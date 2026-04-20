@@ -1,0 +1,18 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-live-trace-open
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: detect-sensitive-open
+    event: open
+    message: Sensitive file open detected via live Inspektor Gadget trace
+    severity: high
+    matchConditions:
+    - expression: event["fname"].contains("/etc/hosts") || event["file.path"].contains("/etc/hosts")
+    actions:
+    - type: generate_report
+      message: Append a runtime finding to the PolicyReport audit log

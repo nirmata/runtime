@@ -1,0 +1,23 @@
+image:
+  repository: ghcr.io/nirmata/kyverno-runtime
+  tag: prototype
+  pullPolicy: IfNotPresent
+
+leaderElection: true
+
+inspektorGadget:
+  timeout: 8s
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+podLabels: {}
+podAnnotations: {}
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,14 @@
+# Chainsaw configuration for kyverno-runtime e2e tests.
+# These tests require a kind cluster with kyverno-runtime installed.
+# Run with: chainsaw test --test-dir tests/e2e/
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: kyverno-runtime-e2e
+spec:
+  timeouts:
+    apply: 30s
+    assert: 120s
+    delete: 30s
+    cleanup: 60s
+  failFast: true

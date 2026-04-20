@@ -1,0 +1,19 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: block-shell-escalation
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: detect-shell-escalation
+    event: exec
+    message: Suspicious shell activity detected
+    severity: high
+    conditions:
+    - name: shell-command
+      expression: event["process.name"] == "/bin/sh" || event["process.name"] == "/bin/bash"
+    actions:
+    - type: terminate
+      message: Request pod termination after suspicious shell execution

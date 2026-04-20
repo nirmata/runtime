@@ -1,0 +1,163 @@
+# E2E test: Verify that multiple RuntimePolicies (open + exec) generate
+# separate PolicyReports for the same pod.
+#
+# Prerequisites:
+#   - kind cluster with kyverno-runtime installed (make kind-install)
+#   - CRDs for RuntimePolicy and PolicyReport deployed
+#
+# This test validates that the full pipeline handles multiple policies
+# independently, which was a key concern during debugging.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: multiple-policies
+spec:
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 60s
+  steps:
+  # Step 1: Create namespace
+  - name: setup-namespace
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: e2e-multi-policy
+            labels:
+              runtime-monitor: "enabled"
+
+  # Step 2: Apply both open and exec RuntimePolicies
+  - name: apply-open-policy
+    try:
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-multi-open
+          spec:
+            namespaceSelector:
+              matchLabels:
+                runtime-monitor: "enabled"
+            validations:
+            - name: detect-open
+              event: open
+              message: File open detected
+              severity: high
+              matchConditions:
+              - expression: >-
+                  event["fname"].contains("/etc/hosts") ||
+                  event["file.path"].contains("/etc/hosts")
+              actions:
+              - type: generate_report
+
+  - name: apply-exec-policy
+    try:
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-multi-exec
+          spec:
+            namespaceSelector:
+              matchLabels:
+                runtime-monitor: "enabled"
+            validations:
+            - name: detect-exec
+              event: exec
+              message: Exec detected
+              severity: medium
+              matchConditions:
+              - expression: size(event) > 0
+              actions:
+              - type: generate_report
+
+  # Step 3: Create a pod that triggers both events
+  - name: create-demo-pod
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: e2e-multi-demo
+            namespace: e2e-multi-policy
+            labels:
+              app: e2e-multi-demo
+          spec:
+            containers:
+            - name: app
+              image: busybox:1.36
+              command: ["sh", "-c", "while true; do cat /etc/hosts; sleep 2; done"]
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: e2e-multi-demo
+            namespace: e2e-multi-policy
+          status:
+            phase: Running
+
+  # Step 4: Assert PolicyReport for open policy
+  - name: assert-open-policy-report
+    try:
+    - assert:
+        resource:
+          apiVersion: wgpolicyk8s.io/v1alpha2
+          kind: PolicyReport
+          metadata:
+            namespace: e2e-multi-policy
+            labels:
+              app.kubernetes.io/managed-by: kyverno-runtime
+              runtime.kyverno.io/policy: e2e-multi-open
+          (results != null): true
+          (length(results) > `0`): true
+
+  # Step 5: Assert PolicyReport for exec policy
+  - name: assert-exec-policy-report
+    try:
+    - assert:
+        resource:
+          apiVersion: wgpolicyk8s.io/v1alpha2
+          kind: PolicyReport
+          metadata:
+            namespace: e2e-multi-policy
+            labels:
+              app.kubernetes.io/managed-by: kyverno-runtime
+              runtime.kyverno.io/policy: e2e-multi-exec
+          (results != null): true
+          (length(results) > `0`): true
+
+  # Cleanup
+  - name: cleanup
+    try:
+    - delete:
+        ref:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: e2e-multi-demo
+            namespace: e2e-multi-policy
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-multi-open
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-multi-exec
+    - delete:
+        ref:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: e2e-multi-policy

@@ -1,0 +1,55 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: verify-network-security
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: verify-unauthorized-db-connect
+    event: tcpconnect
+    message: Unauthorized outbound DB traffic detected
+    severity: high
+    conditions:
+    - expression: event["dst.addr"] != "127.0.0.1" && event["dst.addr"] != "10.0.0.1" && event["dst.addr"] != "10.0.0.2"
+    - expression: event["dst.port"] == "5432"
+    actions:
+    - type: terminate
+      message: Terminate pod on unauthorized DB connection
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: verify-compliance-audit
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: verify-compliance-audit
+    event: open
+    message: Compliance audit event
+    severity: info
+    conditions:
+    - expression: event["k8s.podLabels"].contains("audit-enabled=true")
+    actions:
+    - type: generate_report
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: verify-system-behavior
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: verify-system-performance
+    event: tcpconnect
+    message: Connection behavior observed
+    severity: medium
+    conditions:
+    - expression: double(event["latency"]) > -1.0
+    actions:
+    - type: notify_ops

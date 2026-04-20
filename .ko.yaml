@@ -1,0 +1,13 @@
+builds:
+- id: kyverno-runtime
+  dir: ./cmd/kyverno-runtime
+  env:
+    - CGO_ENABLED=0
+  main: .
+  platforms:
+    - linux/arm64
+
+baseImageOverrides:
+  github.com/nirmata/kyverno-runtime/cmd/kyverno-runtime: gcr.io/distroless/base-debian12:nonroot
+
+defaultBaseImage: gcr.io/distroless/base-debian12:nonroot

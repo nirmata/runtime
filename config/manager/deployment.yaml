@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kyverno-runtime
+  namespace: kyverno-runtime
+spec:
+  selector:
+    matchLabels:
+      app: kyverno-runtime
+  template:
+    metadata:
+      labels:
+        app: kyverno-runtime
+    spec:
+      serviceAccountName: kyverno-runtime
+      hostPID: true
+      containers:
+      - name: manager
+        image: ghcr.io/nirmata/kyverno-runtime:prototype
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        args:
+        - --leader-elect
+        - --inspektor-gadget-timeout=8s
+        env:
+        - name: HOST_ROOT
+          value: /host
+        ports:
+        - containerPort: 8080
+          name: metrics
+        - containerPort: 8081
+          name: probes
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+          readOnly: true
+        - name: host-run
+          mountPath: /run
+        - name: host-var-run
+          mountPath: /var/run
+        - name: host-sys-fs-bpf
+          mountPath: /sys/fs/bpf
+        - name: host-sys-kernel-debug
+          mountPath: /sys/kernel/debug
+        - name: host-sys-kernel-tracing
+          mountPath: /sys/kernel/tracing
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+          type: Directory
+      - name: host-run
+        hostPath:
+          path: /run
+          type: Directory
+      - name: host-var-run
+        hostPath:
+          path: /var/run
+          type: Directory
+      - name: host-sys-fs-bpf
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: host-sys-kernel-debug
+        hostPath:
+          path: /sys/kernel/debug
+          type: DirectoryOrCreate
+      - name: host-sys-kernel-tracing
+        hostPath:
+          path: /sys/kernel/tracing
+          type: DirectoryOrCreate
