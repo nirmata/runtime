@@ -140,6 +140,36 @@ Deliverables:
 - `README.md`
 - runtime config struct updates in command wiring
 
+### Critical: PolicyReport Result Deduplication
+
+The current reporter creates a new PolicyReport result for every matching
+eBPF event. A single `kubectl exec` that opens `/etc/hosts` in a loop
+produces dozens of nearly identical findings in the PolicyReport. This
+makes reports noisy and hard to consume.
+
+**Required behavior:** Deduplicate results by fingerprint and update
+existing entries instead of appending new ones. The fingerprint key is:
+
+`(policy, rule, namespace, pod, container, matched-fields)`
+
+For example, all `trace_open` events matching the same CEL rule for
+`fname=/etc/hosts` in the same pod should collapse into a single
+PolicyReport result with:
+
+- `firstTimestamp` — time of the first occurrence
+- `lastTimestamp` — time of the most recent occurrence
+- `count` — total number of matching events
+
+When a new event matches an existing fingerprint, the reporter updates
+`lastTimestamp` and increments `count` rather than creating a new result
+entry.
+
+Deliverables:
+
+- Fingerprint computation in `pkg/pipeline/reporter.go`
+- Update-or-insert logic in `pkg/pipeline/k8s_reporter.go`
+- Unit tests for dedup, count increment, and timestamp updates
+
 ### Phase 1: Baseline Lifecycle and Confidence
 
 #### RuntimeBehavior CRD
@@ -465,8 +495,11 @@ Deliverables:
 
 ### Phase 4: Alert Aggregation and Suppression
 
-- Aggregate repetitive alerts by fingerprint:
-  `(rule, namespace, workload, container, normalized fields)`.
+Building on the critical dedup work (see "Critical: PolicyReport Result
+Deduplication" above), this phase adds cross-rule aggregation and
+suppression controls.
+
+- Extend the existing fingerprint-based dedup with configurable aggregation:
 - Emit aggregate fields:
   `firstSeen`, `lastSeen`, `count`, `window`.
 - Add suppression controls:

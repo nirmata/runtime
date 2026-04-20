@@ -1,7 +1,8 @@
 KIND_CLUSTER_NAME ?= kyverno-runtime
 IMAGE_REPOSITORY ?= ghcr.io/nirmata/kyverno-runtime
-IMAGE_TAG ?= prototype
+IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
+HOST_PLATFORM ?= linux/$(shell go env GOARCH)
 
 test:
 	go test ./...
@@ -19,19 +20,18 @@ build: fmt lint
 	go build ./cmd/kyverno-runtime
 
 ko-build:
-	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) ko build ./cmd/kyverno-runtime --push=false --bare --tags=$(IMAGE_TAG)
+	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) ko build ./cmd/kyverno-runtime --local --bare --tags=$(IMAGE_TAG) --platform=$(HOST_PLATFORM)
 
 ko-push:
-	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) ko build ./cmd/kyverno-runtime --push=true --bare --tags=$(IMAGE_TAG)
+	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) ko build ./cmd/kyverno-runtime --push=true --bare --tags=$(IMAGE_TAG) --platform=linux/amd64,linux/arm64
 
 # Create a kind cluster and install all components
-kind-create:
+kind-all:
 	kind create cluster --name $(KIND_CLUSTER_NAME) || true
 	$(MAKE) kind-install
 
 # Load the locally built image into a kind cluster
 kind-load-image:
-	@docker image inspect $(IMAGE) >/dev/null 2>&1 || (echo "Image $(IMAGE) not found locally. Run 'make ko-build' first." && exit 1)
 	kind load docker-image $(IMAGE) --name $(KIND_CLUSTER_NAME)
 
 # Install all components into the current cluster
@@ -54,4 +54,4 @@ test-e2e:
 # Full CI pipeline: build, deploy to kind, and run e2e tests
 test-e2e-install: kind-install test-e2e
 
-.PHONY: test fmt lint run build ko-build ko-push kind-create kind-load-image kind-install test-e2e test-e2e-install
+.PHONY: test fmt lint run build ko-build ko-push kind-all kind-load-image kind-install test-e2e test-e2e-install
