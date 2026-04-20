@@ -124,6 +124,69 @@ Single DaemonSet runtime controller, with modular engines:
 
 No separate runtime sensor service is required in this plan.
 
+## Open Design Discussion
+
+### RuntimePolicy vs Standard Kyverno Policy Types
+
+The current design introduces a dedicated `RuntimePolicy` CRD for runtime
+event evaluation. An alternative approach is to reuse standard Kyverno
+policy types:
+
+- **ValidatingPolicy** — evaluate runtime events and trigger violations
+  (PolicyReport findings), reusing the existing Kyverno CEL evaluation
+  engine and policy semantics.
+- **MutatingPolicy** — transform or enrich runtime events before evaluation
+  (e.g., normalize fields, inject labels).
+- **GeneratingPolicy** — trigger side effects in response to runtime events
+  (e.g., create NetworkPolicy, generate alerts, update RuntimeBehavior).
+
+**Potential benefits:**
+
+- Consistent policy authoring experience across admission and runtime.
+- Reuse of existing Kyverno policy tooling (CLI, test framework, VS Code
+  extension).
+- Policy exceptions (`PolicyException` CRD) work out of the box.
+- Familiar semantics for `match`, `exclude`, `preconditions`, and
+  `validationFailureAction`.
+
+**Potential concerns:**
+
+- Runtime events have different schemas and lifecycles than admission
+  requests — the policy model may need adaptation.
+- Continuous streaming evaluation differs from one-shot admission webhooks.
+- Action semantics (terminate pod, kill process) don't map cleanly to
+  existing Kyverno action types.
+- May require extending upstream Kyverno policy types to accommodate
+  runtime-specific fields (event types, severity, collection parameters).
+
+**Decision needed:** Evaluate whether the benefits of policy type reuse
+outweigh the adaptation cost, or whether a dedicated RuntimePolicy with
+Kyverno-aligned semantics is the better path.
+
+### Policy Exceptions
+
+Runtime policies need an exception mechanism to suppress known-good
+violations without modifying the policy itself. Options:
+
+1. **Kyverno PolicyException CRD** — if standard Kyverno policy types are
+   adopted, the existing `PolicyException` resource applies directly. It
+   allows exempting specific namespaces, workloads, or containers from
+   specific policy rules.
+2. **RuntimePolicy-native exceptions** — if `RuntimePolicy` is retained,
+   add an equivalent exception mechanism (e.g., `RuntimePolicyException`
+   CRD or inline `exclude` blocks).
+3. **RuntimeBehavior allow rules** — for baseline-based detection, the
+   `spec.allow` and `spec.allow.refs` fields already serve as a form of
+   exception. Explicit allow entries suppress findings for known-good
+   behaviors.
+
+Regardless of approach, exceptions should support:
+
+- Scoping by namespace, workload label selector, and container name.
+- Per-rule granularity (exempt specific rules, not entire policies).
+- Audit trail (who created the exception, when, and why).
+- Expiration (time-bounded exceptions for maintenance windows).
+
 ## Implementation Phases
 
 ### Phase 0: Foundation Alignment

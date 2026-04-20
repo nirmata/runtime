@@ -12,6 +12,8 @@ Kyverno Runtime runs as a single DaemonSet. It uses Inspektor Gadget to listen t
 For runtime behavior baseline persistence and APIs, kyverno-runtime uses
 `RuntimeBehavior` as the CR name (TO BE IMPLEMENTED.)
 
+See [Design](docs/dev/DESIGN.md) and [Plan](docs/dev/PLAN.md) for details.
+
 ## Prerequisites
 
 - Linux Kubernetes nodes (required for eBPF collection)
