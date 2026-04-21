@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/sha1"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
@@ -13,20 +16,66 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 )
 
 const maxPolicyReportResults = 20
 
+const defaultFlushTimeout = 30 * time.Second
+
+const (
+	propertyFingerprint   = "fingerprint"
+	propertyCount         = "count"
+	propertyFirstSeen     = "firstTimestamp"
+	propertyLastSeen      = "lastTimestamp"
+	propertyContainerName = "container"
+)
+
 // K8sReporter writes PolicyReport resources to Kubernetes.
 type K8sReporter struct {
 	client client.Client
+	opts   ReporterOptions
+
+	mu            sync.Mutex
+	buffered      map[reportBufferKey]*bufferedReport
+	bufferedCount int
+	flushTicker   *time.Ticker
+}
+
+// ReporterOptions controls buffering and flush behavior.
+type ReporterOptions struct {
+	BufferInterval   time.Duration
+	MaxBufferedCount int
+}
+
+type reportBufferKey struct {
+	namespace string
+	pod       string
+	policy    string
+}
+
+type bufferedReport struct {
+	pod      *corev1.Pod
+	policy   *v1alpha1.RuntimePolicy
+	findings []v1alpha1.RuleFinding
 }
 
 // NewK8sReporter creates a new K8sReporter.
 func NewK8sReporter(c client.Client) *K8sReporter {
-	return &K8sReporter{client: c}
+	return NewK8sReporterWithOptions(c, ReporterOptions{})
+}
+
+// NewK8sReporterWithOptions creates a new K8sReporter with buffering options.
+func NewK8sReporterWithOptions(c client.Client, opts ReporterOptions) *K8sReporter {
+	r := &K8sReporter{client: c, opts: opts}
+	if opts.BufferInterval > 0 && opts.MaxBufferedCount > 0 {
+		r.buffered = map[reportBufferKey]*bufferedReport{}
+		r.flushTicker = time.NewTicker(opts.BufferInterval)
+		go r.runFlushLoop()
+	}
+	return r
 }
 
 // Report writes or updates a PolicyReport for the given findings.
@@ -35,6 +84,20 @@ func (r *K8sReporter) Report(ctx context.Context, req ReportRequest) error {
 		return nil
 	}
 
+	if !r.bufferingEnabled() {
+		return r.reportNow(ctx, req)
+	}
+
+	toFlush := r.bufferRequest(req)
+	if len(toFlush) == 0 {
+		return nil
+	}
+
+	return r.flushBatch(ctx, toFlush)
+}
+
+func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
+
 	reportName := reportName(req.Pod.Name, req.Policy.Name)
 	existing := &policyreportv1alpha2.PolicyReport{}
 	err := r.client.Get(ctx, types.NamespacedName{Namespace: req.Pod.Namespace, Name: reportName}, existing)
@@ -42,7 +105,7 @@ func (r *K8sReporter) Report(ctx context.Context, req ReportRequest) error {
 	results := buildPolicyReportResults(req.Pod, req.Policy, req.Findings)
 
 	if apierrors.IsNotFound(err) {
-		bounded := truncatePolicyReportResults(results)
+		bounded := truncatePolicyReportResults(mergePolicyReportResults(nil, results))
 		obj := &policyreportv1alpha2.PolicyReport{
 			TypeMeta: metav1.TypeMeta{APIVersion: policyreportv1alpha2.SchemeGroupVersion.String(), Kind: "PolicyReport"},
 			ObjectMeta: metav1.ObjectMeta{
@@ -69,9 +132,79 @@ func (r *K8sReporter) Report(ctx context.Context, req ReportRequest) error {
 		return err
 	}
 
-	existing.Results = truncatePolicyReportResults(append(existing.Results, results...))
+	existing.Results = truncatePolicyReportResults(mergePolicyReportResults(existing.Results, results))
 	existing.Summary = summarizePolicyReportResults(existing.Results)
 	return r.client.Update(ctx, existing)
+}
+
+func (r *K8sReporter) bufferingEnabled() bool {
+	return r.opts.BufferInterval > 0 && r.opts.MaxBufferedCount > 0
+}
+
+func (r *K8sReporter) bufferRequest(req ReportRequest) []ReportRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	key := reportBufferKey{namespace: req.Pod.Namespace, pod: req.Pod.Name, policy: req.Policy.Name}
+	bucket, found := r.buffered[key]
+	if !found {
+		podCopy := *req.Pod
+		policyCopy := *req.Policy
+		bucket = &bufferedReport{pod: &podCopy, policy: &policyCopy}
+		r.buffered[key] = bucket
+	}
+	bucket.findings = append(bucket.findings, req.Findings...)
+	r.bufferedCount += len(req.Findings)
+
+	if r.bufferedCount < r.opts.MaxBufferedCount {
+		return nil
+	}
+
+	return r.snapshotAndResetLocked()
+}
+
+func (r *K8sReporter) runFlushLoop() {
+	for range r.flushTicker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultFlushTimeout)
+		if err := r.flushBatch(ctx, r.snapshotAndReset()); err != nil {
+			log.Log.Error(err, "failed to flush buffered policy reports")
+		}
+		cancel()
+	}
+}
+
+func (r *K8sReporter) snapshotAndReset() []ReportRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.snapshotAndResetLocked()
+}
+
+func (r *K8sReporter) snapshotAndResetLocked() []ReportRequest {
+	if len(r.buffered) == 0 {
+		return nil
+	}
+
+	batch := make([]ReportRequest, 0, len(r.buffered))
+	for _, item := range r.buffered {
+		batch = append(batch, ReportRequest{
+			Pod:      item.pod,
+			Policy:   item.policy,
+			Findings: append([]v1alpha1.RuleFinding(nil), item.findings...),
+		})
+	}
+
+	r.buffered = map[reportBufferKey]*bufferedReport{}
+	r.bufferedCount = 0
+	return batch
+}
+
+func (r *K8sReporter) flushBatch(ctx context.Context, batch []ReportRequest) error {
+	for _, req := range batch {
+		if err := r.reportNow(ctx, req); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func reportName(podName, policyName string) string {
@@ -92,12 +225,24 @@ func podReference(pod *corev1.Pod) *corev1.ObjectReference {
 func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, findings []v1alpha1.RuleFinding) []policyreportv1alpha2.PolicyReportResult {
 	results := make([]policyreportv1alpha2.PolicyReportResult, 0, len(findings))
 	for _, finding := range findings {
-		properties := make(map[string]string, len(finding.Fields)+1)
+		now := time.Now().UTC()
+		nowRFC3339 := now.Format(time.RFC3339)
+
+		properties := make(map[string]string, len(finding.Fields)+5)
 		for key, value := range finding.Fields {
 			properties[key] = value
 		}
 		if finding.EventType != "" {
 			properties["eventType"] = finding.EventType
+		}
+
+		fingerprint := findingFingerprint(pod, policy, finding)
+		properties[propertyFingerprint] = fingerprint
+		properties[propertyCount] = "1"
+		properties[propertyFirstSeen] = nowRFC3339
+		properties[propertyLastSeen] = nowRFC3339
+		if containerName := extractContainerName(finding.Fields); containerName != "" {
+			properties[propertyContainerName] = containerName
 		}
 
 		result := policyreportv1alpha2.PolicyReportResult{
@@ -110,12 +255,115 @@ func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, f
 			Scored:     true,
 			Severity:   policyreportv1alpha2.PolicySeverity(strings.ToLower(strings.TrimSpace(finding.Severity))),
 			Category:   "Runtime Security",
-			Timestamp:  metav1.Timestamp{Seconds: time.Now().Unix()},
+			Timestamp:  metav1.Timestamp{Seconds: now.Unix()},
 			Properties: properties,
 		}
 		results = append(results, result)
 	}
 	return results
+}
+
+func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult, incoming []policyreportv1alpha2.PolicyReportResult) []policyreportv1alpha2.PolicyReportResult {
+	merged := append([]policyreportv1alpha2.PolicyReportResult(nil), existing...)
+	indexByFingerprint := map[string]int{}
+
+	for i, result := range merged {
+		if fingerprint := result.Properties[propertyFingerprint]; fingerprint != "" {
+			indexByFingerprint[fingerprint] = i
+		}
+	}
+
+	for _, candidate := range incoming {
+		fingerprint := candidate.Properties[propertyFingerprint]
+		if fingerprint == "" {
+			merged = append(merged, candidate)
+			continue
+		}
+
+		idx, found := indexByFingerprint[fingerprint]
+		if !found {
+			indexByFingerprint[fingerprint] = len(merged)
+			merged = append(merged, candidate)
+			continue
+		}
+
+		existingResult := merged[idx]
+		existingCount := parseCount(existingResult.Properties[propertyCount])
+		incomingCount := parseCount(candidate.Properties[propertyCount])
+
+		if existingResult.Properties == nil {
+			existingResult.Properties = map[string]string{}
+		}
+		existingResult.Properties[propertyFingerprint] = fingerprint
+		existingResult.Properties[propertyCount] = strconv.Itoa(existingCount + incomingCount)
+
+		firstSeen := existingResult.Properties[propertyFirstSeen]
+		if firstSeen == "" {
+			firstSeen = candidate.Properties[propertyFirstSeen]
+		}
+		existingResult.Properties[propertyFirstSeen] = firstSeen
+		existingResult.Properties[propertyLastSeen] = candidate.Properties[propertyLastSeen]
+
+		existingResult.Timestamp = candidate.Timestamp
+		merged[idx] = existingResult
+	}
+
+	return merged
+}
+
+func parseCount(raw string) int {
+	if raw == "" {
+		return 1
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 1 {
+		return 1
+	}
+	return parsed
+}
+
+func findingFingerprint(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, finding v1alpha1.RuleFinding) string {
+	matched := serializeMatchedFields(finding.Fields)
+	container := extractContainerName(finding.Fields)
+	raw := strings.Join([]string{
+		policy.Name,
+		finding.RuleName,
+		pod.Namespace,
+		pod.Name,
+		container,
+		matched,
+	}, "|")
+	hash := sha1.Sum([]byte(raw))
+	return fmt.Sprintf("%x", hash)
+}
+
+func serializeMatchedFields(fields map[string]string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+fields[key])
+	}
+	return strings.Join(parts, ";")
+}
+
+func extractContainerName(fields map[string]string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	for _, key := range []string{"container", "container.name", "k8s.container.name", "containerName"} {
+		if name := strings.TrimSpace(fields[key]); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func reportResultForSeverity(severity string) policyreportv1alpha2.PolicyResult {

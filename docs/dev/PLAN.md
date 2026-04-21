@@ -191,19 +191,35 @@ Regardless of approach, exceptions should support:
 
 ### Phase 0: Foundation Alignment
 
+Status: **COMPLETED** ✅ — Feature gates fully implemented, wired, documented, and tested.
+
 - Add feature gates for all new capabilities:
-  - `baselineEngine`
-  - `signatureEngine`
-  - `alertSinks`
-  - `alertAggregation`
+  - `baselineEngine` ✅
+  - `signatureEngine` ✅
+  - `alertSinks` ✅
+  - `alertAggregation` ✅
 
 Deliverables:
 
-- `docs/dev/DESIGN.md`
-- `README.md`
-- runtime config struct updates in command wiring
+- `docs/dev/DESIGN.md` ✅
+- `README.md` ✅
+- runtime config struct updates in command wiring ✅
+- Feature gate unit tests ✅
+- Helm values and template updates ✅
+- Raw manifest updates ✅
 
+Implementation notes:
+
+- Feature gates are implemented in `pkg/config/features.go`
+- CLI flags wired in `cmd/kyverno-runtime/main.go`
+- Helm values in `charts/kyverno-runtime/values.yaml`
+- Helm templates updated in `charts/kyverno-runtime/templates/deployment.yaml`
+- Raw manifest updated in `config/manager/deployment.yaml`
+- All feature gates default to `false` for safe operation
+- `docs/dev/DESIGN.md` updated with comprehensive Phase 0 and Phase 1 sections
 ### Critical: PolicyReport Result Deduplication
+
+Status: implemented.
 
 The current reporter creates a new PolicyReport result for every matching
 eBPF event. A single `kubectl exec` that opens `/etc/hosts` in a loop
@@ -229,11 +245,39 @@ entry.
 
 Deliverables:
 
-- Fingerprint computation in `pkg/pipeline/reporter.go`
+- Fingerprint computation in `pkg/pipeline/k8s_reporter.go`
 - Update-or-insert logic in `pkg/pipeline/k8s_reporter.go`
-- Unit tests for dedup, count increment, and timestamp updates
+- Unit tests for dedup, count increment, and timestamp updates in
+  `pkg/pipeline/reporter_test.go`
+
+Implementation notes:
+
+- Dedup runs in the existing in-process reporter path (no separate
+  cross-node controller in this phase).
+- Each result stores a stable `fingerprint` property derived from
+  `(policy, rule, namespace, pod, container, matched-fields)`.
+- On repeated matches, reporter preserves `firstTimestamp`, updates
+  `lastTimestamp`, and increments `count` instead of appending a new entry.
 
 ### Phase 1: Baseline Lifecycle and Confidence
+
+Status: **FOUNDATIONAL WORK COMPLETE** ✅ — RuntimeBehavior CRD types, merge logic, and comprehensive tests implemented. Ready for controller and lifecycle orchestration development.
+
+Completed deliverables:
+
+- `api/v1alpha1/runtimebehavior_types.go` ✅ — Complete CRD definition with all types
+- `api/v1alpha1/runtimebehavior_types_test.go` ✅ — Comprehensive unit tests 
+- `api/v1alpha1/register.go` ✅ — Type registration in scheme
+- `pkg/baseline/merge.go` ✅ — Baseline merge logic with proper precedence
+- Documentation in `docs/dev/DESIGN.md` ✅ — Full Phase 1 architecture
+- `docs/dev/DESIGN.md` Phase 1 section ✅ — Lifecycle state machine, merge precedence, integration patterns
+
+Pending implementation (for next iteration):
+- `pkg/pipeline/` lifecycle orchestration (controller logic)
+- `pkg/policy/` confidence-aware evaluation hooks
+- Auto-learning and profile promotion logic
+- Staleness detection and relearning
+- Tests for state transitions and merge behavior
 
 #### RuntimeBehavior CRD
 
@@ -431,7 +475,7 @@ When computing the effective allow set:
 
 ```text
                   duration met
-  ┌──────────┐  & minSamples   ┌──────────┐   admin promotes   ┌──────────┐
+  ┌──────────┐  & minSamples    ┌──────────┐   admin promotes   ┌──────────┐
   │ learning │ ───────────────> │ monitor  │ ─────────────────> │ enforce  │
   └──────────┘                  └──────────┘                    └──────────┘
        │                             │                               │

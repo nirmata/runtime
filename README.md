@@ -8,9 +8,7 @@ Kyverno Runtime runs as a single DaemonSet. It uses Inspektor Gadget to listen t
 
 - One `kyverno-runtime` Pod runs per node.
 - Each kyverno-runtime pod watches workload Pods, collects events locally with embedded Inspektor Gadget runtime, evaluates matching runtime policies, and writes `PolicyReport` results.
-
-For runtime behavior baseline persistence and APIs, kyverno-runtime uses
-`RuntimeBehavior` as the CR name (TO BE IMPLEMENTED.)
+- For runtime behavior baseline persistence and APIs, kyverno-runtime supports `RuntimeBehavior` resources (Phase 1, disabled by default).
 
 See [Design](docs/dev/DESIGN.md) and [Plan](docs/dev/PLAN.md) for details.
 
@@ -126,12 +124,26 @@ kubectl apply -f config/manager/deployment.yaml
 
 ## Controller Flags
 
-- `--inspektor-gadget-timeout=8s`
-- `--metrics-bind-address=:8080`
-- `--health-probe-bind-address=:8081`
-- `--leader-elect`
-- `--zap-log-level=<level>` (for example `--zap-log-level=debug|info|warn|error`)
-- `--zap-devel=true|false`
+- `--inspektor-gadget-timeout=8s`: Timeout for inspektor gadget runtime initialization.
+- `--metrics-bind-address=:8080`: The address the metric endpoint binds to.
+- `--health-probe-bind-address=:8081`: The address the probe endpoint binds to.
+- `--leader-elect`: Enable leader election for controller manager.
+- `--report-buffer-interval=10s`: Interval to flush buffered PolicyReport updates.
+- `--report-buffer-max-count=1000`: Maximum buffered findings before forcing a flush.
+
+### Feature Gates
+
+Feature gates enable experimental and future capabilities. All feature gates are disabled by default.
+
+- `--feature-baseline-engine=true|false`: Enable baseline lifecycle and learning engine. Enables `RuntimeBehavior` CRD support for workload profile learning and enforcement.
+- `--feature-signature-engine=true|false`: Enable signature-based rule detection engine. Enables signature rules alongside anomaly detection.
+- `--feature-alert-sinks=true|false`: Enable external alert sinks and routing. Allows directing findings to external systems (HTTP, syslog, alertmanager, etc.).
+- `--feature-alert-aggregation=true|false`: Enable cross-rule aggregation and suppression controls. Enables cooldown and burst limits for alerts.
+
+### Logging Flags
+
+- `--zap-log-level=<level>`: Log level (debug, info, warn, error). Defaults to `info`.
+- `--zap-devel=true|false`: Enable development mode logging. Defaults to `false`.
 
 ## Samples
 

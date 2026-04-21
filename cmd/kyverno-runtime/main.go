@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/config"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/datasource"
 	"github.com/nirmata/kyverno-runtime/pkg/pipeline"
@@ -32,11 +33,23 @@ func main() {
 	var probeAddr string
 	var enableLeaderElection bool
 	var igExecTimeout time.Duration
+	var reportBufferInterval time.Duration
+	var reportBufferMaxCount int
+	var enableBaselineEngine bool
+	var enableSignatureEngine bool
+	var enableAlertSinks bool
+	var enableAlertAggregation bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.DurationVar(&igExecTimeout, "inspektor-gadget-timeout", 8*time.Second, "Timeout for inspektor gadget runtime initialization.")
+	flag.DurationVar(&reportBufferInterval, "report-buffer-interval", 10*time.Second, "Interval to flush buffered PolicyReport updates.")
+	flag.IntVar(&reportBufferMaxCount, "report-buffer-max-count", 1000, "Maximum buffered findings before forcing a flush.")
+	flag.BoolVar(&enableBaselineEngine, "feature-baseline-engine", false, "Enable baseline lifecycle and learning engine.")
+	flag.BoolVar(&enableSignatureEngine, "feature-signature-engine", false, "Enable signature-based rule detection engine.")
+	flag.BoolVar(&enableAlertSinks, "feature-alert-sinks", false, "Enable external alert sinks and routing.")
+	flag.BoolVar(&enableAlertAggregation, "feature-alert-aggregation", false, "Enable cross-rule aggregation and suppression controls.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -44,6 +57,15 @@ func main() {
 
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)
+
+	// Create feature gates configuration from flags
+	features := config.FeatureGates{
+		BaselineEngine:   enableBaselineEngine,
+		SignatureEngine:  enableSignatureEngine,
+		AlertSinks:       enableAlertSinks,
+		AlertAggregation: enableAlertAggregation,
+	}
+	logger.Info("feature gates", "baselineEngine", features.BaselineEngine, "signatureEngine", features.SignatureEngine, "alertSinks", features.AlertSinks, "alertAggregation", features.AlertAggregation)
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -71,7 +93,10 @@ func main() {
 	evaluator := policy.NewEvaluator()
 	matcher := pipeline.NewPolicyMatcher(evaluator)
 	policyEvaluator := pipeline.NewPolicyEvaluator(evaluator)
-	reporter := pipeline.NewK8sReporter(mgr.GetClient())
+	reporter := pipeline.NewK8sReporterWithOptions(mgr.GetClient(), pipeline.ReporterOptions{
+		BufferInterval:   reportBufferInterval,
+		MaxBufferedCount: reportBufferMaxCount,
+	})
 
 	watchManager := pipeline.NewWatchManager(igSource, policyEvaluator, reporter)
 

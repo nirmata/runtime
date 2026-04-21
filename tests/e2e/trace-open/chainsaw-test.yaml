@@ -107,18 +107,15 @@ spec:
         ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: e2e-open-demo
-            namespace: e2e-trace-open
+          name: e2e-open-demo
+          namespace: e2e-trace-open
     - delete:
         ref:
           apiVersion: runtime.kyverno.io/v1alpha1
           kind: RuntimePolicy
-          metadata:
-            name: e2e-detect-sensitive-open
+          name: e2e-detect-sensitive-open
     - delete:
         ref:
           apiVersion: v1
           kind: Namespace
-          metadata:
-            name: e2e-trace-open
+          name: e2e-trace-open

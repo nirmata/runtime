@@ -8,6 +8,16 @@ leaderElection: true
 inspektorGadget:
   timeout: 8s
 
+reportBuffer:
+  interval: 10s
+  maxCount: 1000
+
+featureGates:
+  baselineEngine: false
+  signatureEngine: false
+  alertSinks: false
+  alertAggregation: false
+
 serviceAccount:
   create: true
   name: ""

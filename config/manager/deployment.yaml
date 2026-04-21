@@ -24,6 +24,12 @@ spec:
         args:
         - --leader-elect
         - --inspektor-gadget-timeout=8s
+        - --report-buffer-interval=10s
+        - --report-buffer-max-count=1000
+        - --feature-baseline-engine=false
+        - --feature-signature-engine=false
+        - --feature-alert-sinks=false
+        - --feature-alert-aggregation=false
         env:
         - name: HOST_ROOT
           value: /host
