@@ -14,11 +14,15 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevents"
 )
 
-// podWatchKey uniquely identifies a streaming watch for a pod and a set of event types.
+// podWatchKey uniquely identifies a streaming watch for a pod, a set of event
+// types, and the exact set of matching policies. Including policies in the key
+// ensures that when policies are added, removed, or updated the old watch is
+// stopped and a new one is started with the current policy list.
 type podWatchKey struct {
 	namespace  string
 	name       string
 	eventTypes string // sorted, comma-joined
+	policies   string // sorted policy names, comma-joined
 }
 
 type podWatch struct {
@@ -77,10 +81,17 @@ func (w *WatchManager) Sync(ctx context.Context, pod *corev1.Pod, policies []*v1
 	}
 	sort.Strings(eventTypes)
 
+	policyNames := make([]string, 0, len(policies))
+	for _, p := range policies {
+		policyNames = append(policyNames, p.Name)
+	}
+	sort.Strings(policyNames)
+
 	key := podWatchKey{
 		namespace:  pod.Namespace,
 		name:       pod.Name,
 		eventTypes: strings.Join(eventTypes, ","),
+		policies:   strings.Join(policyNames, ","),
 	}
 
 	w.mu.Lock()
@@ -92,7 +103,7 @@ func (w *WatchManager) Sync(ctx context.Context, pod *corev1.Pod, policies []*v1
 		return
 	}
 
-	// Stop any previous watch with a different event-type set for this pod.
+	// Stop any previous watch with a different event-type or policy set for this pod.
 	w.StopPod(pod)
 
 	// Reconcile request contexts are short-lived and cancelled when Reconcile

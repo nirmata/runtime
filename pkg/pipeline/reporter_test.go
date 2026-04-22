@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -199,11 +200,12 @@ func TestK8sReporterTruncatesResults(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-policy"},
 	}
 
-	// Create many findings to exceed maxPolicyReportResults
-	findings := make([]v1alpha1.RuleFinding, 30)
-	for i := 0; i < 30; i++ {
+	// Create enough findings to exceed maxPolicyReportResults
+	total := maxPolicyReportResults + 10
+	findings := make([]v1alpha1.RuleFinding, total)
+	for i := 0; i < total; i++ {
 		findings[i] = v1alpha1.RuleFinding{
-			RuleName: "rule-" + string(rune(i)),
+			RuleName: fmt.Sprintf("rule-%04d", i),
 			Message:  "finding",
 			Severity: "low",
 		}

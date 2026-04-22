@@ -21,7 +21,7 @@ import (
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 )
 
-const maxPolicyReportResults = 20
+const maxPolicyReportResults = 500
 
 const defaultFlushTimeout = 30 * time.Second
 
@@ -395,8 +395,13 @@ func summarizePolicyReportResults(results []policyreportv1alpha2.PolicyReportRes
 }
 
 func truncatePolicyReportResults(results []policyreportv1alpha2.PolicyReportResult) []policyreportv1alpha2.PolicyReportResult {
-	if len(results) > maxPolicyReportResults {
-		return results[:maxPolicyReportResults]
+	if len(results) <= maxPolicyReportResults {
+		return results
 	}
-	return results
+	// Sort by last-seen timestamp descending so the most recent events are
+	// retained when the result set is trimmed.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Properties[propertyLastSeen] > results[j].Properties[propertyLastSeen]
+	})
+	return results[:maxPolicyReportResults]
 }
