@@ -1,0 +1,174 @@
+# E2E test: validate RuntimeBehavior sample manifests can be applied and carry
+# expected restrictions for network metadata endpoints and sensitive files.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: runtimebehavior-samples
+spec:
+  timeouts:
+    apply: 30s
+    assert: 120s
+    cleanup: 60s
+  steps:
+  - name: ensure-runtimebehavior-crd
+    try:
+    - apply:
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: runtimebehaviors.runtime.kyverno.io
+          spec:
+            group: runtime.kyverno.io
+            names:
+              kind: RuntimeBehavior
+              listKind: RuntimeBehaviorList
+              plural: runtimebehaviors
+              singular: runtimebehavior
+              shortNames:
+              - rb
+            scope: Namespaced
+            versions:
+            - name: v1alpha1
+              served: true
+              storage: true
+              schema:
+                openAPIV3Schema:
+                  type: object
+                  properties:
+                    spec:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    status:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+              subresources:
+                status: {}
+    - assert:
+        resource:
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: runtimebehaviors.runtime.kyverno.io
+
+  - name: setup-namespace
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: runtime-demo
+            labels:
+              runtime-monitor: "enabled"
+
+  - name: apply-loopback-metadata-sample
+    try:
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          metadata:
+            name: demo-deny-loopback-metadata
+            namespace: runtime-demo
+          spec:
+            workloadSelector:
+              matchLabels:
+                app: demo
+            mode: enforce
+            allow:
+              network:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              deny:
+                network:
+                - 127.0.0.1
+                - ::1
+                - 169.254.169.254
+                - 100.100.100.200
+                dns:
+                - metadata.google.internal
+                - metadata.azure.internal
+                - instance-data.ec2.internal
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          metadata:
+            name: demo-deny-loopback-metadata
+            namespace: runtime-demo
+          spec:
+            mode: enforce
+            allow:
+              deny:
+                network:
+                - 127.0.0.1
+                - ::1
+                - 169.254.169.254
+                - 100.100.100.200
+                dns:
+                - metadata.google.internal
+                - metadata.azure.internal
+                - instance-data.ec2.internal
+
+  - name: apply-sensitive-file-sample
+    try:
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          metadata:
+            name: demo-restrict-sensitive-files
+            namespace: runtime-demo
+          spec:
+            workloadSelector:
+              matchLabels:
+                app: demo
+            mode: enforce
+            allow:
+              open:
+              - /etc/hosts
+              - /etc/resolv.conf
+              - /etc/hostname
+              deny:
+                open:
+                - /etc/shadow
+                - /etc/gshadow
+                - /etc/passwd-
+                - /root/.ssh/id_rsa
+                - /root/.aws/credentials
+                - /var/run/secrets/kubernetes.io/serviceaccount/token
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          metadata:
+            name: demo-restrict-sensitive-files
+            namespace: runtime-demo
+          spec:
+            mode: enforce
+            allow:
+              deny:
+                open:
+                - /etc/shadow
+                - /etc/gshadow
+                - /etc/passwd-
+                - /root/.ssh/id_rsa
+                - /root/.aws/credentials
+                - /var/run/secrets/kubernetes.io/serviceaccount/token
+
+  - name: cleanup
+    try:
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          name: demo-deny-loopback-metadata
+          namespace: runtime-demo
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          name: demo-restrict-sensitive-files
+          namespace: runtime-demo

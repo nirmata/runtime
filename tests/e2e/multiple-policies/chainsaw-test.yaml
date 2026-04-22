@@ -140,24 +140,20 @@ spec:
         ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: e2e-multi-demo
-            namespace: e2e-multi-policy
+          name: e2e-multi-demo
+          namespace: e2e-multi-policy
     - delete:
         ref:
           apiVersion: runtime.kyverno.io/v1alpha1
           kind: RuntimePolicy
-          metadata:
-            name: e2e-multi-open
+          name: e2e-multi-open
     - delete:
         ref:
           apiVersion: runtime.kyverno.io/v1alpha1
           kind: RuntimePolicy
-          metadata:
-            name: e2e-multi-exec
+          name: e2e-multi-exec
     - delete:
         ref:
           apiVersion: v1
           kind: Namespace
-          metadata:
-            name: e2e-multi-policy
+          name: e2e-multi-policy

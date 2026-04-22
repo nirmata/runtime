@@ -105,18 +105,15 @@ spec:
         ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: e2e-exec-demo
-            namespace: e2e-trace-exec
+          name: e2e-exec-demo
+          namespace: e2e-trace-exec
     - delete:
         ref:
           apiVersion: runtime.kyverno.io/v1alpha1
           kind: RuntimePolicy
-          metadata:
-            name: e2e-detect-exec
+          name: e2e-detect-exec
     - delete:
         ref:
           apiVersion: v1
           kind: Namespace
-          metadata:
-            name: e2e-trace-exec
+          name: e2e-trace-exec

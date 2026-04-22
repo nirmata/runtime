@@ -172,6 +172,11 @@ kubectl -n runtime-demo exec demo -- sh -c 'nc -zv 8.8.8.8 443 2>&1; true'
 kubectl get policyreport -n runtime-demo
 ```
 
+Additional RuntimeBehavior sample manifests:
+
+- [testdata/runtimebehavior-deny-loopback-metadata.yaml](testdata/runtimebehavior-deny-loopback-metadata.yaml)
+- [testdata/runtimebehavior-restrict-sensitive-files.yaml](testdata/runtimebehavior-restrict-sensitive-files.yaml)
+
 ## Build and Test
 
 ```bash
@@ -326,3 +331,5 @@ See [testdata/E2E_TESTING.md](testdata/E2E_TESTING.md) for comprehensive deploym
 - [testdata/e2e-live-all-usecases.yaml](testdata/e2e-live-all-usecases.yaml)
 - [testdata/e2e-live-trace-policy.yaml](testdata/e2e-live-trace-policy.yaml)
 - [testdata/sample-runtimepolicy.yaml](testdata/sample-runtimepolicy.yaml)
+- [testdata/runtimebehavior-deny-loopback-metadata.yaml](testdata/runtimebehavior-deny-loopback-metadata.yaml)
+- [testdata/runtimebehavior-restrict-sensitive-files.yaml](testdata/runtimebehavior-restrict-sensitive-files.yaml)
