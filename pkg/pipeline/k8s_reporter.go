@@ -21,7 +21,7 @@ import (
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 )
 
-const maxPolicyReportResults = 500
+const maxPolicyReportResults = 1000
 
 const defaultFlushTimeout = 30 * time.Second
 
@@ -31,6 +31,8 @@ const (
 	propertyFirstSeen     = "firstTimestamp"
 	propertyLastSeen      = "lastTimestamp"
 	propertyContainerName = "container"
+
+	annotationTruncatedResults = "runtime.kyverno.io/truncated-results"
 )
 
 // K8sReporter writes PolicyReport resources to Kubernetes.
@@ -48,6 +50,9 @@ type K8sReporter struct {
 type ReporterOptions struct {
 	BufferInterval   time.Duration
 	MaxBufferedCount int
+	// MaxReportResults caps the number of results kept in a PolicyReport.
+	// If zero the package-level maxPolicyReportResults constant is used.
+	MaxReportResults int
 }
 
 type reportBufferKey struct {
@@ -96,6 +101,13 @@ func (r *K8sReporter) Report(ctx context.Context, req ReportRequest) error {
 	return r.flushBatch(ctx, toFlush)
 }
 
+func (r *K8sReporter) maxResults() int {
+	if r.opts.MaxReportResults > 0 {
+		return r.opts.MaxReportResults
+	}
+	return maxPolicyReportResults
+}
+
 func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 
 	reportName := reportName(req.Pod.Name, req.Policy.Name)
@@ -105,7 +117,8 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 	results := buildPolicyReportResults(req.Pod, req.Policy, req.Findings)
 
 	if apierrors.IsNotFound(err) {
-		bounded := truncatePolicyReportResults(mergePolicyReportResults(nil, results))
+		merged, _ := mergePolicyReportResults(nil, results)
+		bounded := truncatePolicyReportResults(merged, r.maxResults())
 		obj := &policyreportv1alpha2.PolicyReport{
 			TypeMeta: metav1.TypeMeta{APIVersion: policyreportv1alpha2.SchemeGroupVersion.String(), Kind: "PolicyReport"},
 			ObjectMeta: metav1.ObjectMeta{
@@ -132,9 +145,37 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 		return err
 	}
 
-	existing.Results = truncatePolicyReportResults(mergePolicyReportResults(existing.Results, results))
+	merged, addedNew := mergePolicyReportResults(existing.Results, results)
+	// When the report is already at capacity and the incoming events are all
+	// duplicates of known fingerprints (pure count increments), skip the
+	// Kubernetes API Update to reduce API server churn. New distinct events
+	// always trigger an update regardless.
+	atMax := len(existing.Results) >= r.maxResults()
+	if atMax && !addedNew {
+		return nil
+	}
+
+	bounded := truncatePolicyReportResults(merged, r.maxResults())
+	setTruncatedAnnotation(existing, len(merged), r.maxResults())
+	existing.Results = bounded
 	existing.Summary = summarizePolicyReportResults(existing.Results)
 	return r.client.Update(ctx, existing)
+}
+
+// setTruncatedAnnotation records the number of dropped results on the report
+// via an annotation so operators can detect when the limit has been hit.
+func setTruncatedAnnotation(report *policyreportv1alpha2.PolicyReport, total, max int) {
+	if total <= max {
+		// Remove a stale annotation if the report is no longer truncated.
+		if report.Annotations != nil {
+			delete(report.Annotations, annotationTruncatedResults)
+		}
+		return
+	}
+	if report.Annotations == nil {
+		report.Annotations = map[string]string{}
+	}
+	report.Annotations[annotationTruncatedResults] = strconv.Itoa(total - max)
 }
 
 func (r *K8sReporter) bufferingEnabled() bool {
@@ -263,9 +304,13 @@ func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, f
 	return results
 }
 
-func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult, incoming []policyreportv1alpha2.PolicyReportResult) []policyreportv1alpha2.PolicyReportResult {
+// mergePolicyReportResults merges incoming results into existing ones,
+// deduplicating by fingerprint. The returned bool is true when at least one
+// new fingerprint was added (i.e. the report structurally changed).
+func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult, incoming []policyreportv1alpha2.PolicyReportResult) ([]policyreportv1alpha2.PolicyReportResult, bool) {
 	merged := append([]policyreportv1alpha2.PolicyReportResult(nil), existing...)
 	indexByFingerprint := map[string]int{}
+	addedNew := false
 
 	for i, result := range merged {
 		if fingerprint := result.Properties[propertyFingerprint]; fingerprint != "" {
@@ -277,6 +322,7 @@ func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult
 		fingerprint := candidate.Properties[propertyFingerprint]
 		if fingerprint == "" {
 			merged = append(merged, candidate)
+			addedNew = true
 			continue
 		}
 
@@ -284,6 +330,7 @@ func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult
 		if !found {
 			indexByFingerprint[fingerprint] = len(merged)
 			merged = append(merged, candidate)
+			addedNew = true
 			continue
 		}
 
@@ -308,7 +355,7 @@ func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult
 		merged[idx] = existingResult
 	}
 
-	return merged
+	return merged, addedNew
 }
 
 func parseCount(raw string) int {
@@ -394,14 +441,17 @@ func summarizePolicyReportResults(results []policyreportv1alpha2.PolicyReportRes
 	return summary
 }
 
-func truncatePolicyReportResults(results []policyreportv1alpha2.PolicyReportResult) []policyreportv1alpha2.PolicyReportResult {
-	if len(results) <= maxPolicyReportResults {
+func truncatePolicyReportResults(results []policyreportv1alpha2.PolicyReportResult, max int) []policyreportv1alpha2.PolicyReportResult {
+	if len(results) <= max {
 		return results
 	}
+	dropped := len(results) - max
+	log.Log.V(1).Info("truncating policy report results",
+		"total", len(results), "limit", max, "dropped", dropped)
 	// Sort by last-seen timestamp descending so the most recent events are
 	// retained when the result set is trimmed.
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Properties[propertyLastSeen] > results[j].Properties[propertyLastSeen]
 	})
-	return results[:maxPolicyReportResults]
+	return results[:max]
 }

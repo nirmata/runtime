@@ -316,6 +316,13 @@ func packetToRuntimeEvents(source datasource.DataSource, packet datasource.Packe
 		if !matchesPod(fields, request.Namespace, request.Pod) {
 			continue
 		}
+		// When collecting for a specific pod, skip events that have no k8s
+		// metadata at all — they originate from unrelated system processes
+		// captured by the node-wide eBPF program and would otherwise appear
+		// in every pod's PolicyReport as noise.
+		if request.Namespace != "" && !eventHasPodMetadata(fields) {
+			continue
+		}
 		events = append(events, runtimeevents.Event{
 			Type:      normalizePacketEventType(request.EventType, fields),
 			Source:    "inspektorgadget",
@@ -326,6 +333,15 @@ func packetToRuntimeEvents(source datasource.DataSource, packet datasource.Packe
 		})
 	}
 	return events
+}
+
+// eventHasPodMetadata returns true if the event fields include both a k8s
+// namespace and a pod name. Events captured node-wide by eBPF (e.g. from
+// system processes) typically lack these fields.
+func eventHasPodMetadata(fields map[string]string) bool {
+	ns := coalesceField(fields, "", "k8s.namespace", "namespace")
+	pod := coalesceField(fields, "", "k8s.podName", "k8s.podname", "pod", "podName")
+	return ns != "" && pod != ""
 }
 
 func extractPacketFields(source datasource.DataSource, data datasource.Data) map[string]string {
