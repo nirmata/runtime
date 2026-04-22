@@ -19,6 +19,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&RuntimePolicyList{},
 		&RuntimeBehavior{},
 		&RuntimeBehaviorList{},
+		&RuntimeRuleBinding{},
+		&RuntimeRuleBindingList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

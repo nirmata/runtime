@@ -19,12 +19,14 @@ type FeatureGates struct {
 	AlertAggregation bool
 }
 
-// DefaultFeatures returns feature gates with recommended defaults.
+// DefaultFeatures returns feature gates with recommended defaults for new installations.
+// All core detection engines are enabled to provide comprehensive threat detection.
+// Alert aggregation is enabled to prevent alert storms and resource exhaustion.
 func DefaultFeatures() FeatureGates {
 	return FeatureGates{
-		BaselineEngine:   false,
-		SignatureEngine:  false,
-		AlertSinks:       false,
-		AlertAggregation: false,
+		BaselineEngine:   true,  // Learn and enforce workload behavioral baselines
+		SignatureEngine:  true,  // Detect known attack patterns
+		AlertSinks:       false, // Optional: advanced feature for external routing
+		AlertAggregation: true,  // Prevent alert storms with cooldown/burst limits
 	}
 }

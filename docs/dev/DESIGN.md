@@ -552,3 +552,240 @@ This improves profile fidelity by avoiding false positives from startup noise.
 5. **Monitor period:** Deviations generate warnings. Admin tunes `spec.allow`.
 6. **Promotion to enforce:** Admin sets `mode: enforce`. Violations trigger
    enforcement actions.
+
+## Phase 2: Rule Binding Resource
+
+The `RuntimeRuleBinding` CRD maps detection rules to workloads, enabling selective
+detection based on workload characteristics and threat models.
+
+### RuntimeRuleBinding Structure
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimeRuleBinding
+metadata:
+  name: ai-agent-detection
+spec:
+  workloadSelector:
+    matchLabels:
+      app: ml-inference
+      environment: production
+  
+  # Bind specific rules with wildcards
+  ruleSelection:
+    include:
+      - cred-access-*      # All credential access rules
+      - exfil-*            # All exfiltration rules
+    exclude:
+      - lateral-dns-*      # Exclude lateral movement detection
+  
+  # Configuration for signature detection
+  signatureDetectionConfig:
+    enabled: true
+    rules:
+      - cred-access-keys
+      - cred-access-shadow
+      - exfil-public-network
+  
+  # Configuration for anomaly detection
+  anomalyDetectionConfig:
+    enabled: true
+    minConfidence: 0.65
+    baseline: default-ml-profile
+
+status:
+  matchedWorkloads: 12
+  enabledRules: 6
+  conditions:
+  - type: Ready
+    status: "True"
+```
+
+### Real-World Scenario: AI Agent Threat Detection
+
+**Workload**: ML inference service running LLM model serving with PII access
+
+**Threats Detected**:
+1. Credential access (T1003, T1110) — attempts to read password files
+2. API key theft (T1528) — attempts to access AWS/Docker credentials
+3. Data exfiltration (T1041) — outbound connections to public IPs
+
+**RuntimeRuleBinding Configuration**:
+- Select workloads: `app: ml-inference`
+- Enable rules: credential access, exfiltration detection
+- Anomaly threshold: 0.65 (balanced sensitivity)
+
+**Expected Findings**:
+- **CRITICAL**: /etc/shadow access → blocked via deny rule
+- **ERROR**: ~/.aws/credentials access → alerted in monitor, blocked in enforce
+- **WARNING**: Outbound to 8.8.8.8 → flagged as potential exfiltration
+
+## Phase 3: Dual Detection Engines
+
+### Signature Detection Engine
+
+The signature engine matches runtime events against 8 built-in threat patterns:
+
+#### Rule: cred-access-ssh-key (CRITICAL)
+
+Detects SSH private key access.
+
+**Real-world scenario**: Compromised container reads `/root/.ssh/id_rsa` to steal
+credentials for lateral movement to other infrastructure.
+
+```yaml
+spec:
+  validations:
+  - name: detect-ssh-key-access
+    event: open
+    message: SSH private key access detected
+    severity: critical
+    matchConditions:
+    - expression: event["fname"].contains("/.ssh/") || event["fname"].contains("/id_rsa")
+    actions:
+    - type: generate_report
+      severity: critical
+```
+
+#### Rule: cred-access-keys (ERROR)
+
+Detects API key and credential locations.
+
+**Real-world scenario**: Training job reads `~/.aws/credentials` to steal cloud
+provider access tokens for unauthorized API calls.
+
+Patterns detected:
+- `~/.aws/credentials`, `~/.aws/config`
+- `~/.docker/config.json`
+- `~/.kube/config`
+- `.env`, `.secrets`, `.token`
+
+#### Rule: exfil-public-network (WARNING)
+
+Detects outbound connections to public IP addresses.
+
+**Real-world scenario**: Malware in production container connects to `8.8.8.8:53`
+to exfiltrate stolen training data.
+
+Blocked IPs:
+- `8.8.8.8` (Google DNS)
+- `1.1.1.1` (Cloudflare DNS)
+- `0.0.0.0/0` (any external network)
+
+#### Rule: lateral-dns-suspicious (WARNING)
+
+Detects DNS queries to known C2 domains.
+
+**Real-world scenario**: Compromised training workload resolves `attacker.ngrok.io`
+to establish reverse shell for remote access.
+
+Blocked domains:
+- `.ngrok.io` (tunnel service)
+- `.localtunnel.me` (tunnel service)
+- `.duckdns.org` (dynamic DNS)
+- `pastebin.com` (data staging)
+
+#### Rule: execution-shell (ERROR)
+
+Detects unexpected shell spawning.
+
+**Real-world scenario**: Log4Shell RCE vulnerability triggers execution of
+`/bin/bash -c` for command injection.
+
+Blocked executables:
+- `/bin/sh`, `/bin/bash`
+- `/usr/bin/python`, `/usr/bin/perl`, `/usr/bin/ruby`
+
+#### Rule: defense-evasion-disable (ERROR)
+
+Detects security tool disruption.
+
+**Real-world scenario**: Backdoor process executes `auditctl -D` to disable
+audit logging and hide its tracks.
+
+Blocked commands:
+- `iptables`, `ufw`, `firewall`
+- `auditctl`, `systemctl`
+
+#### Rule: discovery-proc (WARNING)
+
+Detects /proc filesystem enumeration.
+
+**Real-world scenario**: Attacker enumerates running processes via `/proc/[pid]/status`
+to identify high-privilege processes for privilege escalation.
+
+#### Rule: cred-access-shadow (CRITICAL)
+
+Detects system password file access.
+
+**Real-world scenario**: Ransomware reads `/etc/shadow` to extract password
+hashes for offline cracking.
+
+### Anomaly Detection Engine
+
+The anomaly engine detects deviations from learned `RuntimeBehavior` baselines
+using confidence-based scoring.
+
+#### Confidence Calculation
+
+Confidence = base (0.5) + sample_bonus + drop_rate_bonus + lifecycle_bonus
+
+- **Sample count bonus**: 
+  - 1000+ samples: +0.3
+  - 100+ samples: +0.2
+  - 10+ samples: +0.1
+  
+- **Drop rate bonus**:
+  - <0.1%: +0.2
+  - <1%: +0.1
+  
+- **Lifecycle bonus**:
+  - `completed`: +0.1
+
+**Example**: A baseline with 1500 samples, 0.01% drop rate, and `completed`
+lifecycle = 0.5 + 0.3 + 0.2 + 0.1 = 1.0 (capped)
+
+#### Real-World Scenario: Behavioral Deviation Detection
+
+**Baseline** (from learning phase):
+- Allowed exec: `/usr/local/bin/python`, `/usr/bin/curl`
+- Allowed open: `/app/config`, `/var/log/app.log`
+- Allowed network: `10.96.0.0/12` (Kubernetes internal)
+
+**Observed Event**: Container executes `/usr/bin/perl script.pl`
+
+**Detection**:
+- `/usr/bin/perl` NOT in baseline → anomaly
+- Baseline quality: 1200 samples, 0.2% drop rate → confidence 0.8
+- MinConfidence threshold: 0.6 → ALERT (0.8 > 0.6)
+- Severity: ERROR (from anomaly engine)
+
+**Result**: PolicyReport generated with:
+- Rule: `anomaly-deviation-exec`
+- Severity: ERROR
+- Confidence: 80%
+- Pattern: `execution outside learned baseline`
+
+### E2E Validation
+
+Real-world threat scenarios are provided in `testdata/`:
+
+1. **e2e-ai-agent-credential-access.yaml** — credential access detection
+2. **e2e-ai-agent-aws-credentials.yaml** — cloud credential exfiltration
+3. **e2e-ai-agent-data-exfil.yaml** — data exfiltration to public IPs
+4. **e2e-ai-agent-c2-communication.yaml** — C2 communication via tunnels
+
+Deploy on kind cluster:
+
+```bash
+kind create cluster --name kyverno-runtime-test
+helm install kyverno-runtime ./charts/kyverno-runtime \
+  --set featureGates.signatureEngine=true \
+  --set featureGates.baselineEngine=true
+
+kubectl apply -f testdata/e2e-ai-agent-credential-access.yaml
+sleep 30
+kubectl get policyreport -A
+```
+
+See [testdata/E2E_TESTING.md](../testdata/E2E_TESTING.md) for comprehensive guide.

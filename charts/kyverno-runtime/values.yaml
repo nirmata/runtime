@@ -8,15 +8,22 @@ leaderElection: true
 inspektorGadget:
   timeout: 8s
 
+# Report buffering: optimize for new installations
 reportBuffer:
-  interval: 10s
-  maxCount: 1000
+  # Flush interval balances latency vs batching (default: 5s for faster alerts)
+  interval: 5s
+  # Max buffered findings before forced flush (default: 500 to prevent resource exhaustion)
+  maxCount: 500
 
 featureGates:
-  baselineEngine: false
-  signatureEngine: false
+  # Baseline engine: learn and enforce workload behavioral baselines (default: enabled)
+  baselineEngine: true
+  # Signature engine: detect known attack patterns via 8 built-in rules (default: enabled)
+  signatureEngine: true
+  # Alert sinks: route findings to external systems like syslog, HTTP, etc (default: disabled)
   alertSinks: false
-  alertAggregation: false
+  # Alert aggregation: prevent alert storms with cooldown and burst limits (default: enabled)
+  alertAggregation: true
 
 serviceAccount:
   create: true

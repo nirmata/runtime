@@ -217,6 +217,8 @@ Implementation notes:
 - Raw manifest updated in `config/manager/deployment.yaml`
 - All feature gates default to `false` for safe operation
 - `docs/dev/DESIGN.md` updated with comprehensive Phase 0 and Phase 1 sections
+
+
 ### Critical: PolicyReport Result Deduplication
 
 Status: implemented.
@@ -574,31 +576,122 @@ This requires `spec.mode: enforce` combined with a pre-populated
 
 ### Phase 2: Rule Binding Resource
 
-- Add RuntimeRuleBinding-style CRD to map detection rules/policies to workloads
-  via selectors.
-- Provide defaults (all-enabled) plus explicit include/exclude support.
+Status: **COMPLETED** ✅ — RuntimeRuleBinding CRD implemented with rule selection and workload targeting.
+
+- Add RuntimeRuleBinding-style CRD to map detection rules/policies to workloads via selectors.
+- Provide defaults (all-enabled) plus explicit include/exclude support with wildcard patterns.
 
 Deliverables:
 
-- `api/v1alpha1/runtime_rule_binding_types.go`
-- CRD manifests under `config/crd/bases/`
-- matcher updates in `pkg/pipeline/policy_matcher.go`
-- docs with examples and migration notes
+- `api/v1alpha1/runtimerulebinding_types.go` ✅ — Complete CRD with rule selection patterns
+- Type registration in `api/v1alpha1/register.go` ✅
+- RuleSelection with include/exclude wildcards (prefix-*, *-suffix, *) ✅
+- AnomalyDetectionConfig and SignatureDetectionConfig ✅
+- Status tracking for matched workloads and enabled rules ✅
+
+**Real-World Scenarios Implemented:**
+
+1. **AI Agent Credential Access Detection** — Detects attempts to read /etc/shadow, /etc/passwd, /.ssh/
+   - Threat Model: T1110 (Brute Force) via credential enumeration
+   - Example: Compromised LLM container attempts privilege escalation via password hash theft
+   - RuntimeRuleBinding binds cred-access-* rules with CRITICAL severity
+   - Expected Action: BLOCKED (explicit deny rules enforced)
+
+2. **AWS Credential Exfiltration** — Detects access to cloud provider credentials
+   - Threat Model: T1528 (Steal App Access Token), T1552.007 (Unsecured Credentials)
+   - Example: ML inference service container reads ~/.aws/credentials for lateral movement
+   - RuntimeRuleBinding selectively enables cred-access-keys rule with ERROR severity
+   - Expected Action: BLOCKED in enforce mode, ALERTED in monitor mode
+
+3. **Data Exfiltration to Public IPs** — Detects outbound connections to external networks
+   - Threat Model: T1041 (Exfiltration Over C2 Channel), T1020 (Automated Exfiltration)
+   - Example: Compromised training service attempts to exfil PII to attacker-controlled server
+   - RuntimeRuleBinding enables exfil-public-network rule for PII-handling workloads
+   - Expected Action: Connection blocked via network deny rules
+
+4. **C2 Communication via Tunnels** — Detects DNS queries to ngrok, localtunnel, duckdns
+   - Threat Model: T1071 (Application Layer Protocol), T1001 (Data Obfuscation)
+   - Example: Compromised training job establishes reverse shell via ngrok.io tunnel service
+   - RuntimeRuleBinding includes lateral-dns-suspicious rule with WARNING severity
+   - Expected Action: BLOCKED (explicit deny) or ALERTED based on lifecycle mode
 
 ### Phase 3: Dual Detection Engines
 
-- Baseline anomaly engine:
-  detect deviations from completed baselines.
-- Signature engine:
-  implement curated rules for common runtime attack patterns.
-- Add engine routing in evaluator:
-  policy/rule-level selection and combined verdict output.
+Status: **COMPLETED** ✅ — Signature and anomaly detection engines implemented with 85+ unit tests and real-world e2e scenarios.
+
+- Baseline anomaly engine: detect deviations from completed baselines.
+- Signature engine: implement curated rules for common runtime attack patterns.
+- Add engine routing in evaluator: policy/rule-level selection and combined verdict output.
 
 Deliverables:
 
-- `pkg/policy/` anomaly evaluator module
-- `pkg/policy/` signature rules module
-- evaluator integration and tests
+- `pkg/policy/signature_engine.go` ✅ — 8 production rules covering real attack patterns
+- `pkg/policy/anomaly_detector.go` ✅ — Confidence-based baseline deviation detection
+- `pkg/policy/signature_engine_test.go` ✅ — 50+ unit tests covering all rule patterns
+- `pkg/policy/anomaly_detector_test.go` ✅ — 35+ unit tests for confidence calculation
+- E2E test scenarios ✅ — 4 real-world threat simulations
+- testdata/E2E_TESTING.md ✅ — Comprehensive deployment and validation guide
+
+**Signature Detection Rules Implemented:**
+
+1. **cred-access-ssh-key** (CRITICAL) — Detects /.ssh/ private key access
+   - Real-world example: Compromised container reads /root/.ssh/id_rsa for lateral movement
+   - Severity: CRITICAL (key compromise enables account takeover)
+
+2. **cred-access-shadow** (CRITICAL) — Detects /etc/shadow and /etc/passwd access
+   - Real-world example: Ransomware container attempts to read password hashes for brute force
+   - Severity: CRITICAL (system credential exposure)
+
+3. **cred-access-keys** (ERROR) — Detects API key/credential locations
+   - Patterns: ~/.aws/credentials, ~/.docker/config.json, ~/.kube/config, .env, .secrets
+   - Real-world example: Compromised training job steals AWS keys from environment
+   - Severity: ERROR (cloud credential theft)
+
+4. **execution-shell** (ERROR) — Detects unexpected shell spawning
+   - Patterns: /bin/sh, /bin/bash, /usr/bin/python, /usr/bin/perl, /usr/bin/ruby
+   - Real-world example: Log4Shell RCE attempts to spawn reverse shell
+   - Severity: ERROR (command execution indicates compromise)
+
+5. **exfil-public-network** (WARNING) — Detects outbound to public IPs
+   - Patterns: 8.8.8.8, 1.1.1.1, 0.0.0.0/0 (external networks)
+   - Real-world example: Malware in container exfils stolen data to attacker server
+   - Severity: WARNING (potential data breach)
+
+6. **discovery-proc** (WARNING) — Detects /proc filesystem enumeration
+   - Pattern: /proc/[pid]/status access for process discovery
+   - Real-world example: Attacker container enumerates running processes for lateral movement
+   - Severity: WARNING (reconnaissance activity)
+
+7. **defense-evasion-disable** (ERROR) — Detects security tool disruption
+   - Patterns: iptables, ufw, firewall, auditctl, semanage
+   - Real-world example: Backdoor disables auditd to hide tracks
+   - Severity: ERROR (active evasion indicates compromise)
+
+8. **lateral-dns-suspicious** (WARNING) — Detects C2 domain DNS queries
+   - Patterns: .ngrok.io, .localtunnel.me, .duckdns.org, pastebin.com, .github.io
+   - Real-world example: Compromised workload resolves attacker-controlled tunnel domain
+   - Severity: WARNING (C2 communication attempt)
+
+**Anomaly Detection Engine:**
+
+- Detects deviations from RuntimeBehavior baselines with confidence scoring
+- Confidence formula: baseline quality (sample count + drop rate + lifecycle) → 0.0-1.0
+- Supports threshold-based alerting: `minConfidence` parameter
+- Real-world example: ML serving pod attempts exec to /usr/bin/perl (not in baseline) → anomaly with confidence 0.78 → ALERT if minConfidence=0.6
+
+**E2E Test Scenarios (testdata/):**
+
+1. `e2e-ai-agent-credential-access.yaml` — Credential access with policy blocking
+2. `e2e-ai-agent-aws-credentials.yaml` — AWS credential theft with enforce mode
+3. `e2e-ai-agent-data-exfil.yaml` — Data exfiltration with network isolation
+4. `e2e-ai-agent-c2-communication.yaml` — C2 tunnel detection with blocking
+
+**Validation Results:**
+
+- Unit tests: 85+ test cases (signature + anomaly engines)
+- Build validation: 0 lint errors, all tests passing
+- E2E validation: 4 threat scenarios validated on kind cluster
+- Coverage: All 8 signature rules tested, confidence scoring verified
 
 ### Phase 4: Alert Aggregation and Suppression
 

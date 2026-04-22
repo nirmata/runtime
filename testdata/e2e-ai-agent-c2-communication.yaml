@@ -1,0 +1,129 @@
+# AI Agent Security Testing: Command & Control (C2) Communication Scenario
+# This scenario tests detection of AI agent workload attempting C2 communication
+# Simulates: AttackTechnique T1071 (Application Layer Protocol) + T1001 (Data Obfuscation)
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ai-agent-c2-compromise
+  namespace: default
+  labels:
+    app: ai-agent
+    workload-type: ml-training
+    environment: production
+spec:
+  serviceAccountName: default
+  containers:
+  - name: training-coordinator
+    image: python:3.11-slim
+    command: 
+      - python
+      - -c
+      - |
+        import socket
+        import dns.resolver
+        # Attempt to resolve C2 domains
+        socket.gethostbyname('attacker.ngrok.io')
+        socket.gethostbyname('my-tunnel.localtunnel.me')
+    securityContext:
+      runAsUser: 1000
+---
+# RuntimeBehavior: Strict DNS whitelist for training workloads
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimeBehavior
+metadata:
+  name: ml-training-baseline
+  namespace: default
+spec:
+  workloadSelector:
+    matchLabels:
+      app: ai-agent
+      workload-type: ml-training
+  mode: enforce
+  learning:
+    duration: 1m
+    minSamples: 10
+    startAfter: ready
+  allow:
+    dns:
+      - internal-registry.example.com
+      - ml-datasets.example.com
+      - model-store.example.com
+      - artifact-cache.example.com
+  allow:
+    deny:
+      dns:
+        - "*.ngrok.io"
+        - "*.localtunnel.me"
+        - "*.duckdns.org"
+        - pastebin.com
+        - "*.github.io"
+---
+# RuntimeRuleBinding: Bind C2 detection rules for training workloads
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimeRuleBinding
+metadata:
+  name: ai-training-c2-detection
+  namespace: default
+spec:
+  workloadSelector:
+    matchLabels:
+      app: ai-agent
+      workload-type: ml-training
+  ruleSelection:
+    include:
+      - lateral-dns-suspicious
+      - execution-shell
+      - defense-evasion-disable
+  signatureDetectionConfig:
+    enabled: true
+    rules:
+      - lateral-dns-suspicious
+      - execution-shell
+      - defense-evasion-disable
+  anomalyDetectionConfig:
+    enabled: true
+    minConfidence: 0.65
+---
+# RuntimePolicy: Prevent C2 communication and execution evasion
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: prevent-ai-c2-communication
+  namespace: default
+spec:
+  workloadSelector:
+    matchLabels:
+      app: ai-agent
+      workload-type: ml-training
+  rules:
+    - name: block-ngrok-c2
+      severity: critical
+      patternMatchers:
+        - pattern: "dns"
+          match: "ngrok.io"
+      ruleAction: block
+    - name: block-tunnel-c2
+      severity: critical
+      patternMatchers:
+        - pattern: "dns"
+          match: "localtunnel.me"
+        - pattern: "dns"
+          match: "duckdns.org"
+      ruleAction: block
+    - name: alert-shell-execution
+      severity: error
+      patternMatchers:
+        - pattern: "exec"
+          match: "/bin/bash"
+        - pattern: "exec"
+          match: "/bin/sh"
+      ruleAction: alert
+    - name: block-defense-evasion
+      severity: critical
+      patternMatchers:
+        - pattern: "exec"
+          match: "iptables"
+        - pattern: "exec"
+          match: "auditctl"
+      ruleAction: block
