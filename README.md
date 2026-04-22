@@ -65,6 +65,21 @@ kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail
 kubectl get policyreport -n runtime-demo
 ```
 
+### Quick Start Smoke Check
+
+Use this one-command smoke test to run the same manual flow above with
+assertions and troubleshooting output:
+
+```bash
+make smoke-quickstart
+```
+
+For pre-merge local validation (build + deploy + smoke):
+
+```bash
+make premerge-smoke
+```
+
 Sample runtime policy:
 
 ```yaml

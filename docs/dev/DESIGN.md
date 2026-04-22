@@ -60,6 +60,14 @@ reconciled pod through the same pipeline:
 - Captures runtime events matching the event types needed by applicable policies
 - Returns events as structured data
 
+Collector metadata filtering semantics (to avoid node-level noise while keeping
+gadget compatibility):
+
+| Event type | Missing k8s namespace/pod metadata | Behavior |
+|---|---|---|
+| `connect`, `tcpconnect` | dropped | prevents unrelated system-process network events from polluting pod reports |
+| `open`, `exec` | retained | these gadgets can surface valid workload events even when metadata is sparse |
+
 #### 3. Evaluator
 
 - For each policy, evaluates `matchConditions` (pre-conditions that must all pass)
@@ -71,8 +79,19 @@ reconciled pod through the same pipeline:
 - Creates or updates `PolicyReport` resources in the pod's namespace
 - Deduplicates findings by fingerprint and updates existing entries with
   `firstTimestamp`, `lastTimestamp`, and `count`
-- Stores up to 20 results after dedup/merge
+- Stores up to a configurable max results value (default: 1000) after dedup/merge
+- Keeps the latest entries by `lastTimestamp` and trims older ones
+- Adds annotation `runtime.kyverno.io/truncated-results` when trim occurs
 - Updates summary counts and severity tallies
+- Skips update calls at capacity for pure duplicate-count increments to reduce
+  API server churn
+
+Reporter and datasource metrics exposed on `/metrics`:
+
+- `kyverno_runtime_datasource_events_dropped_no_metadata_total{event_type=...}`
+- `kyverno_runtime_reporter_results_truncated_total`
+- `kyverno_runtime_reporter_updates_skipped_total{reason=...}`
+- `kyverno_runtime_reporter_writes_total{operation=...,result=...}`
 
 #### Reconciliation Loop:
 

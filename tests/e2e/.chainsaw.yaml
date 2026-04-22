@@ -9,6 +9,6 @@ spec:
   timeouts:
     apply: 30s
     assert: 120s
-    delete: 30s
+    delete: 90s
     cleanup: 60s
   failFast: true

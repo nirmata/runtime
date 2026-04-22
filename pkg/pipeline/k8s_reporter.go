@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/observability"
 )
 
 const maxPolicyReportResults = 1000
@@ -139,7 +140,13 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 			Results: bounded,
 			Summary: summarizePolicyReportResults(bounded),
 		}
-		return r.client.Create(ctx, obj)
+		setTruncatedAnnotation(obj, len(merged), r.maxResults())
+		if err := r.client.Create(ctx, obj); err != nil {
+			observability.IncReporterWrite("create", "error")
+			return err
+		}
+		observability.IncReporterWrite("create", "success")
+		return nil
 	}
 	if err != nil {
 		return err
@@ -152,6 +159,7 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 	// always trigger an update regardless.
 	atMax := len(existing.Results) >= r.maxResults()
 	if atMax && !addedNew {
+		observability.IncReporterUpdateSkipped("at_capacity_duplicates")
 		return nil
 	}
 
@@ -159,7 +167,12 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 	setTruncatedAnnotation(existing, len(merged), r.maxResults())
 	existing.Results = bounded
 	existing.Summary = summarizePolicyReportResults(existing.Results)
-	return r.client.Update(ctx, existing)
+	if err := r.client.Update(ctx, existing); err != nil {
+		observability.IncReporterWrite("update", "error")
+		return err
+	}
+	observability.IncReporterWrite("update", "success")
+	return nil
 }
 
 // setTruncatedAnnotation records the number of dropped results on the report
@@ -446,6 +459,7 @@ func truncatePolicyReportResults(results []policyreportv1alpha2.PolicyReportResu
 		return results
 	}
 	dropped := len(results) - max
+	observability.AddReporterResultsTruncated(dropped)
 	log.Log.V(1).Info("truncating policy report results",
 		"total", len(results), "limit", max, "dropped", dropped)
 	// Sort by last-seen timestamp descending so the most recent events are

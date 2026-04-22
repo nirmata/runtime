@@ -49,9 +49,17 @@ kind-install:
 
 # Run Chainsaw e2e tests against a kind cluster with kyverno-runtime installed
 test-e2e:
-	chainsaw test --test-dir tests/e2e/
+	chainsaw test --config tests/e2e/.chainsaw.yaml --test-dir tests/e2e/
+
+test-e2e-quickstart:
+	chainsaw test --config tests/e2e/.chainsaw.yaml --test-dir tests/e2e/quickstart/
+
+smoke-quickstart:
+	bash ./hack/smoke-quickstart.sh
+
+premerge-smoke: build kind-install smoke-quickstart
 
 # Full CI pipeline: build, deploy to kind, and run e2e tests
 test-e2e-install: kind-install test-e2e
 
-.PHONY: test fmt lint run build ko-build ko-push kind-all kind-load-image kind-install test-e2e test-e2e-install
+.PHONY: test fmt lint run build ko-build ko-push kind-all kind-load-image kind-install test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install

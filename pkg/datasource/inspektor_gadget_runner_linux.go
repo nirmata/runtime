@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/nirmata/kyverno-runtime/pkg/observability"
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevents"
 
 	// Set environment to local for embedded gadget runtime.
@@ -316,11 +317,12 @@ func packetToRuntimeEvents(source datasource.DataSource, packet datasource.Packe
 		if !matchesPod(fields, request.Namespace, request.Pod) {
 			continue
 		}
-		// When collecting for a specific pod, skip events that have no k8s
-		// metadata at all — they originate from unrelated system processes
-		// captured by the node-wide eBPF program and would otherwise appear
-		// in every pod's PolicyReport as noise.
-		if request.Namespace != "" && !eventHasPodMetadata(fields) {
+		// For connect/tcpconnect collection, skip events with no k8s metadata
+		// to avoid node/system-process noise in pod-specific reports. Some
+		// non-network gadgets may not populate k8s metadata consistently, so
+		// this filter is intentionally scoped to network connect events.
+		if request.Namespace != "" && isConnectEventType(request.EventType) && !eventHasPodMetadata(fields) {
+			observability.IncDatasourceDroppedNoMetadata(request.EventType)
 			continue
 		}
 		events = append(events, runtimeevents.Event{
@@ -342,6 +344,11 @@ func eventHasPodMetadata(fields map[string]string) bool {
 	ns := coalesceField(fields, "", "k8s.namespace", "namespace")
 	pod := coalesceField(fields, "", "k8s.podName", "k8s.podname", "pod", "podName")
 	return ns != "" && pod != ""
+}
+
+func isConnectEventType(eventType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(eventType))
+	return normalized == "connect" || normalized == "tcpconnect"
 }
 
 func extractPacketFields(source datasource.DataSource, data datasource.Data) map[string]string {

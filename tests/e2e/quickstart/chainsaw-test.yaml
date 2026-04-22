@@ -1,0 +1,95 @@
+# E2E test: README Quick Start runtime-policy flow.
+#
+# This test mirrors the documented manual path:
+# 1. Namespace labeled runtime-monitor=enabled
+# 2. RuntimePolicy for open events
+# 3. Busybox pod opens /etc/hosts repeatedly
+# 4. PolicyReport is created with at least one result
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: quickstart-trace-open
+spec:
+  timeouts:
+    apply: 30s
+    assert: 120s
+    delete: 90s
+    cleanup: 60s
+  steps:
+  - name: setup-namespace
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: e2e-quickstart
+            labels:
+              runtime-monitor: "enabled"
+
+  - name: apply-runtime-policy
+    try:
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-quickstart-trace-open
+          spec:
+            namespaceSelector:
+              matchLabels:
+                runtime-monitor: "enabled"
+            validations:
+            - name: detect-sensitive-open
+              event: open
+              message: Sensitive file open detected via quickstart flow
+              severity: high
+              matchConditions:
+              - expression: >-
+                  event["fname"].contains("/etc/hosts") ||
+                  event["file.path"].contains("/etc/hosts")
+              actions:
+              - type: generate_report
+                message: Append a runtime finding to the PolicyReport audit log
+
+  - name: create-demo-pod
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: e2e-quickstart-demo
+            namespace: e2e-quickstart
+            labels:
+              app: e2e-quickstart-demo
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: app
+              image: busybox:1.36
+              command: ["sh", "-c", "for i in $(seq 1 30); do cat /etc/hosts >/dev/null; sleep 0.1; done"]
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: e2e-quickstart-demo
+            namespace: e2e-quickstart
+          status:
+            phase: Succeeded
+
+  - name: assert-policy-report
+    try:
+    - assert:
+        resource:
+          apiVersion: wgpolicyk8s.io/v1alpha2
+          kind: PolicyReport
+          metadata:
+            namespace: e2e-quickstart
+            labels:
+              app.kubernetes.io/managed-by: kyverno-runtime
+              runtime.kyverno.io/policy: e2e-quickstart-trace-open
+          (results != null): true
+          (length(results) > `0`): true
+

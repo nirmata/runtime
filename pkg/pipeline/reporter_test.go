@@ -229,6 +229,52 @@ func TestK8sReporterTruncatesResults(t *testing.T) {
 	require.Len(t, report.Results, maxPolicyReportResults)
 }
 
+func TestK8sReporterRespectsMaxReportResultsOption(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, policyreportv1alpha2.Install(scheme))
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reporter := NewK8sReporterWithOptions(c, ReporterOptions{MaxReportResults: 5})
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+			UID:       "12345",
+		},
+	}
+
+	policy := &v1alpha1.RuntimePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-policy"},
+	}
+
+	findings := make([]v1alpha1.RuleFinding, 8)
+	for i := 0; i < len(findings); i++ {
+		findings[i] = v1alpha1.RuleFinding{
+			RuleName: fmt.Sprintf("rule-%d", i),
+			Message:  "finding",
+			Severity: "low",
+		}
+	}
+
+	err := reporter.Report(context.Background(), ReportRequest{
+		Pod:      pod,
+		Policy:   policy,
+		Findings: findings,
+	})
+	require.NoError(t, err)
+
+	report := &policyreportv1alpha2.PolicyReport{}
+	err = c.Get(context.Background(), types.NamespacedName{
+		Namespace: pod.Namespace,
+		Name:      reportName(pod.Name, policy.Name),
+	}, report)
+	require.NoError(t, err)
+	require.Len(t, report.Results, 5)
+	require.Equal(t, "3", report.Annotations[annotationTruncatedResults])
+}
+
 // TestK8sReporterMultipleSeverities tests results with different severities
 func TestK8sReporterMultipleSeverities(t *testing.T) {
 	scheme := runtime.NewScheme()
