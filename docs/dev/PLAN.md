@@ -261,6 +261,51 @@ Implementation notes:
 - On repeated matches, reporter preserves `firstTimestamp`, updates
   `lastTimestamp`, and increments `count` instead of appending a new entry.
 
+### Phase 0.5: Quickstart Reliability and Validation Guardrails
+
+Status: **PROPOSED**
+
+Purpose: make the README quickstart deterministic for local validation and
+reduce coordination friction when results are buffered or split across multiple
+PolicyReport objects.
+
+Scope:
+
+- Add a single-command quickstart verifier for kind-based local validation.
+- Encode expected report shape checks (two policies -> two PolicyReports).
+- Add deployment-path guardrails so stale images are less likely during debug.
+
+Deliverables:
+
+- `make quickstart-verify` (or equivalent script in `hack/`) that:
+  - applies quickstart policies,
+  - triggers one open and one network event,
+  - waits for buffered flush windows,
+  - fails with actionable output if expected reports are missing.
+- Deterministic checks in verifier output:
+  - `e2e-live-trace-open` PolicyReport exists,
+  - `detect-public-egress-quickstart` PolicyReport exists,
+  - network PolicyReport has at least one `fail` result.
+- README quickstart verification block that points to the verifier command and
+  explains that findings appear as separate PolicyReports.
+- E2E test coverage in `tests/e2e/` for quickstart report-shape assertions
+  (presence/labels/policy names), not strict `FAIL` count equality.
+
+Guardrails:
+
+- Explicitly document and enforce that code-change validation in kind must use
+  `make kind-install` (or `make ko-build && make kind-load-image`) before
+  replaying quickstart events.
+- Add a troubleshooting check that prints the runtime DaemonSet `Image ID` when
+  verification fails, to quickly detect stale deployments.
+
+Open decision (follow-up item):
+
+- Decide whether quickstart network policy should intentionally report multiple
+  lifecycle events (`connect` + `close`) or collapse to a single logical
+  finding per probe. If collapse is required, define filtering semantics in
+  policy conditions or normalization layer and add regression tests.
+
 ### Phase 1: Baseline Lifecycle and Confidence
 
 Status: **FOUNDATIONAL WORK COMPLETE** ✅ — RuntimeBehavior CRD types, merge logic, and comprehensive tests implemented. Ready for controller and lifecycle orchestration development.
@@ -794,6 +839,338 @@ Deliverables:
 - health/readiness extensions
 - metrics export additions
 - operational runbook in docs
+
+---
+
+## Phase 8: Scalability and Performance (KubeScape-Inspired)
+
+This phase addresses scalability and hot-path performance gaps identified
+by comparing the current implementation with the
+[KubeScape Node Agent](https://github.com/kubescape/node-agent).
+The enhancements are ordered from lowest effort / highest urgency to highest
+architectural impact.
+
+Background: KubeScape runs node-wide gadgets (one eBPF program per event type
+regardless of pod count), deduplicates events before CEL evaluation, and
+batches API server writes. kyverno-runtime currently spawns one eBPF program
+per pod per event type and calls the API server on every matching event.
+At 50 pods × 3 event types, that means 150 concurrent eBPF programs and
+one API write per event.
+
+### Phase 8.1: nodeName Pod Filtering (Priority 1 — Low effort, correctness fix)
+
+Status: **PROPOSED**
+
+The reconciler processes all Pods in the cluster without filtering by node
+name. With leader election enabled, a single active instance reconciles every
+Pod but can only capture eBPF events from the local node. Every Pod on another
+node wastes a goroutine and an IG gadget load that produces zero events.
+
+Changes required:
+
+- Read `NODE_NAME` from the environment in `cmd/kyverno-runtime/main.go`
+  (populated via the Kubernetes downward API) and inject it into
+  `DaemonSetReconciler`.
+- In `Reconcile`, skip pods where `pod.Spec.NodeName != r.nodeName` (empty
+  `NODE_NAME` retains current behaviour for backward compatibility).
+- Add `NODE_NAME` as a downward API env var in
+  `config/manager/deployment.yaml` and
+  `charts/kyverno-runtime/templates/deployment.yaml`.
+- Update `DESIGN.md` to document per-node collection semantics.
+
+Deliverables:
+
+- `pkg/controller/daemonset_reconciler.go` — add `nodeName` field and
+  filter in `Reconcile`
+- `cmd/kyverno-runtime/main.go` — read and pass `NODE_NAME`
+- `config/manager/deployment.yaml` — downward API env var
+- `charts/kyverno-runtime/templates/deployment.yaml` — downward API env var
+- `controller_test.go` — unit test for node-name filter path
+
+This is a prerequisite for node-wide shared gadgets (Phase 8.4).
+
+### Phase 8.2: Per-Pod Finding Buffer with Timed Flush (Priority 2 — Medium effort)
+
+Status: **PROPOSED**
+
+Currently `WatchManager` calls `reporter.Report` inside the streaming event
+handler callback — a synchronous API server read-modify-write per matching
+event. For an active workload generating tens of matches per second, this is
+the dominant API server load and a throughput bottleneck.
+
+Replace the per-event report call with a per-pod `FindingBuffer` that flushes
+to the API server when:
+
+- The buffer reaches a configurable size (default: 50 findings), or
+- A configurable flush timeout elapses (default: 10 s), or
+- The pod is deleted or the watch is stopped (drain flush).
+
+Design:
+
+```go
+type FindingBuffer struct {
+    mu         sync.Mutex
+    findings   []v1alpha1.RuleFinding
+    maxSize    int           // default 50
+    timeout    time.Duration // default 10s
+    timer      *time.Timer
+    flushFn    func([]v1alpha1.RuleFinding)
+}
+```
+
+Buffering reduces API server writes from O(events/s) to O(events / maxSize)
+or O(1/timeout), matching KubeScape's alert-bulking model.
+
+Changes required:
+
+- Add `pkg/pipeline/finding_buffer.go` with `FindingBuffer` type and
+  flush logic (size trigger, timer trigger, drain).
+- Update `WatchManager` to create one `FindingBuffer` per pod watch and
+  send findings to it instead of calling `reporter.Report` directly.
+- Make `maxSize` and `flushTimeout` configurable in the runtime config
+  struct and wired from `cmd/kyverno-runtime/main.go`.
+- Add `kyverno_runtime_reporter_buffer_depth{namespace,pod}` gauge.
+
+Deliverables:
+
+- `pkg/pipeline/finding_buffer.go` + `finding_buffer_test.go`
+- `pkg/pipeline/watch_manager.go` — integrate buffer
+- `pkg/config/` — add `FindingBufferMaxSize`, `FindingBufferFlushTimeout`
+- `cmd/kyverno-runtime/main.go` — wire config values
+- Helm chart values for both settings
+
+### Phase 8.3: Time-Bucket Event Deduplication (Priority 3 — Medium effort)
+
+Status: **PROPOSED**
+
+High-frequency benign events (a web server opening its config file on every
+request, or a shell loop) produce structurally identical eBPF packets in rapid
+succession. Without pre-CEL deduplication, each triggers a full CEL evaluation
+pass across all validations. KubeScape marks events as `Duplicate` using 64 ms
+time-bucket fingerprints and the rule manager short-circuits before any CEL
+work.
+
+Design:
+
+- Compute a fingerprint per event using key fields per event type:
+
+  | Event type | Fingerprint fields |
+  |---|---|
+  | `exec` | `comm` + `path` + `pid` |
+  | `open` | `path` + `flags` |
+  | `connect` / `tcpconnect` | `destination.ip` + `destination.port` + `l4proto` |
+
+- Bucket fingerprints by 64 ms wall-clock slots (matching KubeScape's
+  `DedupBucket` approach).
+- On a cache hit within the same bucket, mark the event as duplicate and
+  skip CEL evaluation.
+- Cache is per-watch (per-pod), bounded by a configurable size
+  (default: 10,000 entries), evicted by LRU.
+
+Changes required:
+
+- Add `pkg/pipeline/event_dedup.go` with `EventDeduplicator` and per-type
+  fingerprint functions.
+- Call dedup check in `WatchManager` event handler before evaluator.
+- Add metric `kyverno_runtime_datasource_events_deduped_total{event_type}`.
+
+Deliverables:
+
+- `pkg/pipeline/event_dedup.go` + `event_dedup_test.go`
+- `pkg/pipeline/watch_manager.go` — call dedup before evaluate
+- `pkg/observability/metrics.go` — new counter
+- `pkg/config/` — `DedupCacheSize`, `DedupBucketMs` config fields
+
+### Phase 8.4: Node-Wide Shared Gadgets (Priority 4 — High effort, highest ceiling)
+
+Status: **PROPOSED**
+
+The dominant scalability cost is the current model of one eBPF program per pod
+per event type. Each call to `streamGadget` allocates a fresh eBPF program,
+perf-buffer pair, and goroutine. At 50 pods × 3 event types that is
+150 concurrent programs. KubeScape runs 3 node-wide programs and
+demultiplexes by mount namespace / container ID.
+
+Design:
+
+```
+NodeTracer (one per event type)
+    │
+    └── shared eBPF gadget (trace_exec / trace_open / trace_tcp)
+            │
+            └── packetToRuntimeEvents()
+                        │
+                    PodRouter.Route(namespace, podName)
+                        │
+                    pod-A channel  ──> WatchManager pod-A handler
+                    pod-B channel  ──> WatchManager pod-B handler
+                    pod-C channel  ──> WatchManager pod-C handler
+```
+
+A `NodeTracer` owns one long-running gadget per event type. Pod watches
+register/deregister channels with the `NodeTracer` keyed on
+`(namespace, podName)`. The node-level gadget survives pod churn entirely;
+no restart on policy changes.
+
+Event routing uses the mount namespace ID (most reliable) falling back to
+`k8s.namespace` + `k8s.podName` fields extracted from the packet.
+
+Changes required:
+
+- Add `pkg/datasource/node_tracer.go` — `NodeTracer` and `PodRouter`.
+- Refactor `WatchManager` to use `NodeTracer` channel subscriptions instead
+  of calling `StreamEventsForPod` per pod.
+- Update `inspektor_gadget_runner_linux.go` to expose a channel-based
+  subscription API alongside the existing stream API.
+- Add metric `kyverno_runtime_watches_active{event_type}` gauge.
+- Add metric `kyverno_runtime_datasource_events_received_total{event_type}` counter.
+- Phase 8.1 (nodeName filter) is a prerequisite.
+
+Deliverables:
+
+- `pkg/datasource/node_tracer.go` + `node_tracer_test.go`
+- `pkg/pipeline/watch_manager.go` — refactored to use `NodeTracer`
+- `pkg/datasource/interface.go` — new `NodeTracerSource` interface
+- `cmd/kyverno-runtime/main.go` — wire `NodeTracer` construction
+- Updated `docs/dev/DESIGN.md` node-wide collection model
+
+### Phase 8.5: CEL Expression Prefilter (Priority 5 — Medium effort)
+
+Status: **PROPOSED**
+
+When a CEL condition contains a literal equality constraint such as
+`event["path"] == "/etc/shadow"`, the current evaluator still runs the full
+CEL engine for every `open` event regardless of the `path` value. KubeScape's
+`prefilter` package statically analyses CEL expressions at policy load time to
+extract literal equality and prefix constraints, then skips CEL evaluation
+entirely when the extracted fields can't satisfy them.
+
+Design:
+
+- At `WatchManager.Sync` time, parse each validation's CEL conditions using
+  the CEL AST to extract:
+  - `path == <literal>` → `PathEquals`
+  - `path.startsWith("<prefix>")` → `PathPrefix`
+  - `destination.port == <int>` → `DestPortEq`
+  - If no constraint can be extracted, set `PassThrough = true`.
+- In the event handler, before calling `evaluator.Evaluate`, run the
+  prefilter. Skip CEL if no hint matches (and `PassThrough == false`).
+- Store compiled prefilter hints in the watch alongside the policy list.
+
+Changes required:
+
+- Add `pkg/pipeline/cel_prefilter.go` — `PrefilterHint` type and
+  `AnalyzeConditions()` function using CEL AST visitor.
+- Call prefilter in `WatchManager` event handler.
+- Add metric `kyverno_runtime_evaluator_prefiltered_total{policy,validation}`.
+
+Deliverables:
+
+- `pkg/pipeline/cel_prefilter.go` + `cel_prefilter_test.go`
+- `pkg/pipeline/watch_manager.go` — call prefilter before evaluate
+- `pkg/observability/metrics.go` — new counter
+
+### Phase 8.6: Rule Cooldown (Priority 6 — Low effort)
+
+Status: **PROPOSED**
+
+Without a cooldown mechanism, a single detection rule can fire continuously
+for the same workload (e.g. `cred-access-shadow` fires on every `/etc/shadow`
+access), flooding the PolicyReport and producing alert fatigue. KubeScape
+gates `SendRuleAlert` calls through a `RuleCooldown` tracker that suppresses
+repeated identical findings within a configurable window.
+
+Design:
+
+- Add `pkg/pipeline/rule_cooldown.go` with `CooldownTracker`:
+  - Key: `(policyName, ruleName, namespace, pod)`.
+  - After the first finding is reported for a key, suppress for
+    `cooldownDuration` (default: 5 m).
+  - Bounded LRU cache (default: 10,000 entries) to cap memory.
+- Call in `WatchManager` before `reporter.Report` (or `FindingBuffer.Add`).
+- Make duration and cache size configurable.
+
+Deliverables:
+
+- `pkg/pipeline/rule_cooldown.go` + `rule_cooldown_test.go`
+- `pkg/pipeline/watch_manager.go` — call cooldown check
+- `pkg/config/` — `RuleCooldownDuration`, `RuleCooldownCacheSize`
+- Helm chart values for both settings
+- Add metric `kyverno_runtime_evaluator_cooldown_skipped_total{policy,rule}`
+
+### Phase 8.7: CEL Pre-Compilation at Watch Start (Priority 7 — Low effort)
+
+Status: **PROPOSED**
+
+CEL programs are currently compiled lazily on the first event that exercises
+a given expression. Compilation errors therefore surface mid-stream (on a
+live event) rather than at policy activation time. The compiled program cache
+already exists in `pkg/policy/evaluator.go`; this change moves the trigger
+from lazy to eager.
+
+Changes required:
+
+- Add an `EnsureCompiled(policy *v1alpha1.RuntimePolicy) error` method to
+  `policy.Evaluator` that pre-compiles all CEL expressions from a policy's
+  validations and match conditions using the existing `compileCELProgram`
+  path.
+- Call `EnsureCompiled` in `WatchManager.Sync` when adding a new watch.
+- If pre-compilation returns an error, log it and skip starting the watch
+  for that policy (with a metric increment), surfacing the problem at
+  reconcile time.
+- Add metric `kyverno_runtime_evaluator_compile_errors_total{policy}`.
+
+Deliverables:
+
+- `pkg/policy/evaluator.go` — `EnsureCompiled` method
+- `pkg/policy/evaluator_test.go` — pre-compile test
+- `pkg/pipeline/watch_manager.go` — call `EnsureCompiled` at watch start
+- `pkg/observability/metrics.go` — new counter
+
+### Phase 8.8: Enhanced Observability Metrics (Priority 8 — Low effort)
+
+Status: **PROPOSED**
+
+The current four counters provide minimal visibility into pipeline
+performance. This phase adds the metrics needed to observe and tune the
+improvements from Phases 8.1–8.7, aligned with KubeScape's observability
+model.
+
+New metrics to add in `pkg/observability/metrics.go`:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `kyverno_runtime_evaluator_duration_seconds` | Histogram | `policy`, `validation`, `event_type` | CEL evaluation duration |
+| `kyverno_runtime_evaluator_prefiltered_total` | Counter | `policy`, `validation` | Events skipped by CEL prefilter |
+| `kyverno_runtime_datasource_events_deduped_total` | Counter | `event_type` | Events skipped by time-bucket dedup |
+| `kyverno_runtime_watches_active` | Gauge | `event_type` | Currently active streaming watches |
+| `kyverno_runtime_reporter_buffer_depth` | Gauge | `namespace` | Per-pod finding buffer depth |
+| `kyverno_runtime_datasource_events_received_total` | Counter | `event_type` | Raw events received from gadget |
+| `kyverno_runtime_evaluator_cooldown_skipped_total` | Counter | `policy`, `rule` | Findings suppressed by rule cooldown |
+| `kyverno_runtime_evaluator_compile_errors_total` | Counter | `policy` | CEL programs that failed pre-compilation |
+
+Deliverables:
+
+- `pkg/observability/metrics.go` — register all new metrics
+- `pkg/observability/metrics_test.go` — registration smoke test
+- Update `docs/dev/DESIGN.md` metrics table
+
+---
+
+### Phase 8 Summary Table
+
+| Phase | Enhancement | Effort | Impact |
+|---|---|---|---|
+| 8.1 | nodeName pod filtering | Low | Correctness + eliminates off-node waste |
+| 8.2 | Per-pod finding buffer | Medium | Reduces API server write load |
+| 8.3 | Time-bucket event dedup | Medium | Reduces CEL evaluation load |
+| 8.4 | Node-wide shared gadgets | High | Dominant scalability win (O(event_types) vs O(pods × event_types)) |
+| 8.5 | CEL expression prefilter | Medium | Eliminates evaluations for high-frequency benign events |
+| 8.6 | Rule cooldown | Low | Reduces alert fatigue and PolicyReport churn |
+| 8.7 | CEL pre-compilation at watch start | Low | Surfaces errors at activation; eliminates first-event lag |
+| 8.8 | Enhanced observability metrics | Low | Observability prerequisite for tuning all of the above |
+
+---
 
 ## Cross-Cutting Validation
 
