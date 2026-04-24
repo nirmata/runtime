@@ -576,7 +576,7 @@ This requires `spec.mode: enforce` combined with a pre-populated
 
 ### Phase 2: Rule Binding Resource
 
-Status: **COMPLETED** ✅ — RuntimeRuleBinding CRD implemented with rule selection and workload targeting.
+Status: **PARTIALLY COMPLETE** ⚠️ — RuntimeRuleBinding API/CRD exists, but reconcile/evaluation-path integration is still pending.
 
 - Add RuntimeRuleBinding-style CRD to map detection rules/policies to workloads via selectors.
 - Provide defaults (all-enabled) plus explicit include/exclude support with wildcard patterns.
@@ -587,9 +587,20 @@ Deliverables:
 - Type registration in `api/v1alpha1/register.go` ✅
 - RuleSelection with include/exclude wildcards (prefix-*, *-suffix, *) ✅
 - AnomalyDetectionConfig and SignatureDetectionConfig ✅
-- Status tracking for matched workloads and enabled rules ✅
+- Status schema for matched workloads and enabled rules ✅
 
-**Real-World Scenarios Implemented:**
+Pending integration work:
+
+- Controller watch + reconcile for `RuntimeRuleBinding` resources in addition to `RuntimePolicy`.
+- Selector application in runtime matching path so bindings actually scope rule execution per workload.
+- Binding-aware rule filtering (include/exclude wildcard resolution) before evaluation.
+- Severity override application from binding into emitted findings.
+- RuntimeBehavior baseline reference resolution from binding (`spec.anomalyDetection.baseline`).
+- Status writer implementation to populate `status.matchedWorkloads`, `status.enabledRules`, and conditions.
+- Conformance tests validating binding effects in running controller path (not just API shape).
+- Documentation alignment: examples currently use legacy field names (`ruleSelection`, `signatureDetectionConfig`, `anomalyDetectionConfig`) while CRD fields are `rules`, `signatureDetection`, `anomalyDetection`.
+
+**Real-World scenario manifests prepared (integration pending):**
 
 1. **AI Agent Credential Access Detection** — Detects attempts to read /etc/shadow, /etc/passwd, /.ssh/
    - Threat Model: T1110 (Brute Force) via credential enumeration
@@ -617,7 +628,7 @@ Deliverables:
 
 ### Phase 3: Dual Detection Engines
 
-Status: **COMPLETED** ✅ — Signature and anomaly detection engines implemented with 85+ unit tests and real-world e2e scenarios.
+Status: **PARTIALLY COMPLETE** ⚠️ — Signature/anomaly engine libraries and unit tests are implemented, but evaluator/controller routing is not yet wired in the live runtime path.
 
 - Baseline anomaly engine: detect deviations from completed baselines.
 - Signature engine: implement curated rules for common runtime attack patterns.
@@ -629,8 +640,18 @@ Deliverables:
 - `pkg/policy/anomaly_detector.go` ✅ — Confidence-based baseline deviation detection
 - `pkg/policy/signature_engine_test.go` ✅ — 50+ unit tests covering all rule patterns
 - `pkg/policy/anomaly_detector_test.go` ✅ — 35+ unit tests for confidence calculation
-- E2E test scenarios ✅ — 4 real-world threat simulations
-- testdata/E2E_TESTING.md ✅ — Comprehensive deployment and validation guide
+- Scenario manifests in `testdata/` ✅ — 4 real-world threat simulations modeled as manifests
+- `testdata/E2E_TESTING.md` ✅ — Deployment and validation guide
+
+Pending integration work:
+
+- Wire feature gates (`feature-baseline-engine`, `feature-signature-engine`) into runtime pipeline behavior (today flags are parsed and logged, but do not alter evaluator construction/routing).
+- Extend evaluator path to execute signature engine and anomaly detector alongside CEL policy checks.
+- Load and cache `RuntimeBehavior` baselines for workloads in monitor/enforce modes.
+- Merge baseline sources (`spec.allow`, `refs`, `status.observed`) on evaluation path via `pkg/baseline` logic.
+- Map engine matches/deviations into PolicyReport findings with stable rule IDs, severities, and fingerprints.
+- Add conflict handling/precedence when CEL, signature, and anomaly outputs overlap.
+- Add end-to-end tests in `tests/e2e/` that assert live dual-engine findings from running controller (not manifest-only validation).
 
 **Signature Detection Rules Implemented:**
 
@@ -679,19 +700,19 @@ Deliverables:
 - Supports threshold-based alerting: `minConfidence` parameter
 - Real-world example: ML serving pod attempts exec to /usr/bin/perl (not in baseline) → anomaly with confidence 0.78 → ALERT if minConfidence=0.6
 
-**E2E Test Scenarios (testdata/):**
+**Scenario manifests (testdata/):**
 
 1. `e2e-ai-agent-credential-access.yaml` — Credential access with policy blocking
 2. `e2e-ai-agent-aws-credentials.yaml` — AWS credential theft with enforce mode
 3. `e2e-ai-agent-data-exfil.yaml` — Data exfiltration with network isolation
 4. `e2e-ai-agent-c2-communication.yaml` — C2 tunnel detection with blocking
 
-**Validation Results:**
+**Current validation coverage:**
 
-- Unit tests: 85+ test cases (signature + anomaly engines)
+- Unit tests: 85+ test cases (signature + anomaly engine libraries)
 - Build validation: 0 lint errors, all tests passing
-- E2E validation: 4 threat scenarios validated on kind cluster
 - Coverage: All 8 signature rules tested, confidence scoring verified
+- Gap: no controller-path e2e asserting binding-driven, dual-engine runtime findings yet
 
 ### Phase 4: Alert Aggregation and Suppression
 
@@ -723,6 +744,27 @@ Deliverables:
 - `pkg/pipeline/` sink interfaces + implementations
 - chart values and docs for sink configuration
 - integration tests with mock endpoints
+
+### Phase 5.5: Reporting API Migration (PolicyReport -> OpenReports)
+
+- Replace `policyreports.wgpolicyk8s.io` output with OpenReports.io CRDs from https://github.com/openreports/reports-api.
+- Keep migration staged so existing clusters can upgrade safely without report loss.
+
+Deliverables:
+
+- Add OpenReports API dependency and scheme registration in runtime manager wiring.
+- Implement OpenReports writer in `pkg/pipeline/` and switch default reporter backend from PolicyReport to OpenReports resources.
+- Define conversion/mapping from existing findings model (policy/rule/severity/message/timestamps/fingerprint/count) to OpenReports schema.
+- Add feature flag or compatibility mode for dual-write during migration window.
+- Add migration documentation for install/upgrade/rollback, including CRD lifecycle guidance.
+- Update Helm chart and install flows to apply OpenReports CRDs and deprecate `wgpolicyk8s.io` PolicyReport dependency.
+- Add integration tests for OpenReports writes, dedup behavior, and backward-compatibility mode.
+
+Validation:
+
+- kind upgrade test from existing PolicyReport deployment to OpenReports-backed deployment.
+- Verify report continuity and no duplicate amplification during dual-write window.
+- Verify old `policyreports.wgpolicyk8s.io` CRD can be removed after migration completion.
 
 ### Phase 6: Persistence Hardening and Compaction
 

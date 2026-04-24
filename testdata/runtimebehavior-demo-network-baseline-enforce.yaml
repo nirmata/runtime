@@ -1,0 +1,19 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimeBehavior
+metadata:
+  name: demo-network-baseline
+  namespace: runtime-demo
+spec:
+  workloadSelector:
+    matchLabels:
+      app: demo
+  mode: enforce
+  allow:
+    network:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+    deny:
+      network:
+        - 8.8.8.8
+        - 1.1.1.1

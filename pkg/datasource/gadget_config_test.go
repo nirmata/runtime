@@ -37,6 +37,35 @@ func TestGadgetRunConfig(t *testing.T) {
 			wantParams: map[string]string{"connect-only": "true"},
 		},
 		{
+			name: "connect sets k8s namespace and pod selectors",
+			request: GadgetCollectRequest{
+				EventType: "connect",
+				Namespace: "runtime-demo",
+				Pod:       "demo",
+			},
+			wantImage: "trace_tcp",
+			wantParams: map[string]string{
+				"connect-only":  "true",
+				"k8s-namespace": "runtime-demo",
+				"k8s-podname":   "demo",
+			},
+		},
+		{
+			name: "connect preserves explicit selectors",
+			request: GadgetCollectRequest{
+				EventType:  "connect",
+				Namespace:  "runtime-demo",
+				Pod:        "demo",
+				Parameters: map[string]string{"k8s-namespace": "custom-ns", "k8s-podname": "custom-pod"},
+			},
+			wantImage: "trace_tcp",
+			wantParams: map[string]string{
+				"connect-only":  "true",
+				"k8s-namespace": "custom-ns",
+				"k8s-podname":   "custom-pod",
+			},
+		},
+		{
 			name:       "tcpconnect maps to trace_tcp with connect-only",
 			request:    GadgetCollectRequest{EventType: "tcpconnect"},
 			wantImage:  "trace_tcp",
@@ -298,6 +327,12 @@ func TestNormalizePacketEventType(t *testing.T) {
 			want:     "tcpconnect",
 		},
 		{
+			name:     "tcpconnect without protocol metadata stays tcpconnect",
+			fallback: "tcpconnect",
+			fields:   map[string]string{},
+			want:     "tcpconnect",
+		},
+		{
 			name:     "non-network fallback is preserved even with event field",
 			fallback: "open",
 			fields:   map[string]string{"event": "normal"},
@@ -322,6 +357,65 @@ func TestNormalizePacketEventType(t *testing.T) {
 			got := normalizePacketEventType(tt.fallback, tt.fields)
 			if got != tt.want {
 				t.Fatalf("normalizePacketEventType(%q, ...) = %q, want %q", tt.fallback, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeNetworkFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields map[string]string
+		want   map[string]string
+	}{
+		{
+			name: "dst aliases are projected",
+			fields: map[string]string{
+				"dst.addr": "8.8.8.8",
+				"dst.port": "53",
+				"src.addr": "10.244.0.12",
+				"src.port": "37912",
+			},
+			want: map[string]string{
+				"destination.ip":   "8.8.8.8",
+				"destination.port": "53",
+				"source.ip":        "10.244.0.12",
+				"source.port":      "37912",
+			},
+		},
+		{
+			name: "existing canonical keys are preserved",
+			fields: map[string]string{
+				"destination.ip":   "1.1.1.1",
+				"destination.port": "443",
+				"dst.addr":         "8.8.8.8",
+				"dst.port":         "53",
+			},
+			want: map[string]string{
+				"destination.ip":   "1.1.1.1",
+				"destination.port": "443",
+			},
+		},
+		{
+			name: "remote aliases are projected",
+			fields: map[string]string{
+				"remote.addr": "9.9.9.9",
+				"remote.port": "853",
+			},
+			want: map[string]string{
+				"destination.ip":   "9.9.9.9",
+				"destination.port": "853",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeNetworkFields(tt.fields)
+			for key, wantValue := range tt.want {
+				if got[key] != wantValue {
+					t.Fatalf("normalizeNetworkFields() key %q = %q, want %q", key, got[key], wantValue)
+				}
 			}
 		})
 	}

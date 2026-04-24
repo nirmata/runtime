@@ -1,0 +1,18 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: detect-public-egress-quickstart
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: detect-public-network-egress
+    event: tcpconnect
+    message: Public network egress detected
+    severity: high
+    conditions:
+    - expression: '(("destination.ip" in event) && (event["destination.ip"] == "8.8.8.8" || event["destination.ip"] == "1.1.1.1")) || (("dst.addr" in event) && (event["dst.addr"] == "8.8.8.8" || event["dst.addr"] == "1.1.1.1"))'
+    actions:
+    - type: generate_report
+      message: Outbound connection to a disallowed public destination

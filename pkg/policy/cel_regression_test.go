@@ -177,6 +177,42 @@ func TestCELFieldAliasesForExecEvents(t *testing.T) {
 	}
 }
 
+func TestCELNetworkExpressionsAgainstNormalizedDestinationIP(t *testing.T) {
+	e := NewEvaluator()
+	activation := buildCELActivation(runtimeevents.Event{
+		Type: "tcpconnect",
+		Fields: map[string]string{
+			"destination.ip": "8.8.8.8",
+		},
+	})
+
+	t.Run("current quickstart expression", func(t *testing.T) {
+		ok, err := e.evaluateCELBoolean(
+			`(("destination.ip" in event) && (event["destination.ip"] == "8.8.8.8" || event["destination.ip"] == "1.1.1.1")) || (("dst.addr" in event) && (event["dst.addr"] == "8.8.8.8" || event["dst.addr"] == "1.1.1.1"))`,
+			activation,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error evaluating current quickstart expression: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected current quickstart network expression to match normalized destination.ip")
+		}
+	})
+
+	t.Run("simplified normalized destination expression", func(t *testing.T) {
+		ok, err := e.evaluateCELBoolean(
+			`event["destination.ip"] == "8.8.8.8" || event["destination.ip"] == "1.1.1.1"`,
+			activation,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error evaluating simplified network expression: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected simplified network expression to match normalized destination.ip")
+		}
+	})
+}
+
 // TestEvaluateRuntimeOpenPolicyWithIGFields simulates the exact field names
 // that Inspektor Gadget trace_open produces and verifies the full evaluation
 // pipeline matches.

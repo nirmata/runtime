@@ -22,13 +22,15 @@ See [Design](docs/dev/DESIGN.md) and [Plan](docs/dev/PLAN.md) for details.
 
 ```bash
 # Create kind cluster, load image into kind nodes, and install chart
-make kind-all
+make kind
 
 # Verify Installation
 kubectl --context kyverno-runtime get pods -n kyverno-runtime
 kubectl --context kyverno-runtime get ds -A
 kubectl describe pod -n kyverno-runtime -l app.kubernetes.io/name=kyverno-runtime | grep -E "Image:|Image ID:"
 kubectl get crd runtimepolicies.runtime.kyverno.io
+kubectl get crd runtimebehaviors.runtime.kyverno.io
+kubectl get crd runtimerulebindings.runtime.kyverno.io
 kubectl get crd policyreports.wgpolicyk8s.io
 ```
 
@@ -39,48 +41,61 @@ Create a test namespace and pod:
 ```bash
 kubectl create ns runtime-demo
 kubectl label ns runtime-demo runtime-monitor=enabled --overwrite
-kubectl -n runtime-demo run demo --image=busybox:1.36 --restart=Never --command -- sh -c 'sleep 300'
+kubectl -n runtime-demo run demo --image=busybox:1.36 --restart=Never --command -- sh -c 'sleep infinity'
 kubectl -n runtime-demo wait --for=condition=Ready pod/demo --timeout=120s
 ```
 
 Apply sample policy and trigger activity. The controller streams eBPF events continuously
-for all matching pods, so no manual trigger is needed:
+for all matching pods. Each triggered event is evaluated against policies and deduplicated findings
+are reported:
 
 ```bash
+# File-open detection policy
 kubectl apply -f testdata/e2e-live-trace-policy.yaml
-# Generate open events — the controller will detect them in real time.
+
+# Trigger file-open events (cat /etc/hosts multiple times)
 kubectl -n runtime-demo exec demo -- sh -c 'for i in $(seq 1 25); do cat /etc/hosts >/dev/null; sleep 0.1; done'
+
+# Network-egress detection policy
+kubectl apply -f testdata/runtimepolicy-network-egress-check.yaml
+
+# Trigger network egress events (connect to public IPs)
+kubectl -n runtime-demo exec demo -- sh -c 'for i in $(seq 1 10); do nc -w 1 -zv 8.8.8.8 53 || true; done'
 ```
 
-Check policy reports:
+Check policy reports. Writes are buffered by default, so allow 5-10 seconds after
+triggering activity before you expect both reports to appear:
 
 ```bash
+# Summary view
 kubectl get policyreport -n runtime-demo
+
+# Detailed findings (shows which rules matched)
+kubectl get policyreport -n runtime-demo -o yaml
 ```
 
-If no report is created yet, check controller logs:
+**Expected output**:
+
+- Two PolicyReports for the `demo` pod: one labeled `e2e-live-trace-open` and one labeled `detect-public-egress-quickstart`
+- PolicyReport names match pod: `demo-<hash>`
+- The open report typically shows `FAIL=1`
+- The network report may show `FAIL=1` or `FAIL=2` because a single `nc` can emit both `connect` and `close` events
+- Results detail shows which policy and rule generated each finding
+
+If reports are empty, check controller logs:
 
 ```bash
-kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=200
-kubectl get policyreport -n runtime-demo
+kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=100 | grep -E "(policy-evaluator|evaluating)"
 ```
 
-### Quick Start Smoke Check
+**Troubleshooting**:
 
-Use this one-command smoke test to run the same manual flow above with
-assertions and troubleshooting output:
+- File-open findings not appearing: Verify `cat /etc/hosts` executed (generates no output but affects system)
+- Network findings not appearing: Verify `nc` connects successfully (shows `open` in output) and wait at least 5-10 seconds before rechecking reports
+- Only the open report appears at first: The buffered reporter has not flushed the network finding yet; re-run `kubectl get policyreport -n runtime-demo -o yaml` after a few more seconds
+- No findings at all: Check controller logs with the command above and confirm both policies exist with `kubectl get runtimepolicy -A`
 
-```bash
-make smoke-quickstart
-```
-
-For pre-merge local validation (build + deploy + smoke):
-
-```bash
-make premerge-smoke
-```
-
-Sample runtime policy:
+Sample runtime policies:
 
 ```yaml
 apiVersion: runtime.kyverno.io/v1alpha1
@@ -96,81 +111,48 @@ spec:
     event: open
     message: Access to /etc/hosts detected
     severity: high
-    matchConditions:
-    - expression: event["fname"].contains("/etc/hosts") || event["file.path"].contains("/etc/hosts")
+    conditions:
+    - expression: '("fname" in event && event["fname"].contains("/etc/hosts")) || ("file.path" in event && event["file.path"].contains("/etc/hosts")) || ("path" in event && event["path"].contains("/etc/hosts")) || ("fullPath" in event && event["fullPath"].contains("/etc/hosts"))'
     actions:
     - type: generate_report
       message: Sensitive file access detected
 ```
 
-## RuntimeBehavior Example (Baseline Learning)
-
-`RuntimeBehavior` defines the known-good runtime profile for a workload and drives anomaly detection.
-
-> **Current implementation**: `enforce` mode generates `PolicyReport` findings (severity: high) for
-> any deviation from the allow list. Active enforcement actions (process termination, network blocking)
-> are planned for a future phase. Use a `RuntimePolicy` with a `terminate` action today for hard enforcement.
-
-Create a baseline for allowed network access. `allow.network` entries are plain CIDR strings;
-`allow.deny.network` entries are CIDRs that always generate findings regardless of the allow list:
-
 ```yaml
 apiVersion: runtime.kyverno.io/v1alpha1
-kind: RuntimeBehavior
+kind: RuntimePolicy
 metadata:
-  name: demo-network-baseline
-  namespace: runtime-demo
+  name: detect-public-egress
 spec:
-  workloadSelector:
+  namespaceSelector:
     matchLabels:
-      app: demo
-  mode: learning
-  allow:
-    network:
-      - 10.0.0.0/8       # Kubernetes internal
-      - 172.16.0.0/12    # Kubernetes internal
-      - 192.168.0.0/16   # Kubernetes internal
-    deny:
-      network:
-        - 8.8.8.8         # Always flag access to known public IPs
-        - 1.1.1.1
+      runtime-monitor: "enabled"
+  validations:
+  - name: detect-public-network-egress
+    event: tcpconnect
+    message: Public network egress detected
+    severity: high
+    conditions:
+    - expression: '(("destination.ip" in event) && (event["destination.ip"] == "8.8.8.8" || event["destination.ip"] == "1.1.1.1")) || (("dst.addr" in event) && (event["dst.addr"] == "8.8.8.8" || event["dst.addr"] == "1.1.1.1"))'
+    actions:
+    - type: generate_report
+      message: Outbound connection to a disallowed public destination
 ```
-
-Then promote to `enforce` mode to generate findings for disallowed connections:
-
-```yaml
-apiVersion: runtime.kyverno.io/v1alpha1
-kind: RuntimeBehavior
-metadata:
-  name: demo-network-baseline
-  namespace: runtime-demo
-spec:
-  workloadSelector:
-    matchLabels:
-      app: demo
-  mode: enforce
-  allow:
-    network:
-      - 10.0.0.0/8
-      - 172.16.0.0/12
-      - 192.168.0.0/16
-    deny:
-      network:
-        - 8.8.8.8
-        - 1.1.1.1
-```
-
-Label the demo pod and check for anomaly findings:
 
 ```bash
-kubectl -n runtime-demo label pod demo app=demo --overwrite
+kubectl apply -f testdata/e2e-live-trace-policy.yaml
 
-# Generate a connect event to an external IP
-kubectl -n runtime-demo exec demo -- sh -c 'nc -zv 8.8.8.8 443 2>&1; true'
+# Generate open events
+kubectl -n runtime-demo exec demo -- sh -c 'for i in $(seq 1 10); do cat /etc/hosts >/dev/null; sleep 0.1; done'
 
-# Check for policy violations in the report
+# Check for policy violations in the report (writes are buffered; allow a few seconds)
 kubectl get policyreport -n runtime-demo
 ```
+
+Expected behavior after RuntimeBehavior implementation is complete:
+
+- Disallowed network destinations should produce anomaly/findings based on `mode` and allow/deny rules.
+- Baseline-consistent destinations should not produce RuntimeBehavior findings.
 
 Additional RuntimeBehavior sample manifests:
 
@@ -198,12 +180,14 @@ make kind-install
 ```
 
 This target builds the local image, loads it into the kind cluster nodes, and
-then runs the Helm install/upgrade with matching image values.
+applies chart CRDs before running Helm install/upgrade with matching image values.
 
 ## Raw Manifests Install
 
 ```bash
 kubectl apply -f config/crd/bases/runtime.kyverno.io_runtimepolicies.yaml
+kubectl apply -f config/crd/bases/runtime.kyverno.io_runtimebehaviors.yaml
+kubectl apply -f config/crd/bases/runtime.kyverno.io_runtimerulebindings.yaml
 kubectl apply -f config/crd/bases/wgpolicyk8s.io_policyreports.yaml
 kubectl apply -f config/rbac/service_account.yaml
 kubectl apply -f config/rbac/role.yaml
@@ -327,9 +311,11 @@ See [testdata/E2E_TESTING.md](testdata/E2E_TESTING.md) for comprehensive deploym
 
 ## Samples
 
+- [testdata/runtimepolicy-network-egress-check.yaml](testdata/runtimepolicy-network-egress-check.yaml)
 - [testdata/runtimepolicy-usecases.yaml](testdata/runtimepolicy-usecases.yaml)
 - [testdata/e2e-live-all-usecases.yaml](testdata/e2e-live-all-usecases.yaml)
 - [testdata/e2e-live-trace-policy.yaml](testdata/e2e-live-trace-policy.yaml)
 - [testdata/sample-runtimepolicy.yaml](testdata/sample-runtimepolicy.yaml)
+- [testdata/runtimebehavior-demo-network-baseline-enforce.yaml](testdata/runtimebehavior-demo-network-baseline-enforce.yaml)
 - [testdata/runtimebehavior-deny-loopback-metadata.yaml](testdata/runtimebehavior-deny-loopback-metadata.yaml)
 - [testdata/runtimebehavior-restrict-sensitive-files.yaml](testdata/runtimebehavior-restrict-sensitive-files.yaml)

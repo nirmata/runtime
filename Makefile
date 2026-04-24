@@ -26,7 +26,7 @@ ko-push:
 	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) ko build ./cmd/kyverno-runtime --push=true --bare --tags=$(IMAGE_TAG) --platform=linux/amd64,linux/arm64
 
 # Create a kind cluster and install all components
-kind-all:
+kind:
 	kind create cluster --name $(KIND_CLUSTER_NAME) || true
 	$(MAKE) kind-install
 
@@ -38,6 +38,7 @@ kind-load-image:
 kind-install:
 	$(MAKE) ko-build
 	$(MAKE) kind-load-image
+	kubectl apply -f ./charts/kyverno-runtime/crds
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \
@@ -62,4 +63,4 @@ premerge-smoke: build kind-install smoke-quickstart
 # Full CI pipeline: build, deploy to kind, and run e2e tests
 test-e2e-install: kind-install test-e2e
 
-.PHONY: test fmt lint run build ko-build ko-push kind-all kind-load-image kind-install test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install
+.PHONY: test fmt lint run build ko-build ko-push kind kind-load-image kind-install test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install

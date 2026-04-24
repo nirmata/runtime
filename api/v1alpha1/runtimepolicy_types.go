@@ -95,6 +95,13 @@ type RuntimePolicyStatus struct {
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
 }
 
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:shortName=rp
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="ObservedPods",type=integer,JSONPath=`.status.observedPods`
+// +kubebuilder:printcolumn:name="ViolatingPods",type=integer,JSONPath=`.status.violatingPods`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
 type RuntimePolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -102,6 +109,8 @@ type RuntimePolicy struct {
 	Spec   RuntimePolicySpec   `json:"spec,omitempty"`
 	Status RuntimePolicyStatus `json:"status,omitempty"`
 }
+
+// +kubebuilder:object:root=true
 
 type RuntimePolicyList struct {
 	metav1.TypeMeta `json:",inline"`

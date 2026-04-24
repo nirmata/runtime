@@ -528,3 +528,88 @@ func parseRFC3339Property(t *testing.T, value string) time.Time {
 	require.NoError(t, err)
 	return parsed
 }
+
+func TestBuildPolicyReportResultsSanitizesBinaryFields(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: "12345"}}
+	policy := &v1alpha1.RuntimePolicy{ObjectMeta: metav1.ObjectMeta{Name: "policy-a"}}
+
+	findings := []v1alpha1.RuleFinding{{
+		RuleName:  "rule-open",
+		Message:   "matched",
+		Severity:  "high",
+		EventType: "open",
+		Fields: map[string]string{
+			"proc":        "cat\x00\x00\x00\x18\x1D\r\x00",
+			"proc.parent": "sh\x00\x00\x00\x00",
+			"ustack":      "\x00\x00\x00\x00",
+			"proc.comm":   "cat",
+		},
+	}}
+
+	results := buildPolicyReportResults(pod, policy, findings)
+	require.Len(t, results, 1)
+
+	props := results[0].Properties
+	require.Equal(t, "cat", props["proc"])
+	require.Equal(t, "sh", props["proc.parent"])
+	require.Equal(t, "cat", props["proc.comm"])
+	_, hasUstack := props["ustack"]
+	require.False(t, hasUstack, "ustack should be dropped when it only contains null/control bytes")
+}
+
+func TestK8sReporterDedupIgnoresVolatileFields(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, policyreportv1alpha2.Install(scheme))
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reporter := NewK8sReporter(c)
+
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "dedup-volatile", Namespace: "default", UID: "12345"}}
+	policy := &v1alpha1.RuntimePolicy{ObjectMeta: metav1.ObjectMeta{Name: "test-policy"}}
+
+	first := v1alpha1.RuleFinding{
+		RuleName:  "rule-open-hosts",
+		Message:   "opened sensitive file",
+		Severity:  "high",
+		EventType: "open",
+		Fields: map[string]string{
+			"fname":           "/etc/hosts",
+			"container.name":  "main",
+			"timestamp_raw":   "111",
+			"timestamp":       "2026-04-24T06:06:55.255385147Z",
+			"proc.pid":        "123",
+			"proc.parent.pid": "122",
+			"ustack.stack_id": "1",
+			"error_raw":       "0",
+		},
+	}
+
+	second := v1alpha1.RuleFinding{
+		RuleName:  "rule-open-hosts",
+		Message:   "opened sensitive file",
+		Severity:  "high",
+		EventType: "open",
+		Fields: map[string]string{
+			"fname":           "/etc/hosts",
+			"container.name":  "main",
+			"timestamp_raw":   "222",
+			"timestamp":       "2026-04-24T06:06:55.355385147Z",
+			"proc.pid":        "456",
+			"proc.parent.pid": "455",
+			"ustack.stack_id": "2",
+			"error_raw":       "1",
+		},
+	}
+
+	err := reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{first}})
+	require.NoError(t, err)
+	err = reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{second}})
+	require.NoError(t, err)
+
+	report := &policyreportv1alpha2.PolicyReport{}
+	err = c.Get(context.Background(), types.NamespacedName{Namespace: pod.Namespace, Name: reportName(pod.Name, policy.Name)}, report)
+	require.NoError(t, err)
+	require.Len(t, report.Results, 1)
+	require.Equal(t, "2", report.Results[0].Properties[propertyCount])
+}

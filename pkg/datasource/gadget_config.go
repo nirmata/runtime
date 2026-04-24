@@ -24,11 +24,28 @@ func gadgetRunConfig(request GadgetCollectRequest) (string, map[string]string, e
 	case "exec":
 		return "trace_exec", params, nil
 	case "connect", "tcpconnect":
+		if request.Namespace != "" {
+			setParamIfEmpty(params, "k8s-namespace", request.Namespace)
+		}
+		if request.Pod != "" {
+			setParamIfEmpty(params, "k8s-podname", request.Pod)
+		}
 		params["connect-only"] = "true"
 		return "trace_tcp", params, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported runtime event type %q", request.EventType)
 	}
+}
+
+func setParamIfEmpty(params map[string]string, key, value string) {
+	if strings.TrimSpace(params[key]) != "" {
+		return
+	}
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return
+	}
+	params[key] = trimmedValue
 }
 
 // matchesPod returns true if the event fields are compatible with the given
@@ -65,7 +82,10 @@ func coalesceField(fields map[string]string, fallback string, keys ...string) st
 // For non-network events, the requested type is preserved.
 func normalizePacketEventType(fallback string, fields map[string]string) string {
 	normalizedFallback := strings.ToLower(strings.TrimSpace(fallback))
-	if strings.EqualFold(normalizedFallback, "connect") || strings.EqualFold(normalizedFallback, "tcpconnect") {
+	if strings.EqualFold(normalizedFallback, "tcpconnect") {
+		return "tcpconnect"
+	}
+	if strings.EqualFold(normalizedFallback, "connect") {
 		if value := strings.TrimSpace(fields["l4proto"]); strings.EqualFold(value, "TCP") {
 			return "tcpconnect"
 		}
@@ -87,4 +107,34 @@ func normalizePacketEventType(fallback string, fields map[string]string) string 
 	}
 
 	return normalizedFallback
+}
+
+// normalizeNetworkFields projects common network field aliases to a stable key set
+// used by RuntimePolicy expressions and detection logic.
+func normalizeNetworkFields(fields map[string]string) map[string]string {
+	if len(fields) == 0 {
+		return fields
+	}
+
+	setFieldIfEmpty(fields, "destination.ip", coalesceField(fields, "",
+		"destination.ip", "dst.addr", "dst.ip", "dest.ip", "daddr", "remote.addr", "remote.ip", "remote"))
+	setFieldIfEmpty(fields, "destination.port", coalesceField(fields, "",
+		"destination.port", "dst.port", "dest.port", "dport", "remote.port"))
+	setFieldIfEmpty(fields, "source.ip", coalesceField(fields, "",
+		"source.ip", "src.addr", "src.ip", "saddr", "local.addr", "local.ip"))
+	setFieldIfEmpty(fields, "source.port", coalesceField(fields, "",
+		"source.port", "src.port", "sport", "local.port"))
+
+	return fields
+}
+
+func setFieldIfEmpty(fields map[string]string, key, value string) {
+	if strings.TrimSpace(fields[key]) != "" {
+		return
+	}
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return
+	}
+	fields[key] = trimmedValue
 }

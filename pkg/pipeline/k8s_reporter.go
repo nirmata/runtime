@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
 	corev1 "k8s.io/api/core/v1"
@@ -284,7 +285,11 @@ func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, f
 
 		properties := make(map[string]string, len(finding.Fields)+5)
 		for key, value := range finding.Fields {
-			properties[key] = value
+			cleanValue := sanitizeReportPropertyValue(value)
+			if cleanValue == "" {
+				continue
+			}
+			properties[key] = cleanValue
 		}
 		if finding.EventType != "" {
 			properties["eventType"] = finding.EventType
@@ -315,6 +320,38 @@ func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, f
 		results = append(results, result)
 	}
 	return results
+}
+
+// sanitizeReportPropertyValue cleans low-level gadget field values so report
+// properties are human-readable.
+func sanitizeReportPropertyValue(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	// Most gadget strings are C-style buffers with trailing NUL padding.
+	if idx := strings.IndexByte(value, 0); idx >= 0 {
+		value = value[:idx]
+	}
+
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if r == utf8.RuneError {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+
+	return strings.TrimSpace(b.String())
 }
 
 // mergePolicyReportResults merges incoming results into existing ones,
@@ -403,15 +440,50 @@ func serializeMatchedFields(fields map[string]string) string {
 	}
 	keys := make([]string, 0, len(fields))
 	for key := range fields {
+		if !includeInFingerprint(key) {
+			continue
+		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		parts = append(parts, key+"="+fields[key])
+		value := sanitizeReportPropertyValue(fields[key])
+		if value == "" {
+			continue
+		}
+		parts = append(parts, key+"="+value)
 	}
 	return strings.Join(parts, ";")
+}
+
+func includeInFingerprint(key string) bool {
+	if key == "" {
+		return false
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if normalized == "" {
+		return false
+	}
+
+	if normalized == "timestamp" || normalized == "timestamp_raw" {
+		return false
+	}
+	if strings.HasSuffix(normalized, "_raw") {
+		return false
+	}
+	if normalized == "ustack" || strings.HasPrefix(normalized, "ustack.") {
+		return false
+	}
+
+	switch normalized {
+	case "proc.pid", "proc.tid", "proc.parent.pid", "proc.parent.tid", "proc.mntns_id", "fd":
+		return false
+	default:
+		return true
+	}
 }
 
 func extractContainerName(fields map[string]string) string {
