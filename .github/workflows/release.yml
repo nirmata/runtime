@@ -108,10 +108,14 @@ jobs:
           CHART_PACKAGE=".cr-release-packages/kyverno-runtime-${{ steps.chart_version.outputs.version }}.tgz"
           helm push "$CHART_PACKAGE" oci://ghcr.io/nirmata/kyverno-runtime
 
-      - name: Publish chart release and update index
+      - name: Configure Git for chart-releaser
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Run chart-releaser
         uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
         with:
           charts_dir: charts
-          skip_packaging: true
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
