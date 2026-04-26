@@ -195,7 +195,7 @@ kubectl get reports -n app-team-a
 kubectl get reports -n app-team-a -o yaml
 ```
 
-### Viewing Findings 🔎
+### 🔎 Viewing Findings
 
 All findings are reported in OpenReports `Report` resources:
 
@@ -210,19 +210,19 @@ kubectl get reports -n demo -o yaml
 kubectl get reports -n demo --watch
 ```
 
-### Next Steps 👉
+### 👉 Next Steps
 
 - **Configure policies per namespace**: See [Configuration](docs/users/configuration.md)
 - **Explore default policies**: See [Policy Library](docs/users/library.md)
 - **Advanced baseline learning**: See [Concepts](docs/users/concepts.md)
 
-## User Docs 📚
+## 📚 User Docs
 
 - [Concepts](docs/users/concepts.md)
 - [Configuration](docs/users/configuration.md)
 - [Policy Library](docs/users/library.md)
 
-## Developer Docs 🛠️
+## 🛠️ Developer Docs
 
 - [Design](docs/dev/DESIGN.md)
 - [Plan](docs/dev/PLAN.md)
