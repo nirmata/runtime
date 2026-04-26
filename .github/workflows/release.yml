@@ -217,6 +217,14 @@ jobs:
 
           make test-e2e-install-prebuilt IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${CANDIDATE_TAG}"
 
+        - name: Debug cluster state
+          if: always()
+          run: |
+            echo "=== RuntimePolicies ===" && kubectl get runtimepolicies -o wide || true
+            echo "=== Kyverno Runtime Pods ===" && kubectl -n kyverno-runtime get pods || true
+            echo "=== Controller Logs ===" && kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=50 || true
+            echo "=== Events ===" && kubectl -n kyverno-runtime get events || true
+
       - name: Dump cluster state on failure
         if: failure()
         run: |
