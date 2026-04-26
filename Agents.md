@@ -72,6 +72,25 @@ collection-path changes.
 - Avoid bare URLs in prose; use markdown links instead.
 - Avoid duplicate headings in a single file.
 
+## GitHub Actions Configuration
+
+All GitHub Actions in `.github/workflows/` are pinned to specific commit hashes (not mutable tags or versions) for security and reproducibility. This prevents unexpected behavior changes if action authors update tags.
+
+**Format:** `uses: owner/action@<commit_hash> # v<semantic_version>`
+
+Example:
+
+```yaml
+uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+```
+
+To update an action to a new version:
+
+1. Find the latest commit hash for the desired version tag on the action's GitHub release page
+2. Replace the old hash with the new hash in all three workflows (ci.yml, e2e.yml, release.yml)
+3. Include the semantic version as a comment for clarity
+4. Test workflows locally with `act` if possible before merging
+
 ## Common learnings
 
 - Prefer `apply_patch` (or direct file edits) over shell heredocs in fish; heredoc formatting can break commands.
