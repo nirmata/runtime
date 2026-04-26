@@ -74,7 +74,11 @@ func (r *embeddedGadgetCollector) Collect(ctx context.Context, request GadgetCol
 	if err := runtime.Init(nil); err != nil {
 		return nil, fmt.Errorf("initialize embedded runtime: %w", err)
 	}
-	defer runtime.Close()
+	defer func() {
+		if err := runtime.Close(); err != nil {
+			logger.Error(err, "close embedded runtime")
+		}
+	}()
 
 	imageName, params, err := gadgetRunConfig(request)
 	if err != nil {
@@ -159,7 +163,11 @@ func streamGadget(ctx context.Context, imageName string, paramValues api.ParamVa
 	if err := runtime.Init(nil); err != nil {
 		return fmt.Errorf("initialize embedded runtime: %w", err)
 	}
-	defer runtime.Close()
+	defer func() {
+		if err := runtime.Close(); err != nil {
+			logger.Error(err, "close embedded runtime")
+		}
+	}()
 
 	ops := getGadgetOperators()
 
