@@ -4,14 +4,14 @@ Kyverno Runtime extends [Kyverno](https://kyverno.io) policy as code from admiss
 It gives security and platform teams a single way to detect known-bad behavior and
 workload-specific anomalies for both traditional workloads and AI agents.
 
-## Features ✨
+## ✨ Features
 
 - Protect workloads with cluster-wide runtime signatures using `RuntimePolicy`.
 - Detect workload drift with learned known-good baselines using `RuntimeBehavior`.
 - Use one reporting surface (`Report` resources from OpenReports) for both signature and anomaly findings.
 - Start safely with monitor-first auto-enrollment and promote to enforcement with confidence.
 
-## Key Concepts 🧠
+## 🧠 Key Concepts
 
 Kyverno Runtime uses two complementary detection models:
 
@@ -25,15 +25,15 @@ Kyverno Runtime uses two complementary detection models:
 3. The controller can auto-create `RuntimeBehavior` profiles for enrolled workloads.
 4. Findings from both engines are deduplicated and written to namespaced OpenReports `Report` resources.
 
-## Quick Start 🚀
+## 🚀 Quick Start
 
-### Prerequisites ✅
+### ✅ Prerequisites
 
 - Kubernetes 1.24+ cluster (kind, EKS, GKE, etc.)
 - `kubectl` configured to access your cluster
 - `helm` 3.0+
 
-### Installation 📦
+### 📦 Installation
 
 **1. Add the Kyverno Helm repository** (when available):
 
@@ -58,7 +58,7 @@ kubectl get pods -n kyverno-runtime
 kubectl get runtimepolicies  # View default policies
 ```
 
-### Example 1: Detect Suspicious Shell Execution
+### 🐚 Example 1: Detect Suspicious Shell Execution
 
 Default policies include detection for shell execution. Trigger this by running a shell in a pod:
 
@@ -93,7 +93,7 @@ kubectl run test-pod --image=alpine -n demo --restart=Never --command -- \
 kubectl get reports -n demo
 ```
 
-### Example 3: Custom Loopback Egress Detection
+### 🔄 Example 3: Custom Loopback Egress Detection
 
 Use a custom policy to detect suspicious loopback connections (`127.0.0.0/8`) that can indicate SSRF abuse or local pivot behavior inside compromised containers.
 

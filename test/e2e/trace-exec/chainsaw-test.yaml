@@ -68,10 +68,11 @@ spec:
             labels:
               app: e2e-exec-demo
           spec:
+            restartPolicy: Never
             containers:
             - name: app
               image: busybox:1.36
-              command: ["sh", "-c", "while true; do cat /etc/hosts; sleep 2; done"]
+              command: ["sh", "-c", "for i in $(seq 1 10); do cat /etc/hosts >/dev/null; done"]
     - assert:
         resource:
           apiVersion: v1
@@ -80,7 +81,7 @@ spec:
             name: e2e-exec-demo
             namespace: e2e-trace-exec
           status:
-            phase: Running
+            phase: Succeeded
 
   # Step 4: Wait for PolicyReport to be created with findings
   - name: assert-policy-report
