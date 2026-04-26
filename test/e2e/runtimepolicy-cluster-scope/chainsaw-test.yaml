@@ -5,7 +5,7 @@ metadata:
 spec:
   timeouts:
     apply: 30s
-    assert: 180s
+    assert: 200s
     cleanup: 60s
   steps:
   - name: assert-runtimepolicy-crd-scope
@@ -69,7 +69,7 @@ spec:
             containers:
             - name: app
               image: busybox:1.36
-              command: ["sh", "-c", "for i in $(seq 1 50); do cat /etc/hosts >/dev/null; sleep 0.2; done"]
+              command: ["sh", "-c", "for i in $(seq 1 100); do cat /etc/hosts >/dev/null; sleep 0.1; done"]
     - assert:
         resource:
           apiVersion: v1

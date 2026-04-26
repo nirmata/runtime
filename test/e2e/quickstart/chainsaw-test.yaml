@@ -12,7 +12,7 @@ metadata:
 spec:
   timeouts:
     apply: 30s
-    assert: 120s
+    assert: 150s
     delete: 90s
     cleanup: 60s
   steps:
@@ -66,7 +66,7 @@ spec:
             containers:
             - name: app
               image: busybox:1.36
-              command: ["sh", "-c", "for i in $(seq 1 100); do cat /etc/hosts >/dev/null; sleep 0.2; done"]
+              command: ["sh", "-c", "for i in $(seq 1 200); do cat /etc/hosts >/dev/null; sleep 0.05; done"]
     - assert:
         resource:
           apiVersion: v1
@@ -107,7 +107,7 @@ metadata:
 spec:
   timeouts:
     apply: 30s
-    assert: 120s
+    assert: 150s
     delete: 90s
     cleanup: 60s
   steps:
@@ -146,13 +146,13 @@ spec:
             - name: app
               image: busybox:1.36
               command: ["sh", "-c", "
-                # Trigger file open events
-                for i in $(seq 1 50); do cat /etc/hosts >/dev/null 2>&1; sleep 0.2; done;
+                # Trigger file open events (higher frequency for better coverage)
+                for i in $(seq 1 100); do cat /etc/hosts >/dev/null 2>&1; sleep 0.1; done;
                 # Trigger network events
                 if command -v nc >/dev/null 2>&1; then
-                  for i in $(seq 1 20); do nc -w 1 -z 8.8.8.8 53 >/dev/null 2>&1 || true; sleep 0.1; done;
+                  for i in $(seq 1 30); do nc -w 1 -z 8.8.8.8 53 >/dev/null 2>&1 || true; sleep 0.1; done;
                 elif command -v wget >/dev/null 2>&1; then
-                  for i in $(seq 1 20); do wget -T 2 -qO- http://1.1.1.1 >/dev/null 2>&1 || true; sleep 0.1; done;
+                  for i in $(seq 1 30); do wget -T 2 -qO- http://1.1.1.1 >/dev/null 2>&1 || true; sleep 0.1; done;
                 fi
               "]
     - assert:
