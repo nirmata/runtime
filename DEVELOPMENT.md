@@ -207,7 +207,7 @@ The repository uses four workflows under `.github/workflows/`.
 - Creates a kind cluster and installs required tooling (`kubectl`, `helm`, `ko`, `chainsaw`)
 - Runs:
   - `make kind-install smoke-quickstart` for manual `quickstart`
-   - `make test-e2e-install` for manual `full`
+  - `make test-e2e-install` for manual `full`
 - On failures, dumps pods/reports/controller logs for easier debugging
 
 ### Release (`release.yml`)
