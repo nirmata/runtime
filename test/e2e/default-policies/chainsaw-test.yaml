@@ -163,12 +163,11 @@ spec:
   - name: cleanup-credential-access-test
     try:
     - delete:
-        resource:
+        ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: cred-access-test
-            namespace: e2e-cred-access
+          name: cred-access-test
+          namespace: e2e-cred-access
 
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -237,12 +236,11 @@ spec:
   - name: cleanup-shell-execution-test
     try:
     - delete:
-        resource:
+        ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: shell-exec-test
-            namespace: e2e-shell-exec
+          name: shell-exec-test
+          namespace: e2e-shell-exec
 
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -311,12 +309,11 @@ spec:
   - name: cleanup-sensitive-file-test
     try:
     - delete:
-        resource:
+        ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: sensitive-file-test
-            namespace: e2e-sensitive-file
+          name: sensitive-file-test
+          namespace: e2e-sensitive-file
 
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -386,12 +383,11 @@ spec:
   - name: cleanup-process-discovery-test
     try:
     - delete:
-        resource:
+        ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: proc-discovery-test
-            namespace: e2e-proc-discovery
+          name: proc-discovery-test
+          namespace: e2e-proc-discovery
 
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -460,9 +456,8 @@ spec:
   - name: cleanup-sec-tool-disruption-test
     try:
     - delete:
-        resource:
+        ref:
           apiVersion: v1
           kind: Pod
-          metadata:
-            name: sec-tool-disrupt-test
-            namespace: e2e-sec-tool-disrupt
+          name: sec-tool-disrupt-test
+          namespace: e2e-sec-tool-disrupt
