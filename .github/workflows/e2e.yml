@@ -11,9 +11,6 @@ on:
         options:
           - quickstart
           - full
-  push:
-    tags:
-      - "v*"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -88,32 +85,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            echo "Release tag push detected; attempting to reuse published image before fallback build"
-            IMAGE_REF="ghcr.io/nirmata/kyverno-runtime:${GITHUB_REF_NAME}"
-
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-            pulled=false
-            for attempt in {1..10}; do
-              if docker pull "${IMAGE_REF}"; then
-                pulled=true
-                break
-              fi
-              echo "Image not available yet (${attempt}/10); retrying in 30s"
-              sleep 30
-            done
-
-            if [[ "${pulled}" == "true" ]]; then
-              echo "Reusing prebuilt image ${IMAGE_REF} for E2E"
-              make test-e2e-install-prebuilt IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${GITHUB_REF_NAME}"
-            else
-              echo "Falling back to local ko build for E2E"
-              make test-e2e-install IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${GITHUB_REF_NAME}"
-            fi
-            exit 0
-          fi
 
           if [[ "${{ inputs.suite }}" == "full" ]]; then
             echo "Manual run requested full suite"

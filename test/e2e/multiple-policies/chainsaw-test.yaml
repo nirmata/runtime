@@ -48,12 +48,7 @@ spec:
               message: File open detected
               severity: high
               matchConditions:
-              - expression: >-
-                  ("fname" in event && event["fname"].contains("/etc/hosts")) ||
-                  ("file.path" in event && event["file.path"].contains("/etc/hosts")) ||
-                  ("path" in event && event["path"].contains("/etc/hosts")) ||
-                  ("fullPath" in event && event["fullPath"].contains("/etc/hosts")) ||
-                  ("filename" in event && event["filename"].contains("/etc/hosts"))
+              - expression: event["file.path"] == "/etc/hosts"
               actions:
               - type: generate_report
 

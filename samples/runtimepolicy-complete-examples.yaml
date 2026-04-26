@@ -32,7 +32,7 @@ spec:
     message: Sensitive file access detected
     severity: high
     matchConditions:
-    - expression: '("fname" in event && (event["fname"].contains("/etc/hosts") || event["fname"].contains("/etc/passwd"))) || ("fpath" in event && (event["fpath"].contains("/etc/hosts") || event["fpath"].contains("/etc/passwd"))) || ("filename" in event && (event["filename"].contains("/etc/hosts") || event["filename"].contains("/etc/passwd")))'
+    - expression: event["file.path"] == "/etc/hosts" || event["file.path"] == "/etc/passwd"
     actions:
     - type: log_event
       message: Record sensitive file access for audit
