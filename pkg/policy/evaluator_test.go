@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -168,5 +169,48 @@ func TestCompileCELProgramCacheHitMiss(t *testing.T) {
 	}
 	if e.cacheHits.Load() != 1 {
 		t.Fatalf("expected 1 cache hit, got %d", e.cacheHits.Load())
+	}
+}
+
+func TestEnsureCompiledSuccess(t *testing.T) {
+	e := NewEvaluator()
+	policy := &v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Validations: []v1alpha1.RuntimeValidation{{
+				Name: "valid-1",
+				MatchConditions: []v1alpha1.RuntimeCELCondition{{
+					Expression: `event["type"] == "open"`,
+				}},
+				Conditions: []v1alpha1.RuntimeCELCondition{{
+					Expression: `event["file.path"].contains("/etc")`,
+				}},
+			}},
+		},
+	}
+
+	if err := e.EnsureCompiled(policy); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestEnsureCompiledInvalidExpression(t *testing.T) {
+	e := NewEvaluator()
+	policy := &v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Validations: []v1alpha1.RuntimeValidation{{
+				Name: "bad-validation",
+				Conditions: []v1alpha1.RuntimeCELCondition{{
+					Expression: `event[`,
+				}},
+			}},
+		},
+	}
+
+	err := e.EnsureCompiled(policy)
+	if err == nil {
+		t.Fatal("expected compile error")
+	}
+	if !strings.Contains(err.Error(), "bad-validation") {
+		t.Fatalf("expected validation name in error, got %v", err)
 	}
 }

@@ -1,0 +1,17 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimeBehavior
+metadata:
+  name: nginx-network-baseline
+  namespace: demo
+spec:
+  workloadSelector:
+    matchLabels:
+      app: nginx
+  mode: monitor
+  allow:
+    network:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - kubernetes.default.svc:443
+    - '*.svc.cluster.local'

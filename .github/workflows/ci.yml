@@ -24,6 +24,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Verify formatting
         run: |
           out=$(gofmt -l .)
@@ -37,6 +42,9 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v2.11.4
+
+      - name: markdownlint
+        run: npx -y markdownlint-cli2 "**/*.md" "#vendor" "#bin"
 
       - name: Build
         run: go build ./cmd/kyverno-runtime

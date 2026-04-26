@@ -38,13 +38,33 @@ spec:
         - --inspektor-gadget-timeout={{ .Values.inspektorGadget.timeout }}
         - --report-buffer-interval={{ .Values.reportBuffer.interval }}
         - --report-buffer-max-count={{ .Values.reportBuffer.maxCount }}
+        - --report-suppression-cooldown={{ .Values.reportSuppression.cooldown }}
+        - --report-suppression-burst={{ .Values.reportSuppression.burst }}
+        - --report-event-cooldown={{ .Values.reportEvents.cooldown }}
+        - --report-event-burst={{ .Values.reportEvents.burst }}
         - --feature-baseline-engine={{ .Values.featureGates.baselineEngine }}
         - --feature-signature-engine={{ .Values.featureGates.signatureEngine }}
         - --feature-alert-sinks={{ .Values.featureGates.alertSinks }}
         - --feature-alert-aggregation={{ .Values.featureGates.alertAggregation }}
+        - --runtimebehavior-auto-create={{ .Values.runtimeBehaviorEnrollment.autoCreate }}
+        - --runtimebehavior-include-controllers={{ .Values.runtimeBehaviorEnrollment.includeControllers }}
+        - --runtimebehavior-include-bare-pods={{ .Values.runtimeBehaviorEnrollment.includeBarePods }}
+        {{- if .Values.runtimeBehaviorEnrollment.includeNamespaces }}
+        - --runtimebehavior-include-namespaces={{ .Values.runtimeBehaviorEnrollment.includeNamespaces }}
+        {{- end }}
+        - --runtimebehavior-exclude-namespaces={{ .Values.runtimeBehaviorEnrollment.excludeNamespaces }}
+        - --runtimebehavior-initial-mode={{ .Values.runtimeBehaviorEnrollment.initialMode }}
+        {{- if .Values.runtimeBehaviorEnrollment.optOutLabel }}
+        - --runtimebehavior-optout-label={{ .Values.runtimeBehaviorEnrollment.optOutLabel }}
+        {{- end }}
+        - --shared-defaults-namespace={{ .Values.runtimeBehaviorEnrollment.sharedDefaultsNamespace }}
         env:
         - name: HOST_ROOT
           value: /host
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         ports:
         - containerPort: 8080
           name: metrics

@@ -112,3 +112,43 @@ func TestDaemonSetReconciler_MatcherError(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), req)
 	require.ErrorIs(t, err, matchErr)
 }
+
+func TestDaemonSetReconciler_NodeNameFilterSkipsOffNodePods(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		Spec:       corev1.PodSpec{NodeName: "node-b"},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	r, matcher := makeReconciler(t, pod, ns)
+	r.SetNodeName("node-a")
+	matcher.MatchesFunc = func(_ *v1alpha1.RuntimePolicy, _ *corev1.Pod, _ map[string]string) (bool, error) {
+		t.Fatalf("matcher should not be invoked for off-node pod")
+		return false, nil
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-pod", Namespace: "default"}}
+	result, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, ctrl.Result{}, result)
+}
+
+func TestDaemonSetReconciler_NodeNameFilterAllowsLocalPods(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		Spec:       corev1.PodSpec{NodeName: "node-a"},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	policy := &v1alpha1.RuntimePolicy{ObjectMeta: metav1.ObjectMeta{Name: "test-policy"}}
+	r, matcher := makeReconciler(t, pod, ns, policy)
+	r.SetNodeName("node-a")
+	matcher.MatchesFunc = func(_ *v1alpha1.RuntimePolicy, _ *corev1.Pod, _ map[string]string) (bool, error) {
+		return true, nil
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-pod", Namespace: "default"}}
+	result, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, ctrl.Result{}, result)
+}

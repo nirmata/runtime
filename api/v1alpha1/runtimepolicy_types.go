@@ -71,6 +71,8 @@ type RuntimeCELCondition struct {
 }
 
 type RuntimeActionRef struct {
+	// Type specifies the action to take on policy violation.
+	// +kubebuilder:validation:Enum=audit
 	Type    string `json:"type"`
 	Message string `json:"message,omitempty"`
 }
@@ -96,7 +98,7 @@ type RuntimePolicyStatus struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=rp
+// +kubebuilder:resource:shortName=rpol,scope=Cluster
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="ObservedPods",type=integer,JSONPath=`.status.observedPods`
 // +kubebuilder:printcolumn:name="ViolatingPods",type=integer,JSONPath=`.status.violatingPods`

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
+	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,7 +22,7 @@ import (
 func TestNewK8sReporter(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -35,7 +35,7 @@ func TestNewK8sReporter(t *testing.T) {
 func TestK8sReporterCreateNewPolicyReport(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -75,7 +75,7 @@ func TestK8sReporterCreateNewPolicyReport(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify at least one PolicyReport exists in the namespace
-	prList := &policyreportv1alpha2.PolicyReportList{}
+	prList := &openreportsv1alpha1.ReportList{}
 	err = c.List(context.Background(), prList)
 
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestK8sReporterCreateNewPolicyReport(t *testing.T) {
 func TestK8sReporterNoFindings(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -119,7 +119,7 @@ func TestK8sReporterNoFindings(t *testing.T) {
 func TestK8sReporterUpdateExistingPolicyReport(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -170,7 +170,7 @@ func TestK8sReporterUpdateExistingPolicyReport(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{
 		Namespace: pod.Namespace,
 		Name:      reportName(pod.Name, policy.Name),
@@ -183,7 +183,7 @@ func TestK8sReporterUpdateExistingPolicyReport(t *testing.T) {
 func TestK8sReporterTruncatesResults(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -220,7 +220,7 @@ func TestK8sReporterTruncatesResults(t *testing.T) {
 	err := reporter.Report(context.Background(), req)
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{
 		Namespace: pod.Namespace,
 		Name:      reportName(pod.Name, policy.Name),
@@ -232,7 +232,7 @@ func TestK8sReporterTruncatesResults(t *testing.T) {
 func TestK8sReporterRespectsMaxReportResultsOption(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporterWithOptions(c, ReporterOptions{MaxReportResults: 5})
@@ -265,7 +265,7 @@ func TestK8sReporterRespectsMaxReportResultsOption(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{
 		Namespace: pod.Namespace,
 		Name:      reportName(pod.Name, policy.Name),
@@ -279,7 +279,7 @@ func TestK8sReporterRespectsMaxReportResultsOption(t *testing.T) {
 func TestK8sReporterMultipleSeverities(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -332,7 +332,7 @@ func TestK8sReporterMultipleSeverities(t *testing.T) {
 	err := reporter.Report(context.Background(), req)
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{
 		Namespace: pod.Namespace,
 		Name:      reportName(pod.Name, policy.Name),
@@ -352,7 +352,7 @@ func TestK8sReporterMultipleSeverities(t *testing.T) {
 func TestK8sReporterDeduplicatesByFingerprint(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -384,7 +384,7 @@ func TestK8sReporterDeduplicatesByFingerprint(t *testing.T) {
 	err = reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{baseFinding}})
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{
 		Namespace: pod.Namespace,
 		Name:      reportName(pod.Name, policy.Name),
@@ -406,7 +406,7 @@ func TestK8sReporterDeduplicatesByFingerprint(t *testing.T) {
 func TestK8sReporterDifferentMatchedFieldsCreateDifferentResults(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -446,7 +446,7 @@ func TestK8sReporterDifferentMatchedFieldsCreateDifferentResults(t *testing.T) {
 	err = reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{second}})
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{
 		Namespace: pod.Namespace,
 		Name:      reportName(pod.Name, policy.Name),
@@ -466,7 +466,7 @@ func TestK8sReporterDifferentMatchedFieldsCreateDifferentResults(t *testing.T) {
 func TestK8sReporterBufferedFlushByMaxCount(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporterWithOptions(c, ReporterOptions{BufferInterval: time.Hour, MaxBufferedCount: 2})
@@ -487,7 +487,7 @@ func TestK8sReporterBufferedFlushByMaxCount(t *testing.T) {
 	err := reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{finding}})
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{Namespace: pod.Namespace, Name: reportName(pod.Name, policy.Name)}, report)
 	require.Error(t, err)
 
@@ -503,7 +503,7 @@ func TestK8sReporterBufferedFlushByMaxCount(t *testing.T) {
 func TestK8sReporterBufferedFlushByInterval(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporterWithOptions(c, ReporterOptions{BufferInterval: 150 * time.Millisecond, MaxBufferedCount: 1000})
@@ -516,7 +516,7 @@ func TestK8sReporterBufferedFlushByInterval(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		report := &policyreportv1alpha2.PolicyReport{}
+		report := &openreportsv1alpha1.Report{}
 		err := c.Get(context.Background(), types.NamespacedName{Namespace: pod.Namespace, Name: reportName(pod.Name, policy.Name)}, report)
 		return err == nil && len(report.Results) == 1
 	}, 3*time.Second, 100*time.Millisecond)
@@ -560,7 +560,7 @@ func TestBuildPolicyReportResultsSanitizesBinaryFields(t *testing.T) {
 func TestK8sReporterDedupIgnoresVolatileFields(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyreportv1alpha2.Install(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
 
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reporter := NewK8sReporter(c)
@@ -607,9 +607,90 @@ func TestK8sReporterDedupIgnoresVolatileFields(t *testing.T) {
 	err = reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{second}})
 	require.NoError(t, err)
 
-	report := &policyreportv1alpha2.PolicyReport{}
+	report := &openreportsv1alpha1.Report{}
 	err = c.Get(context.Background(), types.NamespacedName{Namespace: pod.Namespace, Name: reportName(pod.Name, policy.Name)}, report)
 	require.NoError(t, err)
 	require.Len(t, report.Results, 1)
 	require.Equal(t, "2", report.Results[0].Properties[propertyCount])
+}
+
+func TestK8sReporterSuppressionBurstWithinCooldown(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reporter := NewK8sReporterWithOptions(c, ReporterOptions{
+		SuppressionCooldown: time.Minute,
+		SuppressionBurst:    2,
+	})
+
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "suppression-pod", Namespace: "default", UID: "12345"}}
+	policy := &v1alpha1.RuntimePolicy{ObjectMeta: metav1.ObjectMeta{Name: "test-policy"}}
+	finding := v1alpha1.RuleFinding{
+		RuleName:  "rule-open-hosts",
+		Message:   "opened sensitive file",
+		Severity:  "high",
+		EventType: "open",
+		Fields: map[string]string{
+			"fname":          "/etc/hosts",
+			"container.name": "main",
+		},
+	}
+
+	for i := 0; i < 4; i++ {
+		err := reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{finding}})
+		require.NoError(t, err)
+	}
+
+	report := &openreportsv1alpha1.Report{}
+	err := c.Get(context.Background(), types.NamespacedName{Namespace: pod.Namespace, Name: reportName(pod.Name, policy.Name)}, report)
+	require.NoError(t, err)
+	require.Len(t, report.Results, 1)
+	require.Equal(t, "2", report.Results[0].Properties[propertyCount])
+	_, _, ok := decodeWindowState(report.Results[0].Properties[propertyWindow])
+	require.True(t, ok, "expected valid window property")
+}
+
+func TestK8sReporterSuppressionWindowResetsAfterCooldown(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, openreportsv1alpha1.Install(scheme))
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reporter := NewK8sReporterWithOptions(c, ReporterOptions{
+		SuppressionCooldown: 2 * time.Second,
+		SuppressionBurst:    1,
+	})
+
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "suppression-reset-pod", Namespace: "default", UID: "12345"}}
+	policy := &v1alpha1.RuntimePolicy{ObjectMeta: metav1.ObjectMeta{Name: "test-policy"}}
+	finding := v1alpha1.RuleFinding{
+		RuleName:  "rule-open-hosts",
+		Message:   "opened sensitive file",
+		Severity:  "high",
+		EventType: "open",
+		Fields: map[string]string{
+			"fname":          "/etc/hosts",
+			"container.name": "main",
+		},
+	}
+
+	err := reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{finding}})
+	require.NoError(t, err)
+	err = reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{finding}})
+	require.NoError(t, err)
+	time.Sleep(2200 * time.Millisecond)
+	err = reporter.Report(context.Background(), ReportRequest{Pod: pod, Policy: policy, Findings: []v1alpha1.RuleFinding{finding}})
+	require.NoError(t, err)
+
+	report := &openreportsv1alpha1.Report{}
+	err = c.Get(context.Background(), types.NamespacedName{Namespace: pod.Namespace, Name: reportName(pod.Name, policy.Name)}, report)
+	require.NoError(t, err)
+	require.Len(t, report.Results, 1)
+	require.Equal(t, "2", report.Results[0].Properties[propertyCount])
+	windowStart, windowCount, ok := decodeWindowState(report.Results[0].Properties[propertyWindow])
+	require.True(t, ok, "expected valid window property")
+	require.Equal(t, 1, windowCount)
+	require.True(t, time.Since(windowStart) < 2*time.Second)
 }

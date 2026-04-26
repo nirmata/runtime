@@ -35,7 +35,8 @@ func (m *MockMatcher) Matches(policy *v1alpha1.RuntimePolicy, pod *corev1.Pod, n
 
 // MockEvaluator is a mock implementation of Evaluator for testing.
 type MockEvaluator struct {
-	EvaluateFunc func(policy *v1alpha1.RuntimePolicy, events []runtimeevents.Event) EvaluationResult
+	EvaluateFunc       func(policy *v1alpha1.RuntimePolicy, events []runtimeevents.Event) EvaluationResult
+	EnsureCompiledFunc func(policy *v1alpha1.RuntimePolicy) error
 }
 
 func (m *MockEvaluator) Evaluate(policy *v1alpha1.RuntimePolicy, events []runtimeevents.Event) EvaluationResult {
@@ -43,6 +44,13 @@ func (m *MockEvaluator) Evaluate(policy *v1alpha1.RuntimePolicy, events []runtim
 		return m.EvaluateFunc(policy, events)
 	}
 	return EvaluationResult{}
+}
+
+func (m *MockEvaluator) EnsureCompiled(policy *v1alpha1.RuntimePolicy) error {
+	if m.EnsureCompiledFunc != nil {
+		return m.EnsureCompiledFunc(policy)
+	}
+	return nil
 }
 
 // MockReporter is a mock implementation of Reporter for testing.

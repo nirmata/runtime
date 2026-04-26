@@ -13,6 +13,9 @@ fmt:
 lint:
 	golangci-lint run ./...
 
+lint-docs:
+	npx -y markdownlint-cli2 "**/*.md" "#vendor" "#bin"
+
 run:
 	go run ./cmd/kyverno-runtime
 
@@ -39,6 +42,7 @@ kind-install:
 	$(MAKE) ko-build
 	$(MAKE) kind-load-image
 	kubectl apply -f ./charts/kyverno-runtime/crds
+	kubectl apply -f https://raw.githubusercontent.com/openreports/reports-api/refs/heads/main/config/install.yaml
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \
@@ -50,17 +54,16 @@ kind-install:
 
 # Run Chainsaw e2e tests against a kind cluster with kyverno-runtime installed
 test-e2e:
-	chainsaw test --config tests/e2e/.chainsaw.yaml --test-dir tests/e2e/
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
 
 test-e2e-quickstart:
-	chainsaw test --config tests/e2e/.chainsaw.yaml --test-dir tests/e2e/quickstart/
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/quickstart/
 
-smoke-quickstart:
-	bash ./hack/smoke-quickstart.sh
+smoke-quickstart: test-e2e-quickstart
 
 premerge-smoke: build kind-install smoke-quickstart
 
 # Full CI pipeline: build, deploy to kind, and run e2e tests
 test-e2e-install: kind-install test-e2e
 
-.PHONY: test fmt lint run build ko-build ko-push kind kind-load-image kind-install test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install
+.PHONY: test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install

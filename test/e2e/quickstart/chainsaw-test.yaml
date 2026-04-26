@@ -1,0 +1,182 @@
+# E2E test: README Quick Start runtime-policy flow.
+#
+# This test mirrors the documented manual path:
+# 1. Namespace labeled runtime-monitor=enabled
+# 2. RuntimePolicy for open events
+# 3. Busybox pod opens /etc/hosts repeatedly
+# 4. PolicyReport is created with at least one result
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: quickstart-trace-open
+spec:
+  timeouts:
+    apply: 30s
+    assert: 120s
+    delete: 90s
+    cleanup: 60s
+  steps:
+  - name: setup-namespace
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: e2e-quickstart
+            labels:
+              runtime-monitor: "enabled"
+
+  - name: apply-runtime-policy
+    try:
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-quickstart-trace-open
+          spec:
+            namespaceSelector:
+              matchLabels:
+                runtime-monitor: "enabled"
+            validations:
+            - name: detect-sensitive-open
+              event: open
+              message: Sensitive file open detected via quickstart flow
+              severity: high
+              matchConditions:
+              - expression: >-
+                  ("fname" in event && event["fname"].contains("/etc/hosts")) ||
+                  ("file.path" in event && event["file.path"].contains("/etc/hosts")) ||
+                  ("path" in event && event["path"].contains("/etc/hosts")) ||
+                  ("fullPath" in event && event["fullPath"].contains("/etc/hosts")) ||
+                  ("filename" in event && event["filename"].contains("/etc/hosts"))
+              actions:
+              - type: generate_report
+                message: Append a runtime finding to the PolicyReport audit log
+
+  - name: create-demo-pod
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: e2e-quickstart-demo
+            namespace: e2e-quickstart
+            labels:
+              app: e2e-quickstart-demo
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: app
+              image: busybox:1.36
+              command: ["sh", "-c", "for i in $(seq 1 30); do cat /etc/hosts >/dev/null; sleep 0.1; done"]
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: e2e-quickstart-demo
+            namespace: e2e-quickstart
+          status:
+            phase: Succeeded
+
+  - name: assert-policy-report
+    try:
+    - assert:
+        resource:
+          apiVersion: wgpolicyk8s.io/v1alpha2
+          kind: PolicyReport
+          metadata:
+            namespace: e2e-quickstart
+            labels:
+              app.kubernetes.io/managed-by: kyverno-runtime
+              runtime.kyverno.io/policy: e2e-quickstart-trace-open
+          (results != null): true
+          (length(results) > `0`): true
+
+---
+# E2E test: Verify sample RuntimePolicies work together end-to-end.
+#
+# This test validates that the documented sample policies from samples/ folder:
+# - runtimepolicy-file-open-detection.yaml
+# - runtimepolicy-network-egress-check.yaml
+#
+# work correctly when applied together on a real workload, generating reports
+# with expected findings.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: quickstart-samples-verification
+spec:
+  timeouts:
+    apply: 30s
+    assert: 120s
+    delete: 90s
+    cleanup: 60s
+  steps:
+  - name: setup-namespace
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: e2e-quickstart-samples
+            labels:
+              runtime-monitor: "enabled"
+
+  - name: apply-sample-policies
+    try:
+    - apply:
+        file: ../../samples/runtimepolicy-file-open-detection.yaml
+    - apply:
+        file: ../../samples/runtimepolicy-network-egress-check.yaml
+
+  - name: create-demo-pod
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: quickstart-demo
+            namespace: e2e-quickstart-samples
+            labels:
+              app: quickstart-demo
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: app
+              image: busybox:1.36
+              command: ["sh", "-c", "
+                # Trigger file open events
+                for i in $(seq 1 20); do cat /etc/hosts >/dev/null 2>&1; sleep 0.1; done;
+                # Trigger network events
+                if command -v nc >/dev/null 2>&1; then
+                  for i in $(seq 1 20); do nc -w 1 -z 8.8.8.8 53 >/dev/null 2>&1 || true; done;
+                elif command -v wget >/dev/null 2>&1; then
+                  for i in $(seq 1 20); do wget -T 2 -qO- http://1.1.1.1 >/dev/null 2>&1 || true; done;
+                fi
+              "]
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: quickstart-demo
+            namespace: e2e-quickstart-samples
+          status:
+            phase: Succeeded
+
+  - name: verify-reports-generated
+    try:
+    - assert:
+        resource:
+          apiVersion: wgpolicyk8s.io/v1alpha2
+          kind: PolicyReport
+          metadata:
+            namespace: e2e-quickstart-samples
+          (results != null): true
+          (length(results) > `0`): true

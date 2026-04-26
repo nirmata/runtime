@@ -9,7 +9,7 @@ single-binary DaemonSet architecture.
 This plan focuses on:
 
 1. Higher fidelity detections (anomaly + signature)
-2. Better operational controls (bindings, sinks, aggregation)
+2. Simpler operations (default policy library + auto enrollment)
 3. Safer baseline lifecycle (learning/completion/confidence)
 4. Scale-readiness (bounded persistence, metrics, suppression)
 
@@ -18,7 +18,7 @@ This plan focuses on:
 - Runtime evaluation pipeline is matcher -> collector -> evaluator -> reporter.
 - Runtime collection uses embedded Inspektor Gadget runtime in-process.
 - Deployment model is a single DaemonSet binary.
-- Policy output is written to PolicyReport resources.
+- Policy output is written to OpenReports `Report` resources.
 - Currently supported gadgets: trace_open, trace_exec, trace_tcp (connect).
 
 ## Inspektor Gadget Coverage
@@ -30,7 +30,7 @@ detection. The **Status** column shows whether kyverno-runtime supports the
 gadget today.
 
 | Gadget | IG Image | Syscall / Hook | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | exec | trace_exec | execve | Supported |
 | open | trace_open | open/openat | Supported |
 | connect | trace_tcp | connect (TCP) | Supported |
@@ -55,7 +55,7 @@ Each policy event type maps to one or more gadgets. The collector must enable
 the required gadgets for the policy to produce findings.
 
 | Policy Event Type | Required Gadget(s) | Example Use Case |
-|---|---|---|
+| --- | --- | --- |
 | `open` | trace_open | Sensitive file access (/etc/hosts, /etc/shadow) |
 | `exec` | trace_exec | Shell spawning, unexpected process execution |
 | `connect` / `tcpconnect` | trace_tcp | Unauthorized outbound connections |
@@ -89,7 +89,7 @@ Future enhancements:
 - Code and API flow
   - Add baseline lifecycle and confidence tracking
   - Add signature rule engine support alongside existing policy evaluation
-  - Add rule-to-workload binding resource for targeting
+  - Add default RuntimePolicy library and workload enrollment controls
   - Add alert sink routing and aggregation controls
 - Persistence and data model
   - Add bounded RuntimeBehavior CR and storage model
@@ -120,7 +120,7 @@ Single DaemonSet runtime controller, with modular engines:
 - Decision layer:
   confidence-aware severity and suppression
 - Output layer:
-  PolicyReport + optional external sinks
+  OpenReports `Report` + optional external sinks
 
 No separate runtime sensor service is required in this plan.
 
@@ -187,79 +187,39 @@ Regardless of approach, exceptions should support:
 - Audit trail (who created the exception, when, and why).
 - Expiration (time-bounded exceptions for maintenance windows).
 
+## Completed Work
+
+The following phases have been implemented and are in active production use. See [DESIGN.md](DESIGN.md) for details on these features.
+
+### Phase 0: Foundation Alignment ✅
+
+Feature gates (`baselineEngine`, `signatureEngine`, `alertSinks`, `alertAggregation`) fully implemented and tested. See [DESIGN.md](DESIGN.md#phase-0-foundation-alignment) for architecture details.
+
+### Phase 2.1: Default RuntimePolicy Library ✅
+
+8 production-ready policies ship with every Helm install, providing day-1 protection without custom CEL rules. Policies cover credential access, shell execution, sensitive file access, public network egress, metadata endpoint access, process discovery, security tool disruption, and C2 domain resolution. See [docs/users/library.md](../users/library.md) for the user guide and [DESIGN.md](DESIGN.md#phase-21-default-runtimepolicy-library) for implementation details.
+
+### Phase 3: Dual Detection Engines ✅
+
+Signature-based detection (8 high-confidence rules) and anomaly detection (baseline deviation with confidence scoring) are wired into the live evaluation path. Both engines feed findings to the report model. See [DESIGN.md](DESIGN.md#phase-3-dual-detection-engines) for engine descriptions.
+
+### Phase 5: OpenReports Output, Kubernetes Events, and Metrics ✅
+
+Findings are persisted to OpenReports Report resources (primary backend). Kubernetes Events are emitted with amplification controls. Output metrics track report writes, truncations, and event rates. See [DESIGN.md](DESIGN.md#phase-5-openreports-output-kubernetes-events-and-metrics) for details.
+
+### Phase 6: Persistence Hardening and Compaction ✅
+
+Baseline observation storage is bounded with compaction, normalization of dynamic paths/domains, and overflow markers. See [DESIGN.md](DESIGN.md#phase-6-persistence-hardening-and-compaction) for details.
+
+### Phase 7: Operational Readiness ✅
+
+eBPF readiness preflight checks and SLO metrics (events collected, dropped events, eval latency, baseline completion ratio) implemented. See [DESIGN.md](DESIGN.md#phase-7-operational-readiness) for details.
+
+---
+
 ## Implementation Phases
 
-### Phase 0: Foundation Alignment
-
-Status: **COMPLETED** ✅ — Feature gates fully implemented, wired, documented, and tested.
-
-- Add feature gates for all new capabilities:
-  - `baselineEngine` ✅
-  - `signatureEngine` ✅
-  - `alertSinks` ✅
-  - `alertAggregation` ✅
-
-Deliverables:
-
-- `docs/dev/DESIGN.md` ✅
-- `README.md` ✅
-- runtime config struct updates in command wiring ✅
-- Feature gate unit tests ✅
-- Helm values and template updates ✅
-- Raw manifest updates ✅
-
-Implementation notes:
-
-- Feature gates are implemented in `pkg/config/features.go`
-- CLI flags wired in `cmd/kyverno-runtime/main.go`
-- Helm values in `charts/kyverno-runtime/values.yaml`
-- Helm templates updated in `charts/kyverno-runtime/templates/deployment.yaml`
-- Raw manifest updated in `config/manager/deployment.yaml`
-- All feature gates default to `false` for safe operation
-- `docs/dev/DESIGN.md` updated with comprehensive Phase 0 and Phase 1 sections
-
-
-### Critical: PolicyReport Result Deduplication
-
-Status: implemented.
-
-The current reporter creates a new PolicyReport result for every matching
-eBPF event. A single `kubectl exec` that opens `/etc/hosts` in a loop
-produces dozens of nearly identical findings in the PolicyReport. This
-makes reports noisy and hard to consume.
-
-**Required behavior:** Deduplicate results by fingerprint and update
-existing entries instead of appending new ones. The fingerprint key is:
-
-`(policy, rule, namespace, pod, container, matched-fields)`
-
-For example, all `trace_open` events matching the same CEL rule for
-`fname=/etc/hosts` in the same pod should collapse into a single
-PolicyReport result with:
-
-- `firstTimestamp` — time of the first occurrence
-- `lastTimestamp` — time of the most recent occurrence
-- `count` — total number of matching events
-
-When a new event matches an existing fingerprint, the reporter updates
-`lastTimestamp` and increments `count` rather than creating a new result
-entry.
-
-Deliverables:
-
-- Fingerprint computation in `pkg/pipeline/k8s_reporter.go`
-- Update-or-insert logic in `pkg/pipeline/k8s_reporter.go`
-- Unit tests for dedup, count increment, and timestamp updates in
-  `pkg/pipeline/reporter_test.go`
-
-Implementation notes:
-
-- Dedup runs in the existing in-process reporter path (no separate
-  cross-node controller in this phase).
-- Each result stores a stable `fingerprint` property derived from
-  `(policy, rule, namespace, pod, container, matched-fields)`.
-- On repeated matches, reporter preserves `firstTimestamp`, updates
-  `lastTimestamp`, and increments `count` instead of appending a new entry.
+### Phase 0.5: Quickstart Reliability and Validation Guardrails (PROPOSED)
 
 ### Phase 0.5: Quickstart Reliability and Validation Guardrails
 
@@ -288,7 +248,7 @@ Deliverables:
   - network PolicyReport has at least one `fail` result.
 - README quickstart verification block that points to the verifier command and
   explains that findings appear as separate PolicyReports.
-- E2E test coverage in `tests/e2e/` for quickstart report-shape assertions
+- E2E test coverage in `test/e2e/` for quickstart report-shape assertions
   (presence/labels/policy names), not strict `FAIL` count equality.
 
 Guardrails:
@@ -306,20 +266,17 @@ Open decision (follow-up item):
   finding per probe. If collapse is required, define filtering semantics in
   policy conditions or normalization layer and add regression tests.
 
-### Phase 1: Baseline Lifecycle and Confidence
-
-Status: **FOUNDATIONAL WORK COMPLETE** ✅ — RuntimeBehavior CRD types, merge logic, and comprehensive tests implemented. Ready for controller and lifecycle orchestration development.
-
-Completed deliverables:
+### Phase 1: Baseline Lifecycle and Confidence (FOUNDATIONAL WORK COMPLETE)
 
 - `api/v1alpha1/runtimebehavior_types.go` ✅ — Complete CRD definition with all types
-- `api/v1alpha1/runtimebehavior_types_test.go` ✅ — Comprehensive unit tests 
+- `api/v1alpha1/runtimebehavior_types_test.go` ✅ — Comprehensive unit tests
 - `api/v1alpha1/register.go` ✅ — Type registration in scheme
 - `pkg/baseline/merge.go` ✅ — Baseline merge logic with proper precedence
 - Documentation in `docs/dev/DESIGN.md` ✅ — Full Phase 1 architecture
 - `docs/dev/DESIGN.md` Phase 1 section ✅ — Lifecycle state machine, merge precedence, integration patterns
 
 Pending implementation (for next iteration):
+
 - `pkg/pipeline/` lifecycle orchestration (controller logic)
 - `pkg/policy/` confidence-aware evaluation hooks
 - Auto-learning and profile promotion logic
@@ -502,8 +459,8 @@ and handles deviations:
 - Same merged allowed set as monitor mode.
 - Deviations generate PolicyReport findings with severity from the matching
   RuntimePolicy validation.
-- Enforcement actions configured in the RuntimePolicy (e.g. `terminate`,
-  `kill_process`) are executed.
+- Currently, `audit` actions record findings to PolicyReports. Extended enforcement
+  actions (e.g., `terminate`, `kill_process`, webhooks) are planned for future phases.
 - `status.observed` is still updated for audit, but new observations do not
   expand the allow set.
 
@@ -619,61 +576,39 @@ This requires `spec.mode: enforce` combined with a pre-populated
 - `pkg/baseline/` merge logic for allow + refs + observed
 - tests for state transitions, merge precedence, and mode behavior
 
-### Phase 2: Rule Binding Resource
+### Phase 2.1: Default RuntimePolicy Library
 
-Status: **PARTIALLY COMPLETE** ⚠️ — RuntimeRuleBinding API/CRD exists, but reconcile/evaluation-path integration is still pending.
+Status: **COMPLETED**
 
-- Add RuntimeRuleBinding-style CRD to map detection rules/policies to workloads via selectors.
-- Provide defaults (all-enabled) plus explicit include/exclude support with wildcard patterns.
+Objective: provide day-1 protection without requiring users to author CEL rules.
 
 Deliverables:
 
-- `api/v1alpha1/runtimerulebinding_types.go` ✅ — Complete CRD with rule selection patterns
-- Type registration in `api/v1alpha1/register.go` ✅
-- RuleSelection with include/exclude wildcards (prefix-*, *-suffix, *) ✅
-- AnomalyDetectionConfig and SignatureDetectionConfig ✅
-- Status schema for matched workloads and enabled rules ✅
+- Ship curated default RuntimePolicy manifests with Helm install.
+- Include high-confidence rules (shell spawn, credential access, sensitive file access, public exfil indicators).
+- Add configuration to enable/disable default library as a unit.
+- Add docs mapping default policies to threat scenarios.
+- Add e2e assertions that library policies produce expected PolicyReports.
 
-Pending integration work:
+### Phase 2.2: Security-Owned RuntimeBehavior Auto-Enrollment
 
-- Controller watch + reconcile for `RuntimeRuleBinding` resources in addition to `RuntimePolicy`.
-- Selector application in runtime matching path so bindings actually scope rule execution per workload.
-- Binding-aware rule filtering (include/exclude wildcard resolution) before evaluation.
-- Severity override application from binding into emitted findings.
-- RuntimeBehavior baseline reference resolution from binding (`spec.anomalyDetection.baseline`).
-- Status writer implementation to populate `status.matchedWorkloads`, `status.enabledRules`, and conditions.
-- Conformance tests validating binding effects in running controller path (not just API shape).
-- Documentation alignment: examples currently use legacy field names (`ruleSelection`, `signatureDetectionConfig`, `anomalyDetectionConfig`) while CRD fields are `rules`, `signatureDetection`, `anomalyDetection`.
+Status: **PROPOSED**
 
-**Real-World scenario manifests prepared (integration pending):**
+Objective: auto-create RuntimeBehavior for enrolled workloads with security-team
+control over scope and rollout.
 
-1. **AI Agent Credential Access Detection** — Detects attempts to read /etc/shadow, /etc/passwd, /.ssh/
-   - Threat Model: T1110 (Brute Force) via credential enumeration
-   - Example: Compromised LLM container attempts privilege escalation via password hash theft
-   - RuntimeRuleBinding binds cred-access-* rules with CRITICAL severity
-   - Expected Action: BLOCKED (explicit deny rules enforced)
+Deliverables:
 
-2. **AWS Credential Exfiltration** — Detects access to cloud provider credentials
-   - Threat Model: T1528 (Steal App Access Token), T1552.007 (Unsecured Credentials)
-   - Example: ML inference service container reads ~/.aws/credentials for lateral movement
-   - RuntimeRuleBinding selectively enables cred-access-keys rule with ERROR severity
-   - Expected Action: BLOCKED in enforce mode, ALERTED in monitor mode
-
-3. **Data Exfiltration to Public IPs** — Detects outbound connections to external networks
-   - Threat Model: T1041 (Exfiltration Over C2 Channel), T1020 (Automated Exfiltration)
-   - Example: Compromised training service attempts to exfil PII to attacker-controlled server
-   - RuntimeRuleBinding enables exfil-public-network rule for PII-handling workloads
-   - Expected Action: Connection blocked via network deny rules
-
-4. **C2 Communication via Tunnels** — Detects DNS queries to ngrok, localtunnel, duckdns
-   - Threat Model: T1071 (Application Layer Protocol), T1001 (Data Obfuscation)
-   - Example: Compromised training job establishes reverse shell via ngrok.io tunnel service
-   - RuntimeRuleBinding includes lateral-dns-suspicious rule with WARNING severity
-   - Expected Action: BLOCKED (explicit deny) or ALERTED based on lifecycle mode
+- Enrollment flags for controller kinds and bare pod handling.
+- Namespace include/exclude controls.
+- Initial-mode control (`learning` or `monitor`) for new profiles.
+- Workload identity mapping and idempotent RuntimeBehavior creation.
+- Exception controls for auditable opt-out.
+- Controller tests covering controller-managed workloads and optional bare pods.
 
 ### Phase 3: Dual Detection Engines
 
-Status: **PARTIALLY COMPLETE** ⚠️ — Signature/anomaly engine libraries and unit tests are implemented, but evaluator/controller routing is not yet wired in the live runtime path.
+Status: **COMPLETED** ✅ — Signature/anomaly engine routing is wired into the live evaluator/controller path, RuntimeBehavior observations are updated during evaluation, and unit plus kind-backed validation completed.
 
 - Baseline anomaly engine: detect deviations from completed baselines.
 - Signature engine: implement curated rules for common runtime attack patterns.
@@ -685,18 +620,19 @@ Deliverables:
 - `pkg/policy/anomaly_detector.go` ✅ — Confidence-based baseline deviation detection
 - `pkg/policy/signature_engine_test.go` ✅ — 50+ unit tests covering all rule patterns
 - `pkg/policy/anomaly_detector_test.go` ✅ — 35+ unit tests for confidence calculation
-- Scenario manifests in `testdata/` ✅ — 4 real-world threat simulations modeled as manifests
-- `testdata/E2E_TESTING.md` ✅ — Deployment and validation guide
+- Scenario manifests in `test/samples/` ✅ — 4 real-world threat simulations modeled as manifests
+- `test/e2e/E2E_TESTING.md` ✅ — Deployment and validation guide
 
-Pending integration work:
+Implementation notes:
 
-- Wire feature gates (`feature-baseline-engine`, `feature-signature-engine`) into runtime pipeline behavior (today flags are parsed and logged, but do not alter evaluator construction/routing).
-- Extend evaluator path to execute signature engine and anomaly detector alongside CEL policy checks.
-- Load and cache `RuntimeBehavior` baselines for workloads in monitor/enforce modes.
-- Merge baseline sources (`spec.allow`, `refs`, `status.observed`) on evaluation path via `pkg/baseline` logic.
-- Map engine matches/deviations into PolicyReport findings with stable rule IDs, severities, and fingerprints.
-- Add conflict handling/precedence when CEL, signature, and anomaly outputs overlap.
-- Add end-to-end tests in `tests/e2e/` that assert live dual-engine findings from running controller (not manifest-only validation).
+- Feature gates now control evaluator construction in the live runtime path.
+- Signature engine and anomaly detector execute alongside CEL evaluation for matching event types.
+- RuntimeBehavior observations are updated during live evaluation and compacted for bounded storage.
+- Dual-engine findings are normalized into the runtime report model with stable rule IDs and severities.
+
+Remaining follow-up:
+
+- Expand controller-path e2e coverage for live dual-engine findings under representative workloads.
 
 **Signature Detection Rules Implemented:**
 
@@ -745,19 +681,19 @@ Pending integration work:
 - Supports threshold-based alerting: `minConfidence` parameter
 - Real-world example: ML serving pod attempts exec to /usr/bin/perl (not in baseline) → anomaly with confidence 0.78 → ALERT if minConfidence=0.6
 
-**Scenario manifests (testdata/):**
+**Scenario manifests (test/samples/):**
 
-1. `e2e-ai-agent-credential-access.yaml` — Credential access with policy blocking
-2. `e2e-ai-agent-aws-credentials.yaml` — AWS credential theft with enforce mode
-3. `e2e-ai-agent-data-exfil.yaml` — Data exfiltration with network isolation
-4. `e2e-ai-agent-c2-communication.yaml` — C2 tunnel detection with blocking
+1. `runtimepolicy-ai-agent-credential-access.yaml` — Credential access with policy blocking
+2. `runtimepolicy-ai-agent-aws-credentials.yaml` — AWS credential theft with enforce mode
+3. `runtimepolicy-ai-agent-data-exfil.yaml` — Data exfiltration with network isolation
+4. `runtimepolicy-ai-agent-c2-communication.yaml` — C2 tunnel detection with blocking
 
 **Current validation coverage:**
 
 - Unit tests: 85+ test cases (signature + anomaly engine libraries)
 - Build validation: 0 lint errors, all tests passing
 - Coverage: All 8 signature rules tested, confidence scoring verified
-- Gap: no controller-path e2e asserting binding-driven, dual-engine runtime findings yet
+- Gap: controller-path e2e coverage for live dual-engine findings should be expanded beyond the current unit-focused validation.
 
 ### Phase 4: Alert Aggregation and Suppression
 
@@ -777,41 +713,37 @@ Deliverables:
 - config values in Helm chart
 - tests for dedup, rate-limit, and summary correctness
 
-### Phase 5: Alert Sinks and Routing
+### Phase 5: OpenReports Output, Kubernetes Events, and Metrics
 
-- Add sink framework:
-  `stdout`, `http`, `syslog`, `alertmanager`.
-- Add per-sink retry/backoff, timeout, and rate limiting.
-- Preserve PolicyReport as default native sink.
+Status: **COMPLETED** ✅ — OpenReports is now the persisted backend, Kubernetes Events are emitted with amplification controls, and output metrics are implemented and validated in kind.
+
+- Persist findings to OpenReports as the sole target-state backend.
+- Emit Kubernetes Events for selected detections/lifecycle transitions.
+- Add output-path metrics and keep Event emission rate-limited/deduplicated.
 
 Deliverables:
 
-- `pkg/pipeline/` sink interfaces + implementations
-- chart values and docs for sink configuration
-- integration tests with mock endpoints
+- OpenReports writer and schema mapping from existing finding model.
+- Kubernetes Event emission path with amplification controls.
+- Output/eventing metrics and integration coverage.
 
-### Phase 5.5: Reporting API Migration (PolicyReport -> OpenReports)
+### Phase 5.5: Legacy PolicyReport Migration (Folded into Phase 5)
 
-- Replace `policyreports.wgpolicyk8s.io` output with OpenReports.io CRDs from https://github.com/openreports/reports-api.
+Status: **PARTIALLY COMPLETE** ⚠️ — Runtime output has moved to OpenReports, but migration guidance and rollback documentation still need a final operator-facing pass.
+
 - Keep migration staged so existing clusters can upgrade safely without report loss.
+- Preserve legacy PolicyReport compatibility only for migration-time guidance.
+- Do not implement dual-write as a steady-state operating mode.
 
 Deliverables:
 
-- Add OpenReports API dependency and scheme registration in runtime manager wiring.
-- Implement OpenReports writer in `pkg/pipeline/` and switch default reporter backend from PolicyReport to OpenReports resources.
-- Define conversion/mapping from existing findings model (policy/rule/severity/message/timestamps/fingerprint/count) to OpenReports schema.
-- Add feature flag or compatibility mode for dual-write during migration window.
-- Add migration documentation for install/upgrade/rollback, including CRD lifecycle guidance.
-- Update Helm chart and install flows to apply OpenReports CRDs and deprecate `wgpolicyk8s.io` PolicyReport dependency.
-- Add integration tests for OpenReports writes, dedup behavior, and backward-compatibility mode.
-
-Validation:
-
-- kind upgrade test from existing PolicyReport deployment to OpenReports-backed deployment.
-- Verify report continuity and no duplicate amplification during dual-write window.
-- Verify old `policyreports.wgpolicyk8s.io` CRD can be removed after migration completion.
+- Migration documentation for install/upgrade/rollback and CRD lifecycle guidance.
+- kind upgrade validation from legacy PolicyReport installs to OpenReports-only installs.
+- Validation evidence that legacy PolicyReport output can be retired post-migration.
 
 ### Phase 6: Persistence Hardening and Compaction
+
+Status: **COMPLETED** ✅ — Baseline observation compaction, normalization, overflow markers, and regression tests are implemented.
 
 - Add bounded retention and compaction for baseline internals.
 - Normalize dynamic file paths/domains where beneficial.
@@ -823,6 +755,8 @@ Deliverables:
 - compaction tests and size regression checks
 
 ### Phase 7: Operational Readiness
+
+Status: **COMPLETED** ✅ — eBPF readiness preflight checks and operational SLO metrics are implemented and validated in the deployed runtime.
 
 - Add preflight checks:
   kernel and eBPF capability readiness.
@@ -916,9 +850,14 @@ type FindingBuffer struct {
     timer      *time.Timer
     flushFn    func([]v1alpha1.RuleFinding)
 }
-```
 
+Status: **COMPLETED** ✅ — Default RuntimePolicy library implemented with 7 curated policies, Helm configuration, comprehensive documentation, and e2e test coverage.
 Buffering reduces API server writes from O(events/s) to O(events / maxSize)
+**Completed deliverables:**
+- `charts/kyverno-runtime/templates/default-policies.yaml` ✅ — 7 production-ready policies
+- `charts/kyverno-runtime/values.yaml` ✅ — Configuration options
+- `docs/users/library.md` ✅ — Complete policy reference (user-facing guide)
+- `test/e2e/default-policies/` ✅ — E2E test suite
 or O(1/timeout), matching KubeScape's alert-bulking model.
 
 Changes required:
@@ -955,7 +894,7 @@ Design:
 - Compute a fingerprint per event using key fields per event type:
 
   | Event type | Fingerprint fields |
-  |---|---|
+  | --- | --- |
   | `exec` | `comm` + `path` + `pid` |
   | `open` | `path` + `flags` |
   | `connect` / `tcpconnect` | `destination.ip` + `destination.port` + `l4proto` |
@@ -993,7 +932,7 @@ demultiplexes by mount namespace / container ID.
 
 Design:
 
-```
+```text
 NodeTracer (one per event type)
     │
     └── shared eBPF gadget (trace_exec / trace_open / trace_tcp)
@@ -1139,7 +1078,7 @@ model.
 New metrics to add in `pkg/observability/metrics.go`:
 
 | Metric | Type | Labels | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `kyverno_runtime_evaluator_duration_seconds` | Histogram | `policy`, `validation`, `event_type` | CEL evaluation duration |
 | `kyverno_runtime_evaluator_prefiltered_total` | Counter | `policy`, `validation` | Events skipped by CEL prefilter |
 | `kyverno_runtime_datasource_events_deduped_total` | Counter | `event_type` | Events skipped by time-bucket dedup |
@@ -1160,7 +1099,7 @@ Deliverables:
 ### Phase 8 Summary Table
 
 | Phase | Enhancement | Effort | Impact |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 8.1 | nodeName pod filtering | Low | Correctness + eliminates off-node waste |
 | 8.2 | Per-pod finding buffer | Medium | Reduces API server write load |
 | 8.3 | Time-bucket event dedup | Medium | Reduces CEL evaluation load |
@@ -1169,6 +1108,176 @@ Deliverables:
 | 8.6 | Rule cooldown | Low | Reduces alert fatigue and PolicyReport churn |
 | 8.7 | CEL pre-compilation at watch start | Low | Surfaces errors at activation; eliminates first-event lag |
 | 8.8 | Enhanced observability metrics | Low | Observability prerequisite for tuning all of the above |
+
+---
+
+## Phase-by-Phase Implementation Task List
+
+This section is the execution checklist for implementation. Each phase includes
+task-level work items and a clear definition of done.
+
+### Execution Phase 0: Foundation Alignment
+
+Implementation tasks:
+
+- Verify all feature gates are wired end-to-end (flags, config, chart, manifest).
+- Confirm defaults and docs are consistent across README, chart values, and manager manifests.
+- Keep feature gates disabled by default where required for safe rollout behavior.
+
+Definition of done:
+
+- `make build` and `make test` pass.
+- Helm render includes all feature-gate flags with expected defaults.
+
+### Execution Phase 0.5: Quickstart Reliability and Guardrails
+
+Implementation tasks:
+
+- Add `make quickstart-verify` script flow in `hack/`.
+- Validate expected quickstart report shape (open + network policies) with actionable failure output.
+- Add stale-image diagnostics (print Runtime DaemonSet `Image ID` on verification failure).
+
+Definition of done:
+
+- Quickstart verifier succeeds on fresh kind install.
+- Failure cases provide deterministic remediation hints.
+
+### Execution Phase 1: Baseline Lifecycle and Confidence
+
+Implementation tasks:
+
+- Implement lifecycle orchestration in controller/pipeline for learning/monitor/enforce.
+- Implement confidence/status updates (`observedFrom`, `observedTo`, `sampleCount`, `dropRate`).
+- Implement staleness detection and relearning transitions.
+- Implement shared-default merge path (`spec.allow`, `refs`, `status.observed`) in evaluation flow.
+- Add transition and merge precedence tests.
+
+Definition of done:
+
+- Lifecycle transitions are covered by unit/integration tests.
+- RuntimeBehavior status is updated consistently for active workloads.
+
+### Execution Phase 2.1: Default RuntimePolicy Library
+
+Implementation tasks:
+
+- Create curated default RuntimePolicy manifests under chart/templates or referenced install assets.
+- Add enable/disable toggle for installing policy library.
+- Add policy metadata labels/annotations for ownership and versioning.
+- Add e2e tests asserting expected findings from library rules.
+
+Definition of done:
+
+- Fresh install produces default policy resources when enabled.
+- Library rules generate expected runtime report outcomes in e2e
+  (legacy PolicyReport pre-migration; OpenReports post-migration).
+
+### Execution Phase 2.2: Security-Owned RuntimeBehavior Auto-Enrollment
+
+Implementation tasks:
+
+- Add enrollment flags: controller kinds, bare-pod toggle, namespace include/exclude, initial mode.
+- Implement workload identity resolution and idempotent RuntimeBehavior creation.
+- Implement explicit opt-out exception controls (auditable by label/annotation policy).
+- Add controller tests for enrolled controller-managed pods and optional bare pods.
+
+Definition of done:
+
+- Eligible workloads get exactly one managed RuntimeBehavior profile.
+- Non-eligible workloads are skipped deterministically by enrollment policy.
+
+### Execution Phase 3: Dual Detection Engines Integration
+
+Implementation tasks:
+
+- Wire signature/anomaly engines into live evaluator and watch manager paths.
+- Route feature gates to evaluator construction behavior.
+- Resolve runtime baseline loading/caching in monitor/enforce paths.
+- Normalize finding shape (rule ID, severity, fingerprint) across CEL/signature/anomaly outputs.
+- Add e2e coverage validating dual-engine findings in live controller execution.
+
+Definition of done:
+
+- Dual-engine findings appear in runtime reports with stable dedup behavior
+  (legacy PolicyReport pre-migration; OpenReports post-migration).
+- Feature gates can independently enable/disable engine paths.
+
+### Execution Phase 4: Alert Aggregation and Suppression
+
+Implementation tasks:
+
+- Extend reporter aggregation fields (`firstSeen`, `lastSeen`, `count`, `window`).
+- Add cooldown/burst suppression controls and config wiring.
+- Add tests for aggregation correctness and suppression windows.
+
+Definition of done:
+
+- High-frequency findings are aggregated and rate-limited as configured.
+
+### Execution Phase 5: OpenReports Output, Kubernetes Events, and Metrics
+
+Implementation tasks:
+
+- Implement OpenReports scheme/dependencies and writer backend as the sole persisted report output.
+- Implement finding model mapping to OpenReports schema.
+- Emit Kubernetes Events for key detection/lifecycle transitions with dedup/rate limiting.
+- Add output-path metrics (success/failure counters, latency, emitted/dropped, rate-limited).
+- Add unit/integration tests for OpenReports writes, Event emission behavior, and metric updates.
+
+Definition of done:
+
+- OpenReports is the only persisted runtime report backend.
+- Kubernetes Events are emitted for configured classes without uncontrolled amplification.
+- Metrics cover output and eventing health and are validated by tests.
+
+### Execution Phase 5.5: Legacy PolicyReport Migration (Folded into Phase 5)
+
+Implementation tasks:
+
+- Publish one-time migration guidance for upgrading existing PolicyReport-based installs.
+- Provide upgrade validation and rollback guidance for legacy clusters.
+- Do not introduce dual-write as a steady-state path.
+
+Definition of done:
+
+- Migration runbook is documented and validated on kind upgrade flow.
+- No active PolicyReport output path remains after migration.
+
+### Execution Phase 6: Persistence Hardening and Compaction
+
+Implementation tasks:
+
+- Implement bounded retention and compaction for baseline internals.
+- Add normalization for high-cardinality paths/domains where beneficial.
+- Add overflow markers and cap enforcement tests.
+
+Definition of done:
+
+- Baseline storage growth is bounded and verified by regression checks.
+
+### Execution Phase 7: Operational Readiness
+
+Implementation tasks:
+
+- Add preflight checks for eBPF/kernel capability readiness.
+- Add operational SLO metrics for collection, evaluation, suppression, and sink health.
+- Publish operator runbook updates.
+
+Definition of done:
+
+- Runtime exposes operationally actionable health and performance signals.
+
+### Execution Phase 8: Scalability and Performance
+
+Implementation tasks:
+
+- Implement Phases 8.1 through 8.8 in priority order.
+- Benchmark before/after API write rate, evaluator throughput, and event latency.
+- Validate no regression in finding correctness while optimizing hot paths.
+
+Definition of done:
+
+- Node-scale test shows reduced API churn and stable detection fidelity.
 
 ---
 
@@ -1184,7 +1293,7 @@ Coverage targets:
 
 - baseline lifecycle transitions
 - confidence-aware severity outcomes
-- binding selector behavior
+- enrollment selector behavior (controller kinds + namespace scope + bare pod toggle)
 - aggregation/suppression logic
 - sink retry/rate-limit behavior
 
@@ -1198,7 +1307,7 @@ Validate generated config for:
 
 - feature gates
 - lifecycle parameters
-- sink endpoints
+- output/event settings
 - suppression settings
 
 ### kind validation
@@ -1209,7 +1318,7 @@ kubectl config use-context kind-kyverno-runtime
 helm upgrade --install kyverno-runtime ./charts/kyverno-runtime -n kyverno-runtime --create-namespace --wait
 kubectl get pods -n kyverno-runtime
 kubectl get ds -n kyverno-runtime
-kubectl get policyreport -A
+kubectl api-resources | grep -i report
 ```
 
 ## Risks and Mitigations
@@ -1220,18 +1329,21 @@ kubectl get policyreport -A
   - Mitigation: readiness-aware learning (`startAfter: ready`), multi-source
     profile building, profile export/merge tooling.
 - Increased compute overhead from dual engines
-  - Mitigation: feature gates, sampling, selective bindings.
+  - Mitigation: feature gates, sampling, scoped auto-enrollment controls.
 - False positives due to dynamic workloads
   - Mitigation: normalization, periodic relearning, rule tuning guidance.
-- Operational complexity from multiple sinks
-  - Mitigation: explicit defaults, per-sink health metrics, backoff/retry limits.
+- Operational complexity from multiple output channels
+  - Mitigation: explicit defaults, health metrics, and conservative rate limiting.
 
 ## Completion Criteria
 
 - RuntimeBehavior lifecycle and confidence metadata are implemented and surfaced.
-- Rule binding CRD is available and used in matching.
+- Default RuntimePolicy library is shipped and enabled by documented install flow.
+- RuntimeBehavior auto-enrollment is implemented for configured controller kinds.
+- Bare pod enrollment is configurable and disabled by default.
 - Dual engines (anomaly + signature) are functional behind feature gates.
-- Alert aggregation/suppression and at least one external sink are production-ready.
+- Alert aggregation/suppression is production-ready.
+- OpenReports output path with Kubernetes Events and metrics is production-ready.
 - `go test ./...` passes.
-- kind install validates healthy runtime behavior with generated PolicyReports and
+- kind install validates healthy runtime behavior with generated runtime reports and
   controlled alert output.

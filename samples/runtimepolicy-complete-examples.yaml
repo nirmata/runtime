@@ -1,0 +1,111 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: live-network-security
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: block-external-db
+    event: tcpconnect
+    message: Unauthorized outbound DB traffic detected
+    severity: high
+    conditions:
+    - expression: event["dst.addr"] != "10.0.0.1" && event["dst.addr"] != "10.0.0.2" && event["dst.addr"] != "127.0.0.1"
+    - expression: event["dst.port"] == "5432"
+    actions:
+    - type: terminate
+      message: Terminate pod on unauthorized DB connection
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: live-filesystem-monitoring
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: monitor-sensitive-file-access
+    event: open
+    message: Sensitive file access detected
+    severity: high
+    matchConditions:
+    - expression: '("fname" in event && (event["fname"].contains("/etc/hosts") || event["fname"].contains("/etc/passwd"))) || ("fpath" in event && (event["fpath"].contains("/etc/hosts") || event["fpath"].contains("/etc/passwd"))) || ("filename" in event && (event["filename"].contains("/etc/hosts") || event["filename"].contains("/etc/passwd")))'
+    actions:
+    - type: log_event
+      message: Record sensitive file access for audit
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: live-process-execution
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: detect-shell-activity
+    event: exec
+    message: Shell execution in container
+    severity: medium
+    conditions:
+    - expression: event["proc.comm"] == "sh" || event["proc.comm"] == "bash" || event["proc.comm"] == "cat"
+    actions:
+    - type: kill_process
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: live-compliance-audit
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: compliance-audit
+    event: open
+    message: Compliance audit event
+    severity: info
+    conditions:
+    - expression: event["k8s.podLabels.audit-enabled"] == "true"
+    actions:
+    - type: generate_report
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: live-threat-detection
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: detect-anomaly
+    event: tcpconnect
+    message: Behavioral anomaly detected
+    severity: critical
+    conditions:
+    - expression: event["dst.addr"] != "127.0.0.1"
+    - expression: event["dst.port"] == "443" || event["dst.port"] == "5432"
+    actions:
+    - type: escalate_incident
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: live-system-performance
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: monitor-performance
+    event: tcpconnect
+    message: Connection behavior observed
+    severity: medium
+    conditions:
+    - expression: double(event["latency"]) > 0.0
+    actions:
+    - type: notify_ops

@@ -6,11 +6,11 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
-  publish:
+  publish-image:
     name: Build & Publish Image
     runs-on: ubuntu-latest
 
@@ -48,3 +48,70 @@ jobs:
             --bare \
             --tags=${{ steps.tag.outputs.TAG }},latest \
             --platform=linux/amd64,linux/arm64
+
+  publish-chart:
+    name: Package & Publish Helm Chart
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive and validate chart version
+        id: chart_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.].+)?$ ]]; then
+            echo "Tag '$TAG' must match v<major>.<minor>.<patch> (optionally with prerelease/build suffix)."
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set chart version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.chart_version.outputs.version }}"
+          sed -i.bak -E "s/^version:.*/version: ${VERSION}/" charts/kyverno-runtime/Chart.yaml
+          sed -i.bak -E "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/kyverno-runtime/Chart.yaml
+          rm -f charts/kyverno-runtime/Chart.yaml.bak
+
+      - name: Lint chart
+        run: helm lint charts/kyverno-runtime
+
+      - name: Package chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cr-release-packages
+          helm package charts/kyverno-runtime --destination .cr-release-packages
+
+      - name: Push chart to GHCR (OCI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHART_PACKAGE=".cr-release-packages/kyverno-runtime-${{ steps.chart_version.outputs.version }}.tgz"
+          helm push "$CHART_PACKAGE" oci://ghcr.io/nirmata/kyverno-runtime
+
+      - name: Publish chart release and update index
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: charts
+          skip_packaging: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

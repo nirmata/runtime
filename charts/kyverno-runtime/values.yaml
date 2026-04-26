@@ -15,6 +15,17 @@ reportBuffer:
   # Max buffered findings before forced flush (default: 500 to prevent resource exhaustion)
   maxCount: 500
 
+# Duplicate finding suppression per fingerprint (rolling window)
+reportSuppression:
+  # Window duration used for burst evaluation
+  cooldown: 30s
+  # Max duplicate updates allowed in one cooldown window
+  burst: 20
+
+reportEvents:
+  cooldown: 30s
+  burst: 10
+
 featureGates:
   # Baseline engine: learn and enforce workload behavioral baselines (default: enabled)
   baselineEngine: true
@@ -24,6 +35,31 @@ featureGates:
   alertSinks: false
   # Alert aggregation: prevent alert storms with cooldown and burst limits (default: enabled)
   alertAggregation: true
+
+# Default RuntimePolicy Library - curated policies for day-1 protection
+defaultPolicies:
+  # Enable/disable the default policy library as a unit
+  enabled: true
+  # Individual policy controls - set to false to skip a specific policy
+  policies:
+    credentialAccess: true
+    shellExecution: true
+    sensitiveFileAccess: true
+    publicNetworkEgress: true
+    metadataEndpointEgress: true
+    processDiscovery: true
+    securityToolDisruption: true
+    suspiciousDNS: false
+
+runtimeBehaviorEnrollment:
+  autoCreate: true
+  includeControllers: Deployment,StatefulSet,DaemonSet,Job,CronJob,ReplicaSet
+  includeBarePods: false
+  includeNamespaces: ""
+  excludeNamespaces: kube-system,kyverno-runtime
+  initialMode: learning
+  optOutLabel: ""
+  sharedDefaultsNamespace: kyverno-runtime
 
 serviceAccount:
   create: true

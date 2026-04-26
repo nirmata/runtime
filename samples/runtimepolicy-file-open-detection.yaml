@@ -1,0 +1,18 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-live-trace-open
+spec:
+  namespaceSelector:
+    matchLabels:
+      runtime-monitor: "enabled"
+  validations:
+  - name: detect-open-activity
+    event: open
+    message: Open activity detected via live Inspektor Gadget trace
+    severity: high
+    matchConditions:
+    - expression: '("fname" in event && event["fname"].contains("/etc/hosts")) || ("file.path" in event && event["file.path"].contains("/etc/hosts")) || ("path" in event && event["path"].contains("/etc/hosts")) || ("fullPath" in event && event["fullPath"].contains("/etc/hosts")) || ("filename" in event && event["filename"].contains("/etc/hosts"))'
+    actions:
+    - type: generate_report
+      message: Append a runtime finding to the PolicyReport audit log

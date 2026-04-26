@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
+	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +32,7 @@ const (
 	propertyCount         = "count"
 	propertyFirstSeen     = "firstTimestamp"
 	propertyLastSeen      = "lastTimestamp"
+	propertyWindow        = "window"
 	propertyContainerName = "container"
 
 	annotationTruncatedResults = "runtime.kyverno.io/truncated-results"
@@ -46,15 +47,36 @@ type K8sReporter struct {
 	buffered      map[reportBufferKey]*bufferedReport
 	bufferedCount int
 	flushTicker   *time.Ticker
+
+	eventMu      sync.Mutex
+	eventWindows map[string]eventWindow
 }
 
 // ReporterOptions controls buffering and flush behavior.
 type ReporterOptions struct {
 	BufferInterval   time.Duration
 	MaxBufferedCount int
-	// MaxReportResults caps the number of results kept in a PolicyReport.
+	// MaxReportResults caps the number of results kept in a Report.
 	// If zero the package-level maxPolicyReportResults constant is used.
 	MaxReportResults int
+	// SuppressionCooldown applies per-fingerprint rolling windows used for
+	// rate limiting repeated duplicate findings.
+	SuppressionCooldown time.Duration
+	// SuppressionBurst controls the max allowed duplicate updates for a
+	// fingerprint within a cooldown window. Zero disables suppression.
+	SuppressionBurst int
+	// EventCooldown applies per-fingerprint rolling windows for emitted
+	// Kubernetes Events.
+	EventCooldown time.Duration
+	// EventBurst controls max Events emitted per fingerprint in one cooldown
+	// window. Zero disables Event rate limiting.
+	EventBurst int
+}
+
+type suppressionOptions struct {
+	cooldown time.Duration
+	burst    int
+	now      func() time.Time
 }
 
 type reportBufferKey struct {
@@ -69,6 +91,11 @@ type bufferedReport struct {
 	findings []v1alpha1.RuleFinding
 }
 
+type eventWindow struct {
+	start time.Time
+	count int
+}
+
 // NewK8sReporter creates a new K8sReporter.
 func NewK8sReporter(c client.Client) *K8sReporter {
 	return NewK8sReporterWithOptions(c, ReporterOptions{})
@@ -76,7 +103,7 @@ func NewK8sReporter(c client.Client) *K8sReporter {
 
 // NewK8sReporterWithOptions creates a new K8sReporter with buffering options.
 func NewK8sReporterWithOptions(c client.Client, opts ReporterOptions) *K8sReporter {
-	r := &K8sReporter{client: c, opts: opts}
+	r := &K8sReporter{client: c, opts: opts, eventWindows: map[string]eventWindow{}}
 	if opts.BufferInterval > 0 && opts.MaxBufferedCount > 0 {
 		r.buffered = map[reportBufferKey]*bufferedReport{}
 		r.flushTicker = time.NewTicker(opts.BufferInterval)
@@ -113,16 +140,20 @@ func (r *K8sReporter) maxResults() int {
 func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 
 	reportName := reportName(req.Pod.Name, req.Policy.Name)
-	existing := &policyreportv1alpha2.PolicyReport{}
+	existing := &openreportsv1alpha1.Report{}
 	err := r.client.Get(ctx, types.NamespacedName{Namespace: req.Pod.Namespace, Name: reportName}, existing)
 
 	results := buildPolicyReportResults(req.Pod, req.Policy, req.Findings)
 
 	if apierrors.IsNotFound(err) {
-		merged, _ := mergePolicyReportResults(nil, results)
+		started := time.Now()
+		merged, _, _ := mergePolicyReportResults(nil, results, suppressionOptions{
+			cooldown: r.opts.SuppressionCooldown,
+			burst:    r.opts.SuppressionBurst,
+		})
 		bounded := truncatePolicyReportResults(merged, r.maxResults())
-		obj := &policyreportv1alpha2.PolicyReport{
-			TypeMeta: metav1.TypeMeta{APIVersion: policyreportv1alpha2.SchemeGroupVersion.String(), Kind: "PolicyReport"},
+		obj := &openreportsv1alpha1.Report{
+			TypeMeta: metav1.TypeMeta{APIVersion: "openreports.io/v1alpha1", Kind: "Report"},
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: req.Pod.Namespace,
 				Name:      reportName,
@@ -137,6 +168,7 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 					UID:        req.Pod.UID,
 				}},
 			},
+			Source:  "kyverno-runtime",
 			Scope:   podReference(req.Pod),
 			Results: bounded,
 			Summary: summarizePolicyReportResults(bounded),
@@ -144,16 +176,27 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 		setTruncatedAnnotation(obj, len(merged), r.maxResults())
 		if err := r.client.Create(ctx, obj); err != nil {
 			observability.IncReporterWrite("create", "error")
+			observability.IncSinkFailure("kubernetes_report")
+			observability.ObserveReporterOutputLatency("create", time.Since(started).Seconds())
 			return err
 		}
+		r.emitKubernetesEvents(ctx, req, merged)
+		observability.AddAlertsEmitted(len(merged))
 		observability.IncReporterWrite("create", "success")
+		observability.ObserveReporterOutputLatency("create", time.Since(started).Seconds())
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 
-	merged, addedNew := mergePolicyReportResults(existing.Results, results)
+	merged, addedNew, suppressed := mergePolicyReportResults(existing.Results, results, suppressionOptions{
+		cooldown: r.opts.SuppressionCooldown,
+		burst:    r.opts.SuppressionBurst,
+	})
+	if suppressed > 0 {
+		observability.AddReporterFindingsSuppressed("cooldown_burst", suppressed)
+	}
 	// When the report is already at capacity and the incoming events are all
 	// duplicates of known fingerprints (pure count increments), skip the
 	// Kubernetes API Update to reduce API server churn. New distinct events
@@ -168,17 +211,87 @@ func (r *K8sReporter) reportNow(ctx context.Context, req ReportRequest) error {
 	setTruncatedAnnotation(existing, len(merged), r.maxResults())
 	existing.Results = bounded
 	existing.Summary = summarizePolicyReportResults(existing.Results)
+	started := time.Now()
 	if err := r.client.Update(ctx, existing); err != nil {
 		observability.IncReporterWrite("update", "error")
+		observability.IncSinkFailure("kubernetes_report")
+		observability.ObserveReporterOutputLatency("update", time.Since(started).Seconds())
 		return err
 	}
+	r.emitKubernetesEvents(ctx, req, merged)
+	observability.AddAlertsEmitted(len(merged))
 	observability.IncReporterWrite("update", "success")
+	observability.ObserveReporterOutputLatency("update", time.Since(started).Seconds())
 	return nil
+}
+
+func (r *K8sReporter) emitKubernetesEvents(ctx context.Context, req ReportRequest, results []openreportsv1alpha1.ReportResult) {
+	for _, result := range results {
+		fp := result.Properties[propertyFingerprint]
+		if fp == "" {
+			fp = findingFingerprint(req.Pod, req.Policy, v1alpha1.RuleFinding{RuleName: result.Rule, Fields: result.Properties})
+		}
+		if !r.shouldEmitEvent(fp) {
+			observability.IncReporterEvent("rate_limited")
+			continue
+		}
+
+		now := metav1.NewTime(time.Now().UTC())
+		eventType := corev1.EventTypeWarning
+		if strings.ToLower(string(result.Result)) == "pass" {
+			eventType = corev1.EventTypeNormal
+		}
+		e := &corev1.Event{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "kyverno-runtime-",
+				Namespace:    req.Pod.Namespace,
+			},
+			InvolvedObject: *podReference(req.Pod),
+			Type:           eventType,
+			Reason:         "RuntimeDetection",
+			Message:        result.Description,
+			Source:         corev1.EventSource{Component: "kyverno-runtime"},
+			FirstTimestamp: now,
+			LastTimestamp:  now,
+			Count:          1,
+		}
+		if err := r.client.Create(ctx, e); err != nil {
+			observability.IncReporterEvent("error")
+			observability.IncSinkFailure("kubernetes_event")
+			continue
+		}
+		observability.IncReporterEvent("emitted")
+	}
+}
+
+func (r *K8sReporter) shouldEmitEvent(fingerprint string) bool {
+	if fingerprint == "" {
+		return true
+	}
+	if r.opts.EventCooldown <= 0 || r.opts.EventBurst <= 0 {
+		return true
+	}
+	now := time.Now().UTC()
+
+	r.eventMu.Lock()
+	defer r.eventMu.Unlock()
+
+	window, ok := r.eventWindows[fingerprint]
+	if !ok || now.Sub(window.start) >= r.opts.EventCooldown {
+		r.eventWindows[fingerprint] = eventWindow{start: now, count: 1}
+		return true
+	}
+	if window.count >= r.opts.EventBurst {
+		return false
+	}
+	window.count++
+	r.eventWindows[fingerprint] = window
+	return true
 }
 
 // setTruncatedAnnotation records the number of dropped results on the report
 // via an annotation so operators can detect when the limit has been hit.
-func setTruncatedAnnotation(report *policyreportv1alpha2.PolicyReport, total, max int) {
+func setTruncatedAnnotation(report *openreportsv1alpha1.Report, total, max int) {
 	if total <= max {
 		// Remove a stale annotation if the report is no longer truncated.
 		if report.Annotations != nil {
@@ -277,8 +390,8 @@ func podReference(pod *corev1.Pod) *corev1.ObjectReference {
 	}
 }
 
-func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, findings []v1alpha1.RuleFinding) []policyreportv1alpha2.PolicyReportResult {
-	results := make([]policyreportv1alpha2.PolicyReportResult, 0, len(findings))
+func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, findings []v1alpha1.RuleFinding) []openreportsv1alpha1.ReportResult {
+	results := make([]openreportsv1alpha1.ReportResult, 0, len(findings))
 	for _, finding := range findings {
 		now := time.Now().UTC()
 		nowRFC3339 := now.Format(time.RFC3339)
@@ -300,22 +413,23 @@ func buildPolicyReportResults(pod *corev1.Pod, policy *v1alpha1.RuntimePolicy, f
 		properties[propertyCount] = "1"
 		properties[propertyFirstSeen] = nowRFC3339
 		properties[propertyLastSeen] = nowRFC3339
+		properties[propertyWindow] = encodeWindowState(now, 1)
 		if containerName := extractContainerName(finding.Fields); containerName != "" {
 			properties[propertyContainerName] = containerName
 		}
 
-		result := policyreportv1alpha2.PolicyReportResult{
-			Source:     "kyverno-runtime",
-			Policy:     policy.Name,
-			Rule:       finding.RuleName,
-			Resources:  []corev1.ObjectReference{*podReference(pod)},
-			Message:    finding.Message,
-			Result:     reportResultForSeverity(finding.Severity),
-			Scored:     true,
-			Severity:   policyreportv1alpha2.PolicySeverity(strings.ToLower(strings.TrimSpace(finding.Severity))),
-			Category:   "Runtime Security",
-			Timestamp:  metav1.Timestamp{Seconds: now.Unix()},
-			Properties: properties,
+		result := openreportsv1alpha1.ReportResult{
+			Source:      "kyverno-runtime",
+			Policy:      policy.Name,
+			Rule:        finding.RuleName,
+			Subjects:    []corev1.ObjectReference{*podReference(pod)},
+			Description: finding.Message,
+			Result:      reportResultForSeverity(finding.Severity),
+			Scored:      true,
+			Severity:    openreportsv1alpha1.ResultSeverity(strings.ToLower(strings.TrimSpace(finding.Severity))),
+			Category:    "Runtime Security",
+			Timestamp:   metav1.Timestamp{Seconds: now.Unix()},
+			Properties:  properties,
 		}
 		results = append(results, result)
 	}
@@ -357,10 +471,16 @@ func sanitizeReportPropertyValue(value string) string {
 // mergePolicyReportResults merges incoming results into existing ones,
 // deduplicating by fingerprint. The returned bool is true when at least one
 // new fingerprint was added (i.e. the report structurally changed).
-func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult, incoming []policyreportv1alpha2.PolicyReportResult) ([]policyreportv1alpha2.PolicyReportResult, bool) {
-	merged := append([]policyreportv1alpha2.PolicyReportResult(nil), existing...)
+// The third return value is the number of suppressed duplicate updates.
+func mergePolicyReportResults(existing []openreportsv1alpha1.ReportResult, incoming []openreportsv1alpha1.ReportResult, opts suppressionOptions) ([]openreportsv1alpha1.ReportResult, bool, int) {
+	merged := append([]openreportsv1alpha1.ReportResult(nil), existing...)
 	indexByFingerprint := map[string]int{}
 	addedNew := false
+	suppressed := 0
+	now := time.Now().UTC()
+	if opts.now != nil {
+		now = opts.now().UTC()
+	}
 
 	for i, result := range merged {
 		if fingerprint := result.Properties[propertyFingerprint]; fingerprint != "" {
@@ -388,11 +508,28 @@ func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult
 		existingCount := parseCount(existingResult.Properties[propertyCount])
 		incomingCount := parseCount(candidate.Properties[propertyCount])
 
+		windowStart, windowCount := currentWindowState(existingResult, now, opts.cooldown)
+		if opts.cooldown > 0 && opts.burst > 0 && now.Sub(windowStart) < opts.cooldown && windowCount >= opts.burst {
+			suppressed++
+			continue
+		}
+		if opts.cooldown > 0 {
+			if now.Sub(windowStart) < opts.cooldown {
+				windowCount += incomingCount
+			} else {
+				windowStart = now
+				windowCount = incomingCount
+			}
+		}
+
 		if existingResult.Properties == nil {
 			existingResult.Properties = map[string]string{}
 		}
 		existingResult.Properties[propertyFingerprint] = fingerprint
 		existingResult.Properties[propertyCount] = strconv.Itoa(existingCount + incomingCount)
+		if opts.cooldown > 0 {
+			existingResult.Properties[propertyWindow] = encodeWindowState(windowStart, windowCount)
+		}
 
 		firstSeen := existingResult.Properties[propertyFirstSeen]
 		if firstSeen == "" {
@@ -405,7 +542,43 @@ func mergePolicyReportResults(existing []policyreportv1alpha2.PolicyReportResult
 		merged[idx] = existingResult
 	}
 
-	return merged, addedNew
+	return merged, addedNew, suppressed
+}
+
+func currentWindowState(result openreportsv1alpha1.ReportResult, now time.Time, cooldown time.Duration) (time.Time, int) {
+	if cooldown <= 0 {
+		return now, parseCount(result.Properties[propertyCount])
+	}
+	if start, count, ok := decodeWindowState(result.Properties[propertyWindow]); ok {
+		return start, count
+	}
+	if lastSeen, err := time.Parse(time.RFC3339, result.Properties[propertyLastSeen]); err == nil {
+		return lastSeen.UTC(), parseCount(result.Properties[propertyCount])
+	}
+	return now, parseCount(result.Properties[propertyCount])
+}
+
+func encodeWindowState(start time.Time, count int) string {
+	if count < 1 {
+		count = 1
+	}
+	return start.UTC().Format(time.RFC3339) + "|" + strconv.Itoa(count)
+}
+
+func decodeWindowState(raw string) (time.Time, int, bool) {
+	parts := strings.Split(raw, "|")
+	if len(parts) != 2 {
+		return time.Time{}, 0, false
+	}
+	start, err := time.Parse(time.RFC3339, strings.TrimSpace(parts[0]))
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || count < 1 {
+		return time.Time{}, 0, false
+	}
+	return start.UTC(), count, true
 }
 
 func parseCount(raw string) int {
@@ -498,26 +671,26 @@ func extractContainerName(fields map[string]string) string {
 	return ""
 }
 
-func reportResultForSeverity(severity string) policyreportv1alpha2.PolicyResult {
+func reportResultForSeverity(severity string) openreportsv1alpha1.Result {
 	switch strings.ToLower(strings.TrimSpace(severity)) {
 	case "info", "low":
-		return policyreportv1alpha2.StatusWarn
+		return openreportsv1alpha1.Result("warn")
 	default:
-		return policyreportv1alpha2.StatusFail
+		return openreportsv1alpha1.Result("fail")
 	}
 }
 
-func summarizePolicyReportResults(results []policyreportv1alpha2.PolicyReportResult) policyreportv1alpha2.PolicyReportSummary {
-	summary := policyreportv1alpha2.PolicyReportSummary{}
+func summarizePolicyReportResults(results []openreportsv1alpha1.ReportResult) openreportsv1alpha1.ReportSummary {
+	summary := openreportsv1alpha1.ReportSummary{}
 	for _, result := range results {
-		switch result.Result {
-		case policyreportv1alpha2.StatusPass:
+		switch strings.ToLower(string(result.Result)) {
+		case "pass":
 			summary.Pass++
-		case policyreportv1alpha2.StatusWarn:
+		case "warn":
 			summary.Warn++
-		case policyreportv1alpha2.StatusSkip:
+		case "skip":
 			summary.Skip++
-		case policyreportv1alpha2.StatusError:
+		case "error":
 			summary.Error++
 		default:
 			summary.Fail++
@@ -526,7 +699,7 @@ func summarizePolicyReportResults(results []policyreportv1alpha2.PolicyReportRes
 	return summary
 }
 
-func truncatePolicyReportResults(results []policyreportv1alpha2.PolicyReportResult, max int) []policyreportv1alpha2.PolicyReportResult {
+func truncatePolicyReportResults(results []openreportsv1alpha1.ReportResult, max int) []openreportsv1alpha1.ReportResult {
 	if len(results) <= max {
 		return results
 	}

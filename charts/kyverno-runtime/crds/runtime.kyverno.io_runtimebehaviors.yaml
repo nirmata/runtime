@@ -12,7 +12,7 @@ spec:
     listKind: RuntimeBehaviorList
     plural: runtimebehaviors
     shortNames:
-    - rb
+    - rbe
     singular: runtimebehavior
   scope: Namespaced
   versions:

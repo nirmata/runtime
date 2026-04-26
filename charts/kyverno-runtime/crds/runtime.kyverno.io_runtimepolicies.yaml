@@ -12,9 +12,9 @@ spec:
     listKind: RuntimePolicyList
     plural: runtimepolicies
     shortNames:
-    - rp
+    - rpol
     singular: runtimepolicy
-  scope: Namespaced
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.observedPods

@@ -69,7 +69,12 @@ func (m *Manager) ProcessPod(ctx context.Context, pod *corev1.Pod, policies []v1
 		logger.V(1).Info("events collected", "policy", p.Name, "count", len(events))
 
 		// Evaluate policy against collected events
-		result := m.evaluator.Evaluate(p, events)
+		var result EvaluationResult
+		if pe, ok := m.evaluator.(PodAwareEvaluator); ok {
+			result = pe.EvaluateForPod(p, pod, events)
+		} else {
+			result = m.evaluator.Evaluate(p, events)
+		}
 		logger.V(1).Info("policy evaluated", "policy", p.Name, "findings", len(result.Findings))
 
 		// Write report

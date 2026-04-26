@@ -162,7 +162,7 @@ type ObservedBehaviors struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=rb
+// +kubebuilder:resource:shortName=rbe
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
 // +kubebuilder:printcolumn:name="Lifecycle",type=string,JSONPath=`.status.lifecycle`

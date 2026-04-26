@@ -1,0 +1,130 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: runtimebehavior-auto-enrollment
+spec:
+  timeouts:
+    apply: 30s
+    assert: 180s
+    cleanup: 60s
+  steps:
+  - name: apply-shared-defaults
+    try:
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          metadata:
+            name: e2e-global-defaults
+            namespace: kyverno-runtime
+            labels:
+              scope: all
+          spec:
+            allow:
+              network:
+              - 10.0.0.0/8
+    - apply:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          metadata:
+            name: e2e-jupyter-defaults
+            namespace: kyverno-runtime
+            labels:
+              runtime.kyverno.io/runtime-class: jupyter
+          spec:
+            allow:
+              exec:
+              - /usr/bin/python3
+
+  - name: setup-namespace
+    try:
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: e2e-runtimebehavior-enroll
+            labels:
+              runtime-monitor: "enabled"
+
+  - name: create-controller-managed-workload
+    try:
+    - apply:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: e2e-enroll-demo
+            namespace: e2e-runtimebehavior-enroll
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: e2e-enroll-demo
+            template:
+              metadata:
+                labels:
+                  app: e2e-enroll-demo
+                  runtime.kyverno.io/runtime-class: jupyter
+              spec:
+                containers:
+                - name: app
+                  image: busybox:1.36
+                  command: ["sh", "-c", "sleep 600"]
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            namespace: e2e-runtimebehavior-enroll
+            labels:
+              app: e2e-enroll-demo
+          status:
+            phase: Running
+
+  - name: assert-auto-created-runtimebehavior
+    try:
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          metadata:
+            namespace: e2e-runtimebehavior-enroll
+            labels:
+              runtime.kyverno.io/managed: "true"
+          spec:
+            mode: learning
+            workloadSelector:
+              matchLabels:
+                app: e2e-enroll-demo
+                runtime.kyverno.io/runtime-class: jupyter
+          (spec.allow != null): true
+          (contains(to_string(spec.allow.refs), 'e2e-global-defaults')): true
+          (contains(to_string(spec.allow.refs), 'e2e-jupyter-defaults')): true
+
+  - name: cleanup
+    try:
+    - delete:
+        ref:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: e2e-enroll-demo
+          namespace: e2e-runtimebehavior-enroll
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          name: e2e-global-defaults
+          namespace: kyverno-runtime
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimeBehavior
+          name: e2e-jupyter-defaults
+          namespace: kyverno-runtime
+    - delete:
+        ref:
+          apiVersion: v1
+          kind: Namespace
+          name: e2e-runtimebehavior-enroll

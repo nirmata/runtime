@@ -11,6 +11,7 @@ import (
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/datasource"
+	"github.com/nirmata/kyverno-runtime/pkg/observability"
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevents"
 )
 
@@ -57,20 +58,28 @@ func NewWatchManager(source datasource.StreamingSource, evaluator Evaluator, rep
 func (w *WatchManager) Sync(ctx context.Context, pod *corev1.Pod, policies []*v1alpha1.RuntimePolicy) {
 	logger := log.FromContext(ctx).WithName("watch-manager")
 
-	// Build the desired set of (pod, eventTypes) watches from matched policies.
-	// Group all event types across all matching policies so we run one watch per
-	// unique set of event types.
-	eventTypeSet := make(map[string]struct{})
-	policyMap := make(map[string]*v1alpha1.RuntimePolicy, len(policies))
+	validPolicies := make([]*v1alpha1.RuntimePolicy, 0, len(policies))
 	for _, p := range policies {
-		policyMap[p.Name] = p
+		if err := w.evaluator.EnsureCompiled(p); err != nil {
+			logger.Error(err, "policy CEL pre-compilation failed, skipping policy", "policy", p.Name, "pod", pod.Name, "namespace", pod.Namespace)
+			observability.IncEvaluatorCompileError(p.Name)
+			continue
+		}
+		validPolicies = append(validPolicies, p)
+	}
+
+	// Build the desired set of (pod, eventTypes) watches from matched policies.
+	// Group all event types across all valid matching policies so we run one
+	// watch per unique set of event types.
+	eventTypeSet := make(map[string]struct{})
+	for _, p := range validPolicies {
 		for _, et := range eventTypesForPolicy(p) {
 			eventTypeSet[et] = struct{}{}
 		}
 	}
 
 	if len(eventTypeSet) == 0 {
-		// No matching policies — stop any existing watch.
+		// No valid matching policies — stop any existing watch.
 		w.StopPod(pod)
 		return
 	}
@@ -81,8 +90,8 @@ func (w *WatchManager) Sync(ctx context.Context, pod *corev1.Pod, policies []*v1
 	}
 	sort.Strings(eventTypes)
 
-	policyNames := make([]string, 0, len(policies))
-	for _, p := range policies {
+	policyNames := make([]string, 0, len(validPolicies))
+	for _, p := range validPolicies {
 		policyNames = append(policyNames, p.Name)
 	}
 	sort.Strings(policyNames)
@@ -119,8 +128,8 @@ func (w *WatchManager) Sync(ctx context.Context, pod *corev1.Pod, policies []*v1
 
 	// Capture values for the goroutine.
 	podCopy := pod.DeepCopy()
-	policiesCopy := make([]*v1alpha1.RuntimePolicy, len(policies))
-	copy(policiesCopy, policies)
+	policiesCopy := make([]*v1alpha1.RuntimePolicy, len(validPolicies))
+	copy(policiesCopy, validPolicies)
 
 	go func() {
 		defer func() {

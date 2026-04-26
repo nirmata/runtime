@@ -216,6 +216,43 @@ func (e *Evaluator) compileCELProgram(expression string) (cel.Program, error) {
 	return prog, nil
 }
 
+// EnsureCompiled pre-compiles all CEL expressions in a policy so syntax/type
+// errors are surfaced during watch setup rather than on first event.
+func (e *Evaluator) EnsureCompiled(policy *v1alpha1.RuntimePolicy) error {
+	if policy == nil {
+		return nil
+	}
+	for _, validation := range policy.Spec.Validations {
+		for _, cond := range validation.MatchConditions {
+			expr := strings.TrimSpace(cond.Expression)
+			if expr == "" {
+				continue
+			}
+			compactExpr := strings.ReplaceAll(expr, " ", "")
+			if compactExpr == "event!=null" {
+				continue
+			}
+			if _, err := e.compileCELProgram(expr); err != nil {
+				return fmt.Errorf("validation %q match condition compile failed: %w", validation.Name, err)
+			}
+		}
+		for _, cond := range validation.Conditions {
+			expr := strings.TrimSpace(cond.Expression)
+			if expr == "" {
+				continue
+			}
+			compactExpr := strings.ReplaceAll(expr, " ", "")
+			if compactExpr == "event!=null" {
+				continue
+			}
+			if _, err := e.compileCELProgram(expr); err != nil {
+				return fmt.Errorf("validation %q condition compile failed: %w", validation.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
 func (e *Evaluator) getOrCreateEnv() (*cel.Env, error) {
 	e.envMu.Lock()
 	defer e.envMu.Unlock()
@@ -270,10 +307,11 @@ func addEventFieldAliases(eventMap map[string]string) {
 	}
 
 	// Common open-path aliases used by sample policies and different gadget outputs.
-	aliasIfMissing(eventMap, "file.path", firstNonEmpty(eventMap["file.path"], eventMap["path"], eventMap["fullPath"], eventMap["fname"]))
-	aliasIfMissing(eventMap, "path", firstNonEmpty(eventMap["path"], eventMap["file.path"], eventMap["fullPath"], eventMap["fname"]))
-	aliasIfMissing(eventMap, "fullPath", firstNonEmpty(eventMap["fullPath"], eventMap["file.path"], eventMap["path"], eventMap["fname"]))
-	aliasIfMissing(eventMap, "fname", firstNonEmpty(eventMap["fname"], eventMap["file.path"], eventMap["path"], eventMap["fullPath"]))
+	aliasIfMissing(eventMap, "file.path", firstNonEmpty(eventMap["file.path"], eventMap["path"], eventMap["fullPath"], eventMap["fname"], eventMap["filename"]))
+	aliasIfMissing(eventMap, "path", firstNonEmpty(eventMap["path"], eventMap["file.path"], eventMap["fullPath"], eventMap["fname"], eventMap["filename"]))
+	aliasIfMissing(eventMap, "fullPath", firstNonEmpty(eventMap["fullPath"], eventMap["file.path"], eventMap["path"], eventMap["fname"], eventMap["filename"]))
+	aliasIfMissing(eventMap, "fname", firstNonEmpty(eventMap["fname"], eventMap["file.path"], eventMap["path"], eventMap["fullPath"], eventMap["filename"]))
+	aliasIfMissing(eventMap, "filename", firstNonEmpty(eventMap["filename"], eventMap["fname"], eventMap["file.path"], eventMap["path"], eventMap["fullPath"]))
 
 	// Common process-name aliases for exec style policies.
 	aliasIfMissing(eventMap, "process.name", firstNonEmpty(eventMap["process.name"], eventMap["comm"], eventMap["proc.comm"], eventMap["filename"]))
