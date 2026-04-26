@@ -128,7 +128,7 @@ spec:
             containers:
             - name: test
               image: busybox:1.36
-              command: ["sh", "-c", "cat /etc/passwd && cat /etc/shadow 2>/dev/null; sleep 1"]
+              command: ["sh", "-c", "cat /etc/passwd && cat /etc/shadow 2>/dev/null; sleep 10"]
     - assert:
         resource:
           apiVersion: v1
@@ -202,7 +202,7 @@ spec:
             containers:
             - name: test
               image: alpine:3.18
-              command: ["/bin/sh", "-c", "echo 'shell execution test' && sleep 1"]
+              command: ["/bin/sh", "-c", "echo 'shell execution test' && sleep 10"]
     - assert:
         resource:
           apiVersion: v1
@@ -275,7 +275,7 @@ spec:
             containers:
             - name: test
               image: busybox:1.36
-              command: ["sh", "-c", "cat /etc/hosts >/dev/null && cat /etc/hostname >/dev/null; sleep 1"]
+              command: ["sh", "-c", "cat /etc/hosts >/dev/null && cat /etc/hostname >/dev/null; sleep 10"]
     - assert:
         resource:
           apiVersion: v1
@@ -348,7 +348,7 @@ spec:
             containers:
             - name: test
               image: busybox:1.36
-              command: ["sh", "-c", "cat /proc/1/status >/dev/null 2>&1 || echo 'proc access attempted'; sleep 1"]
+              command: ["sh", "-c", "cat /proc/1/status >/dev/null 2>&1 || echo 'proc access attempted'; sleep 10"]
     - assert:
         resource:
           apiVersion: v1
@@ -422,7 +422,7 @@ spec:
             containers:
             - name: test
               image: busybox:1.36
-              command: ["sh", "-c", "which iptables >/dev/null 2>&1 || echo 'iptables not found'; sleep 1"]
+              command: ["sh", "-c", "which iptables >/dev/null 2>&1 || echo 'iptables not found'; sleep 10"]
     - assert:
         resource:
           apiVersion: v1

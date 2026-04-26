@@ -77,7 +77,7 @@ kubectl get reports -n demo
 kubectl describe report <report-name> -n demo
 ```
 
-### Example 2: Protect Against Credential Access
+### 🔐 Example 2: Protect Against Credential Access
 
 Use the default library policy `detect-credential-access` to detect when containers attempt to read sensitive files like SSH keys or credentials:
 
@@ -134,7 +134,7 @@ kubectl get reports -n demo
 kubectl get reports -n demo -o yaml
 ```
 
-### Example 4: RuntimeBehavior with Allowed Networks
+### 🌐 Example 4: RuntimeBehavior with Allowed Networks
 
 Create a RuntimeBehavior profile with explicit allowed networks for nginx traffic, then deploy nginx in a different namespace and verify an auto-generated RuntimeBehavior appears for it.
 
@@ -177,7 +177,7 @@ kubectl get runtimebehaviors -n app-team-a
 kubectl get runtimebehavior -n app-team-a -o yaml
 ```
 
-### Example 5: Promote to Enforce Mode and Check Findings
+### 🟢 Example 5: Promote to Enforce Mode and Check Findings
 
 After validating monitor-mode behavior, switch the auto-generated RuntimeBehavior profiles in `app-team-a` to `enforce` and verify findings for out-of-policy network activity.
 
