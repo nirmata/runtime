@@ -1,0 +1,83 @@
+name: GHCR Candidate Tag Cleanup
+
+on:
+  schedule:
+    - cron: "30 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      keep_count:
+        description: Number of newest candidate versions to keep
+        required: false
+        default: "20"
+      dry_run:
+        description: If true, only print what would be deleted
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup-candidate-tags:
+    name: Delete Old Candidate Image Versions
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OWNER: ${{ github.repository_owner }}
+      PACKAGE_NAME: kyverno-runtime
+      KEEP_COUNT: ${{ inputs.keep_count || '20' }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+
+    steps:
+      - name: Prune older candidate versions from GHCR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! [[ "${KEEP_COUNT}" =~ ^[0-9]+$ ]]; then
+            echo "KEEP_COUNT must be a non-negative integer (got: ${KEEP_COUNT})"
+            exit 1
+          fi
+
+          org_versions="/orgs/${OWNER}/packages/container/${PACKAGE_NAME}/versions"
+          user_versions="/users/${OWNER}/packages/container/${PACKAGE_NAME}/versions"
+
+          versions_api_base="${org_versions}"
+          if ! gh api "${org_versions}?per_page=1" >/dev/null 2>&1; then
+            versions_api_base="${user_versions}"
+            gh api "${versions_api_base}?per_page=1" >/dev/null
+          fi
+
+          versions_json="$(gh api --paginate "${versions_api_base}?per_page=100" | jq -s 'add')"
+
+          candidate_json="$(
+            echo "${versions_json}" | jq '
+              map(select(.metadata.container.tags != null and any(.metadata.container.tags[]; startswith("candidate-"))))
+              | sort_by(.created_at)
+              | reverse
+            '
+          )"
+
+          total_candidates="$(echo "${candidate_json}" | jq 'length')"
+          echo "Found ${total_candidates} candidate versions for ${OWNER}/${PACKAGE_NAME}"
+
+          if [ "${total_candidates}" -le "${KEEP_COUNT}" ]; then
+            echo "Nothing to delete (total=${total_candidates}, keep=${KEEP_COUNT})."
+            exit 0
+          fi
+
+          to_delete_json="$(echo "${candidate_json}" | jq ".[${KEEP_COUNT}:]")"
+          delete_count="$(echo "${to_delete_json}" | jq 'length')"
+
+          echo "Deleting ${delete_count} candidate versions (keeping newest ${KEEP_COUNT})"
+
+          echo "${to_delete_json}" | jq -r '.[] | "\(.id)\t\(.created_at)\t\((.metadata.container.tags // []) | join(","))"' | \
+          while IFS=$'\t' read -r version_id created_at tags; do
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "[DRY_RUN] would delete version_id=${version_id} created_at=${created_at} tags=${tags}"
+            else
+              echo "Deleting version_id=${version_id} created_at=${created_at} tags=${tags}"
+              gh api -X DELETE "${versions_api_base}/${version_id}"
+            fi
+          done

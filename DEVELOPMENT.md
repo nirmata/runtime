@@ -192,7 +192,7 @@ kubectl get reports -n <namespace> -o yaml
 
 ## GitHub Actions Workflows
 
-The repository uses three workflows under `.github/workflows/`.
+The repository uses four workflows under `.github/workflows/`.
 
 ### CI (`ci.yml`)
 
@@ -203,24 +203,31 @@ The repository uses three workflows under `.github/workflows/`.
 
 ### E2E (`e2e.yml`)
 
-- Triggers on:
-  - Manual runs (`workflow_dispatch`) with input `suite=quickstart|full`
-  - Release tag pushes (`v*`)
+- Triggers on manual runs (`workflow_dispatch`) with input `suite=quickstart|full`
 - Creates a kind cluster and installs required tooling (`kubectl`, `helm`, `ko`, `chainsaw`)
 - Runs:
   - `make kind-install smoke-quickstart` for manual `quickstart`
-  - `make test-e2e-install` for manual `full` and for tag pushes
+   - `make test-e2e-install` for manual `full`
 - On failures, dumps pods/reports/controller logs for easier debugging
 
 ### Release (`release.yml`)
 
 - Triggers on tag pushes (`v*`)
-- Publishes multi-arch controller image to `ghcr.io/nirmata/kyverno-runtime`
+- Builds and pushes a temporary candidate image tag to `ghcr.io/nirmata/kyverno-runtime`
+- Runs release E2E against that candidate image
+- Promotes the candidate image to release tag and `latest` only after E2E passes
 - Publishes Helm chart by deriving chart version from tag (for example, `v0.2.0` -> `0.2.0`)
 - Updates `charts/kyverno-runtime/Chart.yaml` `version` and `appVersion` from tag
 - Runs `helm lint` and `helm package` for chart validation and packaging
 - Pushes the packaged chart to OCI registry: `oci://ghcr.io/nirmata/kyverno-runtime`
 - Runs `helm/chart-releaser-action` to publish release artifacts and update chart index
+
+### GHCR Candidate Cleanup (`ghcr-candidate-cleanup.yml`)
+
+- Triggers on weekly schedule and manual dispatch
+- Deletes older `candidate-*` container versions from GHCR
+- Keeps a configurable number of newest candidate versions
+- Supports `dry_run` mode for safe preview before deletion
 
 **One-time setup note:** If you want classic Helm repository index publishing via GitHub Pages, ensure `gh-pages` is configured in repository Settings -> Pages.
 
