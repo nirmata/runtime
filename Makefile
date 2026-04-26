@@ -41,6 +41,16 @@ kind-load-image:
 kind-install:
 	$(MAKE) ko-build
 	$(MAKE) kind-load-image
+	$(MAKE) kind-install-manifests
+
+# Install all components using a prebuilt image already present in local docker
+# (for example, an image pulled from GHCR in CI tag/release validation).
+kind-install-prebuilt:
+	$(MAKE) kind-load-image
+	$(MAKE) kind-install-manifests
+
+# Shared install logic for both local-build and prebuilt-image flows.
+kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
 	kubectl apply -f https://raw.githubusercontent.com/openreports/reports-api/refs/heads/main/config/install.yaml
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
@@ -66,4 +76,7 @@ premerge-smoke: build kind-install smoke-quickstart
 # Full CI pipeline: build, deploy to kind, and run e2e tests
 test-e2e-install: kind-install test-e2e
 
-.PHONY: test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install
+# Full CI pipeline reusing a prebuilt image tag (no ko build)
+test-e2e-install-prebuilt: kind-install-prebuilt test-e2e
+
+.PHONY: test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt
