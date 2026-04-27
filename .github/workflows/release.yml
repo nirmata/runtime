@@ -34,8 +34,13 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: Set up ko
-        uses: ko-build/setup-ko@3aebd0597dc1e9d1a26bcfdb7cbeb19c131d3037 # v0.7
+      - name: Install ko
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/ko-build/ko@v0.18.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/ko" version
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
