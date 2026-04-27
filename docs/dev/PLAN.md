@@ -337,7 +337,7 @@ Replace timing-based waits with controller-signalled readiness:
   (or a known-good source). Fail CI if they diverge, preventing the
   repeat of the PolicyReport vs Report mismatch.
 
-#### Deliverables
+#### Phase 0.6 Deliverables
 
 - `test/e2e/quickstart/chainsaw-test.yaml` — replace heuristic sleeps
   with integer-sleep loops; add DaemonSet readiness assert step.
@@ -660,7 +660,7 @@ than silent production breakage.
 This requires `spec.mode: enforce` combined with a pre-populated
 `spec.allow` from a previous learning cycle.
 
-#### Deliverables
+#### Phase 1 Deliverables
 
 - `api/v1alpha1/` new `RuntimeBehavior` type (used for both workload profiles
   and shared defaults)
