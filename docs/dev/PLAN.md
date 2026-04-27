@@ -266,6 +266,99 @@ Open decision (follow-up item):
   finding per probe. If collapse is required, define filtering semantics in
   policy conditions or normalization layer and add regression tests.
 
+### Phase 0.6: E2E Test Resilience and Speed
+
+Status: **PROPOSED**
+
+Purpose: make the Chainsaw e2e suite more reliable under cluster load and
+faster to execute, drawing on lessons from the session that fixed the
+quickstart tests.
+
+#### Background
+
+Two failure patterns were found during quickstart debugging:
+
+1. **Timing races** — the `quickstart-samples-verification` pod completed in
+   ~3 seconds when `busybox sleep 0.1` rounded to zero, allowing the
+   chainsaw assert step to start before the controller had indexed the
+   namespace or processed any events. The fix (integer sleeps + initial
+   delay) is fragile: a slower node inverts the problem.
+
+2. **API version drift** — all six e2e tests were asserting
+   `wgpolicyk8s.io/v1alpha2 PolicyReport` while the controller had already
+   been writing `openreports.io/v1alpha1 Report` for multiple releases.
+   This mismatch went undetected because the tests were also broken by the
+   `.gitignore` issue; cascading silent failures masked the divergence.
+
+#### Resilience Improvements
+
+Replace timing-based waits with controller-signalled readiness:
+
+- Add a **namespace readiness step** at the start of every test that
+  asserts the kyverno-runtime DaemonSet Pod is `Ready` on the node
+  running the test namespace's workloads before starting the workload
+  pod. This eliminates the race between namespace labelling and the
+  controller's informer cache sync.
+- Replace all `sleep N` heuristics in demo-pod commands with a
+  **termination signal pattern**: the pod runs until it has produced at
+  least one `open` event that the controller has had time to flush, then
+  exits. Concretely: iterate in a loop with a 1 s sleep and let chainsaw's
+  `assert` timeout govern the overall wait. The pod never needs to "run
+  long enough" — it just needs to produce events.
+- Add a **retry step** or a longer `assert` timeout on Report assertions
+  so transient API server latency does not cause a flake. The current 150 s
+  assert timeout is adequate; the issue is the pod finishing too quickly,
+  not the assertion window being too short.
+- Add a `make validate-policies` target that runs
+  `kubectl apply --dry-run=server` on every file in `samples/` and
+  `charts/kyverno-runtime/templates/`. This catches K8s validation errors
+  (such as the K8s 1.35 CEL `in` operator rejection) before they reach
+  CI or a kind cluster.
+
+#### Speed Improvements
+
+- **Parallel test execution**: Chainsaw already runs tests in parallel by
+  default. Verify the `.chainsaw.yaml` `parallel` setting and set it
+  explicitly so test count growth does not silently serialize.
+- **Shared namespace labelling**: Tests that only need an
+  `open`-event workload can share a single labelled namespace rather than
+  creating and deleting one per test. Reduces namespace churn and the
+  associated informer re-sync delay.
+- **Reduce pod run time**: The demo pod for `quickstart-trace-open` runs
+  200 iterations × 0.05 s = ~10 s. With the controller already watching
+  (readiness step above), 5–10 `cat /etc/hosts` calls with `sleep 1`
+  between them (5–10 s total) is sufficient to trigger a finding. Use
+  integer sleeps exclusively for busybox compatibility.
+- **Add a `make test-e2e-quickstart` target** that runs only the two
+  quickstart tests, for fast pre-commit smoke checking without the full
+  suite.
+- **CRD drift detection**: Add a `make verify-crds` target that diffs the
+  CRDs in `charts/kyverno-runtime/crds/` against the live cluster CRDs
+  (or a known-good source). Fail CI if they diverge, preventing the
+  repeat of the PolicyReport vs Report mismatch.
+
+#### Deliverables
+
+- `test/e2e/quickstart/chainsaw-test.yaml` — replace heuristic sleeps
+  with integer-sleep loops; add DaemonSet readiness assert step.
+- All other `test/e2e/*/chainsaw-test.yaml` — apply same pattern for
+  demo-pod timing.
+- `test/e2e/.chainsaw.yaml` — set explicit `parallel` value.
+- `Makefile` — add `test-e2e-quickstart` and `validate-policies` targets.
+- `Makefile` — add `verify-crds` target.
+
+#### Definition of Done
+
+- All e2e tests pass on a freshly provisioned kind cluster three runs
+  in a row with no flakes.
+- `make test-e2e-quickstart` completes in under 90 s.
+- `make validate-policies` catches the K8s 1.35 CEL `in`-operator
+  example (regression test for that specific expression).
+- `make verify-crds` fails when the chart CRDs diverge from the
+  expected API group.
+
+---
+
 ### Phase 1: Baseline Lifecycle and Confidence (FOUNDATIONAL WORK COMPLETE)
 
 - `api/v1alpha1/runtimebehavior_types.go` ✅ — Complete CRD definition with all types
@@ -1141,6 +1234,24 @@ Definition of done:
 
 - Quickstart verifier succeeds on fresh kind install.
 - Failure cases provide deterministic remediation hints.
+
+### Execution Phase 0.6: E2E Test Resilience and Speed
+
+Implementation tasks:
+
+- Add DaemonSet readiness assert step to all e2e tests before creating workload pods.
+- Replace heuristic fractional sleeps in demo-pod commands with integer-sleep loops.
+- Set explicit `parallel` value in `test/e2e/.chainsaw.yaml`.
+- Add `make test-e2e-quickstart` target for fast smoke checking.
+- Add `make validate-policies` target (`kubectl apply --dry-run=server` on all samples and chart templates).
+- Add `make verify-crds` target to detect CRD drift between chart and cluster/source.
+
+Definition of done:
+
+- All e2e tests pass three consecutive runs without flakes on a fresh kind cluster.
+- `make test-e2e-quickstart` completes in under 90 s.
+- `make validate-policies` catches CEL expression errors rejected by K8s validation.
+- `make verify-crds` fails on API group mismatch.
 
 ### Execution Phase 1: Baseline Lifecycle and Confidence
 
