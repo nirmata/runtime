@@ -52,6 +52,7 @@ kind-install-prebuilt:
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
+	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io
 	kubectl apply -f https://raw.githubusercontent.com/openreports/reports-api/refs/heads/main/config/install.yaml
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
@@ -61,6 +62,11 @@ kind-install-manifests:
 		--set defaultPolicies.enabled=true \
 		--set defaultPolicies.policies.credentialAccess=true \
 		--wait
+	helm template kyverno-runtime ./charts/kyverno-runtime \
+		--namespace kyverno-runtime \
+		--set defaultPolicies.enabled=true \
+		--set defaultPolicies.policies.credentialAccess=true \
+		--show-only templates/default-policies.yaml | kubectl apply -f -
 	kubectl -n kyverno-runtime rollout restart daemonset/kyverno-runtime-kyverno-runtime
 	kubectl -n kyverno-runtime rollout status daemonset/kyverno-runtime-kyverno-runtime --timeout=180s
 	@echo "Verifying default policies are installed..."
