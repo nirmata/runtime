@@ -153,6 +153,18 @@ func TestCELFieldAliasesForExecEvents(t *testing.T) {
 			wantMatch:  true,
 		},
 		{
+			name:       "exepath preferred over proc.comm for process.name",
+			fields:     map[string]string{"exepath": "/bin/sh", "proc.comm": "sh"},
+			expression: `event["process.name"] == "/bin/sh"`,
+			wantMatch:  true,
+		},
+		{
+			name:       "file used for process.name when exepath missing",
+			fields:     map[string]string{"file": "/tmp/iptables", "proc.comm": "iptables"},
+			expression: `event["process.name"].contains("iptables")`,
+			wantMatch:  true,
+		},
+		{
 			name:       "comm does not overwrite existing process.name",
 			fields:     map[string]string{"process.name": "/bin/sh", "comm": "sh"},
 			expression: `event["process.name"] == "/bin/sh"`,

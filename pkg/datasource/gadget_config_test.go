@@ -26,9 +26,10 @@ func TestGadgetRunConfig(t *testing.T) {
 			wantImage: "trace_open",
 		},
 		{
-			name:      "exec maps to trace_exec",
-			request:   GadgetCollectRequest{EventType: "exec"},
-			wantImage: "trace_exec",
+			name:       "exec maps to trace_exec",
+			request:    GadgetCollectRequest{EventType: "exec"},
+			wantImage:  "trace_exec",
+			wantParams: map[string]string{"paths": "true"},
 		},
 		{
 			name:       "connect maps to trace_tcp with connect-only",

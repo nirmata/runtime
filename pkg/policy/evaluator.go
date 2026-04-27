@@ -314,7 +314,10 @@ func addEventFieldAliases(eventMap map[string]string) {
 	aliasIfMissing(eventMap, "filename", firstNonEmpty(eventMap["filename"], eventMap["fname"], eventMap["file.path"], eventMap["path"], eventMap["fullPath"]))
 
 	// Common process-name aliases for exec style policies.
-	aliasIfMissing(eventMap, "process.name", firstNonEmpty(eventMap["process.name"], eventMap["comm"], eventMap["proc.comm"], eventMap["filename"]))
+	// Prefer the full executable path (exepath/file from trace_exec with paths=true)
+	// over the short comm name so that expressions like
+	// event["process.name"].contains("/bin/sh") work correctly.
+	aliasIfMissing(eventMap, "process.name", firstNonEmpty(eventMap["process.name"], eventMap["exepath"], eventMap["file"], eventMap["comm"], eventMap["proc.comm"], eventMap["filename"]))
 	aliasIfMissing(eventMap, "comm", firstNonEmpty(eventMap["comm"], eventMap["process.name"], eventMap["proc.comm"]))
 }
 

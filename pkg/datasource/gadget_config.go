@@ -22,6 +22,11 @@ func gadgetRunConfig(request GadgetCollectRequest) (string, map[string]string, e
 	case "open":
 		return "trace_open", params, nil
 	case "exec":
+		// Enable full executable path capture (file/exepath fields).
+		// Without paths=true the gadget only provides proc.comm (short name
+		// like "sh"), which breaks policy expressions that check the full
+		// path such as event["process.name"].contains("/bin/sh").
+		setParamIfEmpty(params, "paths", "true")
 		return "trace_exec", params, nil
 	case "connect", "tcpconnect":
 		if request.Namespace != "" {

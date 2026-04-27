@@ -38,14 +38,15 @@ Kyverno Runtime uses two complementary detection models:
 **1. Add the Kyverno Helm repository** (when available):
 
 ```bash
-helm repo add kyverno https://kyverno.github.io/kyverno/
+helm repo add kyverno-runtime https://nirmata.github.io/kyverno-runtime/
 helm repo update
 ```
 
 **Step 2: Install Kyverno Runtime with default policies**:
 
 ```bash
-helm install kyverno-runtime kyverno/kyverno-runtime \
+helm install kyverno-runtime oci://ghcr.io/nirmata/kyverno-runtime/kyverno-runtime \
+  --version 0.0.1 \
   --namespace kyverno-runtime --create-namespace \
   --set defaultPolicies.enabled=true \
   --set defaultPolicies.policies.suspiciousDNS=false
