@@ -68,7 +68,7 @@ jobs:
             --push=true \
             --bare \
             --tags=${{ steps.tags.outputs.candidate_tag }} \
-            --platform=linux/amd64,linux/arm64
+            --platform=linux/amd64
 
   publish-chart:
     name: Package & Publish Helm Chart
