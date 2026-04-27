@@ -14,68 +14,12 @@ permissions:
   packages: write
 
 jobs:
-  publish-image:
-    name: Build & Publish Image
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      DOCKER_CONFIG: /tmp/.docker
-    outputs:
-      candidate_tag: ${{ steps.tags.outputs.candidate_tag }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Install ko
-        shell: bash
-        run: |
-          set -euo pipefail
-          KO_VERSION="0.18.0"
-          curl -sSfL "https://github.com/ko-build/ko/releases/download/v${KO_VERSION}/ko_${KO_VERSION}_Linux_x86_64.tar.gz" -o /tmp/ko.tgz
-          tar -xzf /tmp/ko.tgz -C /tmp ko
-          install -m 0755 /tmp/ko /usr/local/bin/ko
-          ko version
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          logout: true
-
-      - name: Derive image tags
-        id: tags
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "candidate_tag=candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push image
-        env:
-          KO_DOCKER_REPO: ghcr.io/nirmata/kyverno-runtime
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          ko build ./cmd/kyverno-runtime \
-            --push=true \
-            --bare \
-            --tags=${{ steps.tags.outputs.candidate_tag }} \
-            --platform=linux/amd64
-
   publish-chart:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
     env:
       DOCKER_CONFIG: /tmp/.docker
-    needs: promote-release-tags
+    needs: e2e-after-publish
 
     steps:
       - name: Checkout
@@ -148,7 +92,6 @@ jobs:
   e2e-after-publish:
     name: E2E After Image Publish
     runs-on: ubuntu-latest
-    needs: publish-image
     timeout-minutes: 90
     permissions:
       contents: read
@@ -219,16 +162,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CANDIDATE_TAG="${{ needs.publish-image.outputs.candidate_tag }}"
-          IMAGE_REF="ghcr.io/nirmata/kyverno-runtime:${CANDIDATE_TAG}"
+          IMAGE_TAG="${GITHUB_REF_NAME}"
+          IMAGE_REF="ghcr.io/nirmata/kyverno-runtime:${IMAGE_TAG}"
 
           pulled=false
-          for attempt in {1..10}; do
+          for attempt in {1..20}; do
             if docker pull "${IMAGE_REF}"; then
               pulled=true
               break
             fi
-            echo "Image not available yet (${attempt}/10); retrying in 15s"
+            echo "Image not available yet (${attempt}/20); retrying in 15s"
             sleep 15
           done
 
@@ -237,7 +180,7 @@ jobs:
             exit 1
           fi
 
-          make test-e2e-install-prebuilt IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${CANDIDATE_TAG}"
+          make test-e2e-install-prebuilt IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${IMAGE_TAG}"
 
       - name: Debug cluster state
         if: always()
@@ -255,31 +198,3 @@ jobs:
           kubectl -n kyverno-runtime get all || true
           kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=200 || true
 
-  promote-release-tags:
-    name: Promote Candidate To Release Tags
-    runs-on: ubuntu-latest
-    env:
-      DOCKER_CONFIG: /tmp/.docker
-    needs:
-      - publish-image
-      - e2e-after-publish
-
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          logout: true
-
-      - name: Promote candidate image to release tags
-        shell: bash
-        run: |
-          set -euo pipefail
-          CANDIDATE_REF="ghcr.io/nirmata/kyverno-runtime:${{ needs.publish-image.outputs.candidate_tag }}"
-          RELEASE_REF="ghcr.io/nirmata/kyverno-runtime:${GITHUB_REF_NAME}"
-          LATEST_REF="ghcr.io/nirmata/kyverno-runtime:latest"
-
-          docker buildx imagetools create --tag "${RELEASE_REF}" "${CANDIDATE_REF}"
-          docker buildx imagetools create --tag "${LATEST_REF}" "${CANDIDATE_REF}"
