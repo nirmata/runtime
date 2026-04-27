@@ -14,12 +14,140 @@ permissions:
   packages: write
 
 jobs:
+  e2e-gate:
+    name: E2E Release Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    env:
+      KIND_CLUSTER_NAME: kyverno-runtime
+      DOCKER_CONFIG: /tmp/.docker
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Set up kind
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+
+      - name: Install Chainsaw
+        shell: bash
+        env:
+          CHAINSAW_VERSION: v0.2.14
+        run: |
+          set -euo pipefail
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64)
+              arch="amd64"
+              ;;
+            arm64|aarch64)
+              arch="arm64"
+              ;;
+            *)
+              echo "Unsupported architecture: $arch"
+              exit 1
+              ;;
+          esac
+
+          mkdir -p "$HOME/.local/bin"
+          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
+          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
+          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
+          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/chainsaw" version
+
+      - name: Build tagged image locally and run E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          make test-e2e-install IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${GITHUB_REF_NAME}"
+
+      - name: Debug cluster state
+        if: always()
+        run: |
+          echo "=== RuntimePolicies ===" && kubectl get runtimepolicies -o wide || true
+          echo "=== Kyverno Runtime Pods ===" && kubectl -n kyverno-runtime get pods || true
+          echo "=== Controller Logs ===" && kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=50 || true
+          echo "=== Events ===" && kubectl -n kyverno-runtime get events || true
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A || true
+          kubectl get reports -A || true
+          kubectl -n kyverno-runtime get all || true
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=200 || true
+
+  publish-image:
+    name: Build & Push Release Image
+    runs-on: ubuntu-latest
+    needs: e2e-gate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push release image
+        env:
+          KO_DOCKER_REPO: ghcr.io/nirmata/kyverno-runtime
+        run: |
+          ko build ./cmd/kyverno-runtime \
+            --push=true \
+            --bare \
+            --tags=${GITHUB_REF_NAME} \
+            --platform=linux/amd64
+
   publish-chart:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
     env:
       DOCKER_CONFIG: /tmp/.docker
-    needs: e2e-after-publish
+    needs: e2e-gate
 
     steps:
       - name: Checkout
@@ -89,112 +217,4 @@ jobs:
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  e2e-after-publish:
-    name: E2E After Image Publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      packages: read
-    env:
-      KIND_CLUSTER_NAME: kyverno-runtime
-      DOCKER_CONFIG: /tmp/.docker
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
-
-      - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
-
-      - name: Set up kind
-        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
-        with:
-          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
-
-      - name: Install Chainsaw
-        shell: bash
-        env:
-          CHAINSAW_VERSION: v0.2.14
-        run: |
-          set -euo pipefail
-          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          arch="$(uname -m)"
-          case "$arch" in
-            x86_64)
-              arch="amd64"
-              ;;
-            arm64|aarch64)
-              arch="arm64"
-              ;;
-            *)
-              echo "Unsupported architecture: $arch"
-              exit 1
-              ;;
-          esac
-
-          mkdir -p "$HOME/.local/bin"
-          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
-          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
-          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
-          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/chainsaw" version
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          logout: true
-
-      - name: Pull release image and run E2E
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE_TAG="${GITHUB_REF_NAME}"
-          IMAGE_REF="ghcr.io/nirmata/kyverno-runtime:${IMAGE_TAG}"
-
-          pulled=false
-          for attempt in {1..20}; do
-            if docker pull "${IMAGE_REF}"; then
-              pulled=true
-              break
-            fi
-            echo "Image not available yet (${attempt}/20); retrying in 15s"
-            sleep 15
-          done
-
-          if [[ "${pulled}" != "true" ]]; then
-            echo "ERROR: release image ${IMAGE_REF} not available after retries"
-            exit 1
-          fi
-
-          make test-e2e-install-prebuilt IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${IMAGE_TAG}"
-
-      - name: Debug cluster state
-        if: always()
-        run: |
-          echo "=== RuntimePolicies ===" && kubectl get runtimepolicies -o wide || true
-          echo "=== Kyverno Runtime Pods ===" && kubectl -n kyverno-runtime get pods || true
-          echo "=== Controller Logs ===" && kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=50 || true
-          echo "=== Events ===" && kubectl -n kyverno-runtime get events || true
-
-      - name: Dump cluster state on failure
-        if: failure()
-        run: |
-          kubectl get pods -A || true
-          kubectl get reports -A || true
-          kubectl -n kyverno-runtime get all || true
-          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=200 || true
 
