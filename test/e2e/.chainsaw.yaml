@@ -11,4 +11,4 @@ spec:
     assert: 120s
     delete: 90s
     cleanup: 60s
-  failFast: true
+  failFast: false
