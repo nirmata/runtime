@@ -12,7 +12,7 @@ spec:
     message: Public network egress detected
     severity: high
     conditions:
-    - expression: '(("destination.ip" in event) && (event["destination.ip"] == "8.8.8.8" || event["destination.ip"] == "1.1.1.1")) || (("dst.addr" in event) && (event["dst.addr"] == "8.8.8.8" || event["dst.addr"] == "1.1.1.1"))'
+    - expression: 'event["destination.ip"] == "8.8.8.8" || event["destination.ip"] == "1.1.1.1"'
     actions:
     - type: generate_report
       message: Outbound connection to a disallowed public destination

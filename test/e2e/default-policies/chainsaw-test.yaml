@@ -143,8 +143,8 @@ spec:
     try:
     - assert:
         resource:
-          apiVersion: wgpolicyk8s.io/v1alpha2
-          kind: PolicyReport
+          apiVersion: openreports.io/v1alpha1
+          kind: Report
           metadata:
             namespace: e2e-cred-access
             labels:
@@ -217,8 +217,8 @@ spec:
     try:
     - assert:
         resource:
-          apiVersion: wgpolicyk8s.io/v1alpha2
-          kind: PolicyReport
+          apiVersion: openreports.io/v1alpha1
+          kind: Report
           metadata:
             namespace: e2e-shell-exec
             labels:
@@ -290,8 +290,8 @@ spec:
     try:
     - assert:
         resource:
-          apiVersion: wgpolicyk8s.io/v1alpha2
-          kind: PolicyReport
+          apiVersion: openreports.io/v1alpha1
+          kind: Report
           metadata:
             namespace: e2e-sensitive-file
             labels:
@@ -363,8 +363,8 @@ spec:
     try:
     - assert:
         resource:
-          apiVersion: wgpolicyk8s.io/v1alpha2
-          kind: PolicyReport
+          apiVersion: openreports.io/v1alpha1
+          kind: Report
           metadata:
             namespace: e2e-proc-discovery
             labels:
@@ -437,8 +437,8 @@ spec:
     try:
     - assert:
         resource:
-          apiVersion: wgpolicyk8s.io/v1alpha2
-          kind: PolicyReport
+          apiVersion: openreports.io/v1alpha1
+          kind: Report
           metadata:
             namespace: e2e-sec-tool-disrupt
             labels:

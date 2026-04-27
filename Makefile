@@ -52,8 +52,7 @@ kind-install-prebuilt:
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io
-	kubectl apply -f https://raw.githubusercontent.com/openreports/reports-api/refs/heads/main/config/install.yaml
+	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \

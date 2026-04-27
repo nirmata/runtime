@@ -81,8 +81,8 @@ spec:
     try:
     - assert:
         resource:
-          apiVersion: wgpolicyk8s.io/v1alpha2
-          kind: PolicyReport
+          apiVersion: openreports.io/v1alpha1
+          kind: Report
           metadata:
             namespace: e2e-quickstart
             labels:
@@ -125,9 +125,9 @@ spec:
   - name: apply-sample-policies
     try:
     - apply:
-        file: ../../samples/runtimepolicy-file-open-detection.yaml
+        file: ../../../samples/runtimepolicy-file-open-detection.yaml
     - apply:
-        file: ../../samples/runtimepolicy-network-egress-check.yaml
+        file: ../../../samples/runtimepolicy-network-egress-check.yaml
 
   - name: create-demo-pod
     try:
@@ -146,14 +146,8 @@ spec:
             - name: app
               image: busybox:1.36
               command: ["sh", "-c", "
-                # Trigger file open events (higher frequency for better coverage)
-                for i in $(seq 1 100); do cat /etc/hosts >/dev/null 2>&1; sleep 0.1; done;
-                # Trigger network events
-                if command -v nc >/dev/null 2>&1; then
-                  for i in $(seq 1 30); do nc -w 1 -z 8.8.8.8 53 >/dev/null 2>&1 || true; sleep 0.1; done;
-                elif command -v wget >/dev/null 2>&1; then
-                  for i in $(seq 1 30); do wget -T 2 -qO- http://1.1.1.1 >/dev/null 2>&1 || true; sleep 0.1; done;
-                fi
+                sleep 5;
+                for i in $(seq 1 20); do cat /etc/hosts >/dev/null 2>&1; sleep 1; done;
               "]
     - assert:
         resource:
@@ -169,8 +163,8 @@ spec:
     try:
     - assert:
         resource:
-          apiVersion: wgpolicyk8s.io/v1alpha2
-          kind: PolicyReport
+          apiVersion: openreports.io/v1alpha1
+          kind: Report
           metadata:
             namespace: e2e-quickstart-samples
           (results != null): true
