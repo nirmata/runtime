@@ -17,6 +17,8 @@ jobs:
   publish-image:
     name: Build & Publish Image
     runs-on: ubuntu-latest
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/.docker
     outputs:
       candidate_tag: ${{ steps.tags.outputs.candidate_tag }}
 
@@ -48,6 +50,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+          logout: true
 
       - name: Derive image tags
         id: tags
@@ -70,6 +73,8 @@ jobs:
   publish-chart:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/.docker
     needs: promote-release-tags
 
     steps:
@@ -87,6 +92,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+          logout: true
 
       - name: Derive and validate chart version
         id: chart_version
@@ -149,6 +155,7 @@ jobs:
       packages: read
     env:
       KIND_CLUSTER_NAME: kyverno-runtime
+      DOCKER_CONFIG: ${{ runner.temp }}/.docker
 
     steps:
       - name: Checkout
@@ -200,14 +207,20 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/chainsaw" version
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          logout: true
+
       - name: Pull release image and run E2E
         shell: bash
         run: |
           set -euo pipefail
           CANDIDATE_TAG="${{ needs.publish-image.outputs.candidate_tag }}"
           IMAGE_REF="ghcr.io/nirmata/kyverno-runtime:${CANDIDATE_TAG}"
-
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
 
           pulled=false
           for attempt in {1..10}; do
@@ -245,6 +258,8 @@ jobs:
   promote-release-tags:
     name: Promote Candidate To Release Tags
     runs-on: ubuntu-latest
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/.docker
     needs:
       - publish-image
       - e2e-after-publish
@@ -256,6 +271,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+          logout: true
 
       - name: Promote candidate image to release tags
         shell: bash
