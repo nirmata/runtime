@@ -58,12 +58,23 @@ kind-install-manifests:
 		--set image.repository=$(IMAGE_REPOSITORY) \
 		--set image.tag=$(IMAGE_TAG) \
 		--set image.pullPolicy=IfNotPresent \
+		--set defaultPolicies.enabled=true \
+		--set defaultPolicies.policies.credentialAccess=true \
 		--wait
 	kubectl -n kyverno-runtime rollout restart daemonset/kyverno-runtime-kyverno-runtime
 	kubectl -n kyverno-runtime rollout status daemonset/kyverno-runtime-kyverno-runtime --timeout=180s
 	@echo "Verifying default policies are installed..."
-	@kubectl get runtimepolicies detect-credential-access >/dev/null 2>&1 || (echo "ERROR: Policies not found after Helm installation!" && kubectl get runtimepolicies && exit 1)
-	@echo "✓ Default policies verified"
+	@for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+		if kubectl get runtimepolicy detect-credential-access >/dev/null 2>&1; then \
+			echo "✓ Default policies verified"; \
+			exit 0; \
+		fi; \
+		echo "Default policies not visible yet ($$attempt/20); retrying in 3s"; \
+		sleep 3; \
+	done; \
+	echo "ERROR: Policies not found after Helm installation retries!"; \
+	kubectl get runtimepolicies || true; \
+	exit 1
 
 # Run Chainsaw e2e tests against a kind cluster with kyverno-runtime installed
 test-e2e:
