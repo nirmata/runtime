@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   kyverno-runtime:
   - apiVersion: v2
+    appVersion: 0.0.1
+    created: "2026-04-27T07:47:46.379301986Z"
+    description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
+    digest: 1baad27d406bddcf3b62d78303fd5404abbb37a446ad78e49ae3c2a5a0e0cdea
+    name: kyverno-runtime
+    type: application
+    urls:
+    - https://github.com/nirmata/kyverno-runtime/releases/download/kyverno-runtime-0.0.1/kyverno-runtime-0.0.1.tgz
+    version: 0.0.1
+  - apiVersion: v2
     appVersion: 0.0.1-alpha8
     created: "2026-04-26T21:11:19.844750321Z"
     description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
@@ -51,4 +61,4 @@ entries:
     urls:
     - https://github.com/nirmata/kyverno-runtime/releases/download/kyverno-runtime-0.0.1-alpha34/kyverno-runtime-0.0.1-alpha34.tgz
     version: 0.0.1-alpha34
-generated: "2026-04-27T07:47:36.036579678Z"
+generated: "2026-04-27T07:47:46.379337442Z"
