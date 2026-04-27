@@ -18,7 +18,7 @@ jobs:
     name: Build & Publish Image
     runs-on: ubuntu-latest
     env:
-      DOCKER_CONFIG: ${{ runner.temp }}/.docker
+      DOCKER_CONFIG: /tmp/.docker
     outputs:
       candidate_tag: ${{ steps.tags.outputs.candidate_tag }}
 
@@ -74,7 +74,7 @@ jobs:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
     env:
-      DOCKER_CONFIG: ${{ runner.temp }}/.docker
+      DOCKER_CONFIG: /tmp/.docker
     needs: promote-release-tags
 
     steps:
@@ -155,7 +155,7 @@ jobs:
       packages: read
     env:
       KIND_CLUSTER_NAME: kyverno-runtime
-      DOCKER_CONFIG: ${{ runner.temp }}/.docker
+      DOCKER_CONFIG: /tmp/.docker
 
     steps:
       - name: Checkout
@@ -259,7 +259,7 @@ jobs:
     name: Promote Candidate To Release Tags
     runs-on: ubuntu-latest
     env:
-      DOCKER_CONFIG: ${{ runner.temp }}/.docker
+      DOCKER_CONFIG: /tmp/.docker
     needs:
       - publish-image
       - e2e-after-publish
