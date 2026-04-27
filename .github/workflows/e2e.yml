@@ -2,15 +2,6 @@ name: E2E
 
 on:
   workflow_dispatch:
-    inputs:
-      suite:
-        description: E2E suite to run
-        required: true
-        default: quickstart
-        type: choice
-        options:
-          - quickstart
-          - full
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,6 +18,7 @@ jobs:
     timeout-minutes: 90
     env:
       KIND_CLUSTER_NAME: kyverno-runtime
+      DOCKER_CONFIG: /tmp/.docker
 
     steps:
       - name: Checkout
@@ -38,6 +30,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up ko
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+
       - name: Set up kubectl
         uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
 
@@ -48,9 +45,6 @@ jobs:
         uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: ${{ env.KIND_CLUSTER_NAME }}
-
-      - name: Set up ko
-        uses: ko-build/setup-ko@3aebd0597dc1e9d1a26bcfdb7cbeb19c131d3037 # v0.7
 
       - name: Install Chainsaw
         shell: bash
@@ -81,18 +75,19 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/chainsaw" version
 
-      - name: Run E2E
+      - name: Build image locally and run E2E
         shell: bash
         run: |
           set -euo pipefail
+          make test-e2e-install IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="$(git describe --tags --always --dirty)"
 
-          if [[ "${{ inputs.suite }}" == "full" ]]; then
-            echo "Manual run requested full suite"
-            make test-e2e-install
-          else
-            echo "Manual run requested quickstart suite"
-            make kind-install smoke-quickstart
-          fi
+      - name: Debug cluster state
+        if: always()
+        run: |
+          echo "=== RuntimePolicies ===" && kubectl get runtimepolicies -o wide || true
+          echo "=== Kyverno Runtime Pods ===" && kubectl -n kyverno-runtime get pods || true
+          echo "=== Controller Logs ===" && kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=50 || true
+          echo "=== Events ===" && kubectl -n kyverno-runtime get events || true
 
       - name: Dump cluster state on failure
         if: failure()
