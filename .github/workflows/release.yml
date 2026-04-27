@@ -17,6 +17,7 @@ jobs:
   publish-image:
     name: Build & Publish Image
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       DOCKER_CONFIG: /tmp/.docker
     outputs:
@@ -32,14 +33,6 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-
-      - name: Warm Go caches for ko build
-        shell: bash
-        run: |
-          set -euo pipefail
-          go mod download
-          # Prebuild once to populate GOMODCACHE and GOCACHE before ko build.
-          go build ./cmd/kyverno-runtime
 
       - name: Set up ko
         uses: ko-build/setup-ko@3aebd0597dc1e9d1a26bcfdb7cbeb19c131d3037 # v0.7
