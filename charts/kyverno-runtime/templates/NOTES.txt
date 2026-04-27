@@ -1,8 +1,8 @@
 kyverno-runtime has been installed.
 
 The chart installs:
-- the RuntimePolicy CRD
-- the PolicyReport CRD used for runtime findings
+- the RuntimePolicy and RuntimeBehavior CRDs
+- the OpenReports Report and ClusterReport CRDs used for runtime findings
 - the kyverno-runtime daemonset controller
 - RBAC and service account
 
@@ -10,4 +10,5 @@ To verify the installation:
   kubectl get pods -n {{ .Release.Namespace }}
   kubectl get ds -n {{ .Release.Namespace }}
   kubectl get crd runtimepolicies.runtime.kyverno.io
-  kubectl get crd policyreports.wgpolicyk8s.io
+  kubectl get crd reports.openreports.io
+  kubectl get crd clusterreports.openreports.io
