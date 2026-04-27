@@ -38,9 +38,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go install github.com/google/ko@v0.18.0
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          "$(go env GOPATH)/bin/ko" version
+          KO_VERSION="0.18.0"
+          curl -sSfL "https://github.com/ko-build/ko/releases/download/v${KO_VERSION}/ko_${KO_VERSION}_Linux_x86_64.tar.gz" -o /tmp/ko.tgz
+          tar -xzf /tmp/ko.tgz -C /tmp ko
+          install -m 0755 /tmp/ko /usr/local/bin/ko
+          ko version
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
