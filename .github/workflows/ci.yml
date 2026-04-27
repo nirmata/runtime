@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Build & Lint
+    name: Build & Unit Test
     runs-on: ubuntu-latest
 
     steps:
