@@ -35,14 +35,19 @@ Kyverno Runtime uses two complementary detection models:
 
 ### 📦 Installation
 
-**1. Add the Kyverno Helm repository** (when available):
+**Option A – Helm repository** (traditional):
 
 ```bash
 helm repo add kyverno-runtime https://nirmata.github.io/kyverno-runtime/
 helm repo update
+helm install kyverno-runtime kyverno-runtime/kyverno-runtime \
+  --version 0.0.1 \
+  --namespace kyverno-runtime --create-namespace \
+  --set defaultPolicies.enabled=true \
+  --set defaultPolicies.policies.suspiciousDNS=false
 ```
 
-**Step 2: Install Kyverno Runtime with default policies**:
+**Option B – OCI registry** (alternative):
 
 ```bash
 helm install kyverno-runtime oci://ghcr.io/nirmata/kyverno-runtime/kyverno-runtime \

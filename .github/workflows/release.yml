@@ -186,6 +186,10 @@ jobs:
   publish-chart:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      pages: write
     env:
       DOCKER_CONFIG: /tmp/.docker
     needs: [lint-test, e2e-gate]
@@ -255,6 +259,14 @@ jobs:
         uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
         with:
           charts_dir: charts
+          # Store .tgz files in the gh-pages branch and serve them via GitHub Pages
+          # (public) rather than as GitHub release assets (which require authentication
+          # for private repos and cause "helm pull" to return 404).
+          packages_with_index: true
+          # Prevent overwriting the container-image release as "latest".
+          mark_as_latest: false
+          # Tolerate re-runs without failing on already-uploaded packages.
+          skip_existing: true
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
