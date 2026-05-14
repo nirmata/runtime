@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -118,6 +120,17 @@ func main() {
 	// streaming runs until the pod watch context is cancelled.
 	igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
 
+	// Pre-warm eBPF gadget operators in the background. The operators are
+	// initialised lazily via sync.Once on first use; on a cold kernel this can
+	// take 2-3 minutes. Starting the warm-up here ensures they are ready before
+	// the first pod is reconciled. The ready channel is used as a readiness gate
+	// so that kind-install / rollout-status waits until the operators are ready.
+	operatorsReady := make(chan struct{})
+	go func() {
+		igSource.PreWarm()
+		close(operatorsReady)
+	}()
+
 	evaluator := policy.NewEvaluator()
 	matcher := pipeline.NewPolicyMatcher(evaluator)
 	policyEvaluator := pipeline.NewPolicyEvaluatorWithOptions(evaluator, pipeline.PolicyEvaluatorOptions{
@@ -212,6 +225,17 @@ func main() {
 	}
 	if err := mgr.AddReadyzCheck("ebpf-preflight", preflight.EBPFCapabilityCheck); err != nil {
 		logger.Error(err, "failed to add eBPF preflight readiness check")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("ebpf-operators", func(req *http.Request) error {
+		select {
+		case <-operatorsReady:
+			return nil
+		default:
+			return fmt.Errorf("eBPF gadget operators are still initializing")
+		}
+	}); err != nil {
+		logger.Error(err, "failed to add eBPF operators readiness check")
 		os.Exit(1)
 	}
 

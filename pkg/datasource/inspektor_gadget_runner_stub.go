@@ -21,6 +21,9 @@ func (r *unsupportedGadgetCollector) Collect(_ context.Context, _ GadgetCollectR
 	return nil, fmt.Errorf("embedded Inspektor Gadget runtime is only supported on linux")
 }
 
+// PreWarm is a no-op on non-linux platforms.
+func (s *InspektorGadgetSource) PreWarm() {}
+
 // StreamEventsForPod is not supported on non-linux platforms.
 func (s *InspektorGadgetSource) StreamEventsForPod(_ context.Context, _ *corev1.Pod, _ QueryOptions, _ EventHandler) error {
 	return fmt.Errorf("embedded Inspektor Gadget runtime is only supported on linux")

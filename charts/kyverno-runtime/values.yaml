@@ -1,6 +1,7 @@
 image:
   repository: ghcr.io/nirmata/kyverno-runtime
-  tag: prototype
+  # tag defaults to the chart's appVersion when left empty
+  tag: ""
   pullPolicy: IfNotPresent
 
 leaderElection: true

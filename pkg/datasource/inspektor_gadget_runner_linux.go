@@ -214,6 +214,14 @@ func streamGadget(ctx context.Context, imageName string, paramValues api.ParamVa
 	return nil
 }
 
+// PreWarm eagerly initializes the eBPF gadget operators so that the first
+// streaming watch does not incur one-time operator initialization overhead.
+// It blocks until all operators are ready and is safe to call concurrently —
+// only one initialization ever runs regardless of how many callers are waiting.
+func (s *InspektorGadgetSource) PreWarm() {
+	_ = getGadgetOperators()
+}
+
 // StreamEventsForPod implements datasource.StreamingSource. It starts one
 // long-running gadget per requested event type and delivers events to handler
 // until ctx is cancelled.

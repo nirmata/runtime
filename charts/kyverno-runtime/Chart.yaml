@@ -3,4 +3,4 @@ name: kyverno-runtime
 description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
 type: application
 version: 0.1.0
-appVersion: "prototype"
+appVersion: "0.0.0-dev"

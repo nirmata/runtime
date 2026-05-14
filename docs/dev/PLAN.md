@@ -187,6 +187,33 @@ Regardless of approach, exceptions should support:
 - Audit trail (who created the exception, when, and why).
 - Expiration (time-bounded exceptions for maintenance windows).
 
+## Known Issues
+
+### Helm repo-based install fails (OCI install works)
+
+Installing via a traditional Helm repository URL fails:
+
+```bash
+helm install kyverno-runtime kyverno-runtime/kyverno-runtime \
+  --namespace kyverno-runtime --create-namespace \
+  --set defaultPolicies.enabled=true \
+  --set defaultPolicies.policies.suspiciousDNS=false
+```
+
+OCI install (`helm install kyverno-runtime oci://...`) works correctly.
+
+Root cause is unknown — needs investigation. Likely culprits: chart packaging
+artifact (missing or malformed `index.yaml` entry), repo push step in the
+release workflow not running, or a chart `name`/version mismatch between
+`Chart.yaml` and the published index.
+
+**Fix needed:** Reproduce with a freshly published chart release, inspect the
+Helm repo index, compare with the OCI artifact, and fix the release workflow or
+chart metadata so that repo-based `helm install` works identically to the OCI
+path.
+
+---
+
 ## Completed Work
 
 The following phases have been implemented and are in active production use. See [DESIGN.md](DESIGN.md) for details on these features.
