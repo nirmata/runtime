@@ -1617,7 +1617,7 @@ observation pipeline runs unchanged and in parallel for audit and reporting.
 
 ### Architecture
 
-```
+```text
 Policy Reconciler (at policy load time, once per policy change):
   CEL AST Walker
     ├── compilable conditions → BPF map entries (cilium/ebpf)
@@ -1708,6 +1708,7 @@ func Compile(policy *RuntimePolicy) (*CompiledPolicy, error)
 #### terminate_pod
 
 In `WatchManager`, after a finding with `action: terminate_pod`:
+
 1. Enqueue the pod to a drain goroutine (never block the event handler).
 2. Call `client.Delete` with `gracePeriodSeconds: 0`.
 3. Rate limit: max 1 termination per pod per minute to prevent cascading restarts.
@@ -1781,7 +1782,7 @@ Detect capability at startup and select the best available hook:
 driven by both `action: network_block` in `RuntimePolicy` and
 `spec.networkControls` in `RuntimeBehavior`.
 
-#### BPF Programs
+#### BPF Programs (Network)
 
 ```c
 // tc_egress.bpf.c — TC egress CIDR filter (kernel ≥5.4)
@@ -1804,7 +1805,7 @@ int xdp_ingress(struct xdp_md *ctx) {
 TC programs attach to the pod's **veth interface (host side)**. XDP and TC are
 independent attach points on the same interface.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │  Pod veth (host side)                                    │
 │                                                          │
@@ -1817,6 +1818,7 @@ independent attach points on the same interface.
 ```
 
 BPF maps:
+
 - `cidr_deny_lpm`: per-pod LPM trie of blocked/allowed CIDRs
 - `rate_map`: per-pod token-bucket state (bytes available, last refill time)
 
@@ -1846,6 +1848,7 @@ status:
 #### Network Controller
 
 New `pkg/controller/runtimebehavior_network_controller.go`:
+
 1. Watches `RuntimeBehavior` resources for `spec.networkControls` changes.
 2. Resolves the pod's veth interface from the pod's network namespace.
 3. Loads and attaches TC/XDP programs on pod start; detaches on pod deletion.
