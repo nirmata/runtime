@@ -5,7 +5,7 @@ go 1.25.9
 require (
 	github.com/go-logr/logr v1.4.3
 	github.com/google/cel-go v0.28.0
-	github.com/inspektor-gadget/inspektor-gadget v0.51.0
+	github.com/inspektor-gadget/inspektor-gadget v0.51.1
 	github.com/kyverno/sdk/cel v0.0.0-20260303152840-37cc8652dc19
 	github.com/openreports/reports-api v0.2.1
 	github.com/prometheus/client_golang v1.23.2
