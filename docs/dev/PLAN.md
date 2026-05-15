@@ -187,6 +187,68 @@ Regardless of approach, exceptions should support:
 - Audit trail (who created the exception, when, and why).
 - Expiration (time-bounded exceptions for maintenance windows).
 
+### Traffic Shaping as a Separate Concern
+
+The `AllowRules` struct in `RuntimeBehavior` is intentionally binary: a
+behavior is either allowed or denied. This is correct for access control.
+Traffic *rate limiting* and *connection shaping* are quantitative — they
+express constraints like "allow this connection at up to 10 Mbps" or "block
+all egress except to these CIDRs". These are fundamentally different kinds of
+enforcement.
+
+**Do not extend `AllowRules` with rate or shaping fields.** The correct path is
+a `spec.networkControls` block on `RuntimeBehavior` (see Phase 9) that handles
+quantitative network controls, keeping `AllowRules` as the binary access-control
+layer.
+
+This separation also reflects the implementation reality: binary allow/deny can
+be driven by anomaly detection and CEL rules over existing IG gadgets. Rate
+limiting and connection shaping require XDP or TC eBPF programs that *take an
+action* on packets — they cannot be implemented via passive observation alone.
+
+### ObservedBehaviors Evolution
+
+The current `ObservedBehaviors` struct stores flat string slices per event
+category (`Exec`, `Open`, `Network`, `DNS`). As more gadget types are added
+(capabilities, ptrace, kmod, etc.) this structure will become unwieldy and
+loses per-entry metadata (when first/last seen, how many times).
+
+A future evolution should move to typed per-category structs with timestamps:
+
+```go
+type ObservedBehaviorEntry struct {
+    Value     string      `json:"value"`
+    FirstSeen metav1.Time `json:"firstSeen"`
+    LastSeen  metav1.Time `json:"lastSeen"`
+    Count     int64       `json:"count"`
+}
+```
+
+This makes the status useful as an audit trail (when did the workload first
+exec `/usr/bin/curl`?) and enables confidence-weighted promotion: entries seen
+only once during learning carry less weight than those seen thousands of times.
+
+### Shared Default Merge Precedence: First-Match vs Union
+
+The current `findRuntimeBehaviorForPod` returns the **first** matching
+`RuntimeBehavior` for a pod. If a cluster has both a namespace-scoped profile
+and a cluster-wide default, only the first match is used. This is first-match
+semantics, not precedence-ordered union.
+
+For stacked defaults (workload profile → namespace default → cluster default),
+the correct model is:
+
+1. Workload-bound `RuntimeBehavior` (has `workloadSelector`) — inline rules
+   and its `spec.allow.refs` are all resolved.
+2. Referenced library `RuntimeBehavior` resources (no `workloadSelector`) —
+   merged in `refs` order.
+3. `status.observed` — auto-learned entries fill remaining gaps.
+
+The controller should resolve all matching `RuntimeBehavior` resources for a
+pod (not just the first), then apply the merge precedence rules in
+`pkg/baseline/merge.go`. This requires a multi-match pass in
+`findRuntimeBehaviorForPod` and explicit precedence docs.
+
 ## Known Issues
 
 None at this time.
@@ -556,12 +618,72 @@ and handles deviations:
 **`enforce` mode:**
 
 - Same merged allowed set as monitor mode.
-- Deviations generate PolicyReport findings with severity from the matching
-  RuntimePolicy validation.
-- Currently, `audit` actions record findings to PolicyReports. Extended enforcement
-  actions (e.g., `terminate`, `kill_process`, webhooks) are planned for future phases.
+- Deviations generate PolicyReport findings and trigger enforcement actions.
 - `status.observed` is still updated for audit, but new observations do not
   expand the allow set.
+
+Enforcement actions are declared per-rule in `RuntimePolicy` using an `action`
+field (see Phase 9 for full details). Available actions in increasing order of
+severity:
+
+| Action | Effect | Latency | Requires |
+| --- | --- | --- | --- |
+| `audit` | Record finding to PolicyReport only | ~seconds | None |
+| `webhook` | POST finding to external endpoint | ~ms–seconds | Webhook config |
+| `kill_process` | Send SIGKILL to the offending process | ~microseconds | `CAP_BPF` + `BPF_PROG_TYPE_TRACING` |
+| `network_block` | Install TC/XDP rule to drop packets | ~ms | `CAP_NET_ADMIN` |
+| `terminate_pod` | Delete the pod via Kubernetes API | ~1–5 seconds | Kubernetes RBAC |
+
+Example: enforce mode with `kill_process` for shell execution:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: no-shell-exec
+  namespace: production
+spec:
+  workloadSelector:
+    matchLabels:
+      app: nginx
+  validations:
+    - event: exec
+      action: kill_process          # kill the process immediately
+      severity: error
+      message: "Unexpected shell execution"
+      conditions:
+        - expression: >
+            event["process.name"] in ["/bin/sh", "/bin/bash",
+            "/usr/bin/python3", "/usr/bin/perl"]
+```
+
+Example: enforce mode with `terminate_pod` for credential access:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: no-credential-access
+  namespace: production
+spec:
+  workloadSelector:
+    matchLabels:
+      tier: frontend
+  validations:
+    - event: open
+      action: terminate_pod         # kill the whole pod
+      severity: critical
+      message: "Credential file access detected"
+      conditions:
+        - expression: >
+            event["fname"].startsWith("/etc/shadow") ||
+            event["fname"].startsWith("/root/.ssh/")
+```
+
+The `action` field in `RuntimeBehavior` (mode: enforce) applies to all anomaly
+and baseline-deviation findings for that workload — it does not require an
+explicit `RuntimePolicy` rule. The default `enforce` action for baseline
+deviations is `audit` until an explicit action is configured.
 
 #### Merge Precedence
 
@@ -1395,6 +1517,411 @@ Implementation tasks:
 Definition of done:
 
 - Node-scale test shows reduced API churn and stable detection fidelity.
+
+### Execution Phase E0: API Changes and Prerequisite
+
+Implementation tasks:
+
+- Complete Phase 8.1 (nodeName filtering) as a hard prerequisite.
+- Extend `RuntimeActionRef.Type` enum to add `kill_process`, `network_block`, `terminate_pod`, `webhook`.
+- Add `WebhookReference` type to `runtimepolicy_types.go`.
+- Add `NetworkControls` and `NetworkControlsStatus` types to `runtimebehavior_types.go`.
+- Update CRD manifests and Helm chart with new fields.
+- Verify `audit` default is preserved for existing policies (backward compatibility).
+
+Definition of done:
+
+- `make build` and `make test` pass with new API types.
+- Helm render includes all new fields.
+- Existing policies with no `action` field behave identically to today.
+
+### Execution Phase E1: CEL Compiler and terminate_pod
+
+Implementation tasks:
+
+- Implement CEL AST walker in `pkg/cel/compiler.go` classifying conditions into `ExecDenyExact`, `ExecDenyPrefix`, `OpenDenyPrefix`, `CIDRDeny`, and `UserspaceFallback`.
+- Write unit tests covering all compilable and non-compilable CEL patterns.
+- Add `pkg/pipeline/action_router.go` to route findings to action handlers by type.
+- Implement `terminate_pod` in `WatchManager` via drain goroutine with rate limiting (max 1 delete/pod/minute).
+- Emit a Kubernetes Event and PolicyReport finding before pod deletion.
+
+Definition of done:
+
+- Policy with `action: terminate_pod` and a compilable CEL condition terminates a violating pod.
+- Non-compilable conditions still produce findings but no enforcement action.
+- Rate limit prevents cascading restart loops.
+
+### Execution Phase E2: Process Enforcement (kill_process)
+
+Implementation tasks:
+
+- Add `pkg/ebpf/enforce/` package with `exec_enforcer.bpf.c` and `open_enforcer.bpf.c`.
+- Compile BPF programs at build time using `bpf2go`.
+- Implement node-wide cgroup-keyed LPM trie maps for exec and open deny patterns.
+- Implement kernel version detection at startup: BPF LSM (≥5.7 + `CONFIG_BPF_LSM=y`) → tracing + `bpf_send_signal` (≥5.3) → audit-only fallback.
+- Implement `pkg/ebpf/enforce/manager.go` for program lifecycle and per-pod map updates.
+- Wire CEL compiler output to map population in the policy reconciler.
+- Add `CAP_BPF` and `CAP_PERFMON` to Helm DaemonSet security context (feature-gated).
+- Write `docs/users/enforcement.md` covering kernel requirements and action semantics.
+
+Definition of done:
+
+- Policy with `action: kill_process` and `event["comm"] == "/bin/sh"` denies exec before it completes on a kernel with BPF LSM.
+- Graceful fallback to `bpf_send_signal` on kernels without LSM; correct kill-after behavior.
+- Graceful fallback to audit-only on unsupported kernels with a clear log warning.
+
+### Execution Phase E3: Network Enforcement (network_block)
+
+Implementation tasks:
+
+- Add `pkg/ebpf/network/` package with `tc_egress.bpf.c` and `xdp_ingress.bpf.c`.
+- Implement veth interface resolution from pod network namespace via `/proc/<pid>/net/if_link`.
+- Implement `pkg/controller/runtimebehavior_network_controller.go` reconciler watching `spec.networkControls` changes.
+- Implement TC program attach/detach on pod start/stop; XDP program for ingress rate limiting.
+- Populate CIDR LPM trie from `spec.networkControls.egress.blockCIDRs` and `allowCIDRs`.
+- Update `RuntimeBehaviorStatus` with `networkControls` subfields (dropped packets, last violation time).
+- Add `CAP_NET_ADMIN` to Helm DaemonSet security context (feature-gated).
+- Add kind e2e test verifying egress blocking for a test pod.
+
+Definition of done:
+
+- RuntimeBehavior with `mode: enforce` and `allow.deny.network: ["0.0.0.0/0"]` drops egress packets to public IPs.
+- TC program attaches and detaches cleanly on pod start/stop with no veth interface leaks.
+- `status.networkControls.droppedPackets` is updated correctly.
+
+### Execution Phase E4: Webhook Action
+
+Implementation tasks:
+
+- Extend `pkg/pipeline/action_router.go` with webhook dispatch (HTTP POST, configurable retry and timeout).
+- Add `WebhookReference` handling to action router (URL + optional secretRef for auth headers).
+- Serialize findings as JSON for the webhook payload.
+- Add unit tests with a mock HTTP server covering success, retry, and timeout paths.
+
+Definition of done:
+
+- Policy with `action: webhook` POSTs finding JSON to a configured endpoint on violation.
+- Retries on transient HTTP errors and times out cleanly with no goroutine leak.
+
+---
+
+## Phase 9: Active Enforcement (CEL-Compiled, Kernel-Native)
+
+Status: **PROPOSED**
+
+The enforcement layer is fully decoupled from the IG observation pipeline.
+Enforcement decisions are made at **policy load time** by compiling CEL
+conditions into BPF map entries. BPF programs run in the kernel against
+these maps — zero userspace roundtrip for compilable conditions. The IG
+observation pipeline runs unchanged and in parallel for audit and reporting.
+
+### Architecture
+
+```
+Policy Reconciler (at policy load time, once per policy change):
+  CEL AST Walker
+    ├── compilable conditions → BPF map entries (cilium/ebpf)
+    └── non-compilable conditions → stored for userspace fallback
+
+Kernel path (per-event, zero userspace roundtrip):
+  LSM / TC hook
+    → BPF program checks policy maps
+    → deny (-EPERM) / kill (bpf_send_signal) / drop (TC_ACT_DROP)
+
+Observation path (per-event, parallel, always runs):
+  IG stream → CEL eval → PolicyReport / OpenReports
+    → terminate_pod for non-compilable violations
+```
+
+The BPF programs are **static, compiled once at build time** using `bpf2go`.
+Enforcement policy lives entirely in BPF maps updated by the policy reconciler
+at load time — not per-event. Programs are node-wide (one per event type, not
+per pod). Pod churn updates maps only; programs are never reloaded.
+
+### CEL Compilation Model
+
+The CEL AST walker classifies each condition at policy load time:
+
+| CEL Pattern | BPF Representation | Compilable |
+| --- | --- | --- |
+| `field == "literal"` | `BPF_MAP_TYPE_HASH` | Yes |
+| `field in [list]` | `BPF_MAP_TYPE_HASH` | Yes |
+| `field.startsWith("prefix")` | `BPF_MAP_TYPE_LPM_TRIE` | Yes |
+| CIDR / IP match | `BPF_MAP_TYPE_LPM_TRIE` | Yes |
+| `int(field) == N` or range | `BPF_MAP_TYPE_HASH` / inline | Yes |
+| AND / OR of the above | combined map lookups | Yes |
+| `field.matches(regex)` | — | No — userspace fallback |
+| K8s API fields (namespace labels, annotations) | — | No — userspace fallback |
+| Cross-event correlation | — | No — userspace fallback |
+
+Non-compilable conditions fall back to the IG observation path. The only
+enforcement action available for non-compilable conditions is `terminate_pod`
+(the syscall completes before CEL evaluates in userspace).
+
+### Phase E0: API Changes and Prerequisite
+
+**Prerequisite:** Phase 8.1 (nodeName filtering) must be complete. Enforcement
+programs must only load on the node where the pod runs.
+
+Extend `RuntimeActionRef.Type` enum in `api/v1alpha1/runtimepolicy_types.go`:
+
+```go
+// +kubebuilder:validation:Enum=audit;kill_process;network_block;terminate_pod;webhook
+type EnforcementAction string
+
+const (
+    ActionAudit        EnforcementAction = "audit"
+    ActionKillProcess  EnforcementAction = "kill_process"
+    ActionNetworkBlock EnforcementAction = "network_block"
+    ActionTerminatePod EnforcementAction = "terminate_pod"
+    ActionWebhook      EnforcementAction = "webhook"
+)
+```
+
+Add `WebhookRef *WebhookReference` to `RuntimeActionRef` for webhook
+configuration. Add `NetworkControls *NetworkControls` and
+`NetworkControlsStatus` to `RuntimeBehaviorSpec` and `RuntimeBehaviorStatus`
+(see Phase E3). `audit` remains the default — fully backward-compatible.
+
+### Phase E1: CEL Compiler and terminate_pod
+
+**Goal:** Validate the CEL compilation approach with zero eBPF risk.
+`terminate_pod` uses only the Kubernetes API.
+
+#### CEL AST Walker
+
+New package `pkg/cel/compiler.go`. Uses the `cel-go` AST API (already a
+project dependency):
+
+```go
+type CompiledPolicy struct {
+    ExecDenyExact    []string    // → BPF_MAP_TYPE_HASH
+    ExecDenyPrefix   []string    // → BPF_MAP_TYPE_LPM_TRIE
+    OpenDenyPrefix   []string    // → BPF_MAP_TYPE_LPM_TRIE
+    CIDRDeny         []net.IPNet // → BPF_MAP_TYPE_LPM_TRIE
+    UserspaceFallback []RuntimeValidation
+}
+
+func Compile(policy *RuntimePolicy) (*CompiledPolicy, error)
+```
+
+#### terminate_pod
+
+In `WatchManager`, after a finding with `action: terminate_pod`:
+1. Enqueue the pod to a drain goroutine (never block the event handler).
+2. Call `client.Delete` with `gracePeriodSeconds: 0`.
+3. Rate limit: max 1 termination per pod per minute to prevent cascading restarts.
+4. Emit a Kubernetes Event and PolicyReport finding before deleting.
+
+#### Phase E1 Deliverables
+
+- `pkg/cel/compiler.go` + `compiler_test.go`
+- `pkg/pipeline/action_router.go` — routes findings to action handlers by type
+- `pkg/pipeline/watch_manager.go` — terminate_pod drain goroutine with rate limiting
+
+### Phase E2: Process Enforcement (kill_process)
+
+**Goal:** In-kernel enforcement for exec and file-open events. Zero userspace
+roundtrip for compilable conditions.
+
+#### BPF Programs
+
+Static programs in `pkg/ebpf/enforce/`, compiled at build time with `bpf2go`:
+
+```c
+// exec_enforcer.bpf.c
+// Primary: BPF LSM hook — deny-before (kernel ≥5.7 + CONFIG_BPF_LSM)
+// Fallback: BPF_PROG_TYPE_TRACING + bpf_send_signal — kill-after (≥5.3)
+SEC("lsm/bprm_check_security")
+int BPF_PROG(enforce_exec, struct linux_binprm *bprm) {
+    char path[256] = {};
+    bpf_d_path(&bprm->file->f_path, path, sizeof(path));
+    if (bpf_map_lookup_elem(&exec_deny_lpm, path))
+        return -EPERM;
+    return 0;
+}
+
+// open_enforcer.bpf.c
+SEC("lsm/file_open")
+int BPF_PROG(enforce_open, struct file *file) {
+    char path[256] = {};
+    bpf_d_path(&file->f_path, path, sizeof(path));
+    if (bpf_map_lookup_elem(&open_deny_lpm, path))
+        return -EPERM;
+    return 0;
+}
+```
+
+Programs are **node-wide** — one instance per event type handles all pods on
+the node. Maps are keyed by `(cgroup_id, pattern)`. Pod churn updates maps
+only; no program reload.
+
+#### Kernel Version Handling
+
+Detect capability at startup and select the best available hook:
+
+| Kernel | Capability | Enforcement semantics |
+| --- | --- | --- |
+| ≥5.7 + `CONFIG_BPF_LSM=y` + `lsm=bpf` | BPF LSM | deny-before (-EPERM) |
+| ≥5.3 | BPF tracing | kill-after (bpf_send_signal, ~ms gap) |
+| <5.3 | None | audit-only, log warning |
+
+#### Phase E2 Deliverables
+
+- `pkg/ebpf/enforce/exec_enforcer.bpf.c` + `open_enforcer.bpf.c`
+- `pkg/ebpf/enforce/manager.go` — program loader, map manager, cgroup tracking
+- `pkg/ebpf/enforce/manager_test.go`
+- `cmd/kyverno-runtime/main.go` — kernel version check at startup, enforcer wiring
+- Helm chart: `CAP_BPF`, `CAP_PERFMON` in DaemonSet security context (feature-gated)
+- `docs/users/enforcement.md` — user guide for kernel requirements and action semantics
+
+### Phase E3: Network Enforcement (network_block)
+
+**Goal:** Kernel-level egress blocking and ingress rate limiting via TC/XDP,
+driven by both `action: network_block` in `RuntimePolicy` and
+`spec.networkControls` in `RuntimeBehavior`.
+
+#### BPF Programs
+
+```c
+// tc_egress.bpf.c — TC egress CIDR filter (kernel ≥5.4)
+SEC("tc")
+int tc_egress(struct __sk_buff *skb) {
+    __u32 dst_ip = ...;  // extracted from skb
+    struct lpm_key key = { .prefixlen = 32, .addr = dst_ip };
+    if (bpf_map_lookup_elem(&cidr_deny_lpm, &key))
+        return TC_ACT_DROP;
+    return TC_ACT_OK;
+}
+
+// xdp_ingress.bpf.c — XDP ingress token-bucket rate limiter (kernel ≥4.8)
+SEC("xdp")
+int xdp_ingress(struct xdp_md *ctx) {
+    // token-bucket check via rate_map; drop if tokens exhausted
+}
+```
+
+TC programs attach to the pod's **veth interface (host side)**. XDP and TC are
+independent attach points on the same interface.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Pod veth (host side)                                    │
+│                                                          │
+│  NIC RX ──> XDP hook ──> rate limit / CIDR check        │
+│                    └── pass ──> kernel network stack     │
+│                                                          │
+│  Pod TX ──> TC egress ──> CIDR block / rate limit        │
+│                    └── pass ──> NIC TX                   │
+└──────────────────────────────────────────────────────────┘
+```
+
+BPF maps:
+- `cidr_deny_lpm`: per-pod LPM trie of blocked/allowed CIDRs
+- `rate_map`: per-pod token-bucket state (bytes available, last refill time)
+
+#### NetworkControls API
+
+```yaml
+spec:
+  networkControls:
+    mode: monitor   # monitor | enforce
+    egress:
+      blockCIDRs:
+        - "0.0.0.0/0"
+      allowCIDRs:
+        - "10.96.0.0/12"
+      rateLimit:
+        bytesPerSecond: "1Mi"
+    ingress:
+      rateLimit:
+        bytesPerSecond: "10Mi"
+
+status:
+  networkControls:
+    droppedPackets: 142
+    lastViolation: "2026-05-15T00:00:00Z"
+```
+
+#### Network Controller
+
+New `pkg/controller/runtimebehavior_network_controller.go`:
+1. Watches `RuntimeBehavior` resources for `spec.networkControls` changes.
+2. Resolves the pod's veth interface from the pod's network namespace.
+3. Loads and attaches TC/XDP programs on pod start; detaches on pod deletion.
+4. Updates CIDR LPM maps from `spec.networkControls` and `spec.allow.deny.network`.
+5. Updates `status.networkControls` on every packet drop event.
+
+#### Baseline-Derived Network Controls
+
+After learning completes, the controller can promote observed network
+destinations to explicit allow rules and lock down all other egress:
+
+```bash
+kubectl kyverno runtime network-controls promote <name> -n <namespace>
+```
+
+#### Phase E3 Deliverables
+
+- `pkg/ebpf/network/tc_egress.bpf.c` + `xdp_ingress.bpf.c`
+- `pkg/ebpf/network/loader.go` — veth resolution, attach/detach, map management
+- `pkg/controller/runtimebehavior_network_controller.go`
+- `api/v1alpha1/runtimebehavior_types.go` — `NetworkControls` and `NetworkControlsStatus` types
+- Helm chart: `CAP_NET_ADMIN` in DaemonSet security context (feature-gated)
+- kind e2e: egress blocking verified for a test pod
+
+### Phase E4: Webhook Action
+
+**Goal:** POST finding JSON to a configured external endpoint for integration
+with incident response platforms (PagerDuty, Slack, OpsGenie).
+
+```yaml
+spec:
+  validations:
+    - event: exec
+      actions:
+        - type: webhook
+          webhookRef:
+            url: https://hooks.slack.com/services/...
+            secretRef:
+              name: slack-webhook-secret
+              key: url
+```
+
+Implemented in `pkg/pipeline/action_router.go` (added in Phase E1). HTTP POST
+with configurable retry and timeout. No eBPF required.
+
+#### Phase E4 Deliverables
+
+- `pkg/pipeline/action_router.go` — webhook dispatch with retry/timeout
+- `api/v1alpha1/runtimepolicy_types.go` — `WebhookReference` type
+- Unit tests with mock HTTP server
+
+### Phase 9 Summary
+
+| Phase | Deliverable | New eBPF | Enforcement Latency | Min Kernel |
+| --- | --- | --- | --- | --- |
+| E0 | API changes, nodeName filter | None | N/A | None |
+| E1 | CEL compiler, terminate_pod | None | 1–5s | None |
+| E2 | kill_process (LSM / tracing) | Yes | 0 or ~ms | 5.3 (5.7 for LSM) |
+| E3 | network_block (TC / XDP) | Yes | ~ms | 4.8 (XDP) / 5.4 (TC) |
+| E4 | webhook | None | ~ms (HTTP) | None |
+
+E1 ships independently and provides immediate value. E2 and E3 require eBPF
+expertise but are isolated to new packages with no changes to the IG observation
+pipeline.
+
+#### Phase 9 Prerequisites
+
+- **Phase 8.1 (nodeName filtering)** must be complete before any enforcement
+  programs load — programs must only attach on the node where the pod runs.
+- **`cilium/ebpf`** is a transitive dependency via Inspektor Gadget; use it
+  directly for enforcement program loading. Do not fork IG.
+- **Kernel version detection** at startup for graceful fallback between LSM,
+  tracing, and audit-only modes.
+- **Security context review** — `CAP_BPF`, `CAP_PERFMON`, and `CAP_NET_ADMIN`
+  must be reviewed for compatibility with any admission policies in target
+  clusters before enabling enforcement.
 
 ---
 
