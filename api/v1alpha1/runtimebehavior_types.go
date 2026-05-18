@@ -77,6 +77,7 @@ type AllowRules struct {
 	// +optional
 	Refs []BehaviorReference `json:"refs,omitempty"`
 
+	// shouldnt deny rules exist at the same fucking level ?
 	// Deny rules that always block behaviors, overriding allow rules.
 	// +optional
 	Deny *DenyRules `json:"deny,omitempty"`

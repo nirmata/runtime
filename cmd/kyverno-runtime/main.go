@@ -215,6 +215,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient())
+	if err != nil {
+		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
+		os.Exit(1)
+	}
+	if err := ctrl.NewControllerManagedBy(mgr).
+		For(&v1alpha1.RuntimeBehavior{}).
+		Complete(runtimeBehaviorReconciler); err != nil {
+		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		logger.Error(err, "failed to add health check")
 		os.Exit(1)
