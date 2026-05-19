@@ -94,7 +94,7 @@ func (p *Probe) attach() error {
 	}
 	for _, link := range links {
 		// not a pod interface
-		if strings.HasPrefix(link.Attrs().Name, "veth") {
+		if !strings.HasPrefix(link.Attrs().Name, "veth") {
 			continue
 		}
 		qdiscs, err := nlHandle.QdiscList(link)
