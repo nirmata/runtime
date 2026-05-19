@@ -2,9 +2,7 @@ package probe
 
 import (
 	"encoding/binary"
-	"errors"
 	"net"
-	"os"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -87,9 +85,12 @@ func (p *Probe) attach() error {
 			},
 			QdiscType: "clsact",
 		}
-		if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := netlink.QdiscReplace(qdisc); err != nil {
 			return err
 		}
+		// if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, os.ErrExist) {
+		// 	return err
+		// }
 
 		// attach the BPF program as a tc filter
 		filter := &netlink.BpfFilter{
