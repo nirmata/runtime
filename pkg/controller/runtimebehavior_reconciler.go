@@ -43,13 +43,13 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	if rb.DeletionTimestamp != nil {
 		delete(r.bannedIps, req.Name)
-		ips := []string{}
+		ipsToBan := []string{}
 		for _, ips := range r.bannedIps {
 			for _, ip := range ips {
-				ips = append(ips, ip)
+				ipsToBan = append(ipsToBan, ip)
 			}
 		}
-		r.probe.UpdateMap(ips)
+		r.probe.UpdateMap(ipsToBan)
 		return ctrl.Result{}, nil
 	}
 
