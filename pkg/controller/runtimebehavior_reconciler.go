@@ -64,7 +64,12 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		// todo
 	case v1alpha1.ModeEnforce:
 		// load the bpf program with the new ips found
+		ips := make([]string, len(r.bannedIps))
+		for ip := range r.bannedIps {
+			ips = append(ips, ip)
+		}
 
+		r.probe.UpdateMap(ips)
 	}
 
 	return ctrl.Result{}, nil

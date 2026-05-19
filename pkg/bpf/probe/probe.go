@@ -28,7 +28,17 @@ func New() (*Probe, error) {
 		return nil, err
 	}
 
-	return &Probe{}, nil
+	p := &Probe{
+		bpfObjs:   objs,
+		bannedIps: make(map[string]struct{}),
+	}
+
+	err = p.attach()
+	if err != nil {
+		return nil, err
+	}
+
+	return p, nil
 }
 
 func (p *Probe) UpdateMap(ips []string) {
@@ -59,7 +69,7 @@ func (p *Probe) UpdateMap(ips []string) {
 	p.bannedIps = newIpMap
 }
 
-func (p *Probe) Attach() error {
+func (p *Probe) attach() error {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return err
