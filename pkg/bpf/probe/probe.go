@@ -2,10 +2,12 @@ package probe
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
+	"os"
 
-	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/link"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go@latest egressBlock ./_cprog/probe.c
@@ -76,12 +78,33 @@ func (p *Probe) attach() error {
 	}
 	// attach to all interfaces for now till we think of how we wanna do pod filtering
 	for _, iface := range ifaces {
-		_, err := link.AttachTCX(link.TCXOptions{
-			Interface: iface.Index,
-			Program:   p.bpfObjs.TcEgress,
-			Attach:    ebpf.AttachTCXEgress,
-		})
-		if err != nil {
+		// maybe use tcx if the kernel was discovered to be modern?
+		qdisc := &netlink.GenericQdisc{
+			QdiscAttrs: netlink.QdiscAttrs{
+				LinkIndex: iface.Index,
+				Handle:    netlink.MakeHandle(0xffff, 0),
+				Parent:    netlink.HANDLE_CLSACT,
+			},
+			QdiscType: "clsact",
+		}
+		if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+
+		// attach the BPF program as a tc filter
+		filter := &netlink.BpfFilter{
+			FilterAttrs: netlink.FilterAttrs{
+				LinkIndex: iface.Index,
+				Parent:    netlink.HANDLE_MIN_EGRESS, // or HANDLE_MIN_INGRESS
+				Handle:    1,
+				Protocol:  unix.ETH_P_ALL,
+				Priority:  1,
+			},
+			Fd:           p.bpfObjs.TcEgress.FD(),
+			Name:         "tc_egress",
+			DirectAction: true,
+		}
+		if err := netlink.FilterAdd(filter); err != nil {
 			return err
 		}
 	}
