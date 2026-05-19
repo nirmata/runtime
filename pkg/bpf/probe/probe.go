@@ -2,9 +2,12 @@ package probe
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
+	"os"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
@@ -70,32 +73,42 @@ func (p *Probe) UpdateMap(ips []string) {
 }
 
 func (p *Probe) attach() error {
-	ifaces, err := net.Interfaces()
+	hostNs, err := netns.GetFromPath("/proc/1/ns/net")
 	if err != nil {
 		return err
 	}
-	// attach to all interfaces for now till we think of how we wanna do pod filtering
-	for _, iface := range ifaces {
-		// maybe use tcx if the kernel was discovered to be modern?
+	defer hostNs.Close()
+
+	// create a netlink handle inside host netns
+	nlHandle, err := netlink.NewHandleAt(hostNs)
+	if err != nil {
+		return err
+	}
+	defer nlHandle.Close()
+
+	// now list interfaces from host
+	links, err := nlHandle.LinkList()
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
 		qdisc := &netlink.GenericQdisc{
 			QdiscAttrs: netlink.QdiscAttrs{
-				LinkIndex: iface.Index,
+				LinkIndex: link.Attrs().Index,
 				Handle:    netlink.MakeHandle(0xffff, 0),
 				Parent:    netlink.HANDLE_CLSACT,
 			},
 			QdiscType: "clsact",
 		}
-		if err := netlink.QdiscReplace(qdisc); err != nil {
+
+		if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}
-		// if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, os.ErrExist) {
-		// 	return err
-		// }
 
 		// attach the BPF program as a tc filter
 		filter := &netlink.BpfFilter{
 			FilterAttrs: netlink.FilterAttrs{
-				LinkIndex: iface.Index,
+				LinkIndex: link.Attrs().Index,
 				Parent:    netlink.HANDLE_MIN_EGRESS, // or HANDLE_MIN_INGRESS
 				Handle:    1,
 				Protocol:  unix.ETH_P_ALL,
@@ -109,5 +122,6 @@ func (p *Probe) attach() error {
 			return err
 		}
 	}
+
 	return nil
 }
