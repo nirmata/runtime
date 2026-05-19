@@ -6,10 +6,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/probe"
 )
+
+const cleanupFinalizer = "runtime.kyverno.io/cleanup"
 
 type RuntimeBehaviorReconciler struct {
 	client    client.Client
@@ -41,7 +44,7 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if rb.DeletionTimestamp != nil {
+	if !rb.DeletionTimestamp.IsZero() {
 		delete(r.bannedIps, req.Name)
 		ipsToBan := []string{}
 		for _, ips := range r.bannedIps {
@@ -50,6 +53,15 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			}
 		}
 		r.probe.UpdateMap(ipsToBan)
+		if rb.Finalizers != nil {
+			if controllerutil.ContainsFinalizer(rb, cleanupFinalizer) {
+				controllerutil.RemoveFinalizer(rb, cleanupFinalizer)
+				if err := r.client.Update(ctx, rb); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -78,6 +90,14 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 
 		r.probe.UpdateMap(ipsToBan)
+	}
+
+	// add finalizer if not present
+	if !controllerutil.ContainsFinalizer(rb, cleanupFinalizer) {
+		controllerutil.AddFinalizer(rb, cleanupFinalizer)
+		if err := r.client.Update(ctx, rb); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil
