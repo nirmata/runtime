@@ -61,7 +61,7 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	r.bannedIps[req.Name] = rb.Spec.Allow.Network
+	r.bannedIps[req.Name] = rb.Spec.Allow.Deny.Network
 
 	switch rb.Spec.Mode {
 	case v1alpha1.ModeLearning:
