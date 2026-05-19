@@ -44,6 +44,13 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if rb.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
 	}
+	if rb.Spec.Allow == nil {
+		return ctrl.Result{}, nil
+	}
+
+	if rb.Spec.Allow.Deny == nil {
+		return ctrl.Result{}, nil
+	}
 
 	for _, ip := range rb.Spec.Allow.Deny.Network {
 		// register this ip so that its banned
