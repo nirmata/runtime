@@ -1,10 +1,7 @@
 package main
 
 import (
-	"context"
 	"flag"
-	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -12,23 +9,16 @@ import (
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/config"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
-	"github.com/nirmata/kyverno-runtime/pkg/datasource"
-	"github.com/nirmata/kyverno-runtime/pkg/pipeline"
-	"github.com/nirmata/kyverno-runtime/pkg/policy"
 	"github.com/nirmata/kyverno-runtime/pkg/preflight"
 )
 
@@ -118,102 +108,7 @@ func main() {
 
 	// igExecTimeout is reused as the IG initialisation/context timeout;
 	// streaming runs until the pod watch context is cancelled.
-	igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
-
-	// Pre-warm eBPF gadget operators in the background. The operators are
-	// initialised lazily via sync.Once on first use; on a cold kernel this can
-	// take 2-3 minutes. Starting the warm-up here ensures they are ready before
-	// the first pod is reconciled. The ready channel is used as a readiness gate
-	// so that kind-install / rollout-status waits until the operators are ready.
-	operatorsReady := make(chan struct{})
-	go func() {
-		igSource.PreWarm()
-		close(operatorsReady)
-	}()
-
-	evaluator := policy.NewEvaluator()
-	matcher := pipeline.NewPolicyMatcher(evaluator)
-	policyEvaluator := pipeline.NewPolicyEvaluatorWithOptions(evaluator, pipeline.PolicyEvaluatorOptions{
-		Client:            mgr.GetClient(),
-		BaselineEnabled:   features.BaselineEngine,
-		SignatureEnabled:  features.SignatureEngine,
-		MinConfidence:     0.6,
-		BehaviorNamespace: sharedDefaultsNamespace,
-	})
-	reporter := pipeline.NewK8sReporterWithOptions(mgr.GetClient(), pipeline.ReporterOptions{
-		BufferInterval:      reportBufferInterval,
-		MaxBufferedCount:    reportBufferMaxCount,
-		SuppressionCooldown: reportSuppressionCooldown,
-		SuppressionBurst:    reportSuppressionBurst,
-		EventCooldown:       reportEventCooldown,
-		EventBurst:          reportEventBurst,
-	})
-
-	watchManager := pipeline.NewWatchManager(igSource, policyEvaluator, reporter)
-
-	// Create the DaemonSet-based reconciler
-	enrollment := controller.DefaultRuntimeBehaviorEnrollmentConfig()
-	enrollment.AutoCreate = runtimeBehaviorAutoCreate
-	enrollment.IncludeControllers = parseCSVSet(runtimeBehaviorIncludeControllers)
-	enrollment.IncludeBarePods = runtimeBehaviorIncludeBarePods
-	enrollment.IncludeNamespaces = parseCSVSet(runtimeBehaviorIncludeNamespaces)
-	enrollment.ExcludeNamespaces = parseCSVSet(runtimeBehaviorExcludeNamespaces)
-	enrollment.OptOutLabel = strings.TrimSpace(runtimeBehaviorOptOutLabel)
-	enrollment.SharedDefaultsNamespace = strings.TrimSpace(sharedDefaultsNamespace)
-	if strings.EqualFold(strings.TrimSpace(runtimeBehaviorInitialMode), string(v1alpha1.ModeMonitor)) {
-		enrollment.InitialMode = v1alpha1.ModeMonitor
-	} else {
-		enrollment.InitialMode = v1alpha1.ModeLearning
-	}
-
-	reconciler := controller.NewDaemonSetReconcilerWithEnrollmentConfig(
-		mgr.GetClient(),
-		matcher,
-		watchManager,
-		enrollment,
-	)
-	reconciler.SetNodeName(os.Getenv("NODE_NAME"))
-
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Pod{}).
-		Watches(&v1alpha1.RuntimePolicy{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []reconcile.Request {
-			pods := &corev1.PodList{}
-			if err := mgr.GetClient().List(ctx, pods); err != nil {
-				return nil
-			}
-			requests := make([]reconcile.Request, 0, len(pods.Items))
-			for i := range pods.Items {
-				pod := &pods.Items[i]
-				if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil {
-					continue
-				}
-				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}})
-			}
-			return requests
-		})).
-		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-			ns, ok := obj.(*corev1.Namespace)
-			if !ok {
-				return nil
-			}
-			pods := &corev1.PodList{}
-			if err := mgr.GetClient().List(ctx, pods, client.InNamespace(ns.Name)); err != nil {
-				return nil
-			}
-			requests := make([]reconcile.Request, 0, len(pods.Items))
-			for i := range pods.Items {
-				pod := &pods.Items[i]
-				if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil {
-					continue
-				}
-				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}})
-			}
-			return requests
-		})).
-		Complete(reconciler); err != nil {
-		logger.Error(err, "failed to set up reconciler")
-		os.Exit(1)
-	}
+	// igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
 
 	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient())
 	if err != nil {
@@ -239,17 +134,17 @@ func main() {
 		logger.Error(err, "failed to add eBPF preflight readiness check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("ebpf-operators", func(req *http.Request) error {
-		select {
-		case <-operatorsReady:
-			return nil
-		default:
-			return fmt.Errorf("eBPF gadget operators are still initializing")
-		}
-	}); err != nil {
-		logger.Error(err, "failed to add eBPF operators readiness check")
-		os.Exit(1)
-	}
+	// if err := mgr.AddReadyzCheck("ebpf-operators", func(req *http.Request) error {
+	// 	select {
+	// 	case <-operatorsReady:
+	// 		return nil
+	// 	default:
+	// 		return fmt.Errorf("eBPF gadget operators are still initializing")
+	// 	}
+	// }); err != nil {
+	// 	logger.Error(err, "failed to add eBPF operators readiness check")
+	// 	os.Exit(1)
+	// }
 
 	logger.Info("starting kyverno-runtime DaemonSet controller")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
