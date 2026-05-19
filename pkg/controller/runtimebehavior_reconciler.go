@@ -13,7 +13,7 @@ import (
 
 type RuntimeBehaviorReconciler struct {
 	client    client.Client
-	bannedIps map[string]struct{}
+	bannedIps map[string][]string
 	probe     *probe.Probe
 }
 
@@ -26,7 +26,7 @@ func NewRuntimeBehaviorReconciler(c client.Client) (*RuntimeBehaviorReconciler, 
 
 	return &RuntimeBehaviorReconciler{
 		client:    c,
-		bannedIps: make(map[string]struct{}),
+		bannedIps: make(map[string][]string),
 		probe:     probe,
 	}, nil
 }
@@ -42,8 +42,17 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if rb.DeletionTimestamp != nil {
+		delete(r.bannedIps, req.Name)
+		ips := []string{}
+		for _, ips := range r.bannedIps {
+			for _, ip := range ips {
+				ips = append(ips, ip)
+			}
+		}
+		r.probe.UpdateMap(ips)
 		return ctrl.Result{}, nil
 	}
+
 	if rb.Spec.Allow == nil {
 		return ctrl.Result{}, nil
 	}
@@ -52,10 +61,7 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	for _, ip := range rb.Spec.Allow.Deny.Network {
-		// register this ip so that its banned
-		r.bannedIps[ip] = struct{}{}
-	}
+	r.bannedIps[req.Name] = rb.Spec.Allow.Network
 
 	switch rb.Spec.Mode {
 	case v1alpha1.ModeLearning:
@@ -64,9 +70,11 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		// todo
 	case v1alpha1.ModeEnforce:
 		// load the bpf program with the new ips found
-		ips := make([]string, len(r.bannedIps))
-		for ip := range r.bannedIps {
-			ips = append(ips, ip)
+		ips := []string{}
+		for _, ips := range r.bannedIps {
+			for _, ip := range ips {
+				ips = append(ips, ip)
+			}
 		}
 
 		r.probe.UpdateMap(ips)
