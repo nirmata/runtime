@@ -69,7 +69,7 @@ func (p *Probe) UpdateMap(ips []string) {
 		if ip4 == nil {
 			continue
 		}
-		ipBytes := binary.BigEndian.Uint32(ip4)
+		ipBytes := binary.LittleEndian.Uint32(ip4)
 		p.bpfObjs.BannedIps.Delete(&ipBytes)
 	}
 
