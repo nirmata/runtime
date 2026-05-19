@@ -97,6 +97,18 @@ func (p *Probe) attach() error {
 		if strings.HasPrefix(link.Attrs().Name, "veth") {
 			continue
 		}
+		qdiscs, err := nlHandle.QdiscList(link)
+		if err != nil {
+			// log something
+			continue
+		}
+		for _, disc := range qdiscs {
+			if err := nlHandle.QdiscDel(disc); err != nil {
+				// log something
+				continue
+			}
+		}
+
 		qdisc := &netlink.GenericQdisc{
 			QdiscAttrs: netlink.QdiscAttrs{
 				LinkIndex: link.Attrs().Index,
