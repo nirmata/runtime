@@ -118,7 +118,7 @@ func (p *Probe) attach() error {
 			QdiscType: "clsact",
 		}
 
-		if err := netlink.QdiscAdd(qdisc); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := nlHandle.QdiscAdd(qdisc); err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}
 
@@ -135,7 +135,7 @@ func (p *Probe) attach() error {
 			Name:         "tc_egress",
 			DirectAction: true,
 		}
-		if err := netlink.FilterAdd(filter); err != nil {
+		if err := nlHandle.FilterAdd(filter); err != nil {
 			return err
 		}
 	}
