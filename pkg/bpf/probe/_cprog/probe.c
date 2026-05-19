@@ -48,10 +48,13 @@ int tc_egress(struct __sk_buff *skb)
         return TC_ACT_OK;
     }
 
-    __u32 daddr = ip->daddr;
+        __u32 daddr = ip->daddr;
     bpf_printk("tc_egress: daddr=%x\n", daddr);
 
-    if (bpf_map_lookup_elem(&banned_ips, &daddr)) {
+    __u8 *val = bpf_map_lookup_elem(&banned_ips, &daddr);
+    bpf_printk("tc_egress: map lookup result=%d\n", val ? 1 : 0);
+
+    if (val) {
         bpf_printk("tc_egress: BLOCKING daddr=%x\n", daddr);
         return TC_ACT_SHOT;
     }

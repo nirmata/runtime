@@ -129,7 +129,7 @@ func (p *Probe) attach() error {
 		filter := &netlink.BpfFilter{
 			FilterAttrs: netlink.FilterAttrs{
 				LinkIndex: link.Attrs().Index,
-				Parent:    netlink.HANDLE_MIN_INGRESS, // or HANDLE_MIN_INGRESS
+				Parent:    netlink.HANDLE_MIN_INGRESS,
 				Handle:    1,
 				Protocol:  unix.ETH_P_ALL,
 				Priority:  1,
