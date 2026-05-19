@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -92,6 +93,10 @@ func (p *Probe) attach() error {
 		return err
 	}
 	for _, link := range links {
+		// not a pod interface
+		if strings.HasPrefix(link.Attrs().Name, "veth") {
+			continue
+		}
 		qdisc := &netlink.GenericQdisc{
 			QdiscAttrs: netlink.QdiscAttrs{
 				LinkIndex: link.Attrs().Index,
