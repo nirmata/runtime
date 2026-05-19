@@ -31,24 +31,31 @@ int tc_egress(struct __sk_buff *skb)
 {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
-    // parse an ethernet header from the skb
+
     struct ethhdr *ethernet_hdr = data;
-    if ((void *)(ethernet_hdr+1) > data_end)
+    if ((void *)(ethernet_hdr+1) > data_end) {
+        bpf_printk("tc_egress: dropped at eth bounds check\n");
         return TC_ACT_OK;
-
-    if (ethernet_hdr->h_proto != bpf_htons(ETH_P_IP))
+    }
+    if (ethernet_hdr->h_proto != bpf_htons(ETH_P_IP)) {
+        bpf_printk("tc_egress: non-IP packet proto=%x\n", bpf_ntohs(ethernet_hdr->h_proto));
         return TC_ACT_OK;
+    }
 
-    // offset by ethernet header bytes
     struct iphdr *ip = (void *)(ethernet_hdr+1);
-    if ((void *)(ip + 1) > data_end)
+    if ((void *)(ip + 1) > data_end) {
+        bpf_printk("tc_egress: dropped at ip bounds check\n");
         return TC_ACT_OK;
+    }
 
-    __u32 daddr = bpf_ntohl(ip->daddr);
+    __u32 daddr = ip->daddr;
+    bpf_printk("tc_egress: daddr=%x\n", daddr);
+
     if (bpf_map_lookup_elem(&banned_ips, &daddr)) {
+        bpf_printk("tc_egress: BLOCKING daddr=%x\n", daddr);
         return TC_ACT_SHOT;
     }
-    // otherwise return ok
+
     return TC_ACT_OK;
 }
 
