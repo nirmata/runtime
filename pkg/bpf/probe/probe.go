@@ -58,7 +58,7 @@ func (p *Probe) UpdateMap(ips []string) {
 		}
 		ipBytes := binary.BigEndian.Uint32(ip4)
 
-		err := p.bpfObjs.BannedIps.Put(ipBytes, uint8(0))
+		err := p.bpfObjs.BannedIps.Put(&ipBytes, uint8(0))
 		if err != nil {
 			// log it
 		}
@@ -70,7 +70,7 @@ func (p *Probe) UpdateMap(ips []string) {
 			continue
 		}
 		ipBytes := binary.BigEndian.Uint32(ip4)
-		p.bpfObjs.BannedIps.Delete(ipBytes)
+		p.bpfObjs.BannedIps.Delete(&ipBytes)
 	}
 
 	p.bannedIps = newIpMap

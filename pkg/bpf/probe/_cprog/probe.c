@@ -48,7 +48,7 @@ int tc_egress(struct __sk_buff *skb)
         return TC_ACT_OK;
     }
 
-        __u32 daddr = ip->daddr;
+    __u32 daddr = ip->daddr;
     bpf_printk("tc_egress: daddr=%x\n", daddr);
 
     __u8 *val = bpf_map_lookup_elem(&banned_ips, &daddr);
