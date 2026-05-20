@@ -8,6 +8,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/go-logr/logr"
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/probe"
 )
@@ -21,8 +22,8 @@ type RuntimeBehaviorReconciler struct {
 }
 
 // NewRuntimeBehaviorReconciler creates a new RuntimeBehaviorReconciler.
-func NewRuntimeBehaviorReconciler(c client.Client) (*RuntimeBehaviorReconciler, error) {
-	probe, err := probe.New()
+func NewRuntimeBehaviorReconciler(c client.Client, l *logr.Logger) (*RuntimeBehaviorReconciler, error) {
+	probe, err := probe.New(l)
 	if err != nil {
 		return nil, err
 	}

@@ -110,7 +110,7 @@ func main() {
 	// streaming runs until the pod watch context is cancelled.
 	// igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
 
-	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient())
+	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient(), &logger)
 	if err != nil {
 		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
 		os.Exit(1)

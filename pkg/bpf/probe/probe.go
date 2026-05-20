@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/go-logr/logr"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -16,11 +17,12 @@ import (
 
 // call it something other than probe
 type Probe struct {
+	logger    *logr.Logger
 	bpfObjs   *egressBlockObjects
 	bannedIps map[string]struct{}
 }
 
-func New() (*Probe, error) {
+func New(l *logr.Logger) (*Probe, error) {
 	spec, err := loadEgressBlock()
 	if err != nil {
 		return nil, err
@@ -33,6 +35,7 @@ func New() (*Probe, error) {
 	}
 
 	p := &Probe{
+		logger:    l,
 		bpfObjs:   objs,
 		bannedIps: make(map[string]struct{}),
 	}
@@ -60,13 +63,14 @@ func (p *Probe) UpdateMap(ips []string) {
 
 		err := p.bpfObjs.BannedIps.Put(&ipBytes, uint8(0))
 		if err != nil {
-			// log it
+			p.logger.Error(err, "failed to add ip to bpf map", ip)
 		}
 	}
 
 	for ip := range p.bannedIps {
 		ip4 := net.ParseIP(ip).To4()
 		if ip4 == nil {
+			p.logger.Info("failed to parse ip as an ipv4", ip)
 			continue
 		}
 		ipBytes := binary.LittleEndian.Uint32(ip4)
@@ -102,12 +106,12 @@ func (p *Probe) attach() error {
 		}
 		qdiscs, err := nlHandle.QdiscList(link)
 		if err != nil {
-			// log something
+			p.logger.Error(err, "error listing qdiscs for link with index", link.Attrs().Index)
 			continue
 		}
 		for _, disc := range qdiscs {
 			if err := nlHandle.QdiscDel(disc); err != nil {
-				// log something
+				p.logger.Error(err, "error cleaning up qdisc", disc.Attrs().Handle)
 				continue
 			}
 		}
