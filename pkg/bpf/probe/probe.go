@@ -3,6 +3,7 @@ package probe
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -15,7 +16,7 @@ import (
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go@latest egressBlock ./_cprog/probe.c
 
-// call it something other than probe
+// todo: call it something other than probe
 type Probe struct {
 	logger    *logr.Logger
 	bpfObjs   *egressBlockObjects
@@ -38,11 +39,6 @@ func New(l *logr.Logger) (*Probe, error) {
 		logger:    l,
 		bpfObjs:   objs,
 		bannedIps: make(map[string]struct{}),
-	}
-
-	err = p.attach()
-	if err != nil {
-		return nil, err
 	}
 
 	return p, nil
@@ -80,8 +76,9 @@ func (p *Probe) UpdateMap(ips []string) {
 	p.bannedIps = newIpMap
 }
 
-func (p *Probe) attach() error {
-	hostNs, err := netns.GetFromPath("/proc/1/ns/net")
+// we can't pass links because you cant get a nlHandle from a link, our best bet is pids
+func (p *Probe) Attach(pid uint32) error {
+	hostNs, err := netns.GetFromPath(fmt.Sprintf("/proc/%d/ns/net", pid))
 	if err != nil {
 		return err
 	}

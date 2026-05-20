@@ -17,7 +17,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/probe"
 	"github.com/nirmata/kyverno-runtime/pkg/config"
+	"github.com/nirmata/kyverno-runtime/pkg/containerd"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/preflight"
 )
@@ -110,11 +112,25 @@ func main() {
 	// streaming runs until the pod watch context is cancelled.
 	// igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
 
-	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient(), &logger)
+	// todo: make the socket passed through a flag with the default being the common default
+	probe, err := probe.New(&logger)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient(), &logger, probe)
 	if err != nil {
 		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
 		os.Exit(1)
 	}
+	connector, err := containerd.InitContainerdConnector("/run/containerd/containerd.sock",
+		probe, runtimeBehaviorReconciler, &logger)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	// set the runtime behavior's callback to the connector's evaluate function
+	runtimeBehaviorReconciler.SetCallback(connector.EvaluatePodsAgaintLabels)
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.RuntimeBehavior{}).
 		Complete(runtimeBehaviorReconciler); err != nil {
@@ -134,20 +150,17 @@ func main() {
 		logger.Error(err, "failed to add eBPF preflight readiness check")
 		os.Exit(1)
 	}
-	// if err := mgr.AddReadyzCheck("ebpf-operators", func(req *http.Request) error {
-	// 	select {
-	// 	case <-operatorsReady:
-	// 		return nil
-	// 	default:
-	// 		return fmt.Errorf("eBPF gadget operators are still initializing")
-	// 	}
-	// }); err != nil {
-	// 	logger.Error(err, "failed to add eBPF operators readiness check")
-	// 	os.Exit(1)
-	// }
+
+	sigCtx := ctrl.SetupSignalHandler()
+	go func() {
+		if err := connector.Run(sigCtx); err != nil {
+			logger.Error(err, "containerd connector exited with error")
+			os.Exit(1)
+		}
+	}()
 
 	logger.Info("starting kyverno-runtime DaemonSet controller")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(sigCtx); err != nil {
 		logger.Error(err, "manager exited non-zero")
 		os.Exit(1)
 	}

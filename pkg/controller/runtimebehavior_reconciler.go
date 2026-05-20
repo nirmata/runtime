@@ -16,29 +16,31 @@ import (
 const cleanupFinalizer = "runtime.kyverno.io/cleanup"
 
 type RuntimeBehaviorReconciler struct {
-	client    client.Client
-	bannedIps map[string][]string
-	probe     *probe.Probe
+	AllLabels map[string]string // all labels we saw from all runtime behaviors
+	Client    client.Client
+
+	bannedIps     map[string][]string
+	probe         *probe.Probe
+	labelCallback func()
 }
 
 // NewRuntimeBehaviorReconciler creates a new RuntimeBehaviorReconciler.
-func NewRuntimeBehaviorReconciler(c client.Client, l *logr.Logger) (*RuntimeBehaviorReconciler, error) {
-	probe, err := probe.New(l)
-	if err != nil {
-		return nil, err
-	}
-
+func NewRuntimeBehaviorReconciler(c client.Client, l *logr.Logger, probe *probe.Probe) (*RuntimeBehaviorReconciler, error) {
 	return &RuntimeBehaviorReconciler{
-		client:    c,
+		Client:    c,
 		bannedIps: make(map[string][]string),
 		probe:     probe,
 	}, nil
 }
 
+func (r *RuntimeBehaviorReconciler) SetCallback(f func()) {
+	r.labelCallback = f
+}
+
 // Reconcile is called whenever a RuntimeBehavior is created, updated, or deleted.
 func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	rb := &v1alpha1.RuntimeBehavior{}
-	if err := r.client.Get(ctx, req.NamespacedName, rb); err != nil {
+	if err := r.Client.Get(ctx, req.NamespacedName, rb); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -57,7 +59,7 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if rb.Finalizers != nil {
 			if controllerutil.ContainsFinalizer(rb, cleanupFinalizer) {
 				controllerutil.RemoveFinalizer(rb, cleanupFinalizer)
-				if err := r.client.Update(ctx, rb); err != nil {
+				if err := r.Client.Update(ctx, rb); err != nil {
 					return ctrl.Result{}, err
 				}
 				return ctrl.Result{}, nil
@@ -66,40 +68,30 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	if rb.Spec.Allow == nil {
-		return ctrl.Result{}, nil
-	}
-
-	if rb.Spec.Allow.Deny == nil {
+	if rb.Spec.Allow == nil || rb.Spec.Allow.Deny == nil {
 		return ctrl.Result{}, nil
 	}
 
 	r.bannedIps[req.Name] = rb.Spec.Allow.Deny.Network
-
-	switch rb.Spec.Mode {
-	case v1alpha1.ModeLearning:
-		// todo
-	case v1alpha1.ModeMonitor:
-		// todo
-	case v1alpha1.ModeEnforce:
-		// load the bpf program with the new ips found
-		ipsToBan := []string{}
-		for _, ips := range r.bannedIps {
-			for _, ip := range ips {
-				ipsToBan = append(ipsToBan, ip)
-			}
+	ipsToBan := []string{}
+	for _, ips := range r.bannedIps {
+		for _, ip := range ips {
+			ipsToBan = append(ipsToBan, ip)
 		}
-
-		r.probe.UpdateMap(ipsToBan)
 	}
+
+	// todo: dont do this if the mode is not enforce
+	r.probe.UpdateMap(ipsToBan)
 
 	// add finalizer if not present
 	if !controllerutil.ContainsFinalizer(rb, cleanupFinalizer) {
 		controllerutil.AddFinalizer(rb, cleanupFinalizer)
-		if err := r.client.Update(ctx, rb); err != nil {
+		if err := r.Client.Update(ctx, rb); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
+	// should be the re-evaluate function on the connector
+	r.labelCallback()
 
 	return ctrl.Result{}, nil
 }
