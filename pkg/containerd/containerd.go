@@ -149,7 +149,8 @@ func (c *ContainerdConnector) listAndMatch(ctx context.Context) error {
 	for _, cont := range containers {
 		pod, err := c.buildPodSpec(ctx, cont)
 		if err != nil {
-			return err
+			c.logger.Error(err, "failed to build spec for container", cont.ID())
+			continue
 		}
 
 		for labelKey, labelVal := range c.runtimeReconciler.AllLabels {
