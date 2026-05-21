@@ -41,10 +41,6 @@ func InitContainerdConnector(socketPath string,
 	probe *probe.Probe,
 	r *controller.RuntimeBehaviorReconciler,
 	logger *logr.Logger) (*ContainerdConnector, error) {
-	if socketPath == "" {
-		socketPath = "/run/containerd/containerd.sock"
-	}
-
 	client, err := containerd.New(socketPath)
 	if err != nil {
 		return nil, err

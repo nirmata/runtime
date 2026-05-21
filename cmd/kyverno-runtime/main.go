@@ -47,6 +47,7 @@ func main() {
 	var runtimeBehaviorInitialMode string
 	var runtimeBehaviorOptOutLabel string
 	var sharedDefaultsNamespace string
+	var containerdSocketPath string
 
 	defaults := config.DefaultFeatures()
 
@@ -72,6 +73,7 @@ func main() {
 	flag.StringVar(&runtimeBehaviorInitialMode, "runtimebehavior-initial-mode", "learning", "Initial mode for auto-created RuntimeBehavior resources: learning|monitor.")
 	flag.StringVar(&runtimeBehaviorOptOutLabel, "runtimebehavior-optout-label", "", "Optional label key to allow auditable RuntimeBehavior opt-out.")
 	flag.StringVar(&sharedDefaultsNamespace, "shared-defaults-namespace", "kyverno-runtime", "Namespace to discover shared RuntimeBehavior defaults.")
+	flag.StringVar(&containerdSocketPath, "containerd-socket", "/run/containerd/containerd.sock", "Path to the containerd socket.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -112,7 +114,6 @@ func main() {
 	// streaming runs until the pod watch context is cancelled.
 	// igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
 
-	// todo: make the socket passed through a flag with the default being the common default
 	probe, err := probe.New(&logger)
 	if err != nil {
 		os.Exit(1)
@@ -123,7 +124,7 @@ func main() {
 		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
 		os.Exit(1)
 	}
-	connector, err := containerd.InitContainerdConnector("/run/containerd/containerd.sock",
+	connector, err := containerd.InitContainerdConnector(containerdSocketPath,
 		probe, runtimeBehaviorReconciler, &logger)
 	if err != nil {
 		os.Exit(1)
