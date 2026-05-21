@@ -83,15 +83,15 @@ func (c *ContainerdConnector) EvaluatePodsAgaintLabels() {
 }
 
 func (c *ContainerdConnector) Run(ctx context.Context) error {
+	ctx = namespaces.WithNamespace(ctx, "k8s.io")
+
 	// initial listing of all containers
 	err := c.listAndMatch(ctx)
 	if err != nil {
 		return err
 	}
 
-	ctx = namespaces.WithNamespace(ctx, "k8s.io")
 	evCh, errCh := c.client.Subscribe(ctx, `topic=="/tasks/start"`)
-
 	// start the thread that will make sure deleted containers get removed from the map
 	// todo: maybe check if there's a way to subscribe to container deletions?
 	go c.cleanup(ctx)
