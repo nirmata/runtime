@@ -48,7 +48,7 @@ func InitContainerdConnector(socketPath string,
 	return c, nil
 }
 
-func (c *ContainerdConnector) EvaluatePodsAgaintLabels() {
+func (c *ContainerdConnector) EvaluatePodsAgainstLabels() {
 	// check if every pod you have still matches those labels, remove the ones that don't
 	// attach to the ones that do. (maybe make it map to avoid duplicates?)
 	for _, podInfo := range c.pods {
@@ -57,17 +57,16 @@ func (c *ContainerdConnector) EvaluatePodsAgaintLabels() {
 			continue
 		}
 		if podInfo.probe == nil {
-			probe, err := probe.New(c.logger)
+			p, err := probe.New(c.logger)
 			if err != nil {
 				c.logger.Error(err, "failed to create probe")
 				continue
 			}
-
-			err = probe.Attach(podInfo.pid)
-			if err != nil {
-				c.logger.Error(err, "failed to create probe")
+			if err = p.Attach(podInfo.pid); err != nil {
+				c.logger.Error(err, "failed to attach probe")
 				continue
 			}
+			podInfo.probe = p
 		}
 
 		podInfo.probe.UpdateMap(ipsToBan)
@@ -185,7 +184,7 @@ func (c *ContainerdConnector) listAndMatch(ctx context.Context) error {
 	for _, cont := range containers {
 		podInfo, err := c.buildPodInfo(ctx, cont)
 		if err != nil {
-			c.logger.Error(err, fmt.Sprintf("failed to build spec for container %s", cont.ID()))
+			c.logger.Error(err, "failed to build spec for container", "containerID", cont.ID())
 			continue
 		}
 		ipsToBan := c.getIpsToBanForPod(podInfo.k8sPod)
@@ -194,17 +193,16 @@ func (c *ContainerdConnector) listAndMatch(ctx context.Context) error {
 		}
 
 		if podInfo.probe == nil {
-			probe, err := probe.New(c.logger)
+			p, err := probe.New(c.logger)
 			if err != nil {
 				c.logger.Error(err, "failed to create probe")
 				continue
 			}
-
-			err = probe.Attach(podInfo.pid)
-			if err != nil {
-				c.logger.Error(err, "failed to create probe")
+			if err = p.Attach(podInfo.pid); err != nil {
+				c.logger.Error(err, "failed to attach probe")
 				continue
 			}
+			podInfo.probe = p
 		}
 
 		podInfo.probe.UpdateMap(ipsToBan)
@@ -222,18 +220,16 @@ func (c *ContainerdConnector) buildPodInfo(ctx context.Context, cont containerd.
 
 	podName, ok := labels["io.kubernetes.pod.name"]
 	if !ok {
-		c.logger.Info("container missing pod name label, skipping", "containerID", cont.ID())
-		return nil, err
+		return nil, fmt.Errorf("container %s missing label io.kubernetes.pod.name", cont.ID())
 	}
 
 	ns, ok := labels["io.kubernetes.pod.namespace"]
 	if !ok {
-		c.logger.Info("container missing pod namespace label, skipping", "containerID", cont.ID())
-		return nil, err
+		return nil, fmt.Errorf("container %s missing label io.kubernetes.pod.namespace", cont.ID())
 	}
 
 	pod := &corev1.Pod{}
-	err = c.runtimeReconciler.Client.Get(context.Background(), client.ObjectKey{
+	err = c.runtimeReconciler.Client.Get(ctx, client.ObjectKey{
 		Name:      podName,
 		Namespace: ns,
 	}, pod)
@@ -273,12 +269,10 @@ func (c *ContainerdConnector) cleanup(ctx context.Context) {
 				}
 				podName, ok := labels["io.kubernetes.pod.name"]
 				if !ok {
-					// something
 					continue
 				}
 				ns, ok := labels["io.kubernetes.pod.namespace"]
 				if !ok {
-					// something
 					continue
 				}
 				key := ns + "/" + podName

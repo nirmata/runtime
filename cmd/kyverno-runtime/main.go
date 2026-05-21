@@ -124,7 +124,7 @@ func main() {
 	}
 
 	// set the runtime behavior's callback to the connector's evaluate function
-	runtimeBehaviorReconciler.SetCallback(connector.EvaluatePodsAgaintLabels)
+	runtimeBehaviorReconciler.SetCallback(connector.EvaluatePodsAgainstLabels)
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.RuntimeBehavior{}).
 		Complete(runtimeBehaviorReconciler); err != nil {
