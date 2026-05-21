@@ -103,12 +103,12 @@ func (p *Probe) Attach(pid uint32) error {
 		}
 		qdiscs, err := nlHandle.QdiscList(link)
 		if err != nil {
-			p.logger.Error(err, fmt.Sprintf("error listing qdiscs for link with index %d", link.Attrs().Index))
+			p.logger.Info(fmt.Sprintf("error listing qdiscs for link with index %d: %s", link.Attrs().Index, err.Error()))
 			continue
 		}
 		for _, disc := range qdiscs {
 			if err := nlHandle.QdiscDel(disc); err != nil {
-				p.logger.Error(err, fmt.Sprintf("error cleaning up qdisc %d", disc.Attrs().Handle))
+				p.logger.Info(fmt.Sprintf("error cleaning up qdisc %d: %s", disc.Attrs().Handle, err.Error()))
 				continue
 			}
 		}
