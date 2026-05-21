@@ -247,20 +247,9 @@ func (c *ContainerdConnector) buildPodInfo(ctx context.Context, cont containerd.
 		c.logger.Error(err, "failed to get container task", "containerID", cont.ID())
 		return nil, err
 	}
-	probe, err := probe.New(c.logger)
-	if err != nil {
-		c.logger.Error(err, "failed to create probe")
-		return nil, err
-	}
-	err = probe.Attach(task.Pid())
-	if err != nil {
-		return nil, err
-	}
-
 	return &podInfo{
 		k8sPod: *pod,
 		pid:    task.Pid(),
-		probe:  probe,
 	}, nil
 }
 
