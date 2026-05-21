@@ -2,6 +2,7 @@ package containerd
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/containerd/containerd"
@@ -149,7 +150,7 @@ func (c *ContainerdConnector) listAndMatch(ctx context.Context) error {
 	for _, cont := range containers {
 		pod, err := c.buildPodSpec(ctx, cont)
 		if err != nil {
-			c.logger.Error(err, "failed to build spec for container", cont.ID())
+			c.logger.Error(err, fmt.Sprintf("failed to build spec for container %s", cont.ID()))
 			continue
 		}
 
