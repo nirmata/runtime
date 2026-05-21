@@ -61,7 +61,7 @@ type egressBlockProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type egressBlockMapSpecs struct {
-	BannedIps *ebpf.MapSpec `ebpf:"banned_ips"`
+	BannedIps1 *ebpf.MapSpec `ebpf:"banned_ips_1"`
 }
 
 // egressBlockVariableSpecs contains global variables before they are loaded into the kernel.
@@ -90,12 +90,12 @@ func (o *egressBlockObjects) Close() error {
 //
 // It can be passed to loadEgressBlockObjects or ebpf.CollectionSpec.LoadAndAssign.
 type egressBlockMaps struct {
-	BannedIps *ebpf.Map `ebpf:"banned_ips"`
+	BannedIps1 *ebpf.Map `ebpf:"banned_ips_1"`
 }
 
 func (m *egressBlockMaps) Close() error {
 	return _EgressBlockClose(
-		m.BannedIps,
+		m.BannedIps1,
 	)
 }
 

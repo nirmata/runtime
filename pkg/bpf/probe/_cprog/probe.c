@@ -11,7 +11,7 @@ struct {
     __uint(max_entries, 1024);
     __type(key, __u32);
     __type(value, __u8);
-} banned_ips SEC(".maps");
+} banned_ips_1 SEC(".maps");
 
 struct iphdr {
     __u8  ihl_version;
@@ -51,7 +51,7 @@ int tc_egress(struct __sk_buff *skb)
     __u32 daddr = ip->daddr;
     bpf_printk("tc_egress: daddr=%x\n", daddr);
 
-    __u8 *val = bpf_map_lookup_elem(&banned_ips, &daddr);
+    __u8 *val = bpf_map_lookup_elem(&banned_ips_1, &daddr);
     bpf_printk("tc_egress: map lookup result=%d\n", val ? 1 : 0);
 
     if (val) {
