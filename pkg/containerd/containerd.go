@@ -90,6 +90,7 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 	// todo: maybe check if there's a way to subscribe to container deletions?
 	go c.cleanup(ctx)
 
+	// we initially may need to list all
 	for {
 		select {
 		case ev := <-evCh:

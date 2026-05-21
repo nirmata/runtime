@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"maps"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,6 +29,7 @@ type RuntimeBehaviorReconciler struct {
 func NewRuntimeBehaviorReconciler(c client.Client, l *logr.Logger, probe *probe.Probe) (*RuntimeBehaviorReconciler, error) {
 	return &RuntimeBehaviorReconciler{
 		Client:    c,
+		AllLabels: make(map[string]string),
 		bannedIps: make(map[string][]string),
 		probe:     probe,
 	}, nil
@@ -72,6 +74,13 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
+	// add any new labels
+	if rb.Spec.WorkloadSelector.MatchLabels != nil {
+		// todo: handle overlapping labels
+		maps.Copy(r.AllLabels, rb.Spec.WorkloadSelector.MatchLabels)
+	}
+
+	// handle banned ips
 	r.bannedIps[req.Name] = rb.Spec.Allow.Deny.Network
 	ipsToBan := []string{}
 	for _, ips := range r.bannedIps {
