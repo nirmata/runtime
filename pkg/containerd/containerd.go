@@ -83,6 +83,12 @@ func (c *ContainerdConnector) EvaluatePodsAgaintLabels() {
 }
 
 func (c *ContainerdConnector) Run(ctx context.Context) error {
+	// initial listing of all containers
+	err := c.listAndMatch(ctx)
+	if err != nil {
+		return err
+	}
+
 	ctx = namespaces.WithNamespace(ctx, "k8s.io")
 	evCh, errCh := c.client.Subscribe(ctx, `topic=="/tasks/start"`)
 
@@ -90,7 +96,6 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 	// todo: maybe check if there's a way to subscribe to container deletions?
 	go c.cleanup(ctx)
 
-	// we initially may need to list all
 	for {
 		select {
 		case ev := <-evCh:
@@ -107,57 +112,23 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 				continue
 			}
 
-			labels, err := cont.Labels(ctx)
+			pod, err := c.buildPodSpec(ctx, cont)
 			if err != nil {
-				c.logger.Error(err, "failed to get container labels", "containerID", taskStart.ContainerID)
+				c.logger.Error(err, "failed to build k8s spec for container", "containerID", cont.ID())
 				continue
-			}
-
-			podName, ok := labels["io.kubernetes.pod.name"]
-			if !ok {
-				c.logger.Info("container missing pod name label, skipping", "containerID", cont.ID())
-				continue
-			}
-
-			ns, ok := labels["io.kubernetes.pod.namespace"]
-			if !ok {
-				c.logger.Info("container missing pod namespace label, skipping", "containerID", cont.ID())
-				continue
-			}
-
-			pod := &corev1.Pod{}
-			err = c.runtimeReconciler.Client.Get(context.Background(), client.ObjectKey{
-				Name:      podName,
-				Namespace: ns,
-			}, pod)
-			if err != nil {
-				c.logger.Error(err, "failed to get pod from API server", "pod", podName, "namespace", ns)
-				continue
-			}
-
-			task, err := cont.Task(ctx, nil)
-			if err != nil {
-				c.logger.Error(err, "failed to get container task", "containerID", taskStart.ContainerID)
-				continue
-			}
-
-			podK8s := &podK8sSpec{
-				pod:      *pod,
-				pid:      task.Pid(),
-				attached: false,
 			}
 
 			for labelKey, labelVal := range c.runtimeReconciler.AllLabels {
-				if podLabelVal, exists := pod.Labels[labelKey]; exists {
+				if podLabelVal, exists := pod.pod.Labels[labelKey]; exists {
 					if podLabelVal == labelVal {
 						// a pod matches the labels.. we should attach to it
-						c.probe.Attach(task.Pid())
-						podK8s.attached = true
+						c.probe.Attach(pod.pid)
+						pod.attached = true
 					}
 				}
 			}
 
-			c.pods[ns+"/"+podName] = podK8s
+			c.pods[pod.pod.Namespace+"/"+pod.pod.Name] = pod
 
 		case err := <-errCh:
 			c.logger.Error(err, "containerd event stream error")
@@ -166,6 +137,76 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+func (c *ContainerdConnector) listAndMatch(ctx context.Context) error {
+	containers, err := c.client.Containers(ctx)
+	if err != nil {
+		c.logger.Error(err, "failed to list containers")
+		return err
+	}
+
+	for _, cont := range containers {
+		pod, err := c.buildPodSpec(ctx, cont)
+		if err != nil {
+			return err
+		}
+
+		for labelKey, labelVal := range c.runtimeReconciler.AllLabels {
+			if podLabelVal, exists := pod.pod.Labels[labelKey]; exists {
+				if podLabelVal == labelVal {
+					// a pod matches the labels.. we should attach to it
+					c.probe.Attach(pod.pid)
+					pod.attached = true
+				}
+			}
+		}
+
+		c.pods[pod.pod.Namespace+"/"+pod.pod.Name] = pod
+	}
+	return nil
+}
+
+func (c *ContainerdConnector) buildPodSpec(ctx context.Context, cont containerd.Container) (*podK8sSpec, error) {
+	labels, err := cont.Labels(ctx)
+	if err != nil {
+		c.logger.Error(err, "failed to get container labels", "containerID", cont.ID())
+		return nil, err
+	}
+
+	podName, ok := labels["io.kubernetes.pod.name"]
+	if !ok {
+		c.logger.Info("container missing pod name label, skipping", "containerID", cont.ID())
+		return nil, err
+	}
+
+	ns, ok := labels["io.kubernetes.pod.namespace"]
+	if !ok {
+		c.logger.Info("container missing pod namespace label, skipping", "containerID", cont.ID())
+		return nil, err
+	}
+
+	pod := &corev1.Pod{}
+	err = c.runtimeReconciler.Client.Get(context.Background(), client.ObjectKey{
+		Name:      podName,
+		Namespace: ns,
+	}, pod)
+	if err != nil {
+		c.logger.Error(err, "failed to get pod from API server", "pod", podName, "namespace", ns)
+		return nil, err
+	}
+
+	task, err := cont.Task(ctx, nil)
+	if err != nil {
+		c.logger.Error(err, "failed to get container task", "containerID", cont.ID())
+		return nil, err
+	}
+
+	return &podK8sSpec{
+		pod:      *pod,
+		pid:      task.Pid(),
+		attached: false,
+	}, nil
 }
 
 func (c *ContainerdConnector) cleanup(ctx context.Context) {
