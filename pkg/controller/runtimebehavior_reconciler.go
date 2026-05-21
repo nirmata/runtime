@@ -10,20 +10,15 @@ import (
 
 	"github.com/go-logr/logr"
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/probe"
 )
 
 const cleanupFinalizer = "runtime.kyverno.io/cleanup"
 
 type RuntimeBehaviorReconciler struct {
-	// AllLabels map[string]string // all labels we saw from all runtime behaviors
 	Client client.Client
 	RbMap  map[string]*Rb // a map of rb name to its matching labels and ips so when an event happens
 	// regarding it we can patch the right rb
 
-	// we need to have a label to ips map
-	// and a runtime behavior to label map
-	probe         *probe.Probe
 	labelCallback func()
 }
 
@@ -35,8 +30,8 @@ type Rb struct {
 // NewRuntimeBehaviorReconciler creates a new RuntimeBehaviorReconciler.
 func NewRuntimeBehaviorReconciler(c client.Client, l *logr.Logger) (*RuntimeBehaviorReconciler, error) {
 	return &RuntimeBehaviorReconciler{
+		RbMap:  make(map[string]*Rb),
 		Client: c,
-		// AllLabels: make(map[string]string),
 	}, nil
 }
 
