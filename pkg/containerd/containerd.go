@@ -53,6 +53,23 @@ func (c *ContainerdConnector) EvaluatePodsAgaintLabels() {
 	// attach to the ones that do. (maybe make it map to avoid duplicates?)
 	for _, podInfo := range c.pods {
 		ipsToBan := c.getIpsToBanForPod(podInfo.k8sPod)
+		if len(ipsToBan) == 0 {
+			continue
+		}
+		if podInfo.probe == nil {
+			probe, err := probe.New(c.logger)
+			if err != nil {
+				c.logger.Error(err, "failed to create probe")
+				continue
+			}
+
+			err = probe.Attach(podInfo.pid)
+			if err != nil {
+				c.logger.Error(err, "failed to create probe")
+				continue
+			}
+		}
+
 		podInfo.probe.UpdateMap(ipsToBan)
 	}
 }
@@ -125,10 +142,29 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 			}
 			// get the ips to ban for that pod
 			ipsToBan := c.getIpsToBanForPod(podInfo.k8sPod)
-			// put it in the pod's program
-			podInfo.probe.UpdateMap(ipsToBan)
 
 			c.pods[podInfo.k8sPod.Namespace+"/"+podInfo.k8sPod.Name] = podInfo
+
+			// no ips to ban for that pod.. do nothing
+			if len(ipsToBan) == 0 {
+				continue
+			}
+
+			probe, err := probe.New(c.logger)
+			if err != nil {
+				c.logger.Error(err, "failed to create probe")
+				continue
+			}
+
+			err = probe.Attach(podInfo.pid)
+			if err != nil {
+				c.logger.Error(err, "failed to create probe")
+				continue
+			}
+
+			// put it in the pod's program
+			podInfo.probe = probe
+			podInfo.probe.UpdateMap(ipsToBan)
 
 		case err := <-errCh:
 			c.logger.Error(err, "containerd event stream error")
@@ -153,8 +189,25 @@ func (c *ContainerdConnector) listAndMatch(ctx context.Context) error {
 			continue
 		}
 		ipsToBan := c.getIpsToBanForPod(podInfo.k8sPod)
-		podInfo.probe.UpdateMap(ipsToBan)
+		if len(ipsToBan) == 0 {
+			continue
+		}
 
+		if podInfo.probe == nil {
+			probe, err := probe.New(c.logger)
+			if err != nil {
+				c.logger.Error(err, "failed to create probe")
+				continue
+			}
+
+			err = probe.Attach(podInfo.pid)
+			if err != nil {
+				c.logger.Error(err, "failed to create probe")
+				continue
+			}
+		}
+
+		podInfo.probe.UpdateMap(ipsToBan)
 		c.pods[podInfo.k8sPod.Namespace+"/"+podInfo.k8sPod.Name] = podInfo
 	}
 	return nil
