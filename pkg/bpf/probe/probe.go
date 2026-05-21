@@ -21,6 +21,7 @@ type Probe struct {
 	logger    *logr.Logger
 	bpfObjs   *egressBlockObjects
 	bannedIps map[string]struct{}
+	pid       uint32
 }
 
 func New(l *logr.Logger) (*Probe, error) {
@@ -78,6 +79,7 @@ func (p *Probe) UpdateMap(ips []string) {
 
 // we can't pass links because you cant get a nlHandle from a link, our best bet is pids
 func (p *Probe) Attach(pid uint32) error {
+	p.pid = pid
 	hostNs, err := netns.GetFromPath(fmt.Sprintf("/proc/%d/ns/net", pid))
 	if err != nil {
 		return err
@@ -145,4 +147,49 @@ func (p *Probe) Attach(pid uint32) error {
 	}
 
 	return nil
+}
+
+func (p *Probe) Close() {
+	if p.pid == 0 {
+		return
+	}
+
+	hostNs, err := netns.GetFromPath(fmt.Sprintf("/proc/%d/ns/net", p.pid))
+	if err != nil {
+		// pid is already gone — kernel cleaned up the netns, nothing to do
+		return
+	}
+	defer hostNs.Close()
+
+	nlHandle, err := netlink.NewHandleAt(hostNs)
+	if err != nil {
+		p.logger.Error(err, "failed to create netlink handle during cleanup")
+		return
+	}
+	defer nlHandle.Close()
+
+	links, err := nlHandle.LinkList()
+	if err != nil {
+		p.logger.Error(err, "failed to list links during cleanup")
+		return
+	}
+
+	for _, link := range links {
+		if strings.HasPrefix(link.Attrs().Name, "lo") {
+			continue
+		}
+		qdiscs, err := nlHandle.QdiscList(link)
+		if err != nil {
+			p.logger.Error(err, "failed to list qdiscs during cleanup", "link", link.Attrs().Name)
+			continue
+		}
+		for _, qdisc := range qdiscs {
+			if qdisc.Type() != "clsact" {
+				continue
+			}
+			if err := nlHandle.QdiscDel(qdisc); err != nil {
+				p.logger.Error(err, "failed to remove clsact qdisc", "link", link.Attrs().Name)
+			}
+		}
+	}
 }

@@ -157,7 +157,7 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 
 			err = probe.Attach(podInfo.pid)
 			if err != nil {
-				c.logger.Error(err, "failed to create probe")
+				c.logger.Error(err, "failed to attach probe")
 				continue
 			}
 
@@ -169,7 +169,16 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 			c.logger.Error(err, "containerd event stream error")
 			return err
 		case <-ctx.Done():
+			c.shutdown()
 			return nil
+		}
+	}
+}
+
+func (c *ContainerdConnector) shutdown() {
+	for _, info := range c.pods {
+		if info.probe != nil {
+			info.probe.Close()
 		}
 	}
 }
