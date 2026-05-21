@@ -103,12 +103,12 @@ func (p *Probe) Attach(pid uint32) error {
 		}
 		qdiscs, err := nlHandle.QdiscList(link)
 		if err != nil {
-			p.logger.Error(err, "error listing qdiscs for link with index", link.Attrs().Index)
+			p.logger.Error(err, fmt.Sprintf("error listing qdiscs for link with index %d", link.Attrs().Index))
 			continue
 		}
 		for _, disc := range qdiscs {
 			if err := nlHandle.QdiscDel(disc); err != nil {
-				p.logger.Error(err, "error cleaning up qdisc", disc.Attrs().Handle)
+				p.logger.Error(err, fmt.Sprintf("error cleaning up qdisc %d", disc.Attrs().Handle))
 				continue
 			}
 		}
@@ -130,7 +130,7 @@ func (p *Probe) Attach(pid uint32) error {
 		filter := &netlink.BpfFilter{
 			FilterAttrs: netlink.FilterAttrs{
 				LinkIndex: link.Attrs().Index,
-				Parent:    netlink.HANDLE_MIN_INGRESS,
+				Parent:    netlink.HANDLE_MIN_EGRESS,
 				Handle:    1,
 				Protocol:  unix.ETH_P_ALL,
 				Priority:  1,
