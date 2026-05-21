@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"maps"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -17,21 +16,27 @@ import (
 const cleanupFinalizer = "runtime.kyverno.io/cleanup"
 
 type RuntimeBehaviorReconciler struct {
-	AllLabels map[string]string // all labels we saw from all runtime behaviors
-	Client    client.Client
+	// AllLabels map[string]string // all labels we saw from all runtime behaviors
+	Client client.Client
+	RbMap  map[string]*Rb // a map of rb name to its matching labels and ips so when an event happens
+	// regarding it we can patch the right rb
 
-	bannedIps     map[string][]string
+	// we need to have a label to ips map
+	// and a runtime behavior to label map
 	probe         *probe.Probe
 	labelCallback func()
 }
 
+type Rb struct {
+	Labels map[string]string
+	Ips    []string
+}
+
 // NewRuntimeBehaviorReconciler creates a new RuntimeBehaviorReconciler.
-func NewRuntimeBehaviorReconciler(c client.Client, l *logr.Logger, probe *probe.Probe) (*RuntimeBehaviorReconciler, error) {
+func NewRuntimeBehaviorReconciler(c client.Client, l *logr.Logger) (*RuntimeBehaviorReconciler, error) {
 	return &RuntimeBehaviorReconciler{
-		Client:    c,
-		AllLabels: make(map[string]string),
-		bannedIps: make(map[string][]string),
-		probe:     probe,
+		Client: c,
+		// AllLabels: make(map[string]string),
 	}, nil
 }
 
@@ -50,14 +55,10 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if !rb.DeletionTimestamp.IsZero() {
-		delete(r.bannedIps, req.Name)
-		ipsToBan := []string{}
-		for _, ips := range r.bannedIps {
-			for _, ip := range ips {
-				ipsToBan = append(ipsToBan, ip)
-			}
-		}
-		r.probe.UpdateMap(ipsToBan)
+		delete(r.RbMap, req.Name)
+		// inform the containerd connector to reevaluate ips
+		r.labelCallback()
+
 		if rb.Finalizers != nil {
 			if controllerutil.ContainsFinalizer(rb, cleanupFinalizer) {
 				controllerutil.RemoveFinalizer(rb, cleanupFinalizer)
@@ -74,23 +75,14 @@ func (r *RuntimeBehaviorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// add any new labels
-	if rb.Spec.WorkloadSelector.MatchLabels != nil {
-		// todo: handle overlapping labels
-		maps.Copy(r.AllLabels, rb.Spec.WorkloadSelector.MatchLabels)
+	r.RbMap[req.Name] = &Rb{
+		Ips:    rb.Spec.Allow.Deny.Network,
+		Labels: rb.Spec.WorkloadSelector.MatchLabels,
 	}
 
 	// handle banned ips
-	r.bannedIps[req.Name] = rb.Spec.Allow.Deny.Network
-	ipsToBan := []string{}
-	for _, ips := range r.bannedIps {
-		for _, ip := range ips {
-			ipsToBan = append(ipsToBan, ip)
-		}
-	}
 
 	// todo: dont do this if the mode is not enforce
-	r.probe.UpdateMap(ipsToBan)
 
 	// add finalizer if not present
 	if !controllerutil.ContainsFinalizer(rb, cleanupFinalizer) {

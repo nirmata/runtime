@@ -17,7 +17,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/probe"
 	"github.com/nirmata/kyverno-runtime/pkg/config"
 	"github.com/nirmata/kyverno-runtime/pkg/containerd"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
@@ -114,18 +113,12 @@ func main() {
 	// streaming runs until the pod watch context is cancelled.
 	// igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
 
-	probe, err := probe.New(&logger)
-	if err != nil {
-		os.Exit(1)
-	}
-
-	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient(), &logger, probe)
+	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient(), &logger)
 	if err != nil {
 		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
 		os.Exit(1)
 	}
-	connector, err := containerd.InitContainerdConnector(containerdSocketPath,
-		probe, runtimeBehaviorReconciler, &logger)
+	connector, err := containerd.InitContainerdConnector(containerdSocketPath, runtimeBehaviorReconciler, &logger)
 	if err != nil {
 		os.Exit(1)
 	}

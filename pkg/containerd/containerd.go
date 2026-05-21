@@ -16,30 +16,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type podK8sSpec struct {
-	pod      corev1.Pod
+type podInfo struct {
+	k8sPod   corev1.Pod
 	attached bool
+	probe    *probe.Probe
 	pid      uint32 // todo: how to keep pid up to date ?
-	// todo: do we need any more information here ?
 }
 
 type ContainerdConnector struct {
-	// the connector should have a way for me to tell it hey bro, reevaluate the pods
-	// you have against this new set of selectors. we should avoid a circular dependency
-	// between the connector and the behavior reconciler
-	// can we have a god listener and everything channel sends to it whenever it gets an update?
-	// what am i solving ? the need to tell the connector to reevaluate against the pods it has
-	// so what if it stores all pods it saw. and there is a function on it ?
-	// but again.. to call it.. we will have a circular dependency
 	client            *containerd.Client
 	runtimeReconciler *controller.RuntimeBehaviorReconciler
-	probe             *probe.Probe
-	pods              map[string]*podK8sSpec
+	pods              map[string]*podInfo
 	logger            *logr.Logger
 }
 
 func InitContainerdConnector(socketPath string,
-	probe *probe.Probe,
 	r *controller.RuntimeBehaviorReconciler,
 	logger *logr.Logger) (*ContainerdConnector, error) {
 	client, err := containerd.New(socketPath)
@@ -48,10 +39,9 @@ func InitContainerdConnector(socketPath string,
 	}
 
 	c := &ContainerdConnector{
-		probe:             probe,
 		client:            client,
 		runtimeReconciler: r,
-		pods:              map[string]*podK8sSpec{},
+		pods:              map[string]*podInfo{},
 		logger:            logger,
 	}
 
@@ -60,27 +50,42 @@ func InitContainerdConnector(socketPath string,
 
 func (c *ContainerdConnector) EvaluatePodsAgaintLabels() {
 	// check if every pod you have still matches those labels, remove the ones that don't
-	// attach to the ones that do
-	for _, podSpec := range c.pods {
-		stillMatchesLabels := false
-		for labelKey, labelVal := range c.runtimeReconciler.AllLabels {
-			if podLabelVal, exists := podSpec.pod.Labels[labelKey]; exists {
-				if podLabelVal == labelVal {
-					if !podSpec.attached {
-						c.probe.Attach(podSpec.pid)
-					}
-					stillMatchesLabels = true
-					break
-				}
+	// attach to the ones that do. (maybe make it map to avoid duplicates?)
+	for _, podInfo := range c.pods {
+		ipsToBan := c.getIpsToBanForPod(podInfo.k8sPod)
+		podInfo.probe.UpdateMap(ipsToBan)
+	}
+}
+
+func (c *ContainerdConnector) getIpsToBanForPod(pod corev1.Pod) []string {
+	ipsToBan := []string{}
+	for _, rb := range c.runtimeReconciler.RbMap {
+		rbMatched := false
+		for labelKey, labelVal := range rb.Labels {
+			podLabelVal, exists := pod.Labels[labelKey]
+			// pod doesn't have that label, continue
+			if !exists {
+				continue
 			}
+
+			// the pod has the label, but a different value that the one this rb matches on
+			if podLabelVal != labelVal {
+				continue
+			}
+
+			rbMatched = true
 		}
 
-		if !stillMatchesLabels {
-			// this pod no longer matches the labels
-			// todo: create a probe detach function
-			podSpec.attached = false
+		// this rb didn't match this pod, skip it
+		if !rbMatched {
+			continue
 		}
+
+		// the rb matched the pod, get its ips and add them to the ips to ban
+		ipsToBan = append(ipsToBan, rb.Ips...)
 	}
+
+	return ipsToBan
 }
 
 func (c *ContainerdConnector) Run(ctx context.Context) error {
@@ -113,23 +118,17 @@ func (c *ContainerdConnector) Run(ctx context.Context) error {
 				continue
 			}
 
-			pod, err := c.buildPodSpec(ctx, cont)
+			podInfo, err := c.buildPodInfo(ctx, cont)
 			if err != nil {
 				c.logger.Error(err, "failed to build k8s spec for container", "containerID", cont.ID())
 				continue
 			}
+			// get the ips to ban for that pod
+			ipsToBan := c.getIpsToBanForPod(podInfo.k8sPod)
+			// put it in the pod's program
+			podInfo.probe.UpdateMap(ipsToBan)
 
-			for labelKey, labelVal := range c.runtimeReconciler.AllLabels {
-				if podLabelVal, exists := pod.pod.Labels[labelKey]; exists {
-					if podLabelVal == labelVal {
-						// a pod matches the labels.. we should attach to it
-						c.probe.Attach(pod.pid)
-						pod.attached = true
-					}
-				}
-			}
-
-			c.pods[pod.pod.Namespace+"/"+pod.pod.Name] = pod
+			c.pods[podInfo.k8sPod.Namespace+"/"+podInfo.k8sPod.Name] = podInfo
 
 		case err := <-errCh:
 			c.logger.Error(err, "containerd event stream error")
@@ -148,28 +147,20 @@ func (c *ContainerdConnector) listAndMatch(ctx context.Context) error {
 	}
 
 	for _, cont := range containers {
-		pod, err := c.buildPodSpec(ctx, cont)
+		podInfo, err := c.buildPodInfo(ctx, cont)
 		if err != nil {
 			c.logger.Error(err, fmt.Sprintf("failed to build spec for container %s", cont.ID()))
 			continue
 		}
+		ipsToBan := c.getIpsToBanForPod(podInfo.k8sPod)
+		podInfo.probe.UpdateMap(ipsToBan)
 
-		for labelKey, labelVal := range c.runtimeReconciler.AllLabels {
-			if podLabelVal, exists := pod.pod.Labels[labelKey]; exists {
-				if podLabelVal == labelVal {
-					// a pod matches the labels.. we should attach to it
-					c.probe.Attach(pod.pid)
-					pod.attached = true
-				}
-			}
-		}
-
-		c.pods[pod.pod.Namespace+"/"+pod.pod.Name] = pod
+		c.pods[podInfo.k8sPod.Namespace+"/"+podInfo.k8sPod.Name] = podInfo
 	}
 	return nil
 }
 
-func (c *ContainerdConnector) buildPodSpec(ctx context.Context, cont containerd.Container) (*podK8sSpec, error) {
+func (c *ContainerdConnector) buildPodInfo(ctx context.Context, cont containerd.Container) (*podInfo, error) {
 	labels, err := cont.Labels(ctx)
 	if err != nil {
 		c.logger.Error(err, "failed to get container labels", "containerID", cont.ID())
@@ -203,11 +194,16 @@ func (c *ContainerdConnector) buildPodSpec(ctx context.Context, cont containerd.
 		c.logger.Error(err, "failed to get container task", "containerID", cont.ID())
 		return nil, err
 	}
+	probe, err := probe.New(c.logger)
+	if err != nil {
+		c.logger.Error(err, "failed to create probe")
+		return nil, err
+	}
 
-	return &podK8sSpec{
-		pod:      *pod,
-		pid:      task.Pid(),
-		attached: false,
+	return &podInfo{
+		k8sPod: *pod,
+		pid:    task.Pid(),
+		probe:  probe,
 	}, nil
 }
 
@@ -217,7 +213,7 @@ func (c *ContainerdConnector) cleanup(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			newPodMap := make(map[string]*podK8sSpec)
+			newPodMap := make(map[string]*podInfo)
 			containers, err := c.client.Containers(ctx)
 			if err != nil {
 				c.logger.Error(err, "failed to list containers during cleanup")
