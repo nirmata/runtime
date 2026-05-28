@@ -181,7 +181,7 @@ jobs:
             --push=true \
             --bare \
             --tags=${GITHUB_REF_NAME} \
-            --platform=linux/amd64
+            --platform=linux/amd64,linux/arm64
 
   publish-chart:
     name: Package & Publish Helm Chart
