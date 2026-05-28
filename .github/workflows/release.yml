@@ -91,6 +91,7 @@ jobs:
         uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          config: test/e2e/kind-config.yaml
 
       - name: Install Chainsaw
         shell: bash
@@ -121,26 +122,11 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/chainsaw" version
 
-      - name: Build tagged image locally and verify install
+      - name: Build tagged image locally and run E2E
         shell: bash
         run: |
           set -euo pipefail
-          # Run kind-install only (no Chainsaw assertions) — Inspektor Gadget
-          # requires kernel BTF support that is not available on GitHub Actions
-          # ubuntu-latest runners, so eBPF events are never produced and the
-          # openreports.io/v1alpha1/Report assertions time out. Full E2E runs
-          # in the separate e2e.yml workflow. This gate verifies: image builds,
-          # loads into kind, DaemonSet rolls out, and readiness probe passes.
-          make kind-install IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${GITHUB_REF_NAME}"
-
-      - name: Verify controller rollout
-        shell: bash
-        run: |
-          kubectl -n kyverno-runtime wait pods \
-            -l app.kubernetes.io/name=kyverno-runtime \
-            --for=condition=Ready \
-            --timeout=120s
-          kubectl -n kyverno-runtime get pods -o wide
+          make test-e2e-install IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="${GITHUB_REF_NAME}"
 
       - name: Debug cluster state
         if: always()
