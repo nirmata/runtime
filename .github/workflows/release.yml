@@ -91,6 +91,7 @@ jobs:
         uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          config: test/e2e/kind-config.yaml
 
       - name: Install Chainsaw
         shell: bash
