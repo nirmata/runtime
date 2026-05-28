@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   kyverno-runtime:
   - apiVersion: v2
+    appVersion: 0.0.2
+    created: "2026-05-28T23:11:07.711768989Z"
+    description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
+    digest: c09c918f5d173cb161083de96cb8b89e30a6124c461b165242b0116da532c083
+    name: kyverno-runtime
+    type: application
+    urls:
+    - kyverno-runtime-0.0.2.tgz
+    version: 0.0.2
+  - apiVersion: v2
     appVersion: 0.0.1
     created: "2026-04-27T07:47:46.379301986Z"
     description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
@@ -11,16 +21,6 @@ entries:
     urls:
     - kyverno-runtime-0.0.1.tgz
     version: 0.0.1
-  - apiVersion: v2
-    appVersion: 0.0.1-alpha34
-    created: "2026-04-27T07:47:36.036563293Z"
-    description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
-    digest: 1e3da2aa97b9d3a41988bc5605f811d536e4af6c09f497fd02927affdcefb2c2
-    name: kyverno-runtime
-    type: application
-    urls:
-    - kyverno-runtime-0.0.1-alpha34.tgz
-    version: 0.0.1-alpha34
   - apiVersion: v2
     appVersion: 0.0.1-alpha8
     created: "2026-04-26T21:11:19.844750321Z"
@@ -61,4 +61,14 @@ entries:
     urls:
     - kyverno-runtime-0.0.1-alpha5.tgz
     version: 0.0.1-alpha5
-generated: "2026-04-27T07:47:46.379337442Z"
+  - apiVersion: v2
+    appVersion: 0.0.1-alpha34
+    created: "2026-04-27T07:47:36.036563293Z"
+    description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
+    digest: 1e3da2aa97b9d3a41988bc5605f811d536e4af6c09f497fd02927affdcefb2c2
+    name: kyverno-runtime
+    type: application
+    urls:
+    - kyverno-runtime-0.0.1-alpha34.tgz
+    version: 0.0.1-alpha34
+generated: "2026-05-28T23:11:07.711803991Z"
