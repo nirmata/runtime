@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          make test-e2e-install IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="$(git describe --tags --always --dirty)"
+          make test-e2e-full IMAGE_REPOSITORY=ghcr.io/nirmata/kyverno-runtime IMAGE_TAG="$(git describe --tags --always --dirty)"
 
       - name: Debug cluster state
         if: always()
