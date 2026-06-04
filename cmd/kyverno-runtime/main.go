@@ -152,12 +152,22 @@ func main() {
 		logger.Error(err, "failed to add eBPF preflight readiness check")
 		os.Exit(1)
 	}
+	em := egressmgr.NewEgressManager()
 
-	pw := pods.NewPodWatcher(k8sClient, nodeName, egressmgr.NewEgressManager())
+	pw := pods.NewPodWatcher(k8sClient, nodeName, em)
+	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, em)
+	if err != nil {
+		os.Exit(1)
+	}
 
+	// todo: how to make it durable with restarts ? again.. refer to the policy reporter
 	sigCtx := ctrl.SetupSignalHandler()
 	go func() {
 		pw.Start(sigCtx)
+	}()
+
+	go func() {
+		rbInformer.Start(sigCtx)
 	}()
 
 	logger.Info("starting kyverno-runtime DaemonSet controller")
