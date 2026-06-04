@@ -17,7 +17,8 @@ const cleanupFinalizer = "runtime.kyverno.io/cleanup"
 type RuntimeBehaviorReconciler struct {
 	Client client.Client
 	RbMap  map[string]*Rb // a map of rb name to its matching labels and ips so when an event happens
-	// regarding it we can patch the right rb
+	// todo: this needs to also have a dependency on the egress manager and other bpf handlers
+	// in the future
 
 	labelCallback func()
 }

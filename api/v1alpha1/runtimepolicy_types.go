@@ -97,6 +97,8 @@ type RuntimePolicyStatus struct {
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
 }
 
+// +genclient
+// +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=rpol,scope=Cluster
 // +kubebuilder:subresource:status

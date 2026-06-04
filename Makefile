@@ -1,8 +1,35 @@
+MODULE := github.com/nirmata/kyverno-runtime
+
 KIND_CLUSTER_NAME ?= kyverno-runtime
 IMAGE_REPOSITORY ?= ghcr.io/nirmata/kyverno-runtime
 IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 HOST_PLATFORM ?= linux/$(shell go env GOARCH)
+
+generate-client:
+	go run k8s.io/code-generator/cmd/client-gen \
+		--clientset-name versioned \
+		--input-base "" \
+		--input $(MODULE)/api/v1alpha1 \
+		--output-dir ./pkg/client/clientset \
+		--output-pkg $(MODULE)/pkg/client/clientset \
+		--go-header-file hack/boilerplate.go.txt
+
+generate-listers:
+	go run k8s.io/code-generator/cmd/lister-gen \
+		--output-dir ./pkg/client/listers \
+		--output-pkg $(MODULE)/pkg/client/listers \
+		--go-header-file hack/boilerplate.go.txt \
+		$(MODULE)/api/v1alpha1
+
+generate-informers:
+	go run k8s.io/code-generator/cmd/informer-gen \
+		--output-dir ./pkg/client/informers \
+		--output-pkg $(MODULE)/pkg/client/informers \
+		--versioned-clientset-package $(MODULE)/pkg/client/clientset/versioned \
+		--listers-package $(MODULE)/pkg/client/listers \
+		--go-header-file hack/boilerplate.go.txt \
+		$(MODULE)/api/v1alpha1
 
 test:
 	go test ./...
@@ -106,4 +133,4 @@ test-e2e-install: kind-install test-e2e
 # Full CI pipeline reusing a prebuilt image tag (no ko build)
 test-e2e-install-prebuilt: kind-install-prebuilt test-e2e
 
-.PHONY: test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt
+.PHONY: generate-client generate-listers generate-informers test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt

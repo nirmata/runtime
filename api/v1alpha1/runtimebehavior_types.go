@@ -162,6 +162,7 @@ type ObservedBehaviors struct {
 	DNS     []string `json:"dns,omitempty"`
 }
 
+// +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=rbe
 // +kubebuilder:subresource:status

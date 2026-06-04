@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -18,8 +19,9 @@ import (
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/config"
-	"github.com/nirmata/kyverno-runtime/pkg/containerd"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
+	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
+	"github.com/nirmata/kyverno-runtime/pkg/pods"
 	"github.com/nirmata/kyverno-runtime/pkg/preflight"
 )
 
@@ -109,6 +111,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	k8sClient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		os.Exit(1)
+	}
+
 	// igExecTimeout is reused as the IG initialisation/context timeout;
 	// streaming runs until the pod watch context is cancelled.
 	// igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
@@ -118,13 +125,14 @@ func main() {
 		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
 		os.Exit(1)
 	}
-	connector, err := containerd.InitContainerdConnector(containerdSocketPath, runtimeBehaviorReconciler, &logger)
-	if err != nil {
+
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		logger.Info("NODE_NAME must be provided")
 		os.Exit(1)
 	}
 
 	// set the runtime behavior's callback to the connector's evaluate function
-	runtimeBehaviorReconciler.SetCallback(connector.EvaluatePodsAgainstLabels)
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.RuntimeBehavior{}).
 		Complete(runtimeBehaviorReconciler); err != nil {
@@ -145,12 +153,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	pw := pods.NewPodWatcher(k8sClient, nodeName, egressmgr.NewEgressManager())
+
 	sigCtx := ctrl.SetupSignalHandler()
 	go func() {
-		if err := connector.Run(sigCtx); err != nil {
-			logger.Error(err, "containerd connector exited with error")
-			os.Exit(1)
-		}
+		pw.Start(sigCtx)
 	}()
 
 	logger.Info("starting kyverno-runtime DaemonSet controller")
