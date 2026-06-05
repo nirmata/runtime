@@ -64,16 +64,14 @@ func (p *EgressFilter) AddIps(ips []string) {
 	}
 }
 
-func (p *EgressFilter) Attach(cgPaths []string) error {
-	for _, cgp := range cgPaths {
-		_, err := link.AttachCgroup(link.CgroupOptions{
-			Path:    cgp,
-			Attach:  ebpf.AttachCGroupInetEgress,
-			Program: p.bpfObjs.egressBlockPrograms.CgroupEgress,
-		})
-		if err != nil {
-			return err
-		}
+func (p *EgressFilter) Attach(cgPath string) (link.Link, error) {
+	link, err := link.AttachCgroup(link.CgroupOptions{
+		Path:    cgPath,
+		Attach:  ebpf.AttachCGroupInetEgress,
+		Program: p.bpfObjs.egressBlockPrograms.CgroupEgress,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return link, nil
 }

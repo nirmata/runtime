@@ -32,6 +32,8 @@ func init() {
 	})
 }
 
+type ContainerCgstore struct{}
+
 func ResolveCgInfos(pod *corev1.Pod) ([]*ContainerCgroupInfo, error) {
 	cgInfos := []*ContainerCgroupInfo{}
 	for _, c := range pod.Status.ContainerStatuses {

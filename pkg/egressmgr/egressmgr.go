@@ -3,6 +3,7 @@ package egressmgr
 import (
 	"fmt"
 
+	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
 	"github.com/google/cel-go/cel"
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
@@ -27,7 +28,7 @@ type egressManager struct {
 
 type podAttachment struct {
 	labels          map[string]string
-	cgPaths         []string
+	cgs             map[containers.ContainerCgroupInfo]link.Link // todo: can we store this more efficiently
 	filter          *egressfilter.EgressFilter
 	attachedFilters map[string]*compiledEgressFilter
 }
@@ -145,18 +146,20 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 		if err != nil {
 			return err
 		}
-		cgPaths := containers.ExtractCgPaths(cgInfos)
-
-		err = filter.Attach(cgPaths)
-		if err != nil {
-			return err
-		}
 
 		pa := &podAttachment{
-			cgPaths:         cgPaths,
+			cgs:             make(map[containers.ContainerCgroupInfo]link.Link),
 			labels:          pod.Labels,
 			filter:          filter,
 			attachedFilters: make(map[string]*compiledEgressFilter),
+		}
+
+		for _, cg := range cgInfos {
+			l, err := filter.Attach(cg.Path)
+			if err != nil {
+				return err
+			}
+			pa.cgs[*cg] = l
 		}
 
 		ipsToBan := []string{}
@@ -171,20 +174,27 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 		pa.filter.AddIps(ipsToBan)
 		e.pods[string(pod.UID)] = pa
 	case "update":
-		cgPaths := containers.ExtractCgPaths(cgInfos)
 		pa, ok := e.pods[string(pod.UID)]
 		if !ok {
 			return fmt.Errorf("got a pod event for a pod that doesn't exist")
 		}
-
-		// pod crashes or anything that may trigger a container cgid change
-		newCgPaths := diffSlice(pa.cgPaths, cgPaths)
-		err := pa.filter.Attach(newCgPaths)
-		if err != nil {
-			return err
+		// check if there are new cgroup infos. if there is, create links for them.
+		// for the ones that are gone the attachment would be already deleted by the kernel
+		newCgs := make(map[containers.ContainerCgroupInfo]link.Link)
+		for _, cgInfo := range cgInfos {
+			l, exists := pa.cgs[*cgInfo]
+			if !exists {
+				// new cgroup, attach and get a link
+				newLink, err := pa.filter.Attach(cgInfo.Path)
+				if err != nil {
+					return err
+				}
+				l = newLink
+			}
+			newCgs[*cgInfo] = l
 		}
+		pa.cgs = newCgs
 
-		pa.cgPaths = cgPaths
 	case "delete":
 		// nothing to do
 	}
