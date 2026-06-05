@@ -39,7 +39,9 @@ int cgroup_egress(struct __sk_buff *skb)
     if (val) {
         bpf_printk("cgroup_egress: BLOCKING daddr=%x\n", daddr);
         return 0;
-    }
+    } else {
+        bpf_printk("cgroup_egress: ALLOWING daddr=%x\n", daddr);
+    };
 
     return 1;
 }
