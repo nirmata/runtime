@@ -3,6 +3,7 @@ package egressmgr
 import (
 	"fmt"
 
+	"github.com/go-logr/logr"
 	"github.com/google/cel-go/cel"
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
@@ -55,6 +56,10 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 		selector, err := metav1.LabelSelectorAsSelector(rb.Spec.WorkloadSelector)
 		if err != nil {
 			return err
+		}
+		// nil guard
+		if rb.Spec.Allow == nil || rb.Spec.Allow.Deny == nil {
+			return nil
 		}
 
 		// compile the runtime behavior and store it in our map
@@ -136,7 +141,7 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	switch podEventType {
 	case "create":
-		filter, err := egressfilter.New(nil)
+		filter, err := egressfilter.New(&logr.Logger{})
 		if err != nil {
 			return err
 		}
