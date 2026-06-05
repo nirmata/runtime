@@ -189,7 +189,9 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 
 func compileRb(rb *v1alpha1.RuntimeBehavior) (*compiledEgressFilter, error) {
 	// todo
-	return &compiledEgressFilter{}, nil
+	return &compiledEgressFilter{
+		ips: rb.Spec.Allow.Deny.Network,
+	}, nil
 }
 
 // return the entries in array b and not a
