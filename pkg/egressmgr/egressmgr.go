@@ -170,8 +170,11 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 			ipsToBan = append(ipsToBan, filter.ips...)
 			pa.attachedFilters[rbName] = filter
 		}
+		// ban ips in case there was a rb that matches
+		if len(ipsToBan) > 0 {
+			pa.filter.AddIps(ipsToBan)
+		}
 
-		pa.filter.AddIps(ipsToBan)
 		e.pods[string(pod.UID)] = pa
 	case "update":
 		pa, ok := e.pods[string(pod.UID)]
