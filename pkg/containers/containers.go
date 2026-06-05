@@ -33,18 +33,18 @@ func init() {
 }
 
 func ResolveCgInfos(pod *corev1.Pod) ([]*ContainerCgroupInfo, error) {
-	cgids := []*ContainerCgroupInfo{}
+	cgInfos := []*ContainerCgroupInfo{}
 	for _, c := range pod.Status.ContainerStatuses {
 		// todo: this may not work if the container itself is not running
 		// even if the pod is. we should stash this container and attempt to resolve
 		// its cgid later
-		cgid, err := cgroupIDFromContainer(pod, &c)
+		cgInfo, err := cgroupInfoFromContainer(pod, &c)
 		if err != nil {
 			return nil, err
 		}
-		cgids = append(cgids, cgid)
+		cgInfos = append(cgInfos, cgInfo)
 	}
-	return cgids, nil
+	return cgInfos, nil
 }
 
 func ExtractCgPaths(cgInfos []*ContainerCgroupInfo) []string {
@@ -63,7 +63,7 @@ func ExtractCgids(cgInfos []*ContainerCgroupInfo) []uint64 {
 	return ret
 }
 
-func cgroupIDFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*ContainerCgroupInfo, error) {
+func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*ContainerCgroupInfo, error) {
 	cg, err := detectCgroup()
 	if err != nil {
 		return nil, err
