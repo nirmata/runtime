@@ -166,15 +166,8 @@ func main() {
 		pw.Start(sigCtx)
 	}()
 
-	go func() {
-		rbInformer.Start(sigCtx)
-	}()
+	rbInformer.Start(sigCtx)
 
-	logger.Info("starting kyverno-runtime DaemonSet controller")
-	if err := mgr.Start(sigCtx); err != nil {
-		logger.Error(err, "manager exited non-zero")
-		os.Exit(1)
-	}
 }
 
 func parseCSVSet(value string) map[string]bool {
