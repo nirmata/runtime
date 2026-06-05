@@ -163,7 +163,7 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 		}
 
 		ipsToBan := []string{}
-		for rbName, filter := range e.policies {
+		for rbName, filter := range e.rbs {
 			if !filter.selector.Matches(labels.Set(pod.Labels)) {
 				continue
 			}
