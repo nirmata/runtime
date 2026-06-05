@@ -2,16 +2,22 @@ package main
 
 import (
 	"flag"
+	"log"
 	"os"
 	"strings"
 	"time"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
+
+	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
+	v1alpha1informers "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -154,20 +160,33 @@ func main() {
 	}
 	em := egressmgr.NewEgressManager()
 
-	pw := pods.NewPodWatcher(k8sClient, nodeName, em)
-	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, em)
+	c, err := v1alpha1client.NewForConfig(cfg)
 	if err != nil {
 		os.Exit(1)
 	}
 
-	// todo: how to make it durable with restarts ? again.. refer to the policy reporter
+	factory := v1alpha1informers.NewSharedInformerFactory(c, 0)
+
+	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, em, factory)
+	if err != nil {
+		os.Exit(1)
+	}
+
 	sigCtx := ctrl.SetupSignalHandler()
+
 	go func() {
-		pw.Start(sigCtx)
+		rbInformer.Start(sigCtx)
 	}()
 
-	rbInformer.Start(sigCtx)
+	// sync the runtime behaviors before syncing pods
+	if !cache.WaitForCacheSync(sigCtx.Done(), factory.Runtime().V1alpha1().RuntimeBehaviors().Informer().HasSynced) {
+		log.Printf("timed out waiting for cache sync")
+		os.Exit(1)
+	}
 
+	// todo: how to make it durable with restarts ? again.. refer to the policy reporter
+	pw := pods.NewPodWatcher(k8sClient, nodeName, em)
+	pw.Start(sigCtx)
 }
 
 func parseCSVSet(value string) map[string]bool {
