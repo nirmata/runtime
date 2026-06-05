@@ -73,7 +73,7 @@ func cgroupIDFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Contai
 	podUID := strings.ReplaceAll(string(pod.UID), "-", "_")
 	qos := strings.ToLower(string(pod.Status.QOSClass))
 
-	paths := buildCandidatePaths(cg.mountPoint, containerID, podUID, qos)
+	paths := buildCandidatePaths(cg.mountPoint, podUID, containerID, qos)
 	for _, path := range paths {
 		var stat syscall.Stat_t
 		if err := syscall.Stat(path, &stat); err == nil {
@@ -84,13 +84,13 @@ func cgroupIDFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Contai
 	return nil, fmt.Errorf("cgroup path not found for container %s", containerID)
 }
 
-func buildCandidatePaths(containerID, podUID, root, qos string) []string {
+func buildCandidatePaths(root, podUID, containerID, qos string) []string {
 	type template struct{ root, prefix string }
 
 	// todo: handle file structure differences if the cgroup was found to be v1
 	roots := []template{
 		{root, "kubepods"}, // default cgroupv2
-		{root + "/system.slice/kubelet.slice", "kubelet-kubepods"}, // systemd managed kubelet
+		{root + "/kubelet.slice", "kubelet-kubepods"}, // systemd managed kubelet
 	}
 
 	var paths []string
@@ -106,6 +106,7 @@ func buildCandidatePaths(containerID, podUID, root, qos string) []string {
 			)
 		} else {
 			paths = append(paths,
+				// /root/prefix.slice/prefix-qos.slice/prefix-qos-podID.slice
 				fmt.Sprintf("%s/%s.slice/%s-%s.slice/%s-%s-pod%s.slice/cri-containerd-%s.scope",
 					r.root, r.prefix, r.prefix, qos, r.prefix, qos, podUID, containerID),
 			)
