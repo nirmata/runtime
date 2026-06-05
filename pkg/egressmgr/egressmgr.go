@@ -54,10 +54,6 @@ func NewEgressManager() *egressManager {
 func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEventType string) error {
 	switch rbEventType {
 	case "create":
-		selector, err := metav1.LabelSelectorAsSelector(rb.Spec.WorkloadSelector)
-		if err != nil {
-			return err
-		}
 		// nil guard
 		if rb.Spec.Allow == nil || rb.Spec.Allow.Deny == nil {
 			return nil
@@ -71,7 +67,7 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 		e.rbs[string(rb.UID)] = compiledRb
 
 		for _, pod := range e.pods {
-			if !selector.Matches(labels.Set(pod.labels)) {
+			if !compiledRb.selector.Matches(labels.Set(pod.labels)) {
 				continue
 			}
 			pod.filter.AddIps(compiledRb.ips)
@@ -79,11 +75,6 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 		}
 
 	case "update":
-		selector, err := metav1.LabelSelectorAsSelector(rb.Spec.WorkloadSelector)
-		if err != nil {
-			return err
-		}
-
 		// compile the runtime behavior and store it in our map
 		compiledRb, err := compileRb(&rb)
 		if err != nil {
@@ -92,7 +83,7 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 
 		e.rbs[string(rb.UID)] = compiledRb
 		for _, pod := range e.pods {
-			rbMatches := selector.Matches(labels.Set(pod.labels))
+			rbMatches := compiledRb.selector.Matches(labels.Set(pod.labels))
 			att, ok := pod.attachedFilters[string(rb.UID)]
 			if ok {
 				toRemove := diffSlice(att.ips, compiledRb.ips)
@@ -206,9 +197,14 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 }
 
 func compileRb(rb *v1alpha1.RuntimeBehavior) (*compiledEgressFilter, error) {
+	selector, err := metav1.LabelSelectorAsSelector(rb.Spec.WorkloadSelector)
+	if err != nil {
+		return nil, err
+	}
 	// todo
 	return &compiledEgressFilter{
-		ips: rb.Spec.Allow.Deny.Network,
+		ips:      rb.Spec.Allow.Deny.Network,
+		selector: selector,
 	}, nil
 }
 
