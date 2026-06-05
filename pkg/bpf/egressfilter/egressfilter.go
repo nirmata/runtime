@@ -68,7 +68,7 @@ func (p *EgressFilter) Attach(cgPaths []string) error {
 	for _, cgp := range cgPaths {
 		_, err := link.AttachCgroup(link.CgroupOptions{
 			Path:    cgp,
-			Attach:  ebpf.AttachCGroupInetIngress,
+			Attach:  ebpf.AttachCGroupInetEgress,
 			Program: p.bpfObjs.egressBlockPrograms.CgroupEgress,
 		})
 		if err != nil {
