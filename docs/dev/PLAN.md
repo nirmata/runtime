@@ -105,24 +105,417 @@ Future enhancements:
 
 ## Non-goals
 
-- Replacing Inspektor Gadget internals
 - Introducing external queueing (Kafka/NATS)
 - Building a full SIEM UI in this phase
 
-## Target Architecture (v2)
+## Target Architecture (v1)
 
 Single DaemonSet runtime controller, with modular engines:
 
 - Collection layer:
-  embedded IG runtime + event normalization
+  native eBPF programs (node-wide, one per event type) + cgroup-to-pod router
 - Detection layer:
   anomaly engine (baseline deviation) + signature engine (known attack patterns)
 - Decision layer:
-  confidence-aware severity and suppression
+  confidence-aware severity and suppression; kernel-side enforcement via BPF maps
 - Output layer:
   OpenReports `Report` + optional external sinks
 
 No separate runtime sensor service is required in this plan.
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Native eBPF Programs  (node-wide, one per event category)     │
+│  exec: lsm/bprm_check_security or tracepoint/execve           │
+│  open: lsm/file_open or tracepoint/openat                      │
+│  network: TC egress + XDP ingress (enforcement)                │
+│           kprobe/tcp_connect (monitoring)                      │
+│  dns:  kprobe/udp_sendmsg                                      │
+└────────────────┬───────────────────────────────────────────────┘
+                 │  BPF ringbuf drain  (one goroutine)
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│  Cgroup→Pod Router   (cgroup_id → namespace/pod/container)     │
+└────────────────┬───────────────────────────────────────────────┘
+                 │  channel send per pod-key
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│  Worker Pool  (N configurable workers, rate-limited queue)     │
+│  • Policy index lookup  (no per-reconcile client.List)         │
+│  • CEL prefilter + evaluation (compiled, cached per policy)    │
+│  • Finding buffer accumulation                                 │
+└────────────────┬───────────────────────────────────────────────┘
+                 │  flush on timer / high-water mark
+                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│  Reporter  (batched PolicyReport / OpenReports writes)         │
+└────────────────────────────────────────────────────────────────┘
+
+Policy Reconciler:  RuntimePolicy/RuntimeBehavior changes
+                    → CEL AST walker → BPF enforcement map sync
+```
+
+## Migration: Native eBPF Stack
+
+### Decision
+
+The existing Inspektor Gadget-based architecture does not fit v1 requirements for three reasons:
+
+**1. Enforcement requires different hook points.**
+IG attaches to monitoring-only hooks (tracepoints, kprobes). Enforcement requires TC ingress/egress and BPF LSM hooks that IG cannot attach. Keeping IG for monitoring while writing custom programs for enforcement means two separate kernel-space systems for the same data path, doubling maintenance surface.
+
+**2. Per-pod per-gadget model does not scale.**
+100 pods × 3 event types = 300 concurrent eBPF programs and goroutines. The correct model is one program per event type across the whole node, demultiplexed by `cgroup_id` to the correct pod. This is `O(event_types)` programs regardless of pod count.
+
+**3. Kernel-side policy matching is only possible when you own the stack.**
+When the enforcement decision lives in a BPF map, the kernel performs allow/deny with a single map lookup, with no userspace wakeup per event. This is the dominant performance difference at scale. It requires owning the BPF programs and maps end-to-end.
+
+### Superseded Sections
+
+- **Phase 8.4 (Node-Wide Shared Gadgets via IG)** is superseded by Phase M1+M2. The architecture is identical (one program per event type, cgroup-based routing); the implementation uses `cilium/ebpf` + CO-RE programs instead of IG gadgets.
+- **Phase 9 (E2: kill_process, E3: network_block)** enforcement BPF programs are absorbed into Phase M4. The enforcement and monitoring programs now share the same cgroup mapper, map infrastructure, and program loader.
+- The "Inspektor Gadget Coverage" gadget table below is superseded. Event type support is now determined by native BPF program capability, not IG gadget availability.
+- Phase 9 (E0, E1, E4) — API changes, CEL compiler, `terminate_pod`, and `webhook` — proceed unchanged. They do not depend on IG.
+
+### Migration Principles
+
+1. The `datasource.StreamingSource` interface already isolates the rest of the pipeline from the IG implementation. The migration replaces only what is behind that interface.
+2. The native eBPF source ships behind a feature flag alongside IG. Parallel validation runs before cutover.
+3. Code quality cleanup (M0) happens before the new stack is built to avoid migrating technical debt.
+4. IG is removed entirely only after cutover validation passes on kind.
+
+### Migration Timeline
+
+| Phase | What | Parallel With | Outcome |
+|---|---|---|---|
+| M0 | Code quality cleanup | Phase 8.1 | Dead code removed; engine APIs generalized |
+| 8.1 | nodeName filtering | M0 | Correctness fix; prerequisite for M1/M2 |
+| M1 | Native eBPF source (monitoring) | M2 (after 8.1) | `NativeBPFSource` behind feature flag |
+| M2 | Worker pool + policy index | M1 (after 8.1) | `O(workers)` goroutines; no per-reconcile list |
+| 9/E0–E1–E4 | API, CEL compiler, terminate_pod, webhook | M1/M2 | Enforcement API wired; no eBPF required |
+| M3 | IG cutover and removal | — (after M1+M2 validated) | Zero IG dependency |
+| M4 | Kernel enforcement (kill_process, network_block) | — (after M1, M3, E1) | Policy decisions in kernel |
+
+---
+
+### Phase M0: Code Quality Cleanup
+
+**Status: PROPOSED**
+**Prerequisite:** None. Can start immediately.
+**Purpose:** Remove dead code, wrapper bloat, and hardcoded gadget-type dispatch before building the new stack.
+
+#### M0.1: Collapse AnomalyDetector to a single generic method
+
+`pkg/policy/anomaly_detector.go` has four per-type methods (`EvaluateExecBehavior`, `EvaluateOpenBehavior`, `EvaluateNetworkBehavior`, `EvaluateDNSBehavior`). Adding a new event type requires a new method and updates to every call site. Replace with a single dispatch method:
+
+```go
+func (ad *AnomalyDetector) Evaluate(ctx context.Context, rb *v1alpha1.RuntimeBehavior, eventType, value string) *AnomalyDetectionResult
+```
+
+Drive dispatch from a `map[string]func(*v1alpha1.ObservedBehaviors) []string` keyed by normalized event type. Adding a new event type is one map entry with no new method signature.
+
+#### M0.2: Fix SignatureEngine to accept an Event
+
+`SignatureEngine.EvaluateSignatures` takes separate `exec, open, network, dns string` params — one per gadget type. Replace with a single `runtimeevents.Event` parameter. Each `SignaturePattern.Match` function receives the event directly and selects its own fields, eliminating the `firstNonEmpty` field-guessing chains scattered across `policy_evaluator.go`.
+
+```go
+func (se *SignatureEngine) Evaluate(ctx context.Context, ev runtimeevents.Event, enabledRules []string) []SignatureMatch
+```
+
+#### M0.3: Add canonical event field accessors
+
+Replace all `ev.Field("process.name"), ev.Field("comm"), ev.Field("proc.comm"), ...` chains with typed accessors on `runtimeevents.Event` that normalize field names once:
+
+```go
+func (e Event) ProcessName() string
+func (e Event) FilePath() string
+func (e Event) RemoteAddr() string
+func (e Event) DNSQuery() string
+```
+
+#### M0.4: Delete DataSourceCollector wrapper
+
+`pkg/pipeline/datasource_collector.go` wraps `datasource.Source` to add exactly one metrics call. Move `IncDatasourceEventCollected` into the source itself. Delete `DataSourceCollector` and the `Collector` interface. `WatchManager` already depends on `datasource.StreamingSource` directly.
+
+#### M0.5: Delete Manager.ProcessPod dead path
+
+`pkg/pipeline/manager.go` implements `ProcessPod` which is not called by any non-test code. The active production path goes through `WatchManager`. Delete `manager.go` and the `Manager` type.
+
+#### M0.6: Merge duplicate EvaluationResult types
+
+`pipeline.EvaluationResult` and `policy.EvaluationResult` are structurally identical. The conversion in `PolicyEvaluator.Evaluate()` is dead weight. Define one canonical `EvaluationResult` (in `v1alpha1` or `runtimeevents`) and use it in both packages.
+
+#### M0.7: Remove PodAwareEvaluator type assertion
+
+`Manager` (deleted in M0.5) type-asserts to `PodAwareEvaluator` to call `EvaluateForPod`. After deleting `Manager`, delete `PodAwareEvaluator`. Fold the signature/anomaly engine calls into the evaluator's main `Evaluate` path, guarded by feature flags, not an optional interface.
+
+#### Phase M0 Deliverables
+
+- `pkg/policy/anomaly_detector.go` — single `Evaluate(ctx, rb, eventType, value)` replaces four per-type methods
+- `pkg/policy/signature_engine.go` — `Evaluate(ctx, ev, enabledRules)` replaces deconstructed params
+- `pkg/runtimeevents/types.go` — typed field accessors on `Event`
+- `pkg/pipeline/datasource_collector.go` — deleted
+- `pkg/pipeline/manager.go` — deleted
+- `pkg/pipeline/evaluator.go` — `PodAwareEvaluator` deleted; `EvaluationResult` unified
+- All call sites updated; `go test ./...` passes
+
+#### Definition of Done
+
+- `go test ./...` passes
+- `grep -r "EvaluateExecBehavior\|EvaluateOpenBehavior\|EvaluateNetworkBehavior\|EvaluateDNSBehavior" --include="*.go"` returns zero results
+- `grep -r "DataSourceCollector\|ProcessPod\|PodAwareEvaluator" --include="*.go"` returns zero results
+
+---
+
+### Phase M1: Native eBPF Foundation
+
+**Status: PROPOSED**
+**Prerequisite:** Phase 8.1 (nodeName filtering), Phase M0
+**Purpose:** Build `NativeBPFSource` implementing `datasource.StreamingSource` behind a feature flag. No IG code is modified until M3.
+
+#### M1.1: cgroup-to-pod mapper
+
+The hardest part of the native stack is not the BPF programs — it is mapping kernel `cgroup_id` (what the kernel sees) to `(namespace, pod, container)` (what the controller cares about).
+
+Design:
+- Watch cgroupfs (`/sys/fs/cgroup`) via inotify for cgroup creation/deletion
+- Parse `/proc/<pid>/cgroup` to associate PIDs with cgroupfs paths
+- Maintain a `map[uint64]PodRef` (`cgroup_id → namespace/pod/container`) in userspace
+- Update the map from the pod informer on pod start/stop events
+- The pod informer already exists in the controller; extend it to notify the cgroup mapper
+
+Reference implementations: Tetragon `pkg/cgrouprate`, Cilium `pkg/cgroupManager`.
+
+New package: `pkg/ebpf/cgroup/mapper.go`
+
+#### M1.2: Node-wide BPF monitoring programs
+
+One program per event category, loaded once at node startup, compiled at build time via `bpf2go` + CO-RE:
+
+| Program file | Hook | Event types |
+|---|---|---|
+| `trace_exec.bpf.c` | `tracepoint/syscalls/sys_enter_execve` | exec |
+| `trace_open.bpf.c` | `tracepoint/syscalls/sys_enter_openat` | open |
+| `trace_connect.bpf.c` | `kprobe/tcp_connect` | connect, network |
+| `trace_dns.bpf.c` | `kprobe/udp_sendmsg` | dns |
+
+All programs emit to a shared `BPF_MAP_TYPE_RINGBUF`. Each event record includes `cgroup_id` for pod routing. Programs are node-wide — pod churn requires no program reload.
+
+New package: `pkg/ebpf/monitor/`
+
+#### M1.3: NativeBPFSource
+
+Implements `datasource.StreamingSource`:
+
+```go
+type NativeBPFSource struct {
+    cgroupMapper *cgroup.Mapper
+    programs     map[string]*ebpf.Collection // event type → loaded BPF objects
+    ringbuf      *ringbuf.Reader
+    router       *PodRouter                  // cgroup_id → subscriber channels
+}
+```
+
+`StreamEventsForPod` registers a channel with `PodRouter`. A single ring buffer drain goroutine routes events to the right channel by `cgroup_id`. No goroutine per pod.
+
+Feature flag: `KYVERNO_RUNTIME_NATIVE_EBPF=true` selects `NativeBPFSource` over `InspektorGadgetSource` at startup.
+
+#### M1.4: Kernel compatibility matrix
+
+Detect at startup and select available hooks:
+
+| Kernel | Available hooks | Notes |
+|---|---|---|
+| ≥ 5.7 + `CONFIG_BPF_LSM=y` | tracepoints + LSM | Full monitoring + enforcement |
+| ≥ 5.3 | tracepoints + `bpf_send_signal` | Monitoring + kill-after enforcement |
+| ≥ 4.18 | tracepoints only | Monitoring and audit-only enforcement |
+| < 4.18 | None | Fail preflight; log warning |
+
+#### Phase M1 Deliverables
+
+- `pkg/ebpf/cgroup/mapper.go` + `mapper_test.go`
+- `pkg/ebpf/monitor/trace_exec.bpf.c`, `trace_open.bpf.c`, `trace_connect.bpf.c`, `trace_dns.bpf.c`
+- `pkg/ebpf/monitor/loader.go` — program load, attach, ringbuf drain goroutine
+- `pkg/datasource/native_bpf_source.go` — `NativeBPFSource` implementing `StreamingSource`
+- `pkg/datasource/pod_router.go` — `PodRouter` (`cgroup_id` → subscriber channels)
+- `cmd/kyverno-runtime/main.go` — feature flag wiring, kernel version detection
+- Unit tests for `PodRouter` routing and `CgroupMapper` update logic
+- `docs/dev/DESIGN.md` — kernel compatibility table, CO-RE requirements
+
+#### Definition of Done
+
+- With `KYVERNO_RUNTIME_NATIVE_EBPF=true`, exec/open/connect events are routed to the correct pod channel on a kind cluster
+- IG source remains selectable via feature flag (no regression)
+- Active goroutine count is `O(event_types + workers)`, not `O(pods × event_types)`
+
+---
+
+### Phase M2: Worker Pool and Policy Index
+
+**Status: PROPOSED**
+**Prerequisite:** Phase 8.1
+**Can run in parallel with:** Phase M1
+**Purpose:** Replace the per-pod goroutine model in `WatchManager` and the per-reconcile `client.List` with a worker pool and an indexed policy cache. Accelerates Phase 8.2 (finding buffer).
+
+#### M2.1: Worker pool
+
+Replace `WatchManager.Sync()` goroutine-per-pod with a shared worker pool:
+
+```
+Pod events → rate-limited workqueue → N workers (default: 8, configurable)
+```
+
+Each worker dequeues a `(pod, event)` work item, looks up matched policies from the policy index, runs CEL prefilter (Phase 8.5), evaluates, and sends findings to `FindingBuffer`. The pod's subscription to `NativeBPFSource` is still per pod-key; the processing is shared from the pool.
+
+#### M2.2: Policy index
+
+Replace `r.client.List(ctx, policies)` in `DaemonSetReconciler.Reconcile()` with a local index maintained by the policy informer:
+
+```go
+type PolicyIndex struct {
+    mu       sync.RWMutex
+    byNS     map[string][]*v1alpha1.RuntimePolicy
+    compiled map[string]*cel.CompiledPolicy   // policyName → compiled AST
+}
+```
+
+`Reconcile` calls `policyIndex.MatchForPod(pod, nsLabels)` — a map lookup — instead of deserializing all policies from the API server. The index is updated by a policy informer handler on Add/Update/Delete. CEL programs are pre-compiled at index insertion time (Phase 8.7 accelerated).
+
+Re-enqueue behaviour: on `RuntimePolicy` change, re-enqueue only pods that match the policy's `matchConstraints`; on namespace label change, re-enqueue only pods in that namespace. Do not re-enqueue all pods.
+
+#### M2.3: Finding buffer (accelerated from Phase 8.2)
+
+Implement `pkg/pipeline/finding_buffer.go` as specified in Phase 8.2. Wire into the M2.1 worker pool output. Replaces per-event `reporter.Report()` calls.
+
+#### Phase M2 Deliverables
+
+- `pkg/pipeline/worker_pool.go` + `worker_pool_test.go`
+- `pkg/pipeline/policy_index.go` + `policy_index_test.go`
+- `pkg/pipeline/watch_manager.go` — refactored to use worker pool instead of per-pod goroutines
+- `pkg/controller/daemonset_reconciler.go` — use policy index; scoped re-enqueue on policy/namespace changes
+- `pkg/pipeline/finding_buffer.go` + `finding_buffer_test.go` (accelerated from Phase 8.2)
+- Helm chart: `workerCount` value
+
+#### Definition of Done
+
+- At 100 pods × 3 event types: goroutine count is `O(workers + event_types)`, verified by test
+- Per-reconcile `client.List(policies)` calls eliminated; confirmed by API server audit log on kind
+- Policy change re-enqueues only affected pods, not all pods
+
+---
+
+### Phase M3: IG Cutover and Removal
+
+**Status: PROPOSED**
+**Prerequisite:** M1 complete and validated on kind; M2 complete
+**Purpose:** Remove Inspektor Gadget as a dependency after parallel validation confirms parity.
+
+#### M3.1: Parallel validation
+
+Run `InspektorGadgetSource` and `NativeBPFSource` side-by-side on a kind cluster with representative workloads:
+- Compare finding sets for identical events
+- Validate event field name parity and normalization
+- Document and resolve any gaps before flipping the default
+
+#### M3.2: Flip default to NativeBPFSource
+
+Change the feature flag default from IG to native. Update Helm chart defaults. Run the full e2e suite with native source only.
+
+#### M3.3: Delete IG source and dependency
+
+Delete:
+- `pkg/datasource/inspektor_gadget_source.go`
+- `pkg/datasource/inspektor_gadget_runner_linux.go`
+- `pkg/datasource/inspektor_gadget_runner_stub.go`
+- `pkg/datasource/gadget_config.go`
+- `pkg/datasource/gadget_config_test.go`
+- Remove `github.com/inspektor-gadget/inspektor-gadget` from `go.mod`
+
+Update the gadget table in this plan to reflect native BPF program capability rather than IG gadget availability.
+
+#### Phase M3 Deliverables
+
+- Parallel validation report (kind cluster, 3+ representative workloads)
+- IG datasource files deleted
+- `go.mod` / `go.sum` updated; `go mod tidy` clean
+- `go test ./...` and `make test-e2e` pass with native source only
+
+#### Definition of Done
+
+- `grep -rE "inspektor.gadget|InspektorGadget" --include="*.go"` returns zero results
+- `go mod graph | grep inspektor-gadget` returns nothing
+- All e2e tests pass on kind using native source
+
+---
+
+### Phase M4: Kernel-side Enforcement (Native Stack)
+
+**Status: PROPOSED**
+**Prerequisite:** M1, M3, Phase 9/E1 (CEL compiler)
+**Supersedes:** Phase 9 E2 (kill_process) and Phase 9 E3 (network_block)
+**Purpose:** Add enforcement hook points to the native eBPF programs. Monitoring and enforcement share the same cgroup mapper, map infrastructure, and program loader.
+
+Phase 9 E0, E1, and E4 (API changes, CEL compiler, terminate_pod, webhook) proceed unchanged — they do not depend on IG and require no modification.
+
+#### M4.1: Enforcement programs extending M1 monitoring programs
+
+Extend `trace_exec.bpf.c` and `trace_open.bpf.c` with LSM hook variants that check enforcement maps before allowing the syscall:
+
+```c
+SEC("lsm/bprm_check_security")   // kernel ≥5.7 + CONFIG_BPF_LSM
+int BPF_PROG(enforce_exec, struct linux_binprm *bprm) {
+    u64 cgroup_id = bpf_get_current_cgroup_id();
+    // (cgroup_id, path_hash) → deny?
+    if (bpf_map_lookup_elem(&exec_enforce_map, &key))
+        return -EPERM;
+    return 0;  // pass through to monitoring ringbuf
+}
+```
+
+Maps are keyed by `(cgroup_id, pattern_hash)`. Enforcement and monitoring coexist — both paths run from the same loaded program.
+
+#### M4.2: Policy reconciler → BPF map sync
+
+When a `RuntimePolicy` with `action: kill_process` or `action: network_block` is created or updated:
+1. CEL AST walker (Phase 9/E1) produces `CompiledPolicy.ExecDenyExact`, `ExecDenyPrefix`, `CIDRDeny`, etc.
+2. The enforcement reconciler writes these entries into the enforcement BPF maps for each pod on this node that matches the policy
+3. On pod deletion or policy deletion, entries are removed
+
+This is the "compile once at policy load, zero userspace roundtrip per event" model.
+
+#### M4.3: Network enforcement (TC/XDP)
+
+TC egress and XDP ingress programs as specified in Phase 9 E3, implemented in `pkg/ebpf/network/`. The cgroup mapper and veth resolver from M1 are shared infrastructure.
+
+#### M4.4: Kernel fallback strategy
+
+| Kernel capability | Enforcement behaviour |
+|---|---|
+| ≥ 5.7 + `CONFIG_BPF_LSM=y` + `lsm=bpf` in boot params | deny-before (`-EPERM`) |
+| ≥ 5.3 | kill-after (`bpf_send_signal`, ~ms gap) |
+| < 5.3 | audit-only; log warning at startup |
+
+#### Phase M4 Deliverables
+
+- `pkg/ebpf/enforce/exec_enforcer.bpf.c` + `open_enforcer.bpf.c` (LSM + tracing fallback)
+- `pkg/ebpf/network/tc_egress.bpf.c` + `xdp_ingress.bpf.c`
+- `pkg/ebpf/enforce/manager.go` — program loader, map manager, cgroup-keyed map population
+- `pkg/ebpf/network/loader.go` — veth resolution, attach/detach, CIDR LPM map management
+- `pkg/controller/enforcement_reconciler.go` — watches RuntimePolicy enforce actions; syncs BPF maps from compiled policy
+- Helm chart: `CAP_BPF`, `CAP_PERFMON`, `CAP_NET_ADMIN` in DaemonSet security context (feature-gated)
+- Kernel version detection at startup with graceful fallback
+- `docs/users/enforcement.md` — kernel requirements, capabilities, and action semantics
+- kind e2e: exec denial verified (LSM path); egress block verified (TC path)
+
+#### Definition of Done
+
+- Policy with `action: kill_process` and a compilable CEL condition denies exec before completion on a kernel with BPF LSM
+- Graceful fallback to kill-after (`bpf_send_signal`) on kernels without LSM
+- Graceful audit-only on kernels below 5.3 with a logged warning
+- `RuntimeBehavior` with `mode: enforce` + `allow.deny.network` drops egress packets; `status.networkControls.droppedPackets` updates correctly
+- TC program attaches and detaches cleanly on pod start/stop with no interface leaks
+
+---
 
 ## Open Design Discussion
 
@@ -1143,7 +1536,9 @@ Deliverables:
 
 ### Phase 8.4: Node-Wide Shared Gadgets (Priority 4 — High effort, highest ceiling)
 
-Status: **PROPOSED**
+Status: **SUPERSEDED by Phase M1 + M2**
+
+The architecture described here (one eBPF program per event type, cgroup-based pod demux, worker pool) is implemented in Phases M1 and M2 using native `cilium/ebpf` programs instead of IG gadgets. Do not implement this phase against IG.
 
 The dominant scalability cost is the current model of one eBPF program per pod
 per event type. Each call to `streamGadget` allocates a fresh eBPF program,
@@ -1319,16 +1714,16 @@ Deliverables:
 
 ### Phase 8 Summary Table
 
-| Phase | Enhancement | Effort | Impact |
-| --- | --- | --- | --- |
-| 8.1 | nodeName pod filtering | Low | Correctness + eliminates off-node waste |
-| 8.2 | Per-pod finding buffer | Medium | Reduces API server write load |
-| 8.3 | Time-bucket event dedup | Medium | Reduces CEL evaluation load |
-| 8.4 | Node-wide shared gadgets | High | Dominant scalability win (O(event_types) vs O(pods × event_types)) |
-| 8.5 | CEL expression prefilter | Medium | Eliminates evaluations for high-frequency benign events |
-| 8.6 | Rule cooldown | Low | Reduces alert fatigue and PolicyReport churn |
-| 8.7 | CEL pre-compilation at watch start | Low | Surfaces errors at activation; eliminates first-event lag |
-| 8.8 | Enhanced observability metrics | Low | Observability prerequisite for tuning all of the above |
+| Phase | Enhancement | Effort | Impact | Status |
+| --- | --- | --- | --- | --- |
+| 8.1 | nodeName pod filtering | Low | Correctness + eliminates off-node waste | PROPOSED (prerequisite for M1/M2) |
+| 8.2 | Per-pod finding buffer | Medium | Reduces API server write load | Accelerated into M2.3 |
+| 8.3 | Time-bucket event dedup | Medium | Reduces CEL evaluation load | PROPOSED |
+| 8.4 | Node-wide shared gadgets (via IG) | High | — | **SUPERSEDED by M1+M2** |
+| 8.5 | CEL expression prefilter | Medium | Eliminates evaluations for high-frequency benign events | PROPOSED |
+| 8.6 | Rule cooldown | Low | Reduces alert fatigue and PolicyReport churn | PROPOSED |
+| 8.7 | CEL pre-compilation at watch start | Low | Surfaces errors at activation; eliminates first-event lag | Accelerated into M2.2 |
+| 8.8 | Enhanced observability metrics | Low | Observability prerequisite for tuning all of the above | PROPOSED |
 
 ---
 
@@ -1506,13 +1901,108 @@ Definition of done:
 
 - Runtime exposes operationally actionable health and performance signals.
 
+### Execution Phase M0: Code Quality Cleanup
+
+Implementation tasks:
+
+- Replace `AnomalyDetector` per-type methods with single `Evaluate(ctx, rb, eventType, value)`.
+- Replace `SignatureEngine.EvaluateSignatures` deconstructed params with `Evaluate(ctx, ev, enabledRules)`.
+- Add typed field accessors on `runtimeevents.Event` (`ProcessName`, `FilePath`, `RemoteAddr`, `DNSQuery`).
+- Delete `pkg/pipeline/datasource_collector.go` and `Collector` interface; move metric call into source.
+- Delete `pkg/pipeline/manager.go` and `Manager` type.
+- Unify `pipeline.EvaluationResult` and `policy.EvaluationResult` into one type.
+- Delete `PodAwareEvaluator`; fold signature/anomaly engine calls into main `Evaluate` path under feature gates.
+
+Definition of done:
+
+- `go test ./...` passes with no regressions.
+- `grep` for deleted identifiers returns zero results.
+
+### Execution Phase M1: Native eBPF Foundation
+
+Implementation tasks:
+
+- Implement `pkg/ebpf/cgroup/mapper.go` — cgroupfs watch + pod informer integration for `cgroup_id → PodRef` mapping.
+- Write BPF programs (`trace_exec`, `trace_open`, `trace_connect`, `trace_dns`) using `bpf2go` + CO-RE targeting kernel ≥ 4.18.
+- Implement `pkg/ebpf/monitor/loader.go` — program load, attach, and ring buffer drain goroutine.
+- Implement `pkg/datasource/native_bpf_source.go` — `NativeBPFSource` and `PodRouter`.
+- Wire feature flag in `cmd/kyverno-runtime/main.go` with kernel version detection at startup.
+- Validate on kind: exec/open/connect events routed to correct pod channels.
+
+Definition of done:
+
+- With `KYVERNO_RUNTIME_NATIVE_EBPF=true`, all event types routed correctly on kind.
+- IG source still selectable; e2e suite passes with both sources.
+- Goroutine count is `O(event_types)` regardless of pod count.
+
+### Execution Phase M2: Worker Pool and Policy Index
+
+Implementation tasks:
+
+- Implement `pkg/pipeline/worker_pool.go` — configurable worker count, rate-limited queue.
+- Implement `pkg/pipeline/policy_index.go` — informer-maintained index with CEL pre-compilation at insert time.
+- Refactor `WatchManager` to use worker pool; remove per-pod goroutine spawning.
+- Refactor `DaemonSetReconciler` to use policy index; implement scoped re-enqueue (policy change → affected pods only).
+- Implement `pkg/pipeline/finding_buffer.go` (accelerated from Phase 8.2).
+- Add `workerCount` Helm chart value.
+
+Definition of done:
+
+- Goroutine count at 100 pods × 3 event types is `O(workers + event_types)`, verified by benchmark.
+- Per-reconcile `client.List(policies)` eliminated; confirmed by audit log on kind.
+- Finding buffer reduces API writes from O(events/s) to O(1/flushInterval).
+
+### Execution Phase M3: IG Cutover and Removal
+
+Implementation tasks:
+
+- Run parallel validation on kind with both sources active; document finding parity.
+- Resolve any event field name or normalization gaps found in parallel validation.
+- Flip `KYVERNO_RUNTIME_NATIVE_EBPF` default to `true`; update Helm chart.
+- Delete all `inspektor_gadget_*` files from `pkg/datasource/`.
+- Remove IG from `go.mod`; run `go mod tidy`.
+- Update gadget table in this plan to reflect native program capability.
+- Run full e2e suite with native source only.
+
+Definition of done:
+
+- `grep -rE "inspektor.gadget|InspektorGadget" --include="*.go"` returns zero.
+- `go mod graph | grep inspektor-gadget` returns nothing.
+- All e2e tests pass on kind using native source only.
+
+### Execution Phase M4: Kernel-side Enforcement
+
+Implementation tasks:
+
+- Implement LSM + tracing-fallback BPF programs in `pkg/ebpf/enforce/`.
+- Implement TC egress + XDP ingress BPF programs in `pkg/ebpf/network/`.
+- Implement `pkg/ebpf/enforce/manager.go` — program lifecycle, cgroup-keyed map population from `CompiledPolicy`.
+- Implement `pkg/ebpf/network/loader.go` — veth resolution, attach/detach, CIDR LPM maps.
+- Implement `pkg/controller/enforcement_reconciler.go` — watches policy enforce actions; syncs BPF maps.
+- Implement kernel version detection with LSM → tracing → audit-only fallback.
+- Add `CAP_BPF`, `CAP_PERFMON`, `CAP_NET_ADMIN` to Helm DaemonSet security context (feature-gated).
+- Write `docs/users/enforcement.md`.
+- Add kind e2e tests: exec denial (LSM path); egress block (TC path).
+
+Definition of done:
+
+- `action: kill_process` denies exec before completion on kernel with BPF LSM.
+- Graceful kill-after fallback on kernels without LSM; audit-only below 5.3.
+- `mode: enforce` + `allow.deny.network` drops packets; status updated correctly.
+- TC programs attach and detach without veth interface leaks.
+
 ### Execution Phase 8: Scalability and Performance
 
 Implementation tasks:
 
-- Implement Phases 8.1 through 8.8 in priority order.
+- Implement Phase 8.1 (nodeName filtering) as the first task — prerequisite for M1 and M2.
+- Implement Phase 8.3 (time-bucket event dedup) against the native source event handler.
+- Implement Phase 8.5 (CEL expression prefilter) in the worker pool event handler.
+- Implement Phase 8.6 (rule cooldown) in the finding buffer flush path.
+- Implement Phase 8.8 (enhanced observability metrics) covering all new components.
+- Skip Phase 8.2 and 8.7 (accelerated into M2).
+- Skip Phase 8.4 (superseded by M1+M2).
 - Benchmark before/after API write rate, evaluator throughput, and event latency.
-- Validate no regression in finding correctness while optimizing hot paths.
 
 Definition of done:
 
@@ -1970,17 +2460,28 @@ kubectl api-resources | grep -i report
 
 ## Risks and Mitigations
 
+**Native eBPF migration:**
+- Kernel version fragmentation — BPF verifier rejects valid programs on older kernels.
+  Mitigation: CO-RE + BTF for portability; explicit kernel compatibility matrix; preflight check at startup rejects unsupported kernels with a clear error rather than silent misbehaviour.
+- cgroup-to-pod mapping gaps on pod churn — a pod may produce events before or after the mapper has registered it.
+  Mitigation: events with unmapped `cgroup_id` are buffered for a short window (500ms) and re-routed once the mapping is populated; unresolvable events are counted via metric and discarded.
+- BPF map sizing under load — enforcement maps have fixed max entries; new pods after the limit is reached will not be enforced.
+  Mitigation: size maps at `maxPods × maxPoliciesPerPod`; emit a metric and a Kubernetes Event when the map is near capacity; fail-safe to audit-only.
+- Parallel validation reveals event field parity gaps between IG and native source.
+  Mitigation: M3.1 requires explicit parity sign-off before IG is removed; gaps are documented and fixed before cutover.
+
+**General:**
 - Alert storms from incomplete baselines
-  - Mitigation: lifecycle gating, confidence-aware severity, suppression windows.
+  Mitigation: lifecycle gating, confidence-aware severity, suppression windows.
 - Startup noise widens learned profiles, reducing detection fidelity
-  - Mitigation: readiness-aware learning (`startAfter: ready`), multi-source
-    profile building, profile export/merge tooling.
+  Mitigation: readiness-aware learning (`startAfter: ready`), multi-source
+  profile building, profile export/merge tooling.
 - Increased compute overhead from dual engines
-  - Mitigation: feature gates, sampling, scoped auto-enrollment controls.
+  Mitigation: feature gates, sampling, scoped auto-enrollment controls.
 - False positives due to dynamic workloads
-  - Mitigation: normalization, periodic relearning, rule tuning guidance.
+  Mitigation: normalization, periodic relearning, rule tuning guidance.
 - Operational complexity from multiple output channels
-  - Mitigation: explicit defaults, health metrics, and conservative rate limiting.
+  Mitigation: explicit defaults, health metrics, and conservative rate limiting.
 
 ## Completion Criteria
 
