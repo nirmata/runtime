@@ -86,8 +86,8 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 			rbMatches := compiledRb.selector.Matches(labels.Set(pod.labels))
 			att, ok := pod.attachedFilters[string(rb.UID)]
 			if ok {
-				toRemove := diffSlice(att.ips, compiledRb.ips)
-				toAdd := diffSlice(compiledRb.ips, att.ips)
+				toAdd := diffSlice(att.ips, compiledRb.ips)
+				toRemove := diffSlice(compiledRb.ips, att.ips)
 
 				// there is no diff and rb still matches, do nothing
 				if len(toRemove) == 0 && len(toAdd) == 0 && rbMatches {
