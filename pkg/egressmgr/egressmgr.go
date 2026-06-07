@@ -75,20 +75,31 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 		}
 
 	case "update":
+		currentRb, ok := e.rbs[string(rb.UID)]
+		if !ok {
+			return fmt.Errorf("got an update for a non existing runtime behavior uid")
+		}
+		oldIps := make([]string, len(currentRb.ips))
+
+		// store the old ips becuase we may need to delete them from a pod's attachment if the runtime behavior no longer matches
+		copy(oldIps, currentRb.ips)
+
 		// compile the runtime behavior and store it in our map
 		compiledRb, err := compileRb(&rb)
 		if err != nil {
 			return err
 		}
 
+		toAdd := diffSlice(currentRb.ips, compiledRb.ips)
+		toRemove := diffSlice(compiledRb.ips, currentRb.ips)
+		// update the current runtime behavior's information to point to the new compiled behavior data
+		currentRb.ips = compiledRb.ips
+		currentRb.selector = compiledRb.selector
+
 		e.rbs[string(rb.UID)] = compiledRb
 		for _, pod := range e.pods {
 			rbMatches := compiledRb.selector.Matches(labels.Set(pod.labels))
-			att, ok := pod.attachedFilters[string(rb.UID)]
 			if ok {
-				toAdd := diffSlice(att.ips, compiledRb.ips)
-				toRemove := diffSlice(compiledRb.ips, att.ips)
-
 				// there is no diff and rb still matches, do nothing
 				if len(toRemove) == 0 && len(toAdd) == 0 && rbMatches {
 					continue
@@ -96,7 +107,7 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 
 				if !rbMatches {
 					// this rb doesn't match anymore. delete the old ips from this attachment's map
-					pod.filter.DeleteIps(att.ips)
+					pod.filter.DeleteIps(oldIps)
 					delete(pod.attachedFilters, string(rb.UID))
 					continue
 				}
@@ -105,14 +116,13 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 				// and update our tracking data structures
 				pod.filter.DeleteIps(toRemove)
 				pod.filter.AddIps(toAdd)
-				pod.attachedFilters[string(rb.UID)] = compiledRb
 				continue
 			}
 
 			// this rb wasn't previously attached to that pod. add its ips if it matches
 			if rbMatches {
 				pod.filter.AddIps(compiledRb.ips)
-				pod.attachedFilters[string(rb.UID)] = compiledRb
+				pod.attachedFilters[string(rb.UID)] = currentRb // add that runtime behavior's pointer to the atatchedFilters map of that pod
 			}
 		}
 	case "delete":
