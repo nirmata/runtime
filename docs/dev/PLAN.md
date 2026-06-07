@@ -123,7 +123,7 @@ Single DaemonSet runtime controller, with modular engines:
 
 No separate runtime sensor service is required in this plan.
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────┐
 │  Native eBPF Programs  (node-wide, one per event category)     │
 │  exec: lsm/bprm_check_security or tracepoint/execve           │
@@ -187,7 +187,7 @@ When the enforcement decision lives in a BPF map, the kernel performs allow/deny
 ### Migration Timeline
 
 | Phase | What | Parallel With | Outcome |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | M0 | Code quality cleanup | Phase 8.1 | Dead code removed; engine APIs generalized |
 | 8.1 | nodeName filtering | M0 | Correctness fix; prerequisite for M1/M2 |
 | M1 | Native eBPF source (monitoring) | M2 (after 8.1) | `NativeBPFSource` behind feature flag |
@@ -259,7 +259,7 @@ func (e Event) DNSQuery() string
 - `pkg/pipeline/evaluator.go` — `PodAwareEvaluator` deleted; `EvaluationResult` unified
 - All call sites updated; `go test ./...` passes
 
-#### Definition of Done
+#### Phase M0 Definition of Done
 
 - `go test ./...` passes
 - `grep -r "EvaluateExecBehavior\|EvaluateOpenBehavior\|EvaluateNetworkBehavior\|EvaluateDNSBehavior" --include="*.go"` returns zero results
@@ -278,6 +278,7 @@ func (e Event) DNSQuery() string
 The hardest part of the native stack is not the BPF programs — it is mapping kernel `cgroup_id` (what the kernel sees) to `(namespace, pod, container)` (what the controller cares about).
 
 Design:
+
 - Watch cgroupfs (`/sys/fs/cgroup`) via inotify for cgroup creation/deletion
 - Parse `/proc/<pid>/cgroup` to associate PIDs with cgroupfs paths
 - Maintain a `map[uint64]PodRef` (`cgroup_id → namespace/pod/container`) in userspace
@@ -293,7 +294,7 @@ New package: `pkg/ebpf/cgroup/mapper.go`
 One program per event category, loaded once at node startup, compiled at build time via `bpf2go` + CO-RE:
 
 | Program file | Hook | Event types |
-|---|---|---|
+| --- | --- | --- |
 | `trace_exec.bpf.c` | `tracepoint/syscalls/sys_enter_execve` | exec |
 | `trace_open.bpf.c` | `tracepoint/syscalls/sys_enter_openat` | open |
 | `trace_connect.bpf.c` | `kprobe/tcp_connect` | connect, network |
@@ -325,7 +326,7 @@ Feature flag: `KYVERNO_RUNTIME_NATIVE_EBPF=true` selects `NativeBPFSource` over 
 Detect at startup and select available hooks:
 
 | Kernel | Available hooks | Notes |
-|---|---|---|
+| --- | --- | --- |
 | ≥ 5.7 + `CONFIG_BPF_LSM=y` | tracepoints + LSM | Full monitoring + enforcement |
 | ≥ 5.3 | tracepoints + `bpf_send_signal` | Monitoring + kill-after enforcement |
 | ≥ 4.18 | tracepoints only | Monitoring and audit-only enforcement |
@@ -342,7 +343,7 @@ Detect at startup and select available hooks:
 - Unit tests for `PodRouter` routing and `CgroupMapper` update logic
 - `docs/dev/DESIGN.md` — kernel compatibility table, CO-RE requirements
 
-#### Definition of Done
+#### Phase M1 Definition of Done
 
 - With `KYVERNO_RUNTIME_NATIVE_EBPF=true`, exec/open/connect events are routed to the correct pod channel on a kind cluster
 - IG source remains selectable via feature flag (no regression)
@@ -361,7 +362,7 @@ Detect at startup and select available hooks:
 
 Replace `WatchManager.Sync()` goroutine-per-pod with a shared worker pool:
 
-```
+```text
 Pod events → rate-limited workqueue → N workers (default: 8, configurable)
 ```
 
@@ -396,7 +397,7 @@ Implement `pkg/pipeline/finding_buffer.go` as specified in Phase 8.2. Wire into 
 - `pkg/pipeline/finding_buffer.go` + `finding_buffer_test.go` (accelerated from Phase 8.2)
 - Helm chart: `workerCount` value
 
-#### Definition of Done
+#### Phase M2 Definition of Done
 
 - At 100 pods × 3 event types: goroutine count is `O(workers + event_types)`, verified by test
 - Per-reconcile `client.List(policies)` calls eliminated; confirmed by API server audit log on kind
@@ -413,6 +414,7 @@ Implement `pkg/pipeline/finding_buffer.go` as specified in Phase 8.2. Wire into 
 #### M3.1: Parallel validation
 
 Run `InspektorGadgetSource` and `NativeBPFSource` side-by-side on a kind cluster with representative workloads:
+
 - Compare finding sets for identical events
 - Validate event field name parity and normalization
 - Document and resolve any gaps before flipping the default
@@ -424,6 +426,7 @@ Change the feature flag default from IG to native. Update Helm chart defaults. R
 #### M3.3: Delete IG source and dependency
 
 Delete:
+
 - `pkg/datasource/inspektor_gadget_source.go`
 - `pkg/datasource/inspektor_gadget_runner_linux.go`
 - `pkg/datasource/inspektor_gadget_runner_stub.go`
@@ -440,7 +443,7 @@ Update the gadget table in this plan to reflect native BPF program capability ra
 - `go.mod` / `go.sum` updated; `go mod tidy` clean
 - `go test ./...` and `make test-e2e` pass with native source only
 
-#### Definition of Done
+#### Phase M3 Definition of Done
 
 - `grep -rE "inspektor.gadget|InspektorGadget" --include="*.go"` returns zero results
 - `go mod graph | grep inspektor-gadget` returns nothing
@@ -477,6 +480,7 @@ Maps are keyed by `(cgroup_id, pattern_hash)`. Enforcement and monitoring coexis
 #### M4.2: Policy reconciler → BPF map sync
 
 When a `RuntimePolicy` with `action: kill_process` or `action: network_block` is created or updated:
+
 1. CEL AST walker (Phase 9/E1) produces `CompiledPolicy.ExecDenyExact`, `ExecDenyPrefix`, `CIDRDeny`, etc.
 2. The enforcement reconciler writes these entries into the enforcement BPF maps for each pod on this node that matches the policy
 3. On pod deletion or policy deletion, entries are removed
@@ -490,7 +494,7 @@ TC egress and XDP ingress programs as specified in Phase 9 E3, implemented in `p
 #### M4.4: Kernel fallback strategy
 
 | Kernel capability | Enforcement behaviour |
-|---|---|
+| --- | --- |
 | ≥ 5.7 + `CONFIG_BPF_LSM=y` + `lsm=bpf` in boot params | deny-before (`-EPERM`) |
 | ≥ 5.3 | kill-after (`bpf_send_signal`, ~ms gap) |
 | < 5.3 | audit-only; log warning at startup |
@@ -507,7 +511,7 @@ TC egress and XDP ingress programs as specified in Phase 9 E3, implemented in `p
 - `docs/users/enforcement.md` — kernel requirements, capabilities, and action semantics
 - kind e2e: exec denial verified (LSM path); egress block verified (TC path)
 
-#### Definition of Done
+#### Phase M4 Definition of Done
 
 - Policy with `action: kill_process` and a compilable CEL condition denies exec before completion on a kernel with BPF LSM
 - Graceful fallback to kill-after (`bpf_send_signal`) on kernels without LSM
@@ -808,7 +812,7 @@ Replace timing-based waits with controller-signalled readiness:
 - `Makefile` — add `test-e2e-quickstart` and `validate-policies` targets.
 - `Makefile` — add `verify-crds` target.
 
-#### Definition of Done
+#### Phase 0.6 Definition of Done
 
 - All e2e tests pass on a freshly provisioned kind cluster three runs
   in a row with no flakes.
@@ -2461,6 +2465,7 @@ kubectl api-resources | grep -i report
 ## Risks and Mitigations
 
 **Native eBPF migration:**
+
 - Kernel version fragmentation — BPF verifier rejects valid programs on older kernels.
   Mitigation: CO-RE + BTF for portability; explicit kernel compatibility matrix; preflight check at startup rejects unsupported kernels with a clear error rather than silent misbehaviour.
 - cgroup-to-pod mapping gaps on pod churn — a pod may produce events before or after the mapper has registered it.
@@ -2471,6 +2476,7 @@ kubectl api-resources | grep -i report
   Mitigation: M3.1 requires explicit parity sign-off before IG is removed; gaps are documented and fixed before cutover.
 
 **General:**
+
 - Alert storms from incomplete baselines
   Mitigation: lifecycle gating, confidence-aware severity, suppression windows.
 - Startup noise widens learned profiles, reducing detection fidelity
