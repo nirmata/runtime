@@ -21,6 +21,12 @@ func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
 	if err != nil {
 		return err
 	}
+
+	_, err = enf.Attach()
+	if err != nil {
+		return err
+	}
+
 	la := &lsmAttachment{
 		enf:          enf,
 		attachedPods: make(map[string]*podRepresentation),
