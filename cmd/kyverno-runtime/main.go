@@ -122,27 +122,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// igExecTimeout is reused as the IG initialisation/context timeout;
-	// streaming runs until the pod watch context is cancelled.
-	// igSource := datasource.NewInspektorGadgetSource(igExecTimeout, 0)
-
-	runtimeBehaviorReconciler, err := controller.NewRuntimeBehaviorReconciler(mgr.GetClient(), &logger)
-	if err != nil {
-		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
-		os.Exit(1)
-	}
-
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		logger.Info("NODE_NAME must be provided")
-		os.Exit(1)
-	}
-
-	// set the runtime behavior's callback to the connector's evaluate function
-	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&v1alpha1.RuntimeBehavior{}).
-		Complete(runtimeBehaviorReconciler); err != nil {
-		logger.Error(err, "failed to set up RuntimeBehavior reconciler")
 		os.Exit(1)
 	}
 
