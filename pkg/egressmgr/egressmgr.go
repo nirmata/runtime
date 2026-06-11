@@ -21,7 +21,7 @@ type egressManager struct {
 }
 
 type podAttachment struct {
-	labels          map[string]string
+	labels          map[string]string                            // todo: centralize pod label storage in the podwatcher
 	cgs             map[containers.ContainerCgroupInfo]link.Link // todo: can we store this more efficiently
 	filter          *egressfilter.EgressFilter
 	attachedFilters map[string]*compiler.EvaluationResult
@@ -41,8 +41,6 @@ func NewEgressManager() *egressManager {
 func (e *egressManager) RuntimeBehaviorEvent(compiledRb *compiler.EvaluationResult, rbEventType string) error {
 	switch rbEventType {
 	case "create":
-		// nil guard
-
 		e.rbs[compiledRb.UID] = compiledRb
 
 		for _, pod := range e.pods {

@@ -20,7 +20,7 @@ type rbWatch struct {
 type RuntimeBehaviorMgr struct {
 	eventHandlers []events.EventIface // both the reevaluator and the individual bpf program handlers
 	factory       v1alpha1informers.SharedInformerFactory
-	rbInformer    cache.SharedIndexInformer
+	rbInformer    cache.SharedIndexInformer // todo: a queue
 	compiler      compiler.Compiler
 	rbThreadMap   map[string]*rbWatch
 }
