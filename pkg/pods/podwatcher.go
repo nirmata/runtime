@@ -15,15 +15,16 @@ import (
 )
 
 type PodWatcher struct {
+	// todo: do i actually need references to the event handlers inside the pod watchers?
 	factory    informers.SharedInformerFactory
 	informer   cache.SharedIndexInformer
 	podCgInfos map[string][]*containers.ContainerCgroupInfo // todo: we should be also delete dead pod entries
 
-	nodeName     string
-	eventHandler events.EventIface
+	nodeName      string
+	eventHandlers []events.EventIface
 }
 
-func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler events.EventIface) *PodWatcher {
+func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.EventIface) *PodWatcher {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		client,
 		0,
@@ -53,8 +54,9 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler ev
 			if len(cgInfos) != 0 {
 				podCgInfos[string(pod.UID)] = cgInfos
 			}
-			eventHandler.PodEvent(*pod, cgInfos, events.EventTypeCreate)
-
+			for _, e := range eventHandlers {
+				e.PodEvent(*pod, cgInfos, events.EventTypeCreate)
+			}
 		},
 		UpdateFunc: func(_, new interface{}) {
 			pod, ok := new.(*corev1.Pod)
@@ -71,7 +73,9 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler ev
 				podCgInfos[string(pod.UID)] = cgInfos
 			}
 
-			eventHandler.PodEvent(*pod, cgInfos, events.EventTypeUpdate)
+			for _, e := range eventHandlers {
+				e.PodEvent(*pod, cgInfos, events.EventTypeUpdate)
+			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)
@@ -80,16 +84,18 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler ev
 			}
 			cgInfos := podCgInfos[string(pod.UID)]
 			delete(podCgInfos, string(pod.UID))
-			eventHandler.PodEvent(*pod, cgInfos, events.EventTypeDelete)
+			for _, e := range eventHandlers {
+				e.PodEvent(*pod, cgInfos, events.EventTypeDelete)
+			}
 		},
 	})
 
 	w := &PodWatcher{
-		factory:      factory,
-		informer:     podInformer,
-		nodeName:     nodeName,
-		eventHandler: eventHandler,
-		podCgInfos:   podCgInfos,
+		factory:       factory,
+		informer:      podInformer,
+		nodeName:      nodeName,
+		eventHandlers: eventHandlers,
+		podCgInfos:    podCgInfos,
 	}
 
 	return w

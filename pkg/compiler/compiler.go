@@ -11,9 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
-// this shouldn't necessarily be called egress filter, it should be a grouped holder for all the things
-// the rb wants to allow or deny (ip, exec, open).
-type CompiledEgressFilter struct {
+type CompiledRuntimeBehavior struct {
 	ReevalInterval *time.Duration
 	UID            string
 
@@ -22,7 +20,7 @@ type CompiledEgressFilter struct {
 	rb        v1alpha1.RuntimeBehavior // this field is here temporarily because we don't have proper cel compile and eval yet
 }
 
-func (c *CompiledEgressFilter) Evaluate() (*EvaluationResult, error) {
+func (c *CompiledRuntimeBehavior) Evaluate() (*EvaluationResult, error) {
 	if c.rb.Spec.Allow == nil || c.rb.Spec.Allow.Deny == nil {
 		return nil, fmt.Errorf("temporary error because we just get the hardcoded ip list for now")
 	}
@@ -34,6 +32,7 @@ func (c *CompiledEgressFilter) Evaluate() (*EvaluationResult, error) {
 
 	return &EvaluationResult{
 		IPs:      c.rb.Spec.Allow.Deny.Network,
+		Open:     c.rb.Spec.Allow.Open,
 		Selector: selector,
 	}, nil
 }
@@ -42,7 +41,6 @@ type EvaluationResult struct {
 	UID      string
 	IPs      []string // the evaluated list of IPs to ban
 	Open     []string // list of files to prevent opening
-	Exec     []string // list of binaries to prevent executing
 	Selector labels.Selector
 }
 
@@ -52,7 +50,7 @@ func NewCompiler() Compiler {
 	return &compiler{}
 }
 
-func (c *compiler) Compile(rb v1alpha1.RuntimeBehavior) (*CompiledEgressFilter, error) {
+func (c *compiler) Compile(rb v1alpha1.RuntimeBehavior) (*CompiledRuntimeBehavior, error) {
 	// todo: i seriously never understood this path stuff. i am done with it
 	// path := field.NewPath("spec")
 	// todo: do we need to initialize this stuff every time we wanna compile. why can't we just init once ?
@@ -88,7 +86,7 @@ func (c *compiler) Compile(rb v1alpha1.RuntimeBehavior) (*CompiledEgressFilter, 
 		}
 	}
 
-	return &CompiledEgressFilter{
+	return &CompiledRuntimeBehavior{
 		rb:        rb,
 		variables: variables,
 	}, nil

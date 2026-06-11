@@ -4,13 +4,14 @@ import (
 	"flag"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	v1alpha1informers "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions"
+	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -140,8 +141,8 @@ func main() {
 		logger.Error(err, "failed to add eBPF preflight readiness check")
 		os.Exit(1)
 	}
-	em := egressmgr.NewEgressManager()
 
+	eventHandlers := []events.EventIface{egressmgr.NewEgressManager(), lsmmgr.NewLsmManager()}
 	c, err := v1alpha1client.NewForConfig(cfg)
 	if err != nil {
 		os.Exit(1)
@@ -149,7 +150,7 @@ func main() {
 
 	factory := v1alpha1informers.NewSharedInformerFactory(c, 0)
 
-	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, em, factory)
+	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, eventHandlers, factory, nil)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -167,18 +168,6 @@ func main() {
 	}
 
 	// todo: how to make it durable with restarts ? again.. refer to the policy reporter
-	pw := pods.NewPodWatcher(k8sClient, nodeName, em)
+	pw := pods.NewPodWatcher(k8sClient, nodeName, eventHandlers)
 	pw.Start(sigCtx)
-}
-
-func parseCSVSet(value string) map[string]bool {
-	out := map[string]bool{}
-	for _, token := range strings.Split(value, ",") {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
-		out[token] = true
-	}
-	return out
 }

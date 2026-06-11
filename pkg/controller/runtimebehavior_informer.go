@@ -13,7 +13,7 @@ import (
 )
 
 type rbWatch struct {
-	compiled *compiler.CompiledEgressFilter
+	compiled *compiler.CompiledRuntimeBehavior
 	cancel   context.CancelFunc
 }
 
@@ -52,7 +52,7 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 
 			if rb.Spec.ReevaluationInterval != nil {
 				ctx, cancel := context.WithCancel(context.Background())
-				go m.evaluateForInterval(ctx, time.Duration(0), string(rb.UID))
+				go m.evaluateForInterval(ctx, *rb.Spec.ReevaluationInterval, string(rb.UID))
 				m.rbThreadMap[string(rb.UID)] = &rbWatch{
 					compiled: compiledRb,
 					cancel:   cancel,
@@ -65,6 +65,7 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 			}
 
 			for _, handler := range eventHandlers {
+				// todo: events should be handled in grs instead of serialy
 				handler.RuntimeBehaviorEvent(evalRes, events.EventTypeCreate)
 			}
 		},
@@ -85,15 +86,14 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 			}
 
 			// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
-			if currentRb.compiled.ReevalInterval == nil ||
-				currentRb.compiled.ReevalInterval != rb.Spec.ReevaluationInterval {
+			if currentRb.compiled.ReevalInterval != rb.Spec.ReevaluationInterval {
 				// there was a previously existing cancel function (different interval). cancel the re-evalutation
 				// thread that runs on that interval
 				if currentRb.cancel != nil {
 					currentRb.cancel()
 				}
 				ctx, cancel := context.WithCancel(context.Background())
-				go m.evaluateForInterval(ctx, time.Duration(0), string(rb.UID))
+				go m.evaluateForInterval(ctx, *rb.Spec.ReevaluationInterval, string(rb.UID))
 				m.rbThreadMap[string(rb.UID)] = &rbWatch{
 					compiled: compiledRb,
 					cancel:   cancel,
