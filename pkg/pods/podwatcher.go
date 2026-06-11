@@ -53,7 +53,7 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler ev
 			if len(cgInfos) != 0 {
 				podCgInfos[string(pod.UID)] = cgInfos
 			}
-			eventHandler.PodEvent(*pod, cgInfos, "create")
+			eventHandler.PodEvent(*pod, cgInfos, events.EventTypeCreate)
 
 		},
 		UpdateFunc: func(_, new interface{}) {
@@ -71,7 +71,7 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler ev
 				podCgInfos[string(pod.UID)] = cgInfos
 			}
 
-			eventHandler.PodEvent(*pod, cgInfos, "update")
+			eventHandler.PodEvent(*pod, cgInfos, events.EventTypeUpdate)
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)
@@ -80,7 +80,7 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler ev
 			}
 			cgInfos := podCgInfos[string(pod.UID)]
 			delete(podCgInfos, string(pod.UID))
-			eventHandler.PodEvent(*pod, cgInfos, "delete")
+			eventHandler.PodEvent(*pod, cgInfos, events.EventTypeDelete)
 		},
 	})
 

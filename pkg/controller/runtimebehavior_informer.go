@@ -65,7 +65,7 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 			}
 
 			for _, handler := range eventHandlers {
-				handler.RuntimeBehaviorEvent(evalRes, "create")
+				handler.RuntimeBehaviorEvent(evalRes, events.EventTypeCreate)
 			}
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
@@ -106,7 +106,7 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 			}
 
 			for _, handler := range eventHandlers {
-				handler.RuntimeBehaviorEvent(evalRes, "update")
+				handler.RuntimeBehaviorEvent(evalRes, events.EventTypeUpdate)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -123,7 +123,7 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 			// deletion events should not depend on runtime behavior data. given the UID, mark it for removal from any
 			// internal data structures
 			for _, handler := range eventHandlers {
-				handler.RuntimeBehaviorEvent(&compiler.EvaluationResult{UID: string(rb.UID)}, "delete")
+				handler.RuntimeBehaviorEvent(&compiler.EvaluationResult{UID: string(rb.UID)}, events.EventTypeDelete)
 			}
 		},
 	})

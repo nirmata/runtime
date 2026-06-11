@@ -1,11 +1,11 @@
 package lsmmgr
 
 import (
-	"fmt"
-
-	"github.com/go-logr/logr"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/kyverno-runtime/pkg/containers"
+	"github.com/nirmata/kyverno-runtime/pkg/events"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -16,100 +16,45 @@ type LsmManager struct {
 }
 
 type podRepresentation struct {
-	cgids  []uint64 // todo: we don't need the cgroup path and are only storing the cgid here. we need to have an extraction mechanism
-	labels map[string]string
+	cgids        []uint64
+	labels       map[string]string
+	attachedLsms map[string]*lsmAttachment
 }
 
 type lsmAttachment struct {
 	enf          *lsm.LsmEnforcer
+	selector     labels.Selector
 	attachedPods map[string]*podRepresentation
 	files        []string
 }
 
 func NewLsmManager() *LsmManager {
-	return &LsmManager{}
+	return &LsmManager{
+		pods:           make(map[string]*podRepresentation),
+		lsmAttachments: make(map[string]*lsmAttachment),
+	}
 }
 
 func (l *LsmManager) RuntimeBehaviorEvent(compiledRb *compiler.EvaluationResult, eventType string) error {
 	switch eventType {
-	case "create":
-		// create the lsm enforcer
-		enf, err := lsm.NewForAttachTarget(&logr.Logger{}, "file_open")
-		if err != nil {
-			return err
-		}
-		// add the banned files
-		err = enf.AddTargets(compiledRb.Open)
-		if err != nil {
-			return err
-		}
-		la := &lsmAttachment{
-			enf:          enf,
-			attachedPods: make(map[string]*podRepresentation),
-		}
-		// set the target pods (cgid)
-		targetCgids := []uint64{}
-		for podUid, pod := range l.pods {
-			if compiledRb.Selector.Matches(labels.Set(pod.labels)) {
-				// add a pointer to this attached pod
-				la.attachedPods[podUid] = pod
-				targetCgids = append(targetCgids, pod.cgids...)
-			}
-			err := enf.AddCgids(targetCgids)
-			if err != nil {
-				// todo: handle this
-				continue
-			}
-		}
-
-		l.lsmAttachments[compiledRb.UID] = la
-	case "update":
-		// a selector change, or a target change. just compute the diff on the target pods and on the banned files
-		la, ok := l.lsmAttachments[compiledRb.UID]
-		if !ok {
-			return fmt.Errorf("got an update for a runtime behavior that doesn't exist")
-		}
-		// diff the existing and new files. delete what must be deleted
-
-		for podUid, pod := range l.pods {
-			if compiledRb.Selector.Matches(labels.Set(pod.labels)) {
-				_, ok := la.attachedPods[podUid]
-				if ok {
-					// we are already attached to this pod cgid. nothing to do
-					continue
-				}
-				// we aren't attached
-				err := la.enf.AddCgids(pod.cgids)
-				if err != nil {
-					continue
-				}
-			} else {
-				// we don't match that pod. did we previously match it ?
-				_, ok := la.attachedPods[podUid]
-				if ok {
-					// yes we did
-					delete(la.attachedPods, podUid)
-					continue
-				}
-			}
-		}
-	case "delete":
-		// does deletion of a link.link automatically detach it ?
+	case events.EventTypeCreate:
+		return l.rbCreated(compiledRb)
+	case events.EventTypeUpdate:
+		return l.rbUpdated(compiledRb)
+	case events.EventTypeDelete:
+		return l.rbDeleted(compiledRb)
 	}
 	return nil
 }
 
-// return the entries in array b and not a
-func diffSlice(a, b []string) []string {
-	set := make(map[string]struct{}, len(a))
-	for _, v := range a {
-		set[v] = struct{}{}
+func (l *LsmManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, eventType string) error {
+	switch eventType {
+	case events.EventTypeCreate:
+		return l.podCreated(pod, cgInfos)
+	case events.EventTypeUpdate:
+		return l.podUpdated(pod, cgInfos)
+	case events.EventTypeDelete:
+		return l.podDeleted(string(pod.UID))
 	}
-	var out []string
-	for _, v := range b {
-		if _, ok := set[v]; !ok {
-			out = append(out, v)
-		}
-	}
-	return out
+	return nil
 }

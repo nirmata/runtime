@@ -6,6 +6,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+const EventTypeCreate = "create"
+const EventTypeUpdate = "update"
+const EventTypeDelete = "delete"
+
 type EventIface interface {
 	PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error
 	RuntimeBehaviorEvent(rb *compiler.EvaluationResult, rbEventType string) error
