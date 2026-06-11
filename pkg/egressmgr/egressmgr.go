@@ -1,104 +1,78 @@
 package egressmgr
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
-	"github.com/google/cel-go/cel"
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
+
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// todo: move this interface to a generic module once the api settled on
-type EventIface interface {
-	PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error
-	RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEventType string) error
-}
-
 type egressManager struct {
-	pods     map[string]*podAttachment
-	rbs      map[string]*compiledEgressFilter
-	policies map[string]*compiledEgressFilter
+	pods       map[string]*podAttachment
+	rbs        map[string]*compiler.EvaluationResult
+	policies   map[string]*compiler.EvaluationResult
+	reevalChan chan (*compiler.EvaluationResult)
 }
 
 type podAttachment struct {
 	labels          map[string]string
 	cgs             map[containers.ContainerCgroupInfo]link.Link // todo: can we store this more efficiently
 	filter          *egressfilter.EgressFilter
-	attachedFilters map[string]*compiledEgressFilter
-}
-
-type compiledEgressFilter struct {
-	ips       []string // the evaluated list of IPs to ban
-	variables []cel.Program
-	prog      cel.Program
-	selector  labels.Selector
+	attachedFilters map[string]*compiler.EvaluationResult
 }
 
 func NewEgressManager() *egressManager {
 	return &egressManager{
 		pods:     make(map[string]*podAttachment),
-		rbs:      make(map[string]*compiledEgressFilter),
-		policies: make(map[string]*compiledEgressFilter),
+		rbs:      make(map[string]*compiler.EvaluationResult),
+		policies: make(map[string]*compiler.EvaluationResult),
 	}
 }
 
 // what about handling compilation outside of this entitity ?
 // on a new rb or policy.. we compile and call RuntimeBehaviorEvent. for periodic recompilation
 // we launch a ticker that compiles per interval and calls RuntimeBehaviorEvent
-func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEventType string) error {
+func (e *egressManager) RuntimeBehaviorEvent(compiledRb *compiler.EvaluationResult, rbEventType string) error {
 	switch rbEventType {
 	case "create":
 		// nil guard
-		if rb.Spec.Allow == nil || rb.Spec.Allow.Deny == nil {
-			return nil
-		}
 
-		// compile the runtime behavior and store it in our map
-		compiledRb, err := compileRb(&rb)
-		if err != nil {
-			return err
-		}
-		e.rbs[string(rb.UID)] = compiledRb
+		e.rbs[compiledRb.UID] = compiledRb
 
 		for _, pod := range e.pods {
-			if !compiledRb.selector.Matches(labels.Set(pod.labels)) {
+			if !compiledRb.Selector.Matches(labels.Set(pod.labels)) {
 				continue
 			}
-			pod.filter.AddIps(compiledRb.ips)
-			pod.attachedFilters[string(rb.UID)] = compiledRb
+			pod.filter.AddIps(compiledRb.IPs)
+			pod.attachedFilters[compiledRb.UID] = compiledRb
 		}
 
 	case "update":
-		currentRb, ok := e.rbs[string(rb.UID)]
+		currentRb, ok := e.rbs[compiledRb.UID]
 		if !ok {
 			return fmt.Errorf("got an update for a non existing runtime behavior uid")
 		}
-		oldIps := make([]string, len(currentRb.ips))
+		oldIps := make([]string, len(currentRb.IPs))
 
 		// store the old ips becuase we may need to delete them from a pod's attachment if the runtime behavior no longer matches
-		copy(oldIps, currentRb.ips)
+		copy(oldIps, currentRb.IPs)
 
-		// compile the runtime behavior and store it in our map
-		compiledRb, err := compileRb(&rb)
-		if err != nil {
-			return err
-		}
-
-		toAdd := diffSlice(currentRb.ips, compiledRb.ips)
-		toRemove := diffSlice(compiledRb.ips, currentRb.ips)
+		toAdd := diffSlice(currentRb.IPs, compiledRb.IPs)
+		toRemove := diffSlice(compiledRb.IPs, currentRb.IPs)
 		// update the current runtime behavior's information to point to the new compiled behavior data
-		currentRb.ips = compiledRb.ips
-		currentRb.selector = compiledRb.selector
+		currentRb.IPs = compiledRb.IPs
+		currentRb.Selector = compiledRb.Selector
 
-		e.rbs[string(rb.UID)] = compiledRb
+		e.rbs[string(compiledRb.UID)] = compiledRb
 		for _, pod := range e.pods {
-			rbMatches := compiledRb.selector.Matches(labels.Set(pod.labels))
+			rbMatches := compiledRb.Selector.Matches(labels.Set(pod.labels))
 			if ok {
 				// there is no diff and rb still matches, do nothing
 				if len(toRemove) == 0 && len(toAdd) == 0 && rbMatches {
@@ -108,7 +82,7 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 				if !rbMatches {
 					// this rb doesn't match anymore. delete the old ips from this attachment's map
 					pod.filter.DeleteIps(oldIps)
-					delete(pod.attachedFilters, string(rb.UID))
+					delete(pod.attachedFilters, string(compiledRb.UID))
 					continue
 				}
 
@@ -121,16 +95,16 @@ func (e *egressManager) RuntimeBehaviorEvent(rb v1alpha1.RuntimeBehavior, rbEven
 
 			// this rb wasn't previously attached to that pod. add its ips if it matches
 			if rbMatches {
-				pod.filter.AddIps(compiledRb.ips)
-				pod.attachedFilters[string(rb.UID)] = currentRb // add that runtime behavior's pointer to the atatchedFilters map of that pod
+				pod.filter.AddIps(compiledRb.IPs)
+				pod.attachedFilters[string(compiledRb.UID)] = currentRb // add that runtime behavior's pointer to the atatchedFilters map of that pod
 			}
 		}
 	case "delete":
-		delete(e.rbs, string(rb.UID))
+		delete(e.rbs, string(compiledRb.UID))
 		for _, pod := range e.pods {
-			if att, ok := pod.attachedFilters[string(rb.UID)]; ok {
-				pod.filter.DeleteIps(att.ips)
-				delete(pod.attachedFilters, string(rb.UID))
+			if att, ok := pod.attachedFilters[string(compiledRb.UID)]; ok {
+				pod.filter.DeleteIps(att.IPs)
+				delete(pod.attachedFilters, string(compiledRb.UID))
 			}
 		}
 	default:
@@ -152,7 +126,7 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 			cgs:             make(map[containers.ContainerCgroupInfo]link.Link),
 			labels:          pod.Labels,
 			filter:          filter,
-			attachedFilters: make(map[string]*compiledEgressFilter),
+			attachedFilters: make(map[string]*compiler.EvaluationResult),
 		}
 
 		for _, cg := range cgInfos {
@@ -165,10 +139,10 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 
 		ipsToBan := []string{}
 		for rbName, filter := range e.rbs {
-			if !filter.selector.Matches(labels.Set(pod.Labels)) {
+			if !filter.Selector.Matches(labels.Set(pod.Labels)) {
 				continue
 			}
-			ipsToBan = append(ipsToBan, filter.ips...)
+			ipsToBan = append(ipsToBan, filter.IPs...)
 			pa.attachedFilters[rbName] = filter
 		}
 		// ban ips in case there was a rb that matches
@@ -206,16 +180,17 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 	return nil
 }
 
-func compileRb(rb *v1alpha1.RuntimeBehavior) (*compiledEgressFilter, error) {
-	selector, err := metav1.LabelSelectorAsSelector(rb.Spec.WorkloadSelector)
-	if err != nil {
-		return nil, err
+// listens for events from the periodic recompiler
+func (e *egressManager) watch(ctx context.Context) {
+	for {
+		select {
+		case recompiledRb := <-e.reevalChan:
+			// todo: update events may fail (during bpf map patching), we should have a way to handle those failures
+			e.RuntimeBehaviorEvent(recompiledRb, "update")
+		case <-ctx.Done():
+			return
+		}
 	}
-	// todo
-	return &compiledEgressFilter{
-		ips:      rb.Spec.Allow.Deny.Network,
-		selector: selector,
-	}, nil
 }
 
 // return the entries in array b and not a

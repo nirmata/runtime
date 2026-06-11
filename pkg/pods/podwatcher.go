@@ -6,7 +6,7 @@ import (
 	"log"
 
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
+	"github.com/nirmata/kyverno-runtime/pkg/events"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
@@ -20,10 +20,10 @@ type PodWatcher struct {
 	podCgInfos map[string][]*containers.ContainerCgroupInfo // todo: we should be also delete dead pod entries
 
 	nodeName     string
-	eventHandler egressmgr.EventIface
+	eventHandler events.EventIface
 }
 
-func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler egressmgr.EventIface) *PodWatcher {
+func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandler events.EventIface) *PodWatcher {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		client,
 		0,

@@ -3,3 +3,4 @@ bin/
 /kyverno-runtime
 *.log
 .vscode
+vmlinux.h

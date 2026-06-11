@@ -2,7 +2,9 @@ package v1alpha1
 
 import (
 	"encoding/json"
+	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -15,6 +17,12 @@ type RuntimeBehaviorSpec struct {
 	// +optional
 	WorkloadSelector *metav1.LabelSelector `json:"workloadSelector,omitempty"`
 
+	ReevaluationInterval *time.Duration
+
+	Variables []admissionregistrationv1.Variable
+
+	Behaviors []Behavior
+
 	// Mode controls how deviations are handled: learning, monitor, or enforce.
 	// +kubebuilder:validation:Enum=learning;monitor;enforce
 	Mode RuntimeBehaviorMode `json:"mode,omitempty"`
@@ -26,6 +34,27 @@ type RuntimeBehaviorSpec struct {
 	// Allow defines inline allow rules and references to shared defaults.
 	// +optional
 	Allow *AllowRules `json:"allow,omitempty"`
+}
+
+type NetworkRules struct {
+	Ips        []string // direct array of string
+	Expression string   // expression that evaluates to array of string
+}
+
+type ExecRules struct {
+	Cmd        []string
+	Expression string
+}
+
+type OpenRules struct {
+	Files      []string
+	Expression string
+}
+
+type Behavior struct {
+	Network *NetworkRules
+	Open    *ExecRules
+	Exec    *OpenRules
 }
 
 // RuntimeBehaviorMode represents the operational mode.

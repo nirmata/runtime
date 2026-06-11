@@ -37,19 +37,19 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 	return p, nil
 }
 
-func (p *EgressFilter) DeleteIps(ips []string) {
+func (e *EgressFilter) DeleteIps(ips []string) {
 	for _, ip := range ips {
 		ip4 := net.ParseIP(ip).To4()
 		if ip4 == nil {
-			p.logger.Info("failed to parse ip as an ipv4", ip)
+			e.logger.Info("failed to parse ip as an ipv4", ip)
 			continue
 		}
 		ipBytes := binary.LittleEndian.Uint32(ip4)
-		p.bpfObjs.BannedIps.Delete(&ipBytes)
+		e.bpfObjs.BannedIps.Delete(&ipBytes)
 	}
 }
 
-func (p *EgressFilter) AddIps(ips []string) {
+func (e *EgressFilter) AddIps(ips []string) {
 	for _, ip := range ips {
 		ip4 := net.ParseIP(ip).To4()
 		if ip4 == nil {
@@ -57,18 +57,18 @@ func (p *EgressFilter) AddIps(ips []string) {
 		}
 		ipBytes := binary.LittleEndian.Uint32(ip4)
 
-		err := p.bpfObjs.BannedIps.Put(&ipBytes, uint8(0))
+		err := e.bpfObjs.BannedIps.Put(&ipBytes, uint8(0))
 		if err != nil {
-			p.logger.Error(err, "failed to add ip to bpf map", ip)
+			e.logger.Error(err, "failed to add ip to bpf map", ip)
 		}
 	}
 }
 
-func (p *EgressFilter) Attach(cgPath string) (link.Link, error) {
+func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
 	link, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgPath,
 		Attach:  ebpf.AttachCGroupInetEgress,
-		Program: p.bpfObjs.egressBlockPrograms.CgroupEgress,
+		Program: e.bpfObjs.egressBlockPrograms.CgroupEgress,
 	})
 	if err != nil {
 		return nil, err
