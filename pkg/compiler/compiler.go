@@ -41,6 +41,8 @@ func (c *CompiledEgressFilter) Evaluate() (*EvaluationResult, error) {
 type EvaluationResult struct {
 	UID      string
 	IPs      []string // the evaluated list of IPs to ban
+	Open     []string // list of files to prevent opening
+	Exec     []string // list of binaries to prevent executing
 	Selector labels.Selector
 }
 

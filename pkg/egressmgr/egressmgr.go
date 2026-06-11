@@ -1,7 +1,6 @@
 package egressmgr
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/cilium/ebpf/link"
@@ -178,19 +177,6 @@ func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 	}
 
 	return nil
-}
-
-// listens for events from the periodic recompiler
-func (e *egressManager) watch(ctx context.Context) {
-	for {
-		select {
-		case recompiledRb := <-e.reevalChan:
-			// todo: update events may fail (during bpf map patching), we should have a way to handle those failures
-			e.RuntimeBehaviorEvent(recompiledRb, "update")
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 // return the entries in array b and not a
