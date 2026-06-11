@@ -10,7 +10,6 @@ import (
 const maxPathLen = 128
 
 //go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -I./_cprog/include
-
 type LsmEnforcer struct {
 	logger  *logr.Logger
 	bpfObjs *lsmGenericObjects
