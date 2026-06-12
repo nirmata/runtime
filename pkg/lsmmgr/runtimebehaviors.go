@@ -11,6 +11,10 @@ import (
 )
 
 func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
+	// rb contains no files to ban opening. do nothing with it
+	if len(compiledRb.Open) == 0 {
+		return nil
+	}
 	// create the lsm enforcer
 	enf, err := lsm.NewForAttachTarget(&logr.Logger{}, "file_open")
 	if err != nil {
