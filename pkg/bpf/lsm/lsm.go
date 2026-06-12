@@ -31,14 +31,14 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		return nil, err
 	}
-	zero := 0
+	zero := uint32(0)
 
 	switch target {
 	// todo: maintain a contract with kernel space for these things
 	case "file_open":
-		objs.lsmGenericMaps.Argtypes.Put(&zero, uint8(1))
+		objs.lsmGenericMaps.Argtypes.Put(&zero, uint64(1))
 	case "bprm_check_security":
-		objs.lsmGenericMaps.Argtypes.Put(&zero, uint8(2))
+		objs.lsmGenericMaps.Argtypes.Put(&zero, uint64(2))
 	}
 
 	l := &LsmEnforcer{

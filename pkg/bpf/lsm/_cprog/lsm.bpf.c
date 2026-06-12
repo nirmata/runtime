@@ -65,6 +65,7 @@ static __always_inline int handle_exec(__u64 *args) {
 SEC("lsm/generic_handler")
 int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
 {
+    bpf_printk("lsm: program entered");
     __u64 cgid = bpf_get_current_cgroup_id();
     __u32 key = 0;
     __u64 *argtype = bpf_map_lookup_elem(&argtypes, &key);
