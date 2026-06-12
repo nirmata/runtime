@@ -49,7 +49,7 @@ static __always_inline int handle_exec(__u64 *args) {
     int len = bpf_probe_read_kernel_str(buf, sizeof(buf), fname);
     if (len <= 0)
         return 0;
-    __u8 *val = bpf_map_lookup_elem(&banned, buf);
+    __u8 *val = bpf_map_lookup_elem(&banned, &buf);
     if (val)
         return -EPERM;
 
