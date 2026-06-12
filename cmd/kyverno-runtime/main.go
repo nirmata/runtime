@@ -10,6 +10,7 @@ import (
 
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	v1alpha1informers "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
 
@@ -150,7 +151,7 @@ func main() {
 
 	factory := v1alpha1informers.NewSharedInformerFactory(c, 0)
 
-	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, eventHandlers, factory, nil)
+	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, eventHandlers, factory, compiler.NewCompiler())
 	if err != nil {
 		os.Exit(1)
 	}
