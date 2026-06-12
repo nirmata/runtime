@@ -59,8 +59,12 @@ static __always_inline int handle_exec(__u64 *args) {
 SEC("lsm/generic_handler")
 int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
 {
-    __u32 cgid = bpf_get_current_pid_tgid() >> 32;
-    __u64 *argtype = bpf_map_lookup_elem(&argtypes, 0);
+    __u64 cgid = bpf_get_current_cgroup_id();
+    __u32 key = 0;
+    __u64 *argtype = bpf_map_lookup_elem(&argtypes, &key);
+    if (!argtype)
+        return 0;
+
     __u64 *args = (__u64*)ctx; // cast context as a pointer to a u64 (array) 
     // how does tetragon in userspace interpret what the kernel passed ?
 
