@@ -22,6 +22,8 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	if err != nil {
 		return nil, err
 	}
+	spec.Programs["generic_lsm_handler"].AttachTo = target
+	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
 	objs := &lsmGenericObjects{}
 
@@ -38,9 +40,6 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	case "bprm_check_security":
 		objs.lsmGenericMaps.Argtypes.Put(&zero, uint8(2))
 	}
-
-	spec.Programs["generic_lsm_handler"].AttachTo = target
-	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
 	l := &LsmEnforcer{
 		logger:  logger,
