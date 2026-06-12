@@ -33,8 +33,8 @@ static __always_inline int handle_open(__u64 *args) {
     struct file *f = (struct file *)arg0;
     char buf[MAX_PATH_LEN] = {};
     bpf_d_path(&f->f_path, buf, sizeof(buf));
-
     char key[MAX_PATH_LEN] = {};
+    bpf_printk("lsm: tail: %x %x %x", buf[MAX_PATH_LEN - 12], buf[MAX_PATH_LEN - 8], buf[MAX_PATH_LEN - 1]);
     bpf_probe_read_kernel_str(key, sizeof(key), buf);
 
     __u8 *val = bpf_map_lookup_elem(&banned, &key);
