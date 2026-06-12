@@ -3,6 +3,7 @@ package lsm
 import (
 	"fmt"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
 )
@@ -39,6 +40,8 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	}
 
 	spec.Programs["generic_lsm_handler"].AttachTo = target
+	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
+
 	l := &LsmEnforcer{
 		logger:  logger,
 		bpfObjs: objs,
