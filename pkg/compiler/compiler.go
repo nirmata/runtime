@@ -31,6 +31,7 @@ func (c *CompiledRuntimeBehavior) Evaluate() (*EvaluationResult, error) {
 	}
 
 	return &EvaluationResult{
+		UID:      c.UID,
 		IPs:      c.rb.Spec.Allow.Deny.Network,
 		Open:     c.rb.Spec.Allow.Deny.Open,
 		Selector: selector,

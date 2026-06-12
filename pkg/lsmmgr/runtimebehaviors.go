@@ -36,6 +36,7 @@ func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
 		attachedPods: make(map[string]*podRepresentation),
 		selector:     compiledRb.Selector,
 	}
+	l.lsmAttachments[compiledRb.UID] = la
 	// set the target pods (cgid)
 	targetCgids := []uint64{}
 	for podUid, pod := range l.pods {
@@ -53,7 +54,6 @@ func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
 			return err
 		}
 	}
-	l.lsmAttachments[compiledRb.UID] = la
 	return nil
 }
 
