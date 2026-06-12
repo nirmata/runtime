@@ -32,7 +32,7 @@ func (c *CompiledRuntimeBehavior) Evaluate() (*EvaluationResult, error) {
 
 	return &EvaluationResult{
 		IPs:      c.rb.Spec.Allow.Deny.Network,
-		Open:     c.rb.Spec.Allow.Open,
+		Open:     c.rb.Spec.Allow.Deny.Open,
 		Selector: selector,
 	}, nil
 }
