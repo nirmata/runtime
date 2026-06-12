@@ -80,23 +80,21 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 				return
 			}
 
-			currentRb, ok := m.rbThreadMap[string(rb.UID)]
-			if !ok {
-				return
-			}
-
-			// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
-			if currentRb.compiled.ReevalInterval != rb.Spec.ReevaluationInterval {
-				// there was a previously existing cancel function (different interval). cancel the re-evalutation
-				// thread that runs on that interval
-				if currentRb.cancel != nil {
-					currentRb.cancel()
-				}
-				ctx, cancel := context.WithCancel(context.Background())
-				go m.evaluateForInterval(ctx, *rb.Spec.ReevaluationInterval, string(rb.UID))
-				m.rbThreadMap[string(rb.UID)] = &rbWatch{
-					compiled: compiledRb,
-					cancel:   cancel,
+			// todo: bug. we never update threadmap in case we never started a reevaluation thread
+			if currentRb, ok := m.rbThreadMap[string(rb.UID)]; ok {
+				// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
+				if currentRb.compiled.ReevalInterval != rb.Spec.ReevaluationInterval {
+					// there was a previously existing cancel function (different interval). cancel the re-evalutation
+					// thread that runs on that interval
+					if currentRb.cancel != nil {
+						currentRb.cancel()
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					go m.evaluateForInterval(ctx, *rb.Spec.ReevaluationInterval, string(rb.UID))
+					m.rbThreadMap[string(rb.UID)] = &rbWatch{
+						compiled: compiledRb,
+						cancel:   cancel,
+					}
 				}
 			}
 
