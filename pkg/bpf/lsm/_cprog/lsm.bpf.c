@@ -34,12 +34,15 @@ static __always_inline int handle_open(__u64 *args) {
     char buf[MAX_PATH_LEN] = {};
     bpf_d_path(&f->f_path, buf, sizeof(buf));
 
-    __u8 *val = bpf_map_lookup_elem(&banned, &buf);
+    char key[MAX_PATH_LEN] = {};
+    bpf_probe_read_kernel_str(key, sizeof(key), buf);
+
+    __u8 *val = bpf_map_lookup_elem(&banned, &key);
     if (val) {
-        bpf_printk("lsm: denying open: path=%s", buf);
+        bpf_printk("lsm: denying open: path=%s", key);
         return -EPERM;
     }
-    bpf_printk("lsm: allowing open: path=%s", buf);
+    bpf_printk("lsm: allowing open: path=%s", key);
     return 0;
 }
 
