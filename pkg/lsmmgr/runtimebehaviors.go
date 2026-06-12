@@ -44,13 +44,15 @@ func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
 			la.attachedPods[podUid] = pod
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
+
+	}
+	if len(targetCgids) > 0 {
 		err := enf.AddCgids(targetCgids)
 		if err != nil {
 			// todo: handle this
-			continue
+			return err
 		}
 	}
-
 	l.lsmAttachments[compiledRb.UID] = la
 	return nil
 }
