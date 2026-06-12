@@ -30,6 +30,7 @@ func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
 	la := &lsmAttachment{
 		enf:          enf,
 		attachedPods: make(map[string]*podRepresentation),
+		selector:     compiledRb.Selector,
 	}
 	// set the target pods (cgid)
 	targetCgids := []uint64{}
