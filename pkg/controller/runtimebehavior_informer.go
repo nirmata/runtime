@@ -80,7 +80,6 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 				return
 			}
 
-			// todo: bug. we never update threadmap in case we never started a reevaluation thread
 			if currentRb, ok := m.rbThreadMap[string(rb.UID)]; ok {
 				// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
 				if currentRb.compiled.ReevalInterval != rb.Spec.ReevaluationInterval {

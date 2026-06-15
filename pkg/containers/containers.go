@@ -90,6 +90,7 @@ func buildCandidatePaths(root, podUID, containerID, qos string) []string {
 	type template struct{ root, prefix string }
 
 	// todo: handle file structure differences if the cgroup was found to be v1
+	// and we need testing on more edge cases
 	roots := []template{
 		{root, "kubepods"}, // default cgroupv2
 		{root + "/kubelet.slice", "kubelet-kubepods"}, // systemd managed kubelet
