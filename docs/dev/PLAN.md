@@ -174,7 +174,7 @@ When the enforcement decision lives in a BPF map, the kernel performs allow/deny
 
 - **Phase 8.4 (Node-Wide Shared Gadgets via IG)** is superseded by Phase M1+M2. The architecture is identical (one program per event type, cgroup-based routing); the implementation uses `cilium/ebpf` + CO-RE programs instead of IG gadgets.
 - **Phase 9 (E2: kill_process, E3: network_block)** enforcement BPF programs are absorbed into Phase M4. The enforcement and monitoring programs now share the same cgroup mapper, map infrastructure, and program loader.
-- The "Inspektor Gadget Coverage" gadget table below is superseded. Event type support is now determined by native BPF program capability, not IG gadget availability.
+- The "Inspektor Gadget Coverage" table earlier in this document is superseded. Event type support is now determined by native BPF program capability, not IG gadget availability.
 - Phase 9 (E0, E1, E4) — API changes, CEL compiler, `terminate_pod`, and `webhook` — proceed unchanged. They do not depend on IG.
 
 ### Migration Principles
