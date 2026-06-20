@@ -126,8 +126,8 @@ No separate runtime sensor service is required in this plan.
 ```text
 ┌────────────────────────────────────────────────────────────────┐
 │  Native eBPF Programs  (node-wide, one per event category)     │
-│  exec: lsm/bprm_check_security or tracepoint/execve           │
-│  open: lsm/file_open or tracepoint/openat                      │
+│  exec: lsm/bprm_check_security or tracepoint:syscalls:sys_enter_execve │
+│  open: lsm/file_open or tracepoint:syscalls:sys_enter_openat           │
 │  network: TC egress + XDP ingress (enforcement)                │
 │           kprobe/tcp_connect (monitoring)                      │
 │  dns:  kprobe/udp_sendmsg                                      │
