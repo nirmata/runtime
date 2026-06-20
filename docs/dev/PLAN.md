@@ -108,7 +108,7 @@ Future enhancements:
 - Introducing external queueing (Kafka/NATS)
 - Building a full SIEM UI in this phase
 
-## Target Architecture (v1)
+## Target Architecture (native eBPF stack)
 
 Single DaemonSet runtime controller, with modular engines:
 
