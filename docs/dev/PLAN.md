@@ -347,7 +347,7 @@ Detect at startup and select available hooks:
 
 - With `KYVERNO_RUNTIME_NATIVE_EBPF=true`, exec/open/connect events are routed to the correct pod channel on a kind cluster
 - IG source remains selectable via feature flag (no regression)
-- Active goroutine count is `O(event_types + workers)`, not `O(pods × event_types)`
+- Collection-layer goroutine count is `O(event_types)`, not `O(pods × event_types)`
 
 ---
 
