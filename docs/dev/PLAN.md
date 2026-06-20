@@ -2467,7 +2467,7 @@ kubectl api-resources | grep -i report
 **Native eBPF migration:**
 
 - Kernel version fragmentation — BPF verifier rejects valid programs on older kernels.
-  Mitigation: CO-RE + BTF for portability; explicit kernel compatibility matrix; preflight check at startup rejects unsupported kernels with a clear error rather than silent misbehaviour.
+  Mitigation: CO-RE + BTF for portability; explicit kernel compatibility matrix; preflight check at startup rejects unsupported kernels with a clear error rather than silent misbehavior.
 - cgroup-to-pod mapping gaps on pod churn — a pod may produce events before or after the mapper has registered it.
   Mitigation: events with unmapped `cgroup_id` are buffered for a short window (500ms) and re-routed once the mapping is populated; unresolvable events are counted via metric and discarded.
 - BPF map sizing under load — enforcement maps have fixed max entries; new pods after the limit is reached will not be enforced.
