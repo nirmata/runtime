@@ -1,12 +1,13 @@
 package compiler
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
@@ -21,30 +22,14 @@ type CompiledRuntimePolicy struct {
 	// todo: think of how allow and deny works in the codebase
 
 	// these are the hardcoded values in the api spec
-	denyIps  []string
-	denyOpen []string
-	denyExec []string
+	compiledNets  []*compiledBehavior
+	compiledOpens []*compiledBehavior
+	compiledExecs []*compiledBehavior
 }
 
-func (c *CompiledRuntimePolicy) Evaluate() (*EvaluationResult, error) {
-	selector, err := metav1.LabelSelectorAsSelector(c.selector)
-	if err != nil {
-		return nil, err
-	}
-
-	return &EvaluationResult{
-		UID:      c.UID,
-		IPs:      c.denyIps,
-		Open:     c.denyOpen,
-		Selector: selector,
-	}, nil
-}
-
-type EvaluationResult struct {
-	UID      string
-	IPs      []string // the evaluated list of IPs to ban
-	Open     []string // list of files to prevent opening
-	Selector labels.Selector
+type compiledBehavior struct {
+	prog   cel.Program
+	values []string
 }
 
 type compiler struct{}
@@ -61,6 +46,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	if err != nil {
 		return nil, err
 	}
+	// todo: cel libraries context initialization
 
 	provider := newVariablesProvider(base.CELTypeProvider())
 	env, err := base.Extend(
@@ -71,31 +57,66 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		return nil, err
 	}
 
-	denyIps := []string{}
-	denyOpen := []string{}
-	denyExec := []string{}
+	compiledNets := []*compiledBehavior{}
+	compiledOpens := []*compiledBehavior{}
+	compiledExecs := []*compiledBehavior{}
 
 	for _, b := range rp.Spec.Behaviors {
 		if b.Network != nil {
-			for _, ip := range b.Network.Deny.Values {
-				denyIps = append(denyIps, ip)
+			compiledNet, err := c.compileBehavior(env, b.Network)
+			if err != nil {
+				return nil, err
 			}
+
+			compiledNets = append(compiledNets, compiledNet)
 		}
 		if b.Exec != nil {
-			for _, fileName := range b.Exec.Deny.Values {
-				denyExec = append(denyExec, fileName)
+			compiledExec, err := c.compileBehavior(env, b.Exec)
+			if err != nil {
+				return nil, err
 			}
+
+			compiledExecs = append(compiledExecs, compiledExec)
 		}
 		if b.Open != nil {
-			for _, fileName := range b.Open.Deny.Values {
-				denyOpen = append(denyOpen, fileName)
+			compiledOpen, err := c.compileBehavior(env, b.Open)
+			if err != nil {
+				return nil, err
 			}
+
+			compiledOpens = append(compiledOpens, compiledOpen)
 		}
 	}
 
 	return &CompiledRuntimePolicy{
-		variables: variables,
+		compiledNets:  compiledNets,
+		compiledOpens: compiledOpens,
+		compiledExecs: compiledExecs,
+		variables:     variables,
 	}, nil
+}
+
+// returns the hardcoded values, the
+func (c *compiler) compileBehavior(e *cel.Env, b *v1alpha1.Behavior) (*compiledBehavior, error) {
+	ret := []string{}
+	// go over the hardcoded values
+	for _, v := range b.Deny.Values {
+		ret = append(ret, v)
+	}
+	ast, compileErr := e.Compile(b.Deny.Expression)
+	if compileErr != nil {
+		return nil, compileErr.Err()
+	}
+	// ensure that the output type is a list of string
+	if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
+		return nil, fmt.Errorf("invalid return type for array")
+	}
+	prog, err := e.Program(ast)
+	if err != nil {
+		return nil, err
+	}
+
+	return &compiledBehavior{prog: prog, values: ret}, nil
 }
 
 func (c *compiler) compileVariables(rp v1alpha1.RuntimePolicy, env *cel.Env, provider *variablesProvider) (map[string]cel.Program, error) {

@@ -59,7 +59,7 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 				}
 			}
 
-			evalRes, err := compiledRb.Evaluate()
+			evalRes, err := compiledRb.Evaluate(context.Background())
 			if err != nil {
 				return
 			}
@@ -97,7 +97,7 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 				}
 			}
 
-			evalRes, err := compiledRb.Evaluate()
+			evalRes, err := compiledRb.Evaluate(context.Background())
 			if err != nil {
 				return
 			}
@@ -146,7 +146,7 @@ func (r *RuntimePolicyMgr) evaluateForInterval(ctx context.Context, interval tim
 				return
 			}
 
-			evalRes, err := rp.compiled.Evaluate()
+			evalRes, err := rp.compiled.Evaluate(ctx)
 			if err != nil {
 				continue
 			}

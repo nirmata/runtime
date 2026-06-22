@@ -57,46 +57,24 @@ type BehaviorRule struct {
 type PolicyBehavior struct {
 	// Network defines network behavior rules.
 	// +optional
-	Network *NetworkBehavior `json:"network,omitempty"`
+	Network *Behavior `json:"network,omitempty"`
 
 	// Exec defines command execution behavior rules.
 	// +optional
-	Exec *ExecBehavior `json:"exec,omitempty"`
+	Exec *Behavior `json:"exec,omitempty"`
 
 	// Open defines file open behavior rules.
 	// +optional
-	Open *OpenBehavior `json:"open,omitempty"`
+	Open *Behavior `json:"open,omitempty"`
 }
 
-// NetworkBehavior defines allow and deny rules for network access.
-type NetworkBehavior struct {
+// Behavoior defines the allowed and denied entries of a given type.
+type Behavior struct {
 	// Allow specifies allowed network access.
 	// +optional
 	Allow *BehaviorRule `json:"allow,omitempty"`
 
 	// Deny specifies denied network access.
-	// +optional
-	Deny *BehaviorRule `json:"deny,omitempty"`
-}
-
-// ExecBehavior defines allow and deny rules for command execution.
-type ExecBehavior struct {
-	// Allow specifies allowed commands.
-	// +optional
-	Allow *BehaviorRule `json:"allow,omitempty"`
-
-	// Deny specifies denied commands.
-	// +optional
-	Deny *BehaviorRule `json:"deny,omitempty"`
-}
-
-// OpenBehavior defines allow and deny rules for file access.
-type OpenBehavior struct {
-	// Allow specifies allowed file paths.
-	// +optional
-	Allow *BehaviorRule `json:"allow,omitempty"`
-
-	// Deny specifies denied file paths.
 	// +optional
 	Deny *BehaviorRule `json:"deny,omitempty"`
 }
