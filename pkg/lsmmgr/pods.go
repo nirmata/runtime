@@ -10,20 +10,20 @@ import (
 )
 
 func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
-	// new pod, does it match any of the existing rbs ?
+	// new pod, does it match any of the existing rps ?
 	// yes ? add its cgids to the map.
 	pr := &podRepresentation{
 		labels:       pod.Labels,
 		cgids:        containers.ExtractCgids(cgInfos),
 		attachedLsms: make(map[string]*lsmAttachment),
 	}
-	for rbUid, la := range l.lsmAttachments {
+	for rpUid, la := range l.lsmAttachments {
 		if la.selector.Matches(labels.Set(pod.Labels)) {
 			err := la.enf.AddCgids(pr.cgids)
 			if err != nil {
 				return err
 			}
-			pr.attachedLsms[rbUid] = la
+			pr.attachedLsms[rpUid] = la
 		}
 	}
 	l.pods[string(pod.UID)] = pr

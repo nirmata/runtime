@@ -12,5 +12,5 @@ const EventTypeDelete = "delete"
 
 type EventIface interface {
 	PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error
-	RuntimeBehaviorEvent(rb *compiler.EvaluationResult, rbEventType string) error
+	RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error
 }

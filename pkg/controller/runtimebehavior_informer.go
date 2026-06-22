@@ -12,48 +12,48 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-type rbWatch struct {
-	compiled *compiler.CompiledRuntimeBehavior
+type rpWatch struct {
+	compiled *compiler.CompiledRuntimePolicy
 	cancel   context.CancelFunc
 }
 
-type RuntimeBehaviorMgr struct {
+type RuntimePolicyMgr struct {
 	eventHandlers []events.EventIface // both the reevaluator and the individual bpf program handlers
 	factory       v1alpha1informers.SharedInformerFactory
-	rbInformer    cache.SharedIndexInformer // todo: a queue
+	rpInformer    cache.SharedIndexInformer // todo: a queue
 	compiler      compiler.Compiler
-	rbThreadMap   map[string]*rbWatch
+	rpThreadMap   map[string]*rpWatch
 }
 
-func NewRuntimeBehaviorMgr(cfg *rest.Config,
+func NewRuntimePolicyMgr(cfg *rest.Config,
 	eventHandlers []events.EventIface,
 	factory v1alpha1informers.SharedInformerFactory,
-	rbCompiler compiler.Compiler) (*RuntimeBehaviorMgr, error) {
-	rbInformer := factory.Runtime().V1alpha1().RuntimeBehaviors().Informer()
+	rpCompiler compiler.Compiler) (*RuntimePolicyMgr, error) {
+	rpInformer := factory.Runtime().V1alpha1().RuntimePolicies().Informer()
 
-	m := &RuntimeBehaviorMgr{
+	m := &RuntimePolicyMgr{
 		factory:       factory,
 		eventHandlers: eventHandlers,
-		rbInformer:    rbInformer,
+		rpInformer:    rpInformer,
 	}
 
-	rbInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	rpInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			rb, ok := obj.(*v1alpha1.RuntimeBehavior)
+			rp, ok := obj.(*v1alpha1.RuntimePolicy)
 			if !ok {
 				return
 			}
 
-			compiledRb, err := rbCompiler.Compile(*rb)
+			compiledRb, err := rpCompiler.Compile(*rp)
 			if err != nil {
 				// todo: log the errors
 				return
 			}
 
-			if rb.Spec.ReevaluationInterval != nil {
+			if rp.Spec.EvaluationInterval != nil {
 				ctx, cancel := context.WithCancel(context.Background())
-				go m.evaluateForInterval(ctx, *rb.Spec.ReevaluationInterval, string(rb.UID))
-				m.rbThreadMap[string(rb.UID)] = &rbWatch{
+				go m.evaluateForInterval(ctx, rp.Spec.EvaluationInterval.Duration, string(rp.UID))
+				m.rpThreadMap[string(rp.UID)] = &rpWatch{
 					compiled: compiledRb,
 					cancel:   cancel,
 				}
@@ -66,31 +66,31 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 
 			for _, handler := range eventHandlers {
 				// todo: events should be handled in grs instead of serialy
-				handler.RuntimeBehaviorEvent(evalRes, events.EventTypeCreate)
+				handler.RuntimePolicyEvent(evalRes, events.EventTypeCreate)
 			}
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
-			rb, ok := newObj.(*v1alpha1.RuntimeBehavior)
+			rp, ok := newObj.(*v1alpha1.RuntimePolicy)
 			if !ok {
 				return
 			}
-			compiledRb, err := rbCompiler.Compile(*rb)
+			compiledRb, err := rpCompiler.Compile(*rp)
 			if err != nil {
 				// todo: log the errors
 				return
 			}
 
-			if currentRb, ok := m.rbThreadMap[string(rb.UID)]; ok {
+			if currentRb, ok := m.rpThreadMap[string(rp.UID)]; ok {
 				// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
-				if currentRb.compiled.ReevalInterval != rb.Spec.ReevaluationInterval {
+				if *currentRb.compiled.ReevalInterval != rp.Spec.EvaluationInterval.Duration {
 					// there was a previously existing cancel function (different interval). cancel the re-evalutation
 					// thread that runs on that interval
 					if currentRb.cancel != nil {
 						currentRb.cancel()
 					}
 					ctx, cancel := context.WithCancel(context.Background())
-					go m.evaluateForInterval(ctx, *rb.Spec.ReevaluationInterval, string(rb.UID))
-					m.rbThreadMap[string(rb.UID)] = &rbWatch{
+					go m.evaluateForInterval(ctx, rp.Spec.EvaluationInterval.Duration, string(rp.UID))
+					m.rpThreadMap[string(rp.UID)] = &rpWatch{
 						compiled: compiledRb,
 						cancel:   cancel,
 					}
@@ -103,24 +103,24 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 			}
 
 			for _, handler := range eventHandlers {
-				handler.RuntimeBehaviorEvent(evalRes, events.EventTypeUpdate)
+				handler.RuntimePolicyEvent(evalRes, events.EventTypeUpdate)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
-			rb, ok := obj.(*v1alpha1.RuntimeBehavior)
+			rp, ok := obj.(*v1alpha1.RuntimePolicy)
 			if !ok {
 				return
 			}
 			// if there was a re-eval thread running, stop it
-			if rbwatch, ok := m.rbThreadMap[string(rb.UID)]; ok {
-				delete(m.rbThreadMap, string(rb.UID))
-				rbwatch.cancel()
+			if rpwatch, ok := m.rpThreadMap[string(rp.UID)]; ok {
+				delete(m.rpThreadMap, string(rp.UID))
+				rpwatch.cancel()
 			}
 
 			// deletion events should not depend on runtime behavior data. given the UID, mark it for removal from any
 			// internal data structures
 			for _, handler := range eventHandlers {
-				handler.RuntimeBehaviorEvent(&compiler.EvaluationResult{UID: string(rb.UID)}, events.EventTypeDelete)
+				handler.RuntimePolicyEvent(&compiler.EvaluationResult{UID: string(rp.UID)}, events.EventTypeDelete)
 			}
 		},
 	})
@@ -128,32 +128,32 @@ func NewRuntimeBehaviorMgr(cfg *rest.Config,
 	return m, nil
 }
 
-func (m *RuntimeBehaviorMgr) Start(ctx context.Context) {
+func (m *RuntimePolicyMgr) Start(ctx context.Context) {
 	m.factory.Start(ctx.Done())
 	<-ctx.Done()
 }
 
 // if there was an object variable, this function would need to be pod aware
-func (r *RuntimeBehaviorMgr) evaluateForInterval(ctx context.Context, interval time.Duration, rbUid string) {
+func (r *RuntimePolicyMgr) evaluateForInterval(ctx context.Context, interval time.Duration, rpUid string) {
 	ticker := time.NewTicker(interval)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			rb, ok := r.rbThreadMap[rbUid]
+			rp, ok := r.rpThreadMap[rpUid]
 			if !ok {
 				return
 			}
 
-			evalRes, err := rb.compiled.Evaluate()
+			evalRes, err := rp.compiled.Evaluate()
 			if err != nil {
 				continue
 			}
 
 			// and the event handlers would need to be able to receive an event for the combined evaluation result of a pod and a policy
 			for _, handler := range r.eventHandlers {
-				handler.RuntimeBehaviorEvent(evalRes, "update")
+				handler.RuntimePolicyEvent(evalRes, "update")
 			}
 		}
 	}

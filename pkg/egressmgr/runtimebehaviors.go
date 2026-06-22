@@ -8,8 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (e *egressManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
-	e.rbs[compiledRb.UID] = compiledRb
+func (e *egressManager) rpCreated(compiledRb *compiler.EvaluationResult) error {
+	e.rps[compiledRb.UID] = compiledRb
 	for _, pod := range e.pods {
 		if !compiledRb.Selector.Matches(labels.Set(pod.labels)) {
 			continue
@@ -20,8 +20,8 @@ func (e *egressManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (e *egressManager) rbUpdated(compiledRb *compiler.EvaluationResult) error {
-	currentRb, ok := e.rbs[compiledRb.UID]
+func (e *egressManager) rpUpdated(compiledRb *compiler.EvaluationResult) error {
+	currentRb, ok := e.rps[compiledRb.UID]
 	if !ok {
 		return fmt.Errorf("got an update for a non existing runtime behavior uid")
 	}
@@ -36,40 +36,40 @@ func (e *egressManager) rbUpdated(compiledRb *compiler.EvaluationResult) error {
 	currentRb.IPs = compiledRb.IPs
 	currentRb.Selector = compiledRb.Selector
 
-	e.rbs[string(compiledRb.UID)] = compiledRb
+	e.rps[string(compiledRb.UID)] = compiledRb
 	for _, pod := range e.pods {
-		rbMatches := compiledRb.Selector.Matches(labels.Set(pod.labels))
+		rpMatches := compiledRb.Selector.Matches(labels.Set(pod.labels))
 		if ok {
-			// there is no diff and rb still matches, do nothing
-			if len(toRemove) == 0 && len(toAdd) == 0 && rbMatches {
+			// there is no diff and rp still matches, do nothing
+			if len(toRemove) == 0 && len(toAdd) == 0 && rpMatches {
 				continue
 			}
 
-			if !rbMatches {
-				// this rb doesn't match anymore. delete the old ips from this attachment's map
+			if !rpMatches {
+				// this rp doesn't match anymore. delete the old ips from this attachment's map
 				pod.filter.DeleteIps(oldIps)
 				delete(pod.attachedFilters, string(compiledRb.UID))
 				continue
 			}
 
-			// rb matches and there is a diff. add the new ips, delete the old
+			// rp matches and there is a diff. add the new ips, delete the old
 			// and update our tracking data structures
 			pod.filter.DeleteIps(toRemove)
 			pod.filter.AddIps(toAdd)
 			continue
 		}
 
-		// this rb wasn't previously attached to that pod. add its ips if it matches
-		if rbMatches {
+		// this rp wasn't previously attached to that pod. add its ips if it matches
+		if rpMatches {
 			pod.filter.AddIps(compiledRb.IPs)
-			pod.attachedFilters[string(compiledRb.UID)] = currentRb // add that runtime behavior's pointer to the atatchedFilters map of that pod
+			pod.attachedFilters[string(compiledRb.UID)] = currentRb // add that runtime policy's pointer to the attachedFilters map of that pod
 		}
 	}
 	return nil
 }
 
-func (e *egressManager) rbDeleted(compiledRb *compiler.EvaluationResult) error {
-	delete(e.rbs, string(compiledRb.UID))
+func (e *egressManager) rpDeleted(compiledRb *compiler.EvaluationResult) error {
+	delete(e.rps, string(compiledRb.UID))
 	for _, pod := range e.pods {
 		if att, ok := pod.attachedFilters[string(compiledRb.UID)]; ok {
 			pod.filter.DeleteIps(att.IPs)

@@ -14,7 +14,7 @@ import (
 
 type egressManager struct {
 	pods       map[string]*podAttachment
-	rbs        map[string]*compiler.EvaluationResult
+	rps        map[string]*compiler.EvaluationResult
 	policies   map[string]*compiler.EvaluationResult
 	reevalChan chan (*compiler.EvaluationResult)
 }
@@ -29,22 +29,22 @@ type podAttachment struct {
 func NewEgressManager() *egressManager {
 	return &egressManager{
 		pods:     make(map[string]*podAttachment),
-		rbs:      make(map[string]*compiler.EvaluationResult),
+		rps:      make(map[string]*compiler.EvaluationResult),
 		policies: make(map[string]*compiler.EvaluationResult),
 	}
 }
 
 // what about handling compilation outside of this entitity ?
-// on a new rb or policy.. we compile and call RuntimeBehaviorEvent. for periodic recompilation
-// we launch a ticker that compiles per interval and calls RuntimeBehaviorEvent
-func (e *egressManager) RuntimeBehaviorEvent(compiledRb *compiler.EvaluationResult, rbEventType string) error {
-	switch rbEventType {
+// on a new rp or policy.. we compile and call RuntimePolicyEvent. for periodic recompilation
+// we launch a ticker that compiles per interval and calls RuntimePolicyEvent
+func (e *egressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, rpEventType string) error {
+	switch rpEventType {
 	case events.EventTypeCreate:
-		return e.rbCreated(compiledRb)
+		return e.rpCreated(compiledRb)
 	case events.EventTypeUpdate:
-		return e.rbUpdated(compiledRb)
+		return e.rpUpdated(compiledRb)
 	case events.EventTypeDelete:
-		return e.rbDeleted(compiledRb)
+		return e.rpDeleted(compiledRb)
 	default:
 		return fmt.Errorf("invalid runtime behavior event type")
 	}

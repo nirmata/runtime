@@ -35,14 +35,14 @@ func NewLsmManager() *LsmManager {
 	}
 }
 
-func (l *LsmManager) RuntimeBehaviorEvent(compiledRb *compiler.EvaluationResult, eventType string) error {
+func (l *LsmManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, eventType string) error {
 	switch eventType {
 	case events.EventTypeCreate:
-		return l.rbCreated(compiledRb)
+		return l.rpCreated(compiledRb)
 	case events.EventTypeUpdate:
-		return l.rbUpdated(compiledRb)
+		return l.rpUpdated(compiledRb)
 	case events.EventTypeDelete:
-		return l.rbDeleted(compiledRb)
+		return l.rpDeleted(compiledRb)
 	}
 	return nil
 }

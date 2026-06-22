@@ -2,98 +2,117 @@ package v1alpha1
 
 import (
 	"encoding/json"
-	"fmt"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// RuntimePolicySpec defines a runtime policy for enforcing or monitoring behaviors.
 type RuntimePolicySpec struct {
-	// MatchConstraints specifies which resources this policy targets. Mirrors
-	// the K8s ValidatingAdmissionPolicy matchConstraints field. The policy cares
-	// about a resource only if it matches _all_ constraints.
-	//
+	// PodSelector identifies the pods this policy applies to.
 	// +optional
-	MatchConstraints *admissionregistrationv1.MatchResources `json:"matchConstraints,omitempty"`
+	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
-	// NamespaceSelector restricts which namespaces this policy applies to.
-	// Deprecated in favour of matchConstraints.namespaceSelector.
-	//
+	// Mode controls how policy violations are handled: monitor or enforce.
+	// +kubebuilder:validation:Enum=monitor;enforce
 	// +optional
-	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+	Mode RuntimePolicyMode `json:"mode,omitempty"`
 
-	Monitor     MonitorSpec         `json:"monitor,omitempty"`
-	Validations []RuntimeValidation `json:"validations,omitempty"`
+	// EvaluationInterval specifies how frequently the policy is re-evaluated.
+	// +optional
+	EvaluationInterval *metav1.Duration `json:"evaluationInterval,omitempty"`
+
+	// Variables defines custom variables that can be used in behavior expressions.
+	// +optional
+	Variables []admissionregistrationv1.Variable `json:"variables,omitempty"`
+
+	// Behaviors defines the allowed and denied runtime behaviors.
+	// +optional
+	Behaviors []PolicyBehavior `json:"behaviors,omitempty"`
 }
 
-// Validate returns an error if the spec is misconfigured.
-// RuntimePolicy only supports targeting Pod resources; any matchConstraints
-// resourceRules that reference other resource types are rejected.
-func (s *RuntimePolicySpec) Validate() error {
-	if s.MatchConstraints == nil {
-		return nil
-	}
-	for i, rule := range s.MatchConstraints.ResourceRules {
-		for _, group := range rule.APIGroups {
-			if group != "" {
-				return fmt.Errorf("matchConstraints.resourceRules[%d]: only the core API group (\"\") is supported, got %q", i, group)
-			}
-		}
-		for _, resource := range rule.Resources {
-			if resource != "pods" {
-				return fmt.Errorf("matchConstraints.resourceRules[%d]: only \"pods\" is supported as a resource, got %q", i, resource)
-			}
-		}
-	}
-	return nil
+// RuntimePolicyMode represents the operational mode for policy enforcement.
+// +kubebuilder:validation:Enum=monitor;enforce
+type RuntimePolicyMode string
+
+const (
+	PolicyModeMonitor RuntimePolicyMode = "monitor"
+	PolicyModeEnforce RuntimePolicyMode = "enforce"
+)
+
+// BehaviorRule defines allow/deny rules with values and/or expressions.
+type BehaviorRule struct {
+	// Values is a list of allowed or denied items (IPs, commands, files, etc.).
+	// +optional
+	Values []string `json:"values,omitempty"`
+
+	// Expression is a CEL expression that evaluates to a list of items.
+	// +optional
+	Expression string `json:"expression,omitempty"`
 }
 
-type MonitorSpec struct {
-	Parameters map[string]string `json:"parameters,omitempty"`
-	SampleRate int               `json:"sampleRate,omitempty"`
+// PolicyBehavior defines allow/deny rules for a specific behavior type.
+// +kubebuilder:validation:XValidation:rule="(self.network != null ? 1 : 0) + (self.exec != null ? 1 : 0) + (self.open != null ? 1 : 0) == 1",message="exactly one of network, exec, or open must be specified"
+type PolicyBehavior struct {
+	// Network defines network behavior rules.
+	// +optional
+	Network *NetworkBehavior `json:"network,omitempty"`
+
+	// Exec defines command execution behavior rules.
+	// +optional
+	Exec *ExecBehavior `json:"exec,omitempty"`
+
+	// Open defines file open behavior rules.
+	// +optional
+	Open *OpenBehavior `json:"open,omitempty"`
 }
 
-// RuntimeValidation models a Kyverno ValidatingPolicy-like runtime check backed by CEL expressions.
-type RuntimeValidation struct {
-	Name            string                `json:"name"`
-	Event           string                `json:"event,omitempty"`
-	Message         string                `json:"message,omitempty"`
-	Severity        string                `json:"severity,omitempty"`
-	MatchConditions []RuntimeCELCondition `json:"matchConditions,omitempty"`
-	Conditions      []RuntimeCELCondition `json:"conditions,omitempty"`
-	Actions         []RuntimeActionRef    `json:"actions,omitempty"`
+// NetworkBehavior defines allow and deny rules for network access.
+type NetworkBehavior struct {
+	// Allow specifies allowed network access.
+	// +optional
+	Allow *BehaviorRule `json:"allow,omitempty"`
+
+	// Deny specifies denied network access.
+	// +optional
+	Deny *BehaviorRule `json:"deny,omitempty"`
 }
 
-type RuntimeCELCondition struct {
-	Name       string `json:"name,omitempty"`
-	Expression string `json:"expression"`
+// ExecBehavior defines allow and deny rules for command execution.
+type ExecBehavior struct {
+	// Allow specifies allowed commands.
+	// +optional
+	Allow *BehaviorRule `json:"allow,omitempty"`
+
+	// Deny specifies denied commands.
+	// +optional
+	Deny *BehaviorRule `json:"deny,omitempty"`
 }
 
-type RuntimeActionRef struct {
-	// Type specifies the action to take on policy violation.
-	// +kubebuilder:validation:Enum=audit
-	Type    string `json:"type"`
-	Message string `json:"message,omitempty"`
+// OpenBehavior defines allow and deny rules for file access.
+type OpenBehavior struct {
+	// Allow specifies allowed file paths.
+	// +optional
+	Allow *BehaviorRule `json:"allow,omitempty"`
+
+	// Deny specifies denied file paths.
+	// +optional
+	Deny *BehaviorRule `json:"deny,omitempty"`
 }
 
-type RuleFinding struct {
-	RuleName  string            `json:"ruleName"`
-	EventType string            `json:"eventType,omitempty"`
-	Severity  string            `json:"severity,omitempty"`
-	Message   string            `json:"message"`
-	Fields    map[string]string `json:"fields,omitempty"`
-}
-
-type ActionRecord struct {
-	Type      string      `json:"type"`
-	Message   string      `json:"message,omitempty"`
-	Timestamp metav1.Time `json:"timestamp"`
-}
-
+// RuntimePolicyStatus reflects the observed state of the policy.
 type RuntimePolicyStatus struct {
-	ObservedPods      int32        `json:"observedPods,omitempty"`
-	ViolatingPods     int32        `json:"violatingPods,omitempty"`
+	// ObservedPods is the number of pods observed by this policy.
+	// +optional
+	ObservedPods int32 `json:"observedPods,omitempty"`
+
+	// ViolatingPods is the number of pods violating this policy.
+	// +optional
+	ViolatingPods int32 `json:"violatingPods,omitempty"`
+
+	// LastEvaluatedTime is the last time the policy was evaluated.
+	// +optional
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
 }
 
@@ -102,6 +121,7 @@ type RuntimePolicyStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=rpol,scope=Cluster
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
 // +kubebuilder:printcolumn:name="ObservedPods",type=integer,JSONPath=`.status.observedPods`
 // +kubebuilder:printcolumn:name="ViolatingPods",type=integer,JSONPath=`.status.violatingPods`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

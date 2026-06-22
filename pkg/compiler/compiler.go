@@ -1,7 +1,6 @@
 package compiler
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/google/cel-go/cel"
@@ -11,29 +10,32 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
-type CompiledRuntimeBehavior struct {
+type CompiledRuntimePolicy struct {
 	ReevalInterval *time.Duration
 	UID            string
 
 	variables map[string]cel.Program
 	prog      cel.Program
-	rb        v1alpha1.RuntimeBehavior // this field is here temporarily because we don't have proper cel compile and eval yet
+	selector  *metav1.LabelSelector
+
+	// todo: think of how allow and deny works in the codebase
+
+	// these are the hardcoded values in the api spec
+	denyIps  []string
+	denyOpen []string
+	denyExec []string
 }
 
-func (c *CompiledRuntimeBehavior) Evaluate() (*EvaluationResult, error) {
-	if c.rb.Spec.Allow == nil || c.rb.Spec.Allow.Deny == nil {
-		return nil, fmt.Errorf("temporary error because we just get the hardcoded ip list for now")
-	}
-
-	selector, err := metav1.LabelSelectorAsSelector(c.rb.Spec.WorkloadSelector)
+func (c *CompiledRuntimePolicy) Evaluate() (*EvaluationResult, error) {
+	selector, err := metav1.LabelSelectorAsSelector(c.selector)
 	if err != nil {
 		return nil, err
 	}
 
 	return &EvaluationResult{
 		UID:      c.UID,
-		IPs:      c.rb.Spec.Allow.Deny.Network,
-		Open:     c.rb.Spec.Allow.Deny.Open,
+		IPs:      c.denyIps,
+		Open:     c.denyOpen,
 		Selector: selector,
 	}, nil
 }
@@ -51,7 +53,7 @@ func NewCompiler() Compiler {
 	return &compiler{}
 }
 
-func (c *compiler) Compile(rb v1alpha1.RuntimeBehavior) (*CompiledRuntimeBehavior, error) {
+func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
 	// todo: i seriously never understood this path stuff. i am done with it
 	// path := field.NewPath("spec")
 	// todo: do we need to initialize this stuff every time we wanna compile. why can't we just init once ?
@@ -64,40 +66,43 @@ func (c *compiler) Compile(rb v1alpha1.RuntimeBehavior) (*CompiledRuntimeBehavio
 	env, err := base.Extend(
 		cel.CustomTypeProvider(provider),
 	)
-	variables, err := c.compileVariables(rb, env, provider)
+	variables, err := c.compileVariables(rp, env, provider)
 	if err != nil {
 		return nil, err
 	}
-	// todo: match conditions ?
 
-	// denyIps := []string{}
-	// denyExec := []string{}
+	denyIps := []string{}
+	denyOpen := []string{}
+	denyExec := []string{}
 
-	for _, b := range rb.Spec.Behaviors {
-		// they should all compile the same way and a single behavior should be only allowed to have one of them
-		// gosh.. i miss rust enums so much
+	for _, b := range rp.Spec.Behaviors {
 		if b.Network != nil {
-
+			for _, ip := range b.Network.Deny.Values {
+				denyIps = append(denyIps, ip)
+			}
 		}
 		if b.Exec != nil {
-
+			for _, fileName := range b.Exec.Deny.Values {
+				denyExec = append(denyExec, fileName)
+			}
 		}
 		if b.Open != nil {
-
+			for _, fileName := range b.Open.Deny.Values {
+				denyOpen = append(denyOpen, fileName)
+			}
 		}
 	}
 
-	return &CompiledRuntimeBehavior{
-		rb:        rb,
+	return &CompiledRuntimePolicy{
 		variables: variables,
 	}, nil
 }
 
-func (c *compiler) compileVariables(rb v1alpha1.RuntimeBehavior, env *cel.Env, provider *variablesProvider) (map[string]cel.Program, error) {
+func (c *compiler) compileVariables(rp v1alpha1.RuntimePolicy, env *cel.Env, provider *variablesProvider) (map[string]cel.Program, error) {
 	path := field.NewPath("spec").Child("variables")
-	variables := make(map[string]cel.Program, len(rb.Spec.Variables))
+	variables := make(map[string]cel.Program, len(rp.Spec.Variables))
 
-	for i, variable := range rb.Spec.Variables {
+	for i, variable := range rp.Spec.Variables {
 		path := path.Index(i).Child("expression")
 		ast, issues := env.Compile(variable.Expression)
 		if err := issues.Err(); err != nil {

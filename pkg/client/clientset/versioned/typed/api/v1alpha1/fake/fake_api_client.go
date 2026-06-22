@@ -27,10 +27,6 @@ type FakeRuntimeV1alpha1 struct {
 	*testing.Fake
 }
 
-func (c *FakeRuntimeV1alpha1) RuntimeBehaviors(namespace string) v1alpha1.RuntimeBehaviorInterface {
-	return newFakeRuntimeBehaviors(c, namespace)
-}
-
 func (c *FakeRuntimeV1alpha1) RuntimePolicies() v1alpha1.RuntimePolicyInterface {
 	return newFakeRuntimePolicies(c)
 }

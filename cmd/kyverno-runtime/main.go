@@ -151,7 +151,7 @@ func main() {
 
 	factory := v1alpha1informers.NewSharedInformerFactory(c, 0)
 
-	rbInformer, err := controller.NewRuntimeBehaviorMgr(cfg, eventHandlers, factory, compiler.NewCompiler())
+	rbInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, factory, compiler.NewCompiler())
 	if err != nil {
 		os.Exit(1)
 	}
@@ -163,7 +163,7 @@ func main() {
 	}()
 
 	// sync the runtime behaviors before syncing pods
-	if !cache.WaitForCacheSync(sigCtx.Done(), factory.Runtime().V1alpha1().RuntimeBehaviors().Informer().HasSynced) {
+	if !cache.WaitForCacheSync(sigCtx.Done(), factory.Runtime().V1alpha1().RuntimePolicies().Informer().HasSynced) {
 		log.Printf("timed out waiting for cache sync")
 		os.Exit(1)
 	}

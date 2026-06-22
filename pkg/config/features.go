@@ -3,7 +3,7 @@ package config
 // FeatureGates controls experimental and future capabilities.
 type FeatureGates struct {
 	// BaselineEngine enables learning and monitoring runtime baselines
-	// via RuntimeBehavior resources.
+	// via RuntimePolicy resources.
 	BaselineEngine bool
 
 	// SignatureEngine enables signature-based rule detection for known

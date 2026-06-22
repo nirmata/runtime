@@ -10,8 +10,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
-	// rb contains no files to ban opening. do nothing with it
+func (l *LsmManager) rpCreated(compiledRb *compiler.EvaluationResult) error {
+	// rp contains no files to ban opening. do nothing with it
 	if len(compiledRb.Open) == 0 {
 		return nil
 	}
@@ -57,7 +57,7 @@ func (l *LsmManager) rbCreated(compiledRb *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (l *LsmManager) rbUpdated(compiledRb *compiler.EvaluationResult) error {
+func (l *LsmManager) rpUpdated(compiledRb *compiler.EvaluationResult) error {
 	// a selector change, or a target change. just compute the diff on the target pods and on the banned files
 	la, ok := l.lsmAttachments[compiledRb.UID]
 	if !ok {
@@ -81,7 +81,7 @@ func (l *LsmManager) rbUpdated(compiledRb *compiler.EvaluationResult) error {
 		}
 	}
 
-	// set the lsm attachment's file to the incoming compiled rb's open files
+	// set the lsm attachment's file to the incoming compiled rp's open files
 	la.files = compiledRb.Open
 	for podUid, pod := range l.pods {
 		if compiledRb.Selector.Matches(labels.Set(pod.labels)) {
@@ -108,7 +108,7 @@ func (l *LsmManager) rbUpdated(compiledRb *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (l *LsmManager) rbDeleted(compiledRb *compiler.EvaluationResult) error {
+func (l *LsmManager) rpDeleted(compiledRb *compiler.EvaluationResult) error {
 	// delete the pointer from the lsm map
 	// and delete it from any pods that may have it
 	delete(l.lsmAttachments, compiledRb.UID)

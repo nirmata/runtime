@@ -17,14 +17,6 @@ limitations under the License.
 
 package v1alpha1
 
-// RuntimeBehaviorListerExpansion allows custom methods to be added to
-// RuntimeBehaviorLister.
-type RuntimeBehaviorListerExpansion interface{}
-
-// RuntimeBehaviorNamespaceListerExpansion allows custom methods to be added to
-// RuntimeBehaviorNamespaceLister.
-type RuntimeBehaviorNamespaceListerExpansion interface{}
-
 // RuntimePolicyListerExpansion allows custom methods to be added to
 // RuntimePolicyLister.
 type RuntimePolicyListerExpansion interface{}
