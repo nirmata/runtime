@@ -40,6 +40,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	// expression and append it to the return
 	denyIps := []string{}
 	denyOpen := []string{}
+	denyExec := []string{}
 
 	for _, compiledNet := range c.compiledNets {
 		// todo: program context
@@ -70,6 +71,20 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		denyOpen = append(denyOpen, compiledOpen.values...)
 	}
 
+	for _, compiledExec := range c.compiledExecs {
+		out, _, err := compiledExec.prog.ContextEval(context.Background(), data)
+		if err != nil {
+			return nil, err
+		}
+		exprFiles, ok := out.Value().([]string)
+		if !ok {
+			return nil, fmt.Errorf("invalid program return type. expected array of string")
+		}
+
+		denyExec = append(denyExec, exprFiles...)
+		denyExec = append(denyOpen, compiledExec.values...)
+	}
+
 	return &EvaluationResult{
 		UID:      c.UID,
 		IPs:      denyIps,
@@ -82,5 +97,6 @@ type EvaluationResult struct {
 	UID      string
 	IPs      []string // the evaluated list of IPs to ban
 	Open     []string // list of files to prevent opening
+	Exec     []string
 	Selector labels.Selector
 }
