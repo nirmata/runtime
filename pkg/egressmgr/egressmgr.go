@@ -18,6 +18,7 @@ type egressManager struct {
 }
 
 type podAttachment struct {
+	defaultDeny     map[string]struct{}                          // the group of runtime policy uids that contained a default deny
 	labels          map[string]string                            // todo: centralize pod label storage in the podwatcher
 	cgs             map[containers.ContainerCgroupInfo]link.Link // todo: can we store this more efficiently
 	filter          *egressfilter.EgressFilter

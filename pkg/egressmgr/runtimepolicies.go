@@ -2,6 +2,7 @@ package egressmgr
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
@@ -37,6 +38,9 @@ func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	toAddDeny := utils.DiffSlice(currentRp.IPs.Deny, compiledRp.IPs.Deny)
 	toRemoveDeny := utils.DiffSlice(compiledRp.IPs.Deny, currentRp.IPs.Deny)
 
+	// has default deny wasn't there, but now is
+	hasDefaultDeny := slices.Contains(toAddDeny, "*")
+
 	// update the current runtime behavior's information to point to the new compiled behavior data
 	currentRp.IPs = compiledRp.IPs
 	currentRp.Selector = compiledRp.Selector
@@ -55,13 +59,30 @@ func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 				// this rp doesn't match anymore. delete the old ips from this attachment's map
 				pod.filter.DeleteIps(oldIps)
 				delete(pod.attachedFilters, string(compiledRp.UID))
-				continue
+
+				// nothing further to do if the policy didn't have a default deny
+				if !hasDefaultDeny {
+					continue
+				}
+
+				// delete the policy from the default deny map
+				delete(pod.defaultDeny, string(compiledRp.UID))
+				// the map is now empty, unset default deny
+				if len(pod.defaultDeny) == 0 {
+					pod.filter.SetDefaultDeny(false)
+				}
 			}
 
 			// rp matches and there is a diff. add the new ips, delete the old
 			// and update our tracking data structures
 			pod.filter.AddIps(&compiler.AllowDenyPair{Allow: toAddAllow, Deny: toAddDeny})
 			pod.filter.DeleteIps(&compiler.AllowDenyPair{Allow: toRemoveAllow, Deny: toRemoveDeny})
+
+			// both those operations are idempotent so its fine to do them even if they were previously done
+			if hasDefaultDeny {
+				pod.filter.SetDefaultDeny(true)
+				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
+			}
 			continue
 		}
 
@@ -69,6 +90,11 @@ func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		if rpMatches {
 			pod.filter.AddIps(compiledRp.IPs)
 			pod.attachedFilters[string(compiledRp.UID)] = currentRp // add that runtime policy's pointer to the attachedFilters map of that pod
+
+			if hasDefaultDeny {
+				pod.filter.SetDefaultDeny(true)
+				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
+			}
 		}
 	}
 	return nil

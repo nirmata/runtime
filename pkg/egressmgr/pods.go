@@ -2,6 +2,7 @@ package egressmgr
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
@@ -20,9 +21,10 @@ func (e *egressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 
 	pa := &podAttachment{
 		cgs:             make(map[containers.ContainerCgroupInfo]link.Link),
+		attachedFilters: make(map[string]*compiler.EvaluationResult),
+		defaultDeny:     make(map[string]struct{}),
 		labels:          pod.Labels,
 		filter:          filter,
-		attachedFilters: make(map[string]*compiler.EvaluationResult),
 	}
 
 	for _, cg := range cgInfos {
@@ -40,8 +42,20 @@ func (e *egressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		}
 		ips.Allow = append(ips.Allow, filter.IPs.Allow...)
 		ips.Deny = append(ips.Deny, filter.IPs.Deny...)
+
+		// the filter's IP contain a default deny. add it to the group of filters
+		// that specify a default deny
+		if slices.Contains(filter.IPs.Deny, "*") {
+			pa.defaultDeny[filter.UID] = struct{}{}
+		}
+
 		pa.attachedFilters[rpName] = filter
 	}
+
+	if len(pa.defaultDeny) > 0 {
+		pa.filter.SetDefaultDeny(true)
+	}
+
 	// ban ips in case there was a rp that matched
 	if len(ips.Allow) > 0 || len(ips.Deny) > 0 {
 		pa.filter.AddIps(ips)

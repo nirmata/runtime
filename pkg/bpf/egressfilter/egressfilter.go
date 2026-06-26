@@ -94,6 +94,15 @@ func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) {
 	}
 }
 
+func (e *EgressFilter) SetDefaultDeny(val bool) {
+	key := 0
+	if val {
+		e.bpfObjs.egressBlockMaps.DefaultDeny.Put(&key, uint8(0))
+	} else {
+		e.bpfObjs.egressBlockMaps.DefaultDeny.Delete(&key)
+	}
+}
+
 func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
 	link, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgPath,

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
@@ -151,10 +152,15 @@ func (r *RuntimePolicyMgr) evaluateForInterval(ctx context.Context, interval tim
 				continue
 			}
 
+			var wg sync.WaitGroup
+			wg.Add(len(r.eventHandlers))
+
 			// and the event handlers would need to be able to receive an event for the combined evaluation result of a pod and a policy
 			for _, handler := range r.eventHandlers {
-				handler.RuntimePolicyEvent(evalRes, "update")
+				go func() { defer wg.Done(); handler.RuntimePolicyEvent(evalRes, "update") }()
 			}
+
+			wg.Wait()
 		}
 	}
 }
