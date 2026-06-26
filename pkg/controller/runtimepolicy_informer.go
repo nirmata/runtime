@@ -8,6 +8,7 @@ import (
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	v1alpha1informers "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions"
+	v1alpha1listers "github.com/nirmata/kyverno-runtime/pkg/client/listers/api/v1alpha1"
 
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
@@ -18,8 +19,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
-
-const workers = 5
 
 type rpWatch struct {
 	compiled *compiler.CompiledRuntimePolicy
@@ -33,6 +32,7 @@ type RuntimePolicyMgr struct {
 	rpInformer    cache.SharedIndexInformer
 	compiler      compiler.Compiler
 	rpThreadMap   map[string]*rpWatch
+	lister        v1alpha1listers.RuntimePolicyLister
 }
 
 func (m *RuntimePolicyMgr) Start(ctx context.Context) {
@@ -45,9 +45,7 @@ func (m *RuntimePolicyMgr) Start(ctx context.Context) {
 
 	m.factory.Start(ctx.Done())
 
-	for range workers {
-		go wait.UntilWithContext(ctx, m.runWorker, time.Second)
-	}
+	go wait.UntilWithContext(ctx, m.runWorker, time.Second)
 
 	<-ctx.Done()
 }
@@ -70,10 +68,12 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 	)
 
 	m := &RuntimePolicyMgr{
+		rpThreadMap:   make(map[string]*rpWatch),
 		factory:       factory,
 		eventHandlers: eventHandlers,
 		rpInformer:    rpInformer,
 		queue:         queue,
+		lister:        factory.Runtime().V1alpha1().RuntimePolicies().Lister(),
 	}
 
 	rpInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -83,7 +83,6 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 				return
 			}
 			queue.Add(events.Event[*v1alpha1.RuntimePolicy]{Obj: rp, Type: events.EventTypeCreate})
-
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			rp, ok := newObj.(*v1alpha1.RuntimePolicy)
@@ -127,6 +126,22 @@ func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
 	}
 
 	if err != nil {
+		// for failed update events, we need to ensure that when we requeue
+		// an event it contains the latest object from the cluster to avoid
+		// having the bpf maps reflecting a stale state
+		if ev.Type == events.EventTypeUpdate {
+			if m.queue.NumRequeues(ev) < 5 {
+				current, fetchErr := m.lister.Get(ev.Obj.Name)
+				if fetchErr == nil {
+					ev.Obj = current
+					m.queue.AddRateLimited(ev)
+					return true
+				}
+			}
+		} else {
+			m.queue.AddRateLimited(ev)
+			return true
+		}
 	}
 
 	m.queue.Forget(ev)
