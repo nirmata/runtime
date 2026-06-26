@@ -64,7 +64,7 @@ spec:
                       description: Exec defines command execution behavior rules.
                       properties:
                         allow:
-                          description: Allow specifies allowed commands.
+                          description: Allow specifies allowed network access.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -78,7 +78,7 @@ spec:
                               type: array
                           type: object
                         deny:
-                          description: Deny specifies denied commands.
+                          description: Deny specifies denied network access.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -128,7 +128,7 @@ spec:
                       description: Open defines file open behavior rules.
                       properties:
                         allow:
-                          description: Allow specifies allowed file paths.
+                          description: Allow specifies allowed network access.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -142,7 +142,7 @@ spec:
                               type: array
                           type: object
                         deny:
-                          description: Deny specifies denied file paths.
+                          description: Deny specifies denied network access.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -157,6 +157,10 @@ spec:
                           type: object
                       type: object
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of network, exec, or open must be specified
+                    rule: '(self.network != null ? 1 : 0) + (self.exec != null ? 1
+                      : 0) + (self.open != null ? 1 : 0) == 1'
                 type: array
               evaluationInterval:
                 description: EvaluationInterval specifies how frequently the policy
@@ -224,12 +228,12 @@ spec:
                   properties:
                     expression:
                       description: |-
-                        Expression is the expression that will be evaluated as the value of the variable.
+                        expression is the expression that will be evaluated as the value of the variable.
                         The CEL expression has access to the same identifiers as the CEL expressions in Validation.
                       type: string
                     name:
                       description: |-
-                        Name is the name of the variable. The name must be a valid CEL identifier and unique among all variables.
+                        name is the name of the variable. The name must be a valid CEL identifier and unique among all variables.
                         The variable can be accessed in other expressions through `variables`
                         For example, if name is "foo", the variable will be available as `variables.foo`
                       type: string

@@ -37,6 +37,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		selector:     compiledRp.Selector,
 	}
 	l.lsmAttachments[compiledRp.UID] = la
+
 	// set the target pods (cgid)
 	targetCgids := []uint64{}
 	for podUid, pod := range l.pods {
@@ -61,7 +62,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	// a selector change, or a target change. just compute the diff on the target pods and on the banned files
 	la, ok := l.lsmAttachments[compiledRp.UID]
 	if !ok {
-		return fmt.Errorf("got an update for a runtime behavior that doesn't exist")
+		return fmt.Errorf("got an update for a runtime policy that doesn't exist")
 	}
 	// diff the existing and new files. delete what must be deleted
 	// todo: instead of calling this function twice we can call it once and have it return both array

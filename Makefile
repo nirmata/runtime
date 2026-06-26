@@ -6,6 +6,9 @@ IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 HOST_PLATFORM ?= linux/$(shell go env GOARCH)
 
+generate-crds:
+	go run sigs.k8s.io/controller-tools/cmd/controller-gen crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
+
 generate-client:
 	go run k8s.io/code-generator/cmd/client-gen \
 		--clientset-name versioned \
@@ -133,4 +136,4 @@ test-e2e-install: kind-install test-e2e
 # Full CI pipeline reusing a prebuilt image tag (no ko build)
 test-e2e-install-prebuilt: kind-install-prebuilt test-e2e
 
-.PHONY: generate-client generate-listers generate-informers test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt
+.PHONY: generate-crds generate-client generate-listers generate-informers test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt
