@@ -10,6 +10,7 @@ import (
 	v1alpha1informers "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions"
 	v1alpha1listers "github.com/nirmata/kyverno-runtime/pkg/client/listers/api/v1alpha1"
 
+	"github.com/go-logr/logr"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type rpWatch struct {
@@ -33,6 +35,7 @@ type RuntimePolicyMgr struct {
 	compiler      compiler.Compiler
 	rpThreadMap   map[string]*rpWatch
 	lister        v1alpha1listers.RuntimePolicyLister
+	log           logr.Logger
 }
 
 func (m *RuntimePolicyMgr) Start(ctx context.Context) {
@@ -74,6 +77,7 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 		rpInformer:    rpInformer,
 		queue:         queue,
 		lister:        factory.Runtime().V1alpha1().RuntimePolicies().Lister(),
+		log:           ctrl.Log.WithName("runtimepolicy"),
 	}
 
 	rpInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -126,7 +130,9 @@ func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
 	}
 
 	if err != nil {
-		if m.queue.NumRequeues(ev) >= 5 {
+		requeues := m.queue.NumRequeues(ev)
+		if requeues >= 5 {
+			m.log.Error(err, "giving up on event after max requeues", "policy", ev.Obj.Name, "type", ev.Type, "requeues", requeues)
 			m.queue.Forget(ev)
 			return true
 		}
@@ -136,11 +142,14 @@ func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
 		// having the bpf maps reflecting a stale state
 		if ev.Type == events.EventTypeUpdate {
 			current, fetchErr := m.lister.Get(ev.Obj.Name)
-			if fetchErr == nil {
-				ev.Obj = current
-				m.queue.AddRateLimited(ev)
+			if fetchErr != nil {
+				m.log.Error(fetchErr, "failed to fetch latest policy from lister, giving up on update", "policy", ev.Obj.Name)
+				m.queue.Forget(ev)
 				return true
 			}
+			ev.Obj = current
+			m.queue.AddRateLimited(ev)
+			return true
 		} else {
 			m.queue.AddRateLimited(ev)
 			return true
@@ -264,6 +273,7 @@ func (r *RuntimePolicyMgr) evaluateForInterval(ctx context.Context, interval tim
 
 			evalRes, err := rp.compiled.Evaluate(ctx)
 			if err != nil {
+				r.log.Error(err, "evaluation failed in interval loop", "policy", rpUid)
 				continue
 			}
 
