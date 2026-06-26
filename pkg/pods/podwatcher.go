@@ -121,7 +121,21 @@ func (w *podWatcher) processNextWorkItem() bool {
 	}
 
 	if err != nil {
-		// what should we do with errors ?
+		// we need to ensure that we are getting the latest pod during requeuing updates
+		// because the pod object's status is what gets used to determine the container ids
+		if ev.Type == events.EventTypeUpdate {
+			if w.queue.NumRequeues(ev) < 5 {
+				current, fetchErr := w.factory.Core().V1().Pods().Lister().Pods(ev.Obj.Namespace).Get(ev.Obj.Name)
+				if fetchErr == nil {
+					ev.Obj = current
+					w.queue.AddRateLimited(ev)
+					return true
+				}
+			}
+		} else {
+			w.queue.AddRateLimited(ev)
+			return true
+		}
 	}
 
 	return true
