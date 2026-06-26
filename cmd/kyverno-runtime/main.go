@@ -37,7 +37,6 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var enableLeaderElection bool
-	var igExecTimeout time.Duration
 	var reportBufferInterval time.Duration
 	var reportBufferMaxCount int
 	var reportSuppressionCooldown time.Duration
@@ -48,41 +47,15 @@ func main() {
 	var enableSignatureEngine bool
 	var enableAlertSinks bool
 	var enableAlertAggregation bool
-	var runtimeBehaviorAutoCreate bool
-	var runtimeBehaviorIncludeControllers string
-	var runtimeBehaviorIncludeBarePods bool
-	var runtimeBehaviorIncludeNamespaces string
-	var runtimeBehaviorExcludeNamespaces string
-	var runtimeBehaviorInitialMode string
-	var runtimeBehaviorOptOutLabel string
-	var sharedDefaultsNamespace string
-	var containerdSocketPath string
-
-	defaults := config.DefaultFeatures()
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
-	flag.DurationVar(&igExecTimeout, "inspektor-gadget-timeout", 8*time.Second, "Timeout for inspektor gadget runtime initialization.")
 	flag.DurationVar(&reportBufferInterval, "report-buffer-interval", 10*time.Second, "Interval to flush buffered PolicyReport updates.")
 	flag.IntVar(&reportBufferMaxCount, "report-buffer-max-count", 1000, "Maximum buffered findings before forcing a flush.")
 	flag.DurationVar(&reportSuppressionCooldown, "report-suppression-cooldown", 30*time.Second, "Rolling cooldown window for duplicate finding suppression.")
 	flag.IntVar(&reportSuppressionBurst, "report-suppression-burst", 20, "Maximum duplicate finding updates per fingerprint in one cooldown window.")
 	flag.DurationVar(&reportEventCooldown, "report-event-cooldown", 30*time.Second, "Rolling cooldown window for Kubernetes Event emission dedup/rate-limit.")
 	flag.IntVar(&reportEventBurst, "report-event-burst", 10, "Maximum Kubernetes Events emitted per fingerprint in one cooldown window.")
-	flag.BoolVar(&enableBaselineEngine, "feature-baseline-engine", defaults.BaselineEngine, "Enable baseline lifecycle and learning engine.")
-	flag.BoolVar(&enableSignatureEngine, "feature-signature-engine", defaults.SignatureEngine, "Enable signature-based rule detection engine.")
-	flag.BoolVar(&enableAlertSinks, "feature-alert-sinks", false, "Enable external alert sinks and routing.")
-	flag.BoolVar(&enableAlertAggregation, "feature-alert-aggregation", defaults.AlertAggregation, "Enable cross-rule aggregation and suppression controls.")
-	flag.BoolVar(&runtimeBehaviorAutoCreate, "runtimebehavior-auto-create", true, "Enable automatic RuntimeBehavior creation for enrolled workloads.")
-	flag.StringVar(&runtimeBehaviorIncludeControllers, "runtimebehavior-include-controllers", "Deployment,StatefulSet,DaemonSet,Job,CronJob,ReplicaSet", "Comma-separated controller kinds for RuntimeBehavior auto-enrollment.")
-	flag.BoolVar(&runtimeBehaviorIncludeBarePods, "runtimebehavior-include-bare-pods", false, "Whether bare pods are eligible for RuntimeBehavior auto-enrollment.")
-	flag.StringVar(&runtimeBehaviorIncludeNamespaces, "runtimebehavior-include-namespaces", "", "Optional comma-separated namespace allow-list for RuntimeBehavior auto-enrollment.")
-	flag.StringVar(&runtimeBehaviorExcludeNamespaces, "runtimebehavior-exclude-namespaces", "kube-system,kyverno-runtime", "Comma-separated namespace deny-list for RuntimeBehavior auto-enrollment.")
-	flag.StringVar(&runtimeBehaviorInitialMode, "runtimebehavior-initial-mode", "learning", "Initial mode for auto-created RuntimeBehavior resources: learning|monitor.")
-	flag.StringVar(&runtimeBehaviorOptOutLabel, "runtimebehavior-optout-label", "", "Optional label key to allow auditable RuntimeBehavior opt-out.")
-	flag.StringVar(&sharedDefaultsNamespace, "shared-defaults-namespace", "kyverno-runtime", "Namespace to discover shared RuntimeBehavior defaults.")
-	flag.StringVar(&containerdSocketPath, "containerd-socket", "/run/containerd/containerd.sock", "Path to the containerd socket.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)

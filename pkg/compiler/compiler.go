@@ -19,8 +19,6 @@ type CompiledRuntimePolicy struct {
 	prog      cel.Program
 	selector  *metav1.LabelSelector
 
-	// todo: think of how allow and deny works in the codebase
-
 	// these are the hardcoded values in the api spec
 	compiledNets  []*compiledBehavior
 	compiledOpens []*compiledBehavior
