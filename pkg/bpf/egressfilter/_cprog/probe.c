@@ -11,6 +11,20 @@ struct {
     __type(value, __u8);
 } banned_ips SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, __u8);
+} allowed_ips SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u8);
+    __type(value, __u8);
+} default_deny SEC(".maps");
+
 struct iphdr {
     __u8  ihl_version;
     __u8  tos;
@@ -34,7 +48,22 @@ int cgroup_egress(struct __sk_buff *skb)
     if ((void *)(ip + 1) > data_end)
         return 1;
 
+    // check if there's a default deny
+    __u8 *dd = bpf_map_lookup_elem(&default_deny, 0);
     __u32 daddr = ip->daddr;
+
+    // there is a value placed in the default_deny map
+    if (dd) {
+        __u8 *val = bpf_map_lookup_elem(&allowed_ips, &daddr);
+        if (val) {
+            bpf_printk("cgroup_egress (allowlist): ALLOWING daddr=%x\n", daddr);
+            return 1;
+        }  
+
+        bpf_printk("cgroup_egress (allowlist): BLOCKING daddr=%x\n", daddr);
+        return 0;
+    };
+
     __u8 *val = bpf_map_lookup_elem(&banned_ips, &daddr);
     if (val) {
         bpf_printk("cgroup_egress: BLOCKING daddr=%x\n", daddr);

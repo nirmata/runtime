@@ -96,7 +96,6 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	}, nil
 }
 
-// returns the hardcoded values, the
 func (c *compiler) compileBehavior(e *cel.Env, b *v1alpha1.Behavior) (*compiledBehavior, error) {
 	ret := []string{}
 	// go over the hardcoded values
