@@ -17,6 +17,11 @@ func (e *egressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		}
 		pod.filter.AddIps(compiledRp.IPs)
 		pod.attachedFilters[compiledRp.UID] = compiledRp
+
+		if slices.Contains(compiledRp.IPs.Deny, "*") {
+			pod.filter.SetDefaultDeny(true)
+			pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -106,6 +111,15 @@ func (e *egressManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
 		if att, ok := pod.attachedFilters[string(compiledRp.UID)]; ok {
 			pod.filter.DeleteIps(att.IPs)
 			delete(pod.attachedFilters, string(compiledRp.UID))
+
+			// attempt to delete that runtime policy's id from the default deny specifiers.
+			// if it didn't exist the length of the map won't change and hence won't reach zero.
+			// if it was already zero, then no harm in setting the default deny to false since its
+			// an idempotent process
+			delete(pod.defaultDeny, string(compiledRp.UID))
+			if len(pod.defaultDeny) == 0 {
+				pod.filter.SetDefaultDeny(false)
+			}
 		}
 	}
 	return nil
