@@ -1,5 +1,11 @@
 package utils
 
+import (
+	"os"
+	"slices"
+	"strings"
+)
+
 // return the entries in array b and not a
 func DiffSlice[T comparable](a, b []T) []T {
 	set := make(map[T]struct{}, len(a))
@@ -13,4 +19,15 @@ func DiffSlice[T comparable](a, b []T) []T {
 		}
 	}
 	return out
+}
+
+func BpfLSMEnabled() (bool, error) {
+	data, err := os.ReadFile("/sys/kernel/security/lsm")
+	if err != nil {
+		return false, err
+	}
+	if slices.Contains(strings.Split(strings.TrimSpace(string(data)), ","), "bpf") {
+		return true, nil
+	}
+	return false, nil
 }

@@ -2,14 +2,12 @@ package main
 
 import (
 	"flag"
-	"log"
 	"os"
 	"time"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
-	v1alpha1informers "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
@@ -122,13 +120,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	factory := v1alpha1informers.NewSharedInformerFactory(c, 0)
 	rpCompiler, err := compiler.NewCompiler()
 	if err != nil {
 		os.Exit(1)
 	}
 
-	rbInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, factory, rpCompiler)
+	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, c, rpCompiler)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -136,12 +133,17 @@ func main() {
 	sigCtx := ctrl.SetupSignalHandler()
 
 	go func() {
-		rbInformer.Start(sigCtx)
+		for {
+			select {
+			case <-sigCtx.Done():
+				return
+			default:
+				rpInformer.Start(sigCtx)
+			}
+		}
 	}()
 
-	// sync the runtime behaviors before syncing pods
-	if !cache.WaitForCacheSync(sigCtx.Done(), factory.Runtime().V1alpha1().RuntimePolicies().Informer().HasSynced) {
-		log.Printf("timed out waiting for cache sync")
+	if !cache.WaitForCacheSync(sigCtx.Done(), rpInformer.HasSynced) {
 		os.Exit(1)
 	}
 

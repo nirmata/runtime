@@ -10,6 +10,12 @@ const EventTypeCreate = "create"
 const EventTypeUpdate = "update"
 const EventTypeDelete = "delete"
 
+type Event[T any] struct {
+	Type   string
+	Obj    T
+	OldObj T
+}
+
 type EventIface interface {
 	PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error
 	RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error

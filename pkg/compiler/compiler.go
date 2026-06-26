@@ -37,7 +37,7 @@ type compiler struct {
 }
 
 func NewCompiler() (Compiler, error) {
-	base, err := NewEnv()
+	base, err := newEnv()
 	if err != nil {
 		return nil, err
 	}

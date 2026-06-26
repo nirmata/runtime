@@ -6,7 +6,7 @@ import (
 	"k8s.io/apiserver/pkg/cel/library"
 )
 
-func NewEnv() (*cel.Env, error) {
+func newEnv() (*cel.Env, error) {
 	// create new cel env
 	return cel.NewEnv(
 		// configure env

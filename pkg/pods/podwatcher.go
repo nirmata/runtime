@@ -4,27 +4,47 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 )
 
-type PodWatcher struct {
-	// todo: do i actually need references to the event handlers inside the pod watchers?
+const workers = 5
+
+type podWatcher struct {
 	factory    informers.SharedInformerFactory
 	informer   cache.SharedIndexInformer
 	podCgInfos map[string][]*containers.ContainerCgroupInfo // todo: we should be also delete dead pod entries
+	queue      workqueue.TypedRateLimitingInterface[events.Event[*corev1.Pod]]
 
 	nodeName      string
 	eventHandlers []events.EventIface
 }
 
-func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.EventIface) *PodWatcher {
+func (w *podWatcher) Start(ctx context.Context) {
+	w.factory.Start(ctx.Done())
+	if !cache.WaitForCacheSync(ctx.Done(), w.informer.HasSynced) {
+		log.Printf("timed out waiting for cache sync")
+		return
+	}
+
+	for range workers {
+		go wait.Until(w.runWorker, time.Second, ctx.Done())
+	}
+
+	<-ctx.Done()
+}
+
+func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.EventIface) *podWatcher {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		client,
 		0,
@@ -36,6 +56,10 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 		}),
 	)
 
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[events.Event[*corev1.Pod]](),
+	)
+
 	podInformer := factory.Core().V1().Pods().Informer()
 	podCgInfos := make(map[string][]*containers.ContainerCgroupInfo)
 
@@ -45,52 +69,25 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 			if !ok {
 				return
 			}
-			cgInfos, err := containers.ResolveCgInfos(pod)
-			if err != nil {
-				// todo: handle this
-				return
-			}
-
-			if len(cgInfos) != 0 {
-				podCgInfos[string(pod.UID)] = cgInfos
-			}
-			for _, e := range eventHandlers {
-				e.PodEvent(*pod, cgInfos, events.EventTypeCreate)
-			}
+			queue.Add(events.Event[*corev1.Pod]{Obj: pod, Type: events.EventTypeCreate})
 		},
 		UpdateFunc: func(_, new interface{}) {
 			pod, ok := new.(*corev1.Pod)
 			if !ok {
 				return
 			}
-			cgInfos, err := containers.ResolveCgInfos(pod)
-			if err != nil {
-				// todo: handle this
-				return
-			}
-
-			if len(cgInfos) != 0 {
-				podCgInfos[string(pod.UID)] = cgInfos
-			}
-
-			for _, e := range eventHandlers {
-				e.PodEvent(*pod, cgInfos, events.EventTypeUpdate)
-			}
+			queue.Add(events.Event[*corev1.Pod]{Obj: pod, Type: events.EventTypeUpdate})
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
 				return
 			}
-			cgInfos := podCgInfos[string(pod.UID)]
-			delete(podCgInfos, string(pod.UID))
-			for _, e := range eventHandlers {
-				e.PodEvent(*pod, cgInfos, events.EventTypeDelete)
-			}
+			queue.Add(events.Event[*corev1.Pod]{Obj: pod, Type: events.EventTypeDelete})
 		},
 	})
 
-	w := &PodWatcher{
+	w := &podWatcher{
 		factory:       factory,
 		informer:      podInformer,
 		nodeName:      nodeName,
@@ -101,12 +98,86 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 	return w
 }
 
-func (w *PodWatcher) Start(ctx context.Context) {
-	w.factory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), w.informer.HasSynced) {
-		log.Printf("timed out waiting for cache sync")
-		return
+func (w *podWatcher) runWorker() {
+	for w.processNextWorkItem() {
+	}
+}
+
+func (w *podWatcher) processNextWorkItem() bool {
+	ev, shutdown := w.queue.Get()
+	if shutdown {
+		return false
 	}
 
-	<-ctx.Done()
+	var err error
+
+	switch ev.Type {
+	case events.EventTypeCreate:
+		err = w.handleCreate(ev)
+	case events.EventTypeUpdate:
+		err = w.handleUpdate(ev)
+	case events.EventTypeDelete:
+		err = w.handleDelete(ev)
+	}
+
+	if err != nil {
+		// what should we do with errors ?
+	}
+
+	return true
+}
+
+func (w *podWatcher) handleCreate(ev events.Event[*corev1.Pod]) error {
+	pod := ev.Obj
+	cgInfos, err := containers.ResolveCgInfos(pod)
+	if err != nil {
+		return err
+	}
+
+	if len(cgInfos) != 0 {
+		w.podCgInfos[string(pod.UID)] = cgInfos
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(w.eventHandlers))
+	for _, e := range w.eventHandlers {
+		go func() { defer wg.Done(); e.PodEvent(*pod, cgInfos, events.EventTypeCreate) }()
+	}
+	wg.Wait()
+	return nil
+}
+
+func (w *podWatcher) handleUpdate(ev events.Event[*corev1.Pod]) error {
+	pod := ev.Obj
+	cgInfos, err := containers.ResolveCgInfos(pod)
+	if err != nil {
+		return err
+	}
+
+	if len(cgInfos) != 0 {
+		w.podCgInfos[string(pod.UID)] = cgInfos
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(w.eventHandlers))
+	for _, e := range w.eventHandlers {
+		go func() { defer wg.Done(); e.PodEvent(*pod, cgInfos, events.EventTypeUpdate) }()
+	}
+
+	wg.Wait()
+	return nil
+}
+
+func (w *podWatcher) handleDelete(ev events.Event[*corev1.Pod]) error {
+	pod := ev.Obj
+	cgInfos := w.podCgInfos[string(pod.UID)]
+	delete(w.podCgInfos, string(pod.UID))
+
+	var wg sync.WaitGroup
+	wg.Add(len(w.eventHandlers))
+	for _, e := range w.eventHandlers {
+		go func() { defer wg.Done(); e.PodEvent(*pod, cgInfos, events.EventTypeDelete) }()
+	}
+	wg.Wait()
+	return nil
 }
