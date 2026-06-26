@@ -121,6 +121,12 @@ func (w *podWatcher) processNextWorkItem() bool {
 	}
 
 	if err != nil {
+		// don't try the same event more than 5 times
+		if w.queue.NumRequeues(ev) >= 5 {
+			w.queue.Forget(ev)
+			return true
+		}
+
 		// we need to ensure that we are getting the latest pod during requeuing updates
 		// because the pod object's status is what gets used to determine the container ids
 		if ev.Type == events.EventTypeUpdate {
@@ -138,6 +144,7 @@ func (w *podWatcher) processNextWorkItem() bool {
 		}
 	}
 
+	w.queue.Forget(ev)
 	return true
 }
 

@@ -126,17 +126,20 @@ func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
 	}
 
 	if err != nil {
+		if m.queue.NumRequeues(ev) >= 5 {
+			m.queue.Forget(ev)
+			return true
+		}
+
 		// for failed update events, we need to ensure that when we requeue
 		// an event it contains the latest object from the cluster to avoid
 		// having the bpf maps reflecting a stale state
 		if ev.Type == events.EventTypeUpdate {
-			if m.queue.NumRequeues(ev) < 5 {
-				current, fetchErr := m.lister.Get(ev.Obj.Name)
-				if fetchErr == nil {
-					ev.Obj = current
-					m.queue.AddRateLimited(ev)
-					return true
-				}
+			current, fetchErr := m.lister.Get(ev.Obj.Name)
+			if fetchErr == nil {
+				ev.Obj = current
+				m.queue.AddRateLimited(ev)
+				return true
 			}
 		} else {
 			m.queue.AddRateLimited(ev)
