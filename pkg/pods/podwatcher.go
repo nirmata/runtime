@@ -3,10 +3,10 @@ package pods
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	corev1 "k8s.io/api/core/v1"
@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 const workers = 5
@@ -28,12 +29,13 @@ type podWatcher struct {
 
 	nodeName      string
 	eventHandlers []events.EventIface
+	log           logr.Logger
 }
 
 func (w *podWatcher) Start(ctx context.Context) {
 	w.factory.Start(ctx.Done())
 	if !cache.WaitForCacheSync(ctx.Done(), w.informer.HasSynced) {
-		log.Printf("timed out waiting for cache sync")
+		w.log.Error(fmt.Errorf("timed out waiting for cache sync"), "failed to sync cache")
 		return
 	}
 
@@ -93,6 +95,7 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 		nodeName:      nodeName,
 		eventHandlers: eventHandlers,
 		podCgInfos:    podCgInfos,
+		log:           ctrl.Log.WithName("podwatcher"),
 	}
 
 	return w
@@ -121,8 +124,10 @@ func (w *podWatcher) processNextWorkItem() bool {
 	}
 
 	if err != nil {
+		requeues := w.queue.NumRequeues(ev)
 		// don't try the same event more than 5 times
-		if w.queue.NumRequeues(ev) >= 5 {
+		if requeues >= 5 {
+			w.log.Error(err, "giving up on event after max requeues", "pod", fmt.Sprintf("%s/%s", ev.Obj.Namespace, ev.Obj.Name), "type", ev.Type, "requeues", requeues)
 			w.queue.Forget(ev)
 			return true
 		}
@@ -130,14 +135,15 @@ func (w *podWatcher) processNextWorkItem() bool {
 		// we need to ensure that we are getting the latest pod during requeuing updates
 		// because the pod object's status is what gets used to determine the container ids
 		if ev.Type == events.EventTypeUpdate {
-			if w.queue.NumRequeues(ev) < 5 {
-				current, fetchErr := w.factory.Core().V1().Pods().Lister().Pods(ev.Obj.Namespace).Get(ev.Obj.Name)
-				if fetchErr == nil {
-					ev.Obj = current
-					w.queue.AddRateLimited(ev)
-					return true
-				}
+			current, fetchErr := w.factory.Core().V1().Pods().Lister().Pods(ev.Obj.Namespace).Get(ev.Obj.Name)
+			if fetchErr != nil {
+				w.log.Error(fetchErr, "failed to fetch latest pod from lister, giving up on update", "pod", fmt.Sprintf("%s/%s", ev.Obj.Namespace, ev.Obj.Name))
+				w.queue.Forget(ev)
+				return true
 			}
+			ev.Obj = current
+			w.queue.AddRateLimited(ev)
+			return true
 		} else {
 			w.queue.AddRateLimited(ev)
 			return true
