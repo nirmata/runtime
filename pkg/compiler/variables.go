@@ -25,7 +25,9 @@ func newVariablesProvider(inner types.Provider) *variablesProvider {
 	}
 }
 
-func (p *variablesProvider) RegisterField(name string, t *types.Type) {
+// store the inner variables name and the types they resolve to. this
+// function is not part of an interface that cel requires, its a custom function.
+func (p *variablesProvider) registerField(name string, t *types.Type) {
 	p.fields[name] = t
 	p.names = append(p.names, name)
 }

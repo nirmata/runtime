@@ -150,8 +150,12 @@ func main() {
 	}
 
 	factory := v1alpha1informers.NewSharedInformerFactory(c, 0)
+	rpCompiler, err := compiler.NewCompiler()
+	if err != nil {
+		os.Exit(1)
+	}
 
-	rbInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, factory, compiler.NewCompiler())
+	rbInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, factory, rpCompiler)
 	if err != nil {
 		os.Exit(1)
 	}

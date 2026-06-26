@@ -28,31 +28,31 @@ type CompiledRuntimePolicy struct {
 }
 
 type compiledBehavior struct {
-	prog   cel.Program
-	values []string
+	defaultDeny bool
+	denyProg    cel.Program
+	allowProg   cel.Program
+	pair        *AllowDenyPair
 }
 
-type compiler struct{}
-
-func NewCompiler() Compiler {
-	return &compiler{}
+type compiler struct {
+	env *cel.Env
 }
 
-func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
-	// todo: i seriously never understood this path stuff. i am done with it
-	// path := field.NewPath("spec")
-	// todo: do we need to initialize this stuff every time we wanna compile. why can't we just init once ?
+func NewCompiler() (Compiler, error) {
 	base, err := NewEnv()
 	if err != nil {
 		return nil, err
 	}
-	// todo: cel libraries context initialization
 
 	provider := newVariablesProvider(base.CELTypeProvider())
 	env, err := base.Extend(
 		cel.CustomTypeProvider(provider),
 	)
-	variables, err := c.compileVariables(rp, env, provider)
+	return &compiler{env: env}, nil
+}
+
+func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
+	variables, err := c.compileVariables(rp, c.env, c.env.CELTypeProvider())
 	if err != nil {
 		return nil, err
 	}
@@ -61,27 +61,33 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	compiledOpens := []*compiledBehavior{}
 	compiledExecs := []*compiledBehavior{}
 
-	for _, b := range rp.Spec.Behaviors {
+	// we use the path to propagate errors with context on which field's compilation errored
+	path := field.NewPath("spec").Child("behaviors")
+
+	for i, b := range rp.Spec.Behaviors {
 		if b.Network != nil {
-			compiledNet, err := c.compileBehavior(env, b.Network)
+			compiledNet, err := c.compileBehavior(b.Network)
 			if err != nil {
-				return nil, err
+				errPath := path.Index(i).Child("network")
+				return nil, field.Invalid(errPath, b.Network, err.Error())
 			}
 
 			compiledNets = append(compiledNets, compiledNet)
 		}
 		if b.Exec != nil {
-			compiledExec, err := c.compileBehavior(env, b.Exec)
+			compiledExec, err := c.compileBehavior(b.Exec)
 			if err != nil {
-				return nil, err
+				errPath := path.Index(i).Child("exec")
+				return nil, field.Invalid(errPath, b.Exec, err.Error())
 			}
 
 			compiledExecs = append(compiledExecs, compiledExec)
 		}
 		if b.Open != nil {
-			compiledOpen, err := c.compileBehavior(env, b.Open)
+			compiledOpen, err := c.compileBehavior(b.Open)
 			if err != nil {
-				return nil, err
+				errPath := path.Index(i).Child("open")
+				return nil, field.Invalid(errPath, b.Open, err.Error())
 			}
 
 			compiledOpens = append(compiledOpens, compiledOpen)
@@ -96,29 +102,57 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	}, nil
 }
 
-func (c *compiler) compileBehavior(e *cel.Env, b *v1alpha1.Behavior) (*compiledBehavior, error) {
-	ret := []string{}
-	// go over the hardcoded values
-	for _, v := range b.Deny.Values {
-		ret = append(ret, v)
+func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, error) {
+	cp := &compiledBehavior{}
+
+	{
+		// go over the hardcoded values and add them to the pair
+		for _, v := range b.Deny.Values {
+			cp.pair.Deny = append(cp.pair.Deny, v)
+		}
+		ast, compileErr := c.env.Compile(b.Deny.Expression)
+		if compileErr != nil {
+			return nil, compileErr.Err()
+		}
+		// ensure that the output type is a list of string
+		if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
+			return nil, fmt.Errorf("invalid return type for array")
+		}
+		prog, err := c.env.Program(ast)
+		if err != nil {
+			return nil, err
+		}
+
+		cp.denyProg = prog
 	}
-	ast, compileErr := e.Compile(b.Deny.Expression)
-	if compileErr != nil {
-		return nil, compileErr.Err()
-	}
-	// ensure that the output type is a list of string
-	if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
-		return nil, fmt.Errorf("invalid return type for array")
-	}
-	prog, err := e.Program(ast)
-	if err != nil {
-		return nil, err
+	{
+		for _, v := range b.Allow.Values {
+			cp.pair.Allow = append(cp.pair.Allow, v)
+		}
+		ast, compileErr := c.env.Compile(b.Allow.Expression)
+		if compileErr != nil {
+			return nil, compileErr.Err()
+		}
+		if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
+			return nil, fmt.Errorf("invalid return type for array")
+		}
+		prog, err := c.env.Program(ast)
+		if err != nil {
+			return nil, err
+		}
+
+		cp.allowProg = prog
 	}
 
-	return &compiledBehavior{prog: prog, values: ret}, nil
+	return cp, nil
 }
 
-func (c *compiler) compileVariables(rp v1alpha1.RuntimePolicy, env *cel.Env, provider *variablesProvider) (map[string]cel.Program, error) {
+func (c *compiler) compileVariables(rp v1alpha1.RuntimePolicy, env *cel.Env, provider types.Provider) (map[string]cel.Program, error) {
+	varsProvider, ok := provider.(*variablesProvider)
+	if !ok {
+		return nil, fmt.Errorf("invalid variables type provider")
+	}
+
 	path := field.NewPath("spec").Child("variables")
 	variables := make(map[string]cel.Program, len(rp.Spec.Variables))
 
@@ -128,7 +162,7 @@ func (c *compiler) compileVariables(rp v1alpha1.RuntimePolicy, env *cel.Env, pro
 		if err := issues.Err(); err != nil {
 			return nil, field.Invalid(path, variable.Expression, err.Error())
 		}
-		provider.RegisterField(variable.Name, ast.OutputType())
+		varsProvider.registerField(variable.Name, ast.OutputType())
 		prog, err := env.Program(ast)
 		if err != nil {
 			return nil, field.Invalid(path, variable.Expression, err.Error())

@@ -13,6 +13,20 @@ import (
 
 const varsKey = "variables"
 
+type EvaluationResult struct {
+	UID      string
+	IPs      *AllowDenyPair
+	Open     *AllowDenyPair
+	Exec     *AllowDenyPair
+	Selector labels.Selector
+}
+
+type AllowDenyPair struct {
+	// todo: there should be something in that type that indicates that a default deny was found
+	Allow []string
+	Deny  []string
+}
+
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
 	selector, err := metav1.LabelSelectorAsSelector(c.selector)
 	if err != nil {
@@ -38,65 +52,66 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	}
 	// iterate on each of the compiled types, extract the hardcoded values and evaluate the
 	// expression and append it to the return
-	denyIps := []string{}
-	denyOpen := []string{}
-	denyExec := []string{}
+	net := &AllowDenyPair{}
+	open := &AllowDenyPair{}
+	exec := &AllowDenyPair{}
 
 	for _, compiledNet := range c.compiledNets {
 		// todo: program context
-		out, _, err := compiledNet.prog.ContextEval(context.Background(), data)
+		err := evalCompiledBehavior(net, compiledNet, data)
 		if err != nil {
 			return nil, err
 		}
-		exprIps, ok := out.Value().([]string)
-		if !ok {
-			return nil, fmt.Errorf("invalid program return type. expected array of string")
-		}
-
-		denyIps = append(denyIps, exprIps...)
-		denyIps = append(denyIps, compiledNet.values...)
 	}
 
 	for _, compiledOpen := range c.compiledOpens {
-		out, _, err := compiledOpen.prog.ContextEval(context.Background(), data)
+		err := evalCompiledBehavior(open, compiledOpen, data)
 		if err != nil {
 			return nil, err
 		}
-		exprFiles, ok := out.Value().([]string)
-		if !ok {
-			return nil, fmt.Errorf("invalid program return type. expected array of string")
-		}
-
-		denyOpen = append(denyOpen, exprFiles...)
-		denyOpen = append(denyOpen, compiledOpen.values...)
 	}
 
 	for _, compiledExec := range c.compiledExecs {
-		out, _, err := compiledExec.prog.ContextEval(context.Background(), data)
+		err := evalCompiledBehavior(exec, compiledExec, data)
 		if err != nil {
 			return nil, err
 		}
-		exprFiles, ok := out.Value().([]string)
-		if !ok {
-			return nil, fmt.Errorf("invalid program return type. expected array of string")
-		}
-
-		denyExec = append(denyExec, exprFiles...)
-		denyExec = append(denyOpen, compiledExec.values...)
 	}
 
 	return &EvaluationResult{
 		UID:      c.UID,
-		IPs:      denyIps,
-		Open:     denyOpen,
+		IPs:      net,
+		Open:     open,
+		Exec:     exec,
 		Selector: selector,
 	}, nil
 }
 
-type EvaluationResult struct {
-	UID      string
-	IPs      []string // the evaluated list of IPs to ban
-	Open     []string // list of files to prevent opening
-	Exec     []string
-	Selector labels.Selector
+func evalCompiledBehavior(accum *AllowDenyPair, b *compiledBehavior, data map[string]any) error {
+	{
+		out, _, err := b.denyProg.ContextEval(context.Background(), data)
+		if err != nil {
+			return err
+		}
+		exprIps, ok := out.Value().([]string)
+		if !ok {
+			return fmt.Errorf("invalid program return type. expected array of string")
+		}
+		accum.Deny = append(accum.Deny, exprIps...)
+		accum.Deny = append(accum.Deny, b.pair.Deny...)
+	}
+	{
+		out, _, err := b.allowProg.ContextEval(context.Background(), data)
+		if err != nil {
+			return err
+		}
+		exprIps, ok := out.Value().([]string)
+		if !ok {
+			return fmt.Errorf("invalid program return type. expected array of string")
+		}
+		accum.Allow = append(accum.Allow, exprIps...)
+		accum.Allow = append(accum.Allow, b.pair.Allow...)
+	}
+
+	return nil
 }

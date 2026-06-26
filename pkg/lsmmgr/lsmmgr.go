@@ -21,11 +21,13 @@ type podRepresentation struct {
 	attachedLsms map[string]*lsmAttachment
 }
 
+// we need a separate type for the lsm attachment because the attachment is policy based.
+// when for the egress manager all we care about is the ips attached to a particular pod's map
 type lsmAttachment struct {
 	enf          *lsm.LsmEnforcer
 	selector     labels.Selector
 	attachedPods map[string]*podRepresentation
-	files        []string
+	files        *compiler.AllowDenyPair
 }
 
 func NewLsmManager() *LsmManager {

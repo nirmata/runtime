@@ -6,6 +6,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
 const maxPathLen = 128
@@ -80,8 +81,8 @@ func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
 	return nil
 }
 
-func (l *LsmEnforcer) AddTargets(paths []string) error {
-	for _, p := range paths {
+func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
+	for _, p := range paths.Deny {
 		if len(p) > maxPathLen {
 			return fmt.Errorf("can't enforce limits on paths larger than %d", maxPathLen)
 		}
@@ -91,13 +92,34 @@ func (l *LsmEnforcer) AddTargets(paths []string) error {
 
 		l.bpfObjs.lsmGenericMaps.Banned.Put(&key, uint8(0))
 	}
+
+	for _, p := range paths.Allow {
+		if len(p) > maxPathLen {
+			return fmt.Errorf("can't enforce limits on paths larger than %d", maxPathLen)
+		}
+		// todo: maybe we can optimize this by calling one big alloc and splitting it up ?
+		key := [maxPathLen]byte{}
+		copy(key[:], p)
+
+		l.bpfObjs.lsmGenericMaps.Allowed.Put(&key, uint8(0))
+	}
 	return nil
 }
 
-func (l *LsmEnforcer) DeleteTargets(paths []string) error {
-	for _, p := range paths {
+func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
+	for _, p := range paths.Deny {
 		if len(p) > maxPathLen {
-			// don't even bother
+			continue
+		}
+		// allocate an array of byte
+		key := [maxPathLen]byte{}
+		copy(key[:], p)
+
+		l.bpfObjs.lsmGenericMaps.Banned.Delete(&key)
+	}
+
+	for _, p := range paths.Allow {
+		if len(p) > maxPathLen {
 			continue
 		}
 		// allocate an array of byte

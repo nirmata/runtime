@@ -33,17 +33,18 @@ func (e *egressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		pa.cgs[*cg] = l
 	}
 
-	ipsToBan := []string{}
+	ips := &compiler.AllowDenyPair{}
 	for rpName, filter := range e.rps {
 		if !filter.Selector.Matches(labels.Set(pod.Labels)) {
 			continue
 		}
-		ipsToBan = append(ipsToBan, filter.IPs...)
+		ips.Allow = append(ips.Allow, filter.IPs.Allow...)
+		ips.Deny = append(ips.Deny, filter.IPs.Deny...)
 		pa.attachedFilters[rpName] = filter
 	}
-	// ban ips in case there was a rp that matches
-	if len(ipsToBan) > 0 {
-		pa.filter.AddIps(ipsToBan)
+	// ban ips in case there was a rp that matched
+	if len(ips.Allow) > 0 || len(ips.Deny) > 0 {
+		pa.filter.AddIps(ips)
 	}
 
 	e.pods[string(pod.UID)] = pa

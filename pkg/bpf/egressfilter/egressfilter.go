@@ -7,6 +7,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
 //go:generate go tool bpf2go egressBlock ./_cprog/probe.c
@@ -37,20 +38,21 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 	return p, nil
 }
 
-func (e *EgressFilter) DeleteIps(ips []string) {
-	for _, ip := range ips {
+func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) {
+	for _, ip := range pair.Allow {
 		ip4 := net.ParseIP(ip).To4()
 		if ip4 == nil {
-			e.logger.Info("failed to parse ip as an ipv4", ip)
 			continue
 		}
 		ipBytes := binary.LittleEndian.Uint32(ip4)
-		e.bpfObjs.BannedIps.Delete(&ipBytes)
-	}
-}
 
-func (e *EgressFilter) AddIps(ips []string) {
-	for _, ip := range ips {
+		err := e.bpfObjs.AllowedIps.Put(&ipBytes, uint8(0))
+		if err != nil {
+			e.logger.Error(err, "failed to add ip to bpf map", ip)
+		}
+	}
+
+	for _, ip := range pair.Deny {
 		ip4 := net.ParseIP(ip).To4()
 		if ip4 == nil {
 			continue
@@ -60,6 +62,34 @@ func (e *EgressFilter) AddIps(ips []string) {
 		err := e.bpfObjs.BannedIps.Put(&ipBytes, uint8(0))
 		if err != nil {
 			e.logger.Error(err, "failed to add ip to bpf map", ip)
+		}
+	}
+}
+
+func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) {
+	for _, ip := range pair.Allow {
+		ip4 := net.ParseIP(ip).To4()
+		if ip4 == nil {
+			continue
+		}
+		ipBytes := binary.LittleEndian.Uint32(ip4)
+
+		err := e.bpfObjs.AllowedIps.Delete(&ipBytes)
+		if err != nil {
+			e.logger.Error(err, "failed to remove ip from bpf map", ip)
+		}
+	}
+
+	for _, ip := range pair.Deny {
+		ip4 := net.ParseIP(ip).To4()
+		if ip4 == nil {
+			continue
+		}
+		ipBytes := binary.LittleEndian.Uint32(ip4)
+
+		err := e.bpfObjs.BannedIps.Delete(&ipBytes)
+		if err != nil {
+			e.logger.Error(err, "failed to remove ip from bpf map", ip)
 		}
 	}
 }

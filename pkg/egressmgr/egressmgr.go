@@ -13,10 +13,8 @@ import (
 )
 
 type egressManager struct {
-	pods       map[string]*podAttachment
-	rps        map[string]*compiler.EvaluationResult
-	policies   map[string]*compiler.EvaluationResult
-	reevalChan chan (*compiler.EvaluationResult)
+	pods map[string]*podAttachment
+	rps  map[string]*compiler.EvaluationResult
 }
 
 type podAttachment struct {
@@ -28,9 +26,8 @@ type podAttachment struct {
 
 func NewEgressManager() *egressManager {
 	return &egressManager{
-		pods:     make(map[string]*podAttachment),
-		rps:      make(map[string]*compiler.EvaluationResult),
-		policies: make(map[string]*compiler.EvaluationResult),
+		pods: make(map[string]*podAttachment),
+		rps:  make(map[string]*compiler.EvaluationResult),
 	}
 }
 
