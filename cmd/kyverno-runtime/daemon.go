@@ -1,18 +1,21 @@
 package main
 
 import (
-	"net/http"
+	"net"
 	"os"
 	"time"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
 
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
+	pb "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
+	"github.com/nirmata/kyverno-runtime/pkg/srv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,28 +24,26 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/pods"
-	"github.com/nirmata/kyverno-runtime/pkg/preflight"
 )
 
 var (
-	metricsAddr                string
-	probeAddr                  string
-	httpAddr                   string
-	enableLeaderElection       bool
-	reportBufferInterval       time.Duration
-	reportBufferMaxCount       int
-	reportSuppressionCooldown  time.Duration
-	reportSuppressionBurst     int
-	reportEventCooldown        time.Duration
-	reportEventBurst           int
+	metricsAddr               string
+	probeAddr                 string
+	httpAddr                  string
+	grpcAddr                  string
+	enableLeaderElection      bool
+	reportBufferInterval      time.Duration
+	reportBufferMaxCount      int
+	reportSuppressionCooldown time.Duration
+	reportSuppressionBurst    int
+	reportEventCooldown       time.Duration
+	reportEventBurst          int
 )
 
 var daemonCmd = &cobra.Command{
@@ -55,6 +56,7 @@ func init() {
 	daemonCmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	daemonCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	daemonCmd.Flags().StringVar(&httpAddr, "http-bind-address", ":8090", "The address the HTTP server binds to.")
+	daemonCmd.Flags().StringVar(&grpcAddr, "grpc-bind-address", ":9090", "The address the gRPC server binds to.")
 	daemonCmd.Flags().DurationVar(&reportBufferInterval, "report-buffer-interval", 10*time.Second, "Interval to flush buffered PolicyReport updates.")
 	daemonCmd.Flags().IntVar(&reportBufferMaxCount, "report-buffer-max-count", 1000, "Maximum buffered findings before forcing a flush.")
 	daemonCmd.Flags().DurationVar(&reportSuppressionCooldown, "report-suppression-cooldown", 30*time.Second, "Rolling cooldown window for duplicate finding suppression.")
@@ -76,17 +78,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	utilruntime.Must(v1alpha1.AddToScheme(scheme))
 
 	cfg := ctrl.GetConfigOrDie()
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "runtime.kyverno.io",
-	})
-	if err != nil {
-		logger.Error(err, "failed to create manager")
-		os.Exit(1)
-	}
 
 	k8sClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
@@ -96,19 +87,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		logger.Info("NODE_NAME must be provided")
-		os.Exit(1)
-	}
-
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		logger.Error(err, "failed to add health check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		logger.Error(err, "failed to add readiness check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("ebpf-preflight", preflight.EBPFCapabilityCheck); err != nil {
-		logger.Error(err, "failed to add eBPF preflight readiness check")
 		os.Exit(1)
 	}
 
@@ -123,14 +101,14 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
+	sigCtx := ctrl.SetupSignalHandler()
+	g, ctx := errgroup.WithContext(sigCtx)
+
+	// runtime policy informer
 	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, c, rpCompiler)
 	if err != nil {
 		os.Exit(1)
 	}
-
-	sigCtx := ctrl.SetupSignalHandler()
-	g, ctx := errgroup.WithContext(sigCtx)
-
 	g.Go(func() error {
 		for {
 			if err := rpInformer.Start(ctx); err != nil {
@@ -146,6 +124,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
+	// pod informer
 	pw := pods.NewPodWatcher(k8sClient, nodeName, eventHandlers)
 	g.Go(func() error {
 		for {
@@ -156,16 +135,23 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 	})
 
-	httpServer := &http.Server{
-		Addr: httpAddr,
-	}
-
-	go func() {
-		logger.Info("starting HTTP server", "address", httpAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error(err, "HTTP server error")
+	// grpc server
+	grpcServer := grpc.NewServer()
+	pb.RegisterLearningServiceServer(grpcServer, srv.NewLeaningModeSrv([]events.LearningIface{}))
+	g.Go(func() error {
+		lis, err := net.Listen("tcp", grpcAddr)
+		if err != nil {
+			logger.Error(err, "failed to listen for gRPC server")
+			return err
 		}
-	}()
+
+		logger.Info("starting gRPC server", "address", grpcAddr)
+		if err := grpcServer.Serve(lis); err != nil {
+			logger.Error(err, "gRPC server error")
+			os.Exit(1)
+		}
+		return nil
+	})
 
 	if err := g.Wait(); err != nil {
 		logger.Error(err, "failed to wait for informer threads")

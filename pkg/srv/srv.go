@@ -9,13 +9,8 @@ func NewLearningModeSrv() *learningModeSrv {
 }
 
 func (lm *learningModeSrv) ServeHttp(w http.ResponseWriter, r *http.Request) {
-	// post -> create a workload profile
-	// delete -> stop learning
-	// get -> read it
-	switch r.Method {
-	case http.MethodGet:
-	case http.MethodPost:
-	case http.MethodDelete:
-	}
-
+	// a single method http server that will go on the controller and signifies a request by the client
+	// to convert a workload profile to a policy
+	// this server is what will call the grpc client and will contain the learned behavior to policy
+	// conversion logic
 }

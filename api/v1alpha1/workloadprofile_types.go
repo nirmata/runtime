@@ -6,6 +6,7 @@ import (
 )
 
 // WorkloadProfileSpec defines the specification of a workload profile
+// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable"
 type WorkloadProfileSpec struct {
 	BehaviorsToLearn []string         `json:"behaviorsToLearn,omitempty"`
 	Duration         *metav1.Duration `json:"duration,omitempty"`

@@ -34,6 +34,12 @@ generate-informers:
 		--go-header-file hack/boilerplate.go.txt \
 		$(MODULE)/api/v1alpha1
 
+generate-proto:
+	protoc \
+		--go_out=. --go_opt=module=$(MODULE) \
+		--go-grpc_out=. --go-grpc_opt=module=$(MODULE) \
+		proto/*.proto
+
 test:
 	go test ./...
 
@@ -136,4 +142,4 @@ test-e2e-install: kind-install test-e2e
 # Full CI pipeline reusing a prebuilt image tag (no ko build)
 test-e2e-install-prebuilt: kind-install-prebuilt test-e2e
 
-.PHONY: generate-crds generate-client generate-listers generate-informers test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt
+.PHONY: generate-crds generate-client generate-listers generate-informers test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

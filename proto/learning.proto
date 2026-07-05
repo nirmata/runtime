@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package learning;
+
+import "google/protobuf/duration.proto";
+
+option go_package = "github.com/nirmata/kyverno-runtime/pkg/proto/learning";
+
+service LearningService {
+  rpc Start(StartRequest) returns (StartResponse);
+  rpc Stop(StopRequest) returns (StopResponse);
+  rpc Read(ReadRequest) returns (ReadResponse);
+}
+
+message StartRequest {
+  string uid = 1;
+  map<string, string> labels = 2;
+  google.protobuf.Duration duration = 3;
+}
+
+message StartResponse {
+}
+
+message StopRequest {
+  string uid = 1;
+}
+
+message StopResponse {
+}
+
+message ReadRequest {
+  string uid = 1;
+}
+
+message ReadResponse {
+}
