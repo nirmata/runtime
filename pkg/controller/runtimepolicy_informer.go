@@ -41,7 +41,9 @@ func (m *RuntimePolicyMgr) Start(ctx context.Context) error {
 	defer m.queue.ShutDown()
 
 	// wait for 30 seconds tops for cache sync
-	timeOut, _ := context.WithTimeout(ctx, time.Second*30)
+	timeOut, cancel := context.WithTimeout(ctx, time.Second*30)
+	defer cancel()
+
 	if !cache.WaitForCacheSync(timeOut.Done(), m.rpInformer.HasSynced) {
 		return fmt.Errorf("timed out waiting for cache sync")
 	}

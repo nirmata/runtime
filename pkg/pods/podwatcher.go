@@ -35,7 +35,9 @@ type podWatcher struct {
 func (w *podWatcher) Start(ctx context.Context) error {
 	w.factory.Start(ctx.Done())
 
-	timeOut, _ := context.WithTimeout(ctx, time.Second*30)
+	timeOut, cancel := context.WithTimeout(ctx, time.Second*30)
+	defer cancel()
+
 	if !cache.WaitForCacheSync(timeOut.Done(), w.informer.HasSynced) {
 		return fmt.Errorf("timed out waiting for cache sync")
 	}
