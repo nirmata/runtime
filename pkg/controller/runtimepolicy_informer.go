@@ -14,7 +14,6 @@ import (
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
@@ -38,12 +37,13 @@ type RuntimePolicyMgr struct {
 	log           logr.Logger
 }
 
-func (m *RuntimePolicyMgr) Start(ctx context.Context) {
+func (m *RuntimePolicyMgr) Start(ctx context.Context) error {
 	defer m.queue.ShutDown()
 
-	if !cache.WaitForCacheSync(ctx.Done(), m.rpInformer.HasSynced) {
-		runtime.HandleError(fmt.Errorf("timed out waiting for cache sync"))
-		return
+	// wait for 30 seconds tops for cache sync
+	timeOut, _ := context.WithTimeout(ctx, time.Second*30)
+	if !cache.WaitForCacheSync(timeOut.Done(), m.rpInformer.HasSynced) {
+		return fmt.Errorf("timed out waiting for cache sync")
 	}
 
 	m.factory.Start(ctx.Done())
@@ -51,6 +51,7 @@ func (m *RuntimePolicyMgr) Start(ctx context.Context) {
 	go wait.UntilWithContext(ctx, m.runWorker, time.Second)
 
 	<-ctx.Done()
+	return nil
 }
 
 // expose HasSynced so we can wait till sync is complete from main before

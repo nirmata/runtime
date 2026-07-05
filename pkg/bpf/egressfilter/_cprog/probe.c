@@ -4,6 +4,9 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
+#define DEFAULT_DENY 1
+#define LEARNING_MODE 2
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
@@ -23,7 +26,14 @@ struct {
     __uint(max_entries, 1);
     __type(key, __u8);
     __type(value, __u8);
-} default_deny SEC(".maps");
+} flags SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, __u32);
+} ip_events SEC(".maps");
 
 struct iphdr {
     __u8  ihl_version;
@@ -48,12 +58,18 @@ int cgroup_egress(struct __sk_buff *skb)
     if ((void *)(ip + 1) > data_end)
         return 1;
 
-    // check if there's a default deny
-    __u8 *dd = bpf_map_lookup_elem(&default_deny, 0);
+    // read the flags
+    __u8 *f = bpf_map_lookup_elem(&flags, 0);
     __u32 daddr = ip->daddr;
 
-    // there is a value placed in the default_deny map
-    if (dd) {
+    // invalid state. it should always be present
+    if (f == NULL) {
+        bpf_printk("unexpected state\n");
+        return 3;
+    };
+
+    // check default deny
+    if (*f & (1 << DEFAULT_DENY)) {
         __u8 *val = bpf_map_lookup_elem(&allowed_ips, &daddr);
         if (val) {
             bpf_printk("cgroup_egress (allowlist): ALLOWING daddr=%x\n", daddr);
@@ -64,12 +80,21 @@ int cgroup_egress(struct __sk_buff *skb)
         return 0;
     };
 
+    // check learning mode
+    if (*f & (1 << LEARNING_MODE)) {
+        __u8 *val = bpf_map_lookup_elem(&ip_events, &daddr);
+        if (val) {
+            (*val)++;     
+        } else {
+            __u32 init_count = 1;
+            bpf_map_update_elem(&ip_events, &daddr, &init_count, BPF_ANY);
+        }
+    }
+
     __u8 *val = bpf_map_lookup_elem(&banned_ips, &daddr);
     if (val) {
         bpf_printk("cgroup_egress: BLOCKING daddr=%x\n", daddr);
         return 0;
-    } else {
-        bpf_printk("cgroup_egress: ALLOWING daddr=%x\n", daddr);
     };
 
     return 1;

@@ -1,6 +1,7 @@
 package egressmgr
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/cilium/ebpf/link"
@@ -15,10 +16,21 @@ import (
 type egressManager struct {
 	pods map[string]*podAttachment
 	rps  map[string]*compiler.EvaluationResult
+	wps  map[string]*workloadProfile
+}
+
+// no additional information need to exist on it apart from what pods
+// currently are live,
+type workloadProfile struct {
+	cancel context.CancelFunc
+	pods   map[string]*podAttachment
 }
 
 type podAttachment struct {
-	defaultDeny     map[string]struct{}                          // the group of runtime policy uids that contained a default deny
+	defaultDeny     map[string]struct{} // the group of runtime policy uids that contained a default deny
+	learningEnabled map[string]struct{} // the ids of the workload profiles that specify we should be learning this pod's behavior
+	// at the end of the learning duration what happens ?
+
 	labels          map[string]string                            // todo: centralize pod label storage in the podwatcher
 	cgs             map[containers.ContainerCgroupInfo]link.Link // todo: can we store this more efficiently
 	filter          *egressfilter.EgressFilter
@@ -29,12 +41,10 @@ func NewEgressManager() *egressManager {
 	return &egressManager{
 		pods: make(map[string]*podAttachment),
 		rps:  make(map[string]*compiler.EvaluationResult),
+		wps:  make(map[string]*workloadProfile),
 	}
 }
 
-// what about handling compilation outside of this entitity ?
-// on a new rp or policy.. we compile and call RuntimePolicyEvent. for periodic recompilation
-// we launch a ticker that compiles per interval and calls RuntimePolicyEvent
 func (e *egressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, rpEventType string) error {
 	switch rpEventType {
 	case events.EventTypeCreate:

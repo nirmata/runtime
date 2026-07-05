@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 	"k8s.io/apimachinery/pkg/labels"
@@ -19,7 +20,7 @@ func (e *egressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		pod.attachedFilters[compiledRp.UID] = compiledRp
 
 		if slices.Contains(compiledRp.IPs.Deny, "*") {
-			pod.filter.SetDefaultDeny(true)
+			pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 			pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
 		}
 	}
@@ -74,7 +75,7 @@ func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 				delete(pod.defaultDeny, string(compiledRp.UID))
 				// the map is now empty, unset default deny
 				if len(pod.defaultDeny) == 0 {
-					pod.filter.SetDefaultDeny(false)
+					pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
 				}
 			}
 
@@ -85,7 +86,7 @@ func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 			// both those operations are idempotent so its fine to do them even if they were previously done
 			if hasDefaultDeny {
-				pod.filter.SetDefaultDeny(true)
+				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
 			}
 			continue
@@ -97,7 +98,7 @@ func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			pod.attachedFilters[string(compiledRp.UID)] = currentRp // add that runtime policy's pointer to the attachedFilters map of that pod
 
 			if hasDefaultDeny {
-				pod.filter.SetDefaultDeny(true)
+				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
 			}
 		}
@@ -118,7 +119,7 @@ func (e *egressManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
 			// an idempotent process
 			delete(pod.defaultDeny, string(compiledRp.UID))
 			if len(pod.defaultDeny) == 0 {
-				pod.filter.SetDefaultDeny(false)
+				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
 			}
 		}
 	}

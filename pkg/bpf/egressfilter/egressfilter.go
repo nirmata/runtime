@@ -12,9 +12,15 @@ import (
 
 //go:generate go tool bpf2go egressBlock ./_cprog/probe.c
 
+const (
+	DEFAULT_DENY  = 1
+	LEARNING_MODE = 2
+)
+
 type EgressFilter struct {
-	logger  *logr.Logger
-	bpfObjs *egressBlockObjects
+	logger              *logr.Logger
+	bpfObjs             *egressBlockObjects
+	learningModeEnabled bool
 }
 
 func New(l *logr.Logger) (*EgressFilter, error) {
@@ -94,13 +100,38 @@ func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) {
 	}
 }
 
-func (e *EgressFilter) SetDefaultDeny(val bool) {
+func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 	key := 0
-	if val {
-		e.bpfObjs.egressBlockMaps.DefaultDeny.Put(&key, uint8(0))
-	} else {
-		e.bpfObjs.egressBlockMaps.DefaultDeny.Delete(&key)
+	var currentval uint8
+
+	err := e.bpfObjs.egressBlockMaps.Flags.Lookup(&key, &currentval)
+	if err != nil {
+		panic("failed to read the flags map. corrupt state")
 	}
+
+	if val {
+		currentval |= idx
+		e.bpfObjs.egressBlockMaps.Flags.Put(&key, &currentval)
+	} else {
+		currentval &^= 1 << idx
+		e.bpfObjs.egressBlockMaps.Flags.Put(&key, &currentval)
+	}
+}
+
+func (e *EgressFilter) ReadLearned() (map[uint32]int, error) {
+	ret := make(map[uint32]int)
+	iter := e.bpfObjs.IpEvents.Iterate()
+
+	var (
+		key   uint32
+		value uint32
+	)
+
+	for iter.Next(&key, &value) {
+		ret[key] = int(value)
+	}
+
+	return ret, nil
 }
 
 func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {

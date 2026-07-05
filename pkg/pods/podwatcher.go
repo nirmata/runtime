@@ -32,11 +32,12 @@ type podWatcher struct {
 	log           logr.Logger
 }
 
-func (w *podWatcher) Start(ctx context.Context) {
+func (w *podWatcher) Start(ctx context.Context) error {
 	w.factory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), w.informer.HasSynced) {
-		w.log.Error(fmt.Errorf("timed out waiting for cache sync"), "failed to sync cache")
-		return
+
+	timeOut, _ := context.WithTimeout(ctx, time.Second*30)
+	if !cache.WaitForCacheSync(timeOut.Done(), w.informer.HasSynced) {
+		return fmt.Errorf("timed out waiting for cache sync")
 	}
 
 	for range workers {
@@ -44,6 +45,7 @@ func (w *podWatcher) Start(ctx context.Context) {
 	}
 
 	<-ctx.Done()
+	return nil
 }
 
 func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.EventIface) *podWatcher {

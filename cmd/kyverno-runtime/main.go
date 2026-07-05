@@ -2,10 +2,12 @@ package main
 
 import (
 	"flag"
+	"net/http"
 	"os"
 	"time"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
+	"golang.org/x/sync/errgroup"
 
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
@@ -24,7 +26,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/config"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/pods"
@@ -34,6 +35,7 @@ import (
 func main() {
 	var metricsAddr string
 	var probeAddr string
+	var httpAddr string
 	var enableLeaderElection bool
 	var reportBufferInterval time.Duration
 	var reportBufferMaxCount int
@@ -41,13 +43,10 @@ func main() {
 	var reportSuppressionBurst int
 	var reportEventCooldown time.Duration
 	var reportEventBurst int
-	var enableBaselineEngine bool
-	var enableSignatureEngine bool
-	var enableAlertSinks bool
-	var enableAlertAggregation bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&httpAddr, "http-bind-address", ":8090", "The address the HTTP server binds to.")
 	flag.DurationVar(&reportBufferInterval, "report-buffer-interval", 10*time.Second, "Interval to flush buffered PolicyReport updates.")
 	flag.IntVar(&reportBufferMaxCount, "report-buffer-max-count", 1000, "Maximum buffered findings before forcing a flush.")
 	flag.DurationVar(&reportSuppressionCooldown, "report-suppression-cooldown", 30*time.Second, "Rolling cooldown window for duplicate finding suppression.")
@@ -61,15 +60,6 @@ func main() {
 
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)
-
-	// Create feature gates configuration from flags
-	features := config.FeatureGates{
-		BaselineEngine:   enableBaselineEngine,
-		SignatureEngine:  enableSignatureEngine,
-		AlertSinks:       enableAlertSinks,
-		AlertAggregation: enableAlertAggregation,
-	}
-	logger.Info("feature gates", "baselineEngine", features.BaselineEngine, "signatureEngine", features.SignatureEngine, "alertSinks", features.AlertSinks, "alertAggregation", features.AlertAggregation)
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -131,23 +121,42 @@ func main() {
 	}
 
 	sigCtx := ctrl.SetupSignalHandler()
+	g, ctx := errgroup.WithContext(sigCtx)
 
-	go func() {
+	g.Go(func() error {
 		for {
-			select {
-			case <-sigCtx.Done():
-				return
-			default:
-				rpInformer.Start(sigCtx)
+			if err := rpInformer.Start(ctx); err != nil {
+				logger.Error(err, "runtime policy informer error")
+				continue
 			}
 		}
-	}()
+	})
 
-	if !cache.WaitForCacheSync(sigCtx.Done(), rpInformer.HasSynced) {
+	// wait for runtime policy cache sync so that when we start the pod informer we have
+	// synced the policies
+	if !cache.WaitForCacheSync(ctx.Done(), rpInformer.HasSynced) {
 		os.Exit(1)
 	}
 
-	// todo: how to make it durable with restarts ? again.. refer to the policy reporter
 	pw := pods.NewPodWatcher(k8sClient, nodeName, eventHandlers)
-	pw.Start(sigCtx)
+	g.Go(func() error {
+		for {
+			if err := pw.Start(ctx); err != nil {
+				logger.Error(err, "pod watcher error")
+				continue
+			}
+		}
+	})
+
+	// refer to authz
+	httpServer := &http.Server{
+		Addr: httpAddr,
+	}
+
+	go func() {
+		logger.Info("starting HTTP server", "address", httpAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error(err, "HTTP server error")
+		}
+	}()
 }
