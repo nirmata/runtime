@@ -1,4 +1,4 @@
-package pods
+package controller
 
 import (
 	"context"
@@ -18,8 +18,6 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
-
-const workers = 5
 
 type podWatcher struct {
 	factory    informers.SharedInformerFactory
@@ -42,9 +40,7 @@ func (w *podWatcher) Start(ctx context.Context) error {
 		return fmt.Errorf("timed out waiting for cache sync")
 	}
 
-	for range workers {
-		go wait.Until(w.runWorker, time.Second, ctx.Done())
-	}
+	go wait.Until(w.runWorker, time.Second, ctx.Done())
 
 	<-ctx.Done()
 	return nil

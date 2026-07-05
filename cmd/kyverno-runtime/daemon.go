@@ -29,7 +29,6 @@ import (
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
-	"github.com/nirmata/kyverno-runtime/pkg/pods"
 )
 
 var (
@@ -125,7 +124,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	// pod informer
-	pw := pods.NewPodWatcher(k8sClient, nodeName, eventHandlers)
+	pw := controller.NewPodWatcher(k8sClient, nodeName, eventHandlers)
 	g.Go(func() error {
 		for {
 			if err := pw.Start(ctx); err != nil {
