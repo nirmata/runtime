@@ -301,9 +301,9 @@ func (x *ReadRequest) GetBehaviorKind() []BehaviorKind {
 
 type ReadResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Network       map[int32]int32        `protobuf:"bytes,1,rep,name=network,proto3" json:"network,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	Open          map[string]int32       `protobuf:"bytes,2,rep,name=open,proto3" json:"open,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	Exec          map[string]int32       `protobuf:"bytes,3,rep,name=exec,proto3" json:"exec,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Network       map[uint32]uint32      `protobuf:"bytes,1,rep,name=network,proto3" json:"network,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Open          map[string]uint32      `protobuf:"bytes,2,rep,name=open,proto3" json:"open,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Exec          map[string]uint32      `protobuf:"bytes,3,rep,name=exec,proto3" json:"exec,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -338,21 +338,21 @@ func (*ReadResponse) Descriptor() ([]byte, []int) {
 	return file_proto_learning_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *ReadResponse) GetNetwork() map[int32]int32 {
+func (x *ReadResponse) GetNetwork() map[uint32]uint32 {
 	if x != nil {
 		return x.Network
 	}
 	return nil
 }
 
-func (x *ReadResponse) GetOpen() map[string]int32 {
+func (x *ReadResponse) GetOpen() map[string]uint32 {
 	if x != nil {
 		return x.Open
 	}
 	return nil
 }
 
-func (x *ReadResponse) GetExec() map[string]int32 {
+func (x *ReadResponse) GetExec() map[string]uint32 {
 	if x != nil {
 		return x.Exec
 	}
@@ -383,14 +383,14 @@ const file_proto_learning_proto_rawDesc = "" +
 	"\x04open\x18\x02 \x03(\v2 .learning.ReadResponse.OpenEntryR\x04open\x124\n" +
 	"\x04exec\x18\x03 \x03(\v2 .learning.ReadResponse.ExecEntryR\x04exec\x1a:\n" +
 	"\fNetworkEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\x1a7\n" +
+	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\x1a7\n" +
 	"\tOpenEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\x1a7\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\x1a7\n" +
 	"\tExecEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01*J\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01*J\n" +
 	"\fBehaviorKind\x12\x14\n" +
 	"\x10BEHAVIOR_NETWORK\x10\x00\x12\x11\n" +
 	"\rBEHAVIOR_OPEN\x10\x01\x12\x11\n" +

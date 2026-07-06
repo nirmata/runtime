@@ -131,7 +131,76 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 	return nil
 }
 
-func (l *LsmEnforcer) SetDefaultDeny(val bool) {
+func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
+	k := 0
 	if val {
+		err := l.bpfObjs.lsmGenericMaps.DefaultDeny.Put(&k, uint8(0))
+		if err != nil {
+			return err
+		}
+		return nil
 	}
+
+	err := l.bpfObjs.lsmGenericMaps.DefaultDeny.Delete(&k)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// we can skip having a value of 1 in the cgids map and indicate
+// that learning mode is active by having an entry in the events map
+func (l *LsmEnforcer) SetLearningModeForCgids(cgids []uint64, val bool) error {
+	for _, cgid := range cgids {
+		if val {
+			innerSpec := &ebpf.MapSpec{
+				Name:       "inner",
+				KeySize:    128,
+				Type:       ebpf.Hash,
+				MaxEntries: 1024,
+			}
+			innerMap, err := ebpf.NewMap(innerSpec)
+			if err != nil {
+				return err
+			}
+			if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Put(&cgid, uint32(innerMap.FD())); err != nil {
+				return err
+			}
+			continue
+		}
+		// val was false, delete the entry
+		if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Delete(&cgid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pass a collector map because we will end up calling this function for many programs
+// and we just wanna get the end result
+func (l *LsmEnforcer) GetLearningModeForCgids(retMap map[string]uint32, cgids []uint64) error {
+	for _, cgid := range cgids {
+		var mapID ebpf.MapID
+		if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Lookup(&cgid, &mapID); err != nil {
+			return fmt.Errorf("failed to lookup inner map id for cgid %d", cgid)
+		}
+
+		openCountMap, err := ebpf.NewMapFromID(mapID)
+		if err != nil {
+			return err
+		}
+		defer openCountMap.Close()
+
+		var (
+			k string
+			v uint32
+		)
+
+		iter := openCountMap.Iterate()
+		for iter.Next(&k, &v) {
+			retMap[k] += v
+		}
+	}
+
+	return nil
 }

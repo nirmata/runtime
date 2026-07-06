@@ -10,7 +10,7 @@
 #define LEARNING_MODE 2
 
 
-static __always_inline int handle_open(__u64 *args, __u8 cgid_map_val) {
+static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
     struct file *f = (struct file *)arg0;
     char buf[MAX_PATH_LEN] = {};
@@ -20,13 +20,14 @@ static __always_inline int handle_open(__u64 *args, __u8 cgid_map_val) {
     bpf_probe_read_kernel_str(key, sizeof(key), buf); 
 
 
-    if (cgid_map_val) {
-        __u32 *open_count = bpf_map_lookup_elem(&open_events, &key);
+    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
+    if (count_map) {
+        __u32 *open_count = bpf_map_lookup_elem(count_map, &key);
         if (open_count) {
             (*open_count)++;
         } else {
             __u32 init_count = 1;
-            bpf_map_update_elem(&open_events, &key, &init_count, BPF_ANY);
+            bpf_map_update_elem(count_map, &key, &init_count, BPF_ANY);
         };
     }
 
@@ -53,7 +54,7 @@ static __always_inline int handle_open(__u64 *args, __u8 cgid_map_val) {
     return 0;
 }
 
-static __always_inline int handle_exec(__u64 *args, __u8 cgid_map_val) {
+static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
     struct linux_binprm *bprm = (struct linux_binprm *)arg0;
     char key[MAX_PATH_LEN] = {};
@@ -64,16 +65,18 @@ static __always_inline int handle_exec(__u64 *args, __u8 cgid_map_val) {
         return 0;
     }
 
-    if (cgid_map_val) {
-        __u32 *open_count = bpf_map_lookup_elem(&open_events, &key);
+    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
+    if (count_map) {
+        __u32 *open_count = bpf_map_lookup_elem(count_map, &key);
         if (open_count) {
             (*open_count)++;
         } else {
             __u32 init_count = 1;
-            bpf_map_update_elem(&open_events, &key, &init_count, BPF_ANY);
+            bpf_map_update_elem(count_map, &key, &init_count, BPF_ANY);
         };
     }
 
+    // should be if there was a value in the open events map
     __u8 *dd_key = 0;
     __u8 *dd = bpf_map_lookup_elem(&default_deny, dd_key);
 
@@ -119,10 +122,10 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
 
     switch (*argtype) {
         case 1: {
-            return handle_open(args, *val);
+            return handle_open(args, &cgid);
         }
         case 2: {
-            return handle_exec(args, *val);
+            return handle_exec(args, &cgid);
         }
         default: {
             bpf_printk("lsm: unknown argtype=%llu", *argtype);

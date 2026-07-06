@@ -1,6 +1,8 @@
 package lsmmgr
 
 import (
+	"context"
+
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -13,16 +15,21 @@ import (
 type LsmManager struct {
 	pods           map[string]*podRepresentation // pod label storage. todo: take this out of here
 	lsmAttachments map[string]*lsmAttachment
+	wps            map[string]*workloadProfile
 }
 
 type podRepresentation struct {
-	cgids        []uint64
-	labels       map[string]string
-	attachedLsms map[string]*lsmAttachment
+	cgids           []uint64
+	labels          map[string]string
+	attachedLsms    map[string]*lsmAttachment
+	learningEnabled map[string]struct{}
 }
 
-// we need a separate type for the lsm attachment because the attachment is policy based.
-// when for the egress manager all we care about is the ips attached to a particular pod's map
+type workloadProfile struct {
+	cancel context.CancelFunc
+	pods   map[string]*podRepresentation
+}
+
 type lsmAttachment struct {
 	enf          *lsm.LsmEnforcer
 	selector     labels.Selector

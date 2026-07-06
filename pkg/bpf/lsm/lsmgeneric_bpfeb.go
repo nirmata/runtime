@@ -61,12 +61,13 @@ type lsmGenericProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type lsmGenericMapSpecs struct {
-	Allowed     *ebpf.MapSpec `ebpf:"allowed"`
-	Argtypes    *ebpf.MapSpec `ebpf:"argtypes"`
-	Banned      *ebpf.MapSpec `ebpf:"banned"`
-	Cgids       *ebpf.MapSpec `ebpf:"cgids"`
-	DefaultDeny *ebpf.MapSpec `ebpf:"default_deny"`
-	OpenEvents  *ebpf.MapSpec `ebpf:"open_events"`
+	Allowed         *ebpf.MapSpec `ebpf:"allowed"`
+	Argtypes        *ebpf.MapSpec `ebpf:"argtypes"`
+	Banned          *ebpf.MapSpec `ebpf:"banned"`
+	Cgids           *ebpf.MapSpec `ebpf:"cgids"`
+	DefaultDeny     *ebpf.MapSpec `ebpf:"default_deny"`
+	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
+	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
 }
 
 // lsmGenericVariableSpecs contains global variables before they are loaded into the kernel.
@@ -95,12 +96,13 @@ func (o *lsmGenericObjects) Close() error {
 //
 // It can be passed to loadLsmGenericObjects or ebpf.CollectionSpec.LoadAndAssign.
 type lsmGenericMaps struct {
-	Allowed     *ebpf.Map `ebpf:"allowed"`
-	Argtypes    *ebpf.Map `ebpf:"argtypes"`
-	Banned      *ebpf.Map `ebpf:"banned"`
-	Cgids       *ebpf.Map `ebpf:"cgids"`
-	DefaultDeny *ebpf.Map `ebpf:"default_deny"`
-	OpenEvents  *ebpf.Map `ebpf:"open_events"`
+	Allowed         *ebpf.Map `ebpf:"allowed"`
+	Argtypes        *ebpf.Map `ebpf:"argtypes"`
+	Banned          *ebpf.Map `ebpf:"banned"`
+	Cgids           *ebpf.Map `ebpf:"cgids"`
+	DefaultDeny     *ebpf.Map `ebpf:"default_deny"`
+	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
+	OpenEvents      *ebpf.Map `ebpf:"open_events"`
 }
 
 func (m *lsmGenericMaps) Close() error {
@@ -110,6 +112,7 @@ func (m *lsmGenericMaps) Close() error {
 		m.Banned,
 		m.Cgids,
 		m.DefaultDeny,
+		m.InnerOpenEvents,
 		m.OpenEvents,
 	)
 }

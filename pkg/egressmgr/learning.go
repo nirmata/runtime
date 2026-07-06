@@ -63,8 +63,8 @@ func (e *EgressManager) Stop(uid string) {
 	wp.cancel()
 }
 
-func (e *EgressManager) Read(uid string) (map[int32]int32, error) {
-	ret := make(map[int32]int32)
+func (e *EgressManager) Read(uid string) (map[uint32]uint32, error) {
+	ret := make(map[uint32]uint32)
 	wp, ok := e.wps[uid]
 	if !ok {
 		return nil, fmt.Errorf("got a read request for a workload profile that doesn't exist")
@@ -75,7 +75,7 @@ func (e *EgressManager) Read(uid string) (map[int32]int32, error) {
 			return nil, err
 		}
 		for learnedIp, count := range learnedFromPod {
-			ret[int32(learnedIp)] += int32(count)
+			ret[learnedIp] += uint32(count)
 		}
 	}
 

@@ -122,8 +122,8 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 	}
 }
 
-func (e *EgressFilter) ReadLearned() (map[uint32]int, error) {
-	ret := make(map[uint32]int)
+func (e *EgressFilter) ReadLearned() (map[uint32]uint32, error) {
+	ret := make(map[uint32]uint32)
 	iter := e.bpfObjs.IpEvents.Iterate()
 
 	var (
@@ -132,7 +132,7 @@ func (e *EgressFilter) ReadLearned() (map[uint32]int, error) {
 	)
 
 	for iter.Next(&key, &value) {
-		ret[key] = int(value)
+		ret[key] = value
 	}
 
 	return ret, nil
