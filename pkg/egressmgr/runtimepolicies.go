@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (e *egressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
+func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	e.rps[compiledRp.UID] = compiledRp
 	for _, pod := range e.pods {
 		if !compiledRp.Selector.Matches(labels.Set(pod.labels)) {
@@ -27,7 +27,7 @@ func (e *egressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
+func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	currentRp, ok := e.rps[compiledRp.UID]
 	if !ok {
 		return fmt.Errorf("got an update for a non existing runtime policy uid")
@@ -106,7 +106,7 @@ func (e *egressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (e *egressManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
+func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
 	delete(e.rps, string(compiledRp.UID))
 	for _, pod := range e.pods {
 		if att, ok := pod.attachedFilters[string(compiledRp.UID)]; ok {

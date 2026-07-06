@@ -22,6 +22,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type BehaviorKind int32
+
+const (
+	BehaviorKind_BEHAVIOR_NETWORK BehaviorKind = 0
+	BehaviorKind_BEHAVIOR_OPEN    BehaviorKind = 1
+	BehaviorKind_BEHAVIOR_EXEC    BehaviorKind = 2
+)
+
+// Enum value maps for BehaviorKind.
+var (
+	BehaviorKind_name = map[int32]string{
+		0: "BEHAVIOR_NETWORK",
+		1: "BEHAVIOR_OPEN",
+		2: "BEHAVIOR_EXEC",
+	}
+	BehaviorKind_value = map[string]int32{
+		"BEHAVIOR_NETWORK": 0,
+		"BEHAVIOR_OPEN":    1,
+		"BEHAVIOR_EXEC":    2,
+	}
+)
+
+func (x BehaviorKind) Enum() *BehaviorKind {
+	p := new(BehaviorKind)
+	*p = x
+	return p
+}
+
+func (x BehaviorKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BehaviorKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_learning_proto_enumTypes[0].Descriptor()
+}
+
+func (BehaviorKind) Type() protoreflect.EnumType {
+	return &file_proto_learning_proto_enumTypes[0]
+}
+
+func (x BehaviorKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BehaviorKind.Descriptor instead.
+func (BehaviorKind) EnumDescriptor() ([]byte, []int) {
+	return file_proto_learning_proto_rawDescGZIP(), []int{0}
+}
+
 type StartRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uid           string                 `protobuf:"bytes,1,opt,name=uid,proto3" json:"uid,omitempty"`
@@ -201,6 +250,7 @@ func (*StopResponse) Descriptor() ([]byte, []int) {
 type ReadRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uid           string                 `protobuf:"bytes,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	BehaviorKind  []BehaviorKind         `protobuf:"varint,2,rep,packed,name=behavior_kind,json=behaviorKind,proto3,enum=learning.BehaviorKind" json:"behavior_kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -242,8 +292,18 @@ func (x *ReadRequest) GetUid() string {
 	return ""
 }
 
+func (x *ReadRequest) GetBehaviorKind() []BehaviorKind {
+	if x != nil {
+		return x.BehaviorKind
+	}
+	return nil
+}
+
 type ReadResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Network       map[int32]int32        `protobuf:"bytes,1,rep,name=network,proto3" json:"network,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Open          map[string]int32       `protobuf:"bytes,2,rep,name=open,proto3" json:"open,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Exec          map[string]int32       `protobuf:"bytes,3,rep,name=exec,proto3" json:"exec,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -278,6 +338,27 @@ func (*ReadResponse) Descriptor() ([]byte, []int) {
 	return file_proto_learning_proto_rawDescGZIP(), []int{5}
 }
 
+func (x *ReadResponse) GetNetwork() map[int32]int32 {
+	if x != nil {
+		return x.Network
+	}
+	return nil
+}
+
+func (x *ReadResponse) GetOpen() map[string]int32 {
+	if x != nil {
+		return x.Open
+	}
+	return nil
+}
+
+func (x *ReadResponse) GetExec() map[string]int32 {
+	if x != nil {
+		return x.Exec
+	}
+	return nil
+}
+
 var File_proto_learning_proto protoreflect.FileDescriptor
 
 const file_proto_learning_proto_rawDesc = "" +
@@ -293,10 +374,27 @@ const file_proto_learning_proto_rawDesc = "" +
 	"\rStartResponse\"\x1f\n" +
 	"\vStopRequest\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\tR\x03uid\"\x0e\n" +
-	"\fStopResponse\"\x1f\n" +
+	"\fStopResponse\"\\\n" +
 	"\vReadRequest\x12\x10\n" +
-	"\x03uid\x18\x01 \x01(\tR\x03uid\"\x0e\n" +
-	"\fReadResponse2\xb9\x01\n" +
+	"\x03uid\x18\x01 \x01(\tR\x03uid\x12;\n" +
+	"\rbehavior_kind\x18\x02 \x03(\x0e2\x16.learning.BehaviorKindR\fbehaviorKind\"\xe7\x02\n" +
+	"\fReadResponse\x12=\n" +
+	"\anetwork\x18\x01 \x03(\v2#.learning.ReadResponse.NetworkEntryR\anetwork\x124\n" +
+	"\x04open\x18\x02 \x03(\v2 .learning.ReadResponse.OpenEntryR\x04open\x124\n" +
+	"\x04exec\x18\x03 \x03(\v2 .learning.ReadResponse.ExecEntryR\x04exec\x1a:\n" +
+	"\fNetworkEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\x1a7\n" +
+	"\tOpenEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\x1a7\n" +
+	"\tExecEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01*J\n" +
+	"\fBehaviorKind\x12\x14\n" +
+	"\x10BEHAVIOR_NETWORK\x10\x00\x12\x11\n" +
+	"\rBEHAVIOR_OPEN\x10\x01\x12\x11\n" +
+	"\rBEHAVIOR_EXEC\x10\x022\xb9\x01\n" +
 	"\x0fLearningService\x128\n" +
 	"\x05Start\x12\x16.learning.StartRequest\x1a\x17.learning.StartResponse\x125\n" +
 	"\x04Stop\x12\x15.learning.StopRequest\x1a\x16.learning.StopResponse\x125\n" +
@@ -314,31 +412,40 @@ func file_proto_learning_proto_rawDescGZIP() []byte {
 	return file_proto_learning_proto_rawDescData
 }
 
-var file_proto_learning_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_proto_learning_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_proto_learning_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_proto_learning_proto_goTypes = []any{
-	(*StartRequest)(nil),        // 0: learning.StartRequest
-	(*StartResponse)(nil),       // 1: learning.StartResponse
-	(*StopRequest)(nil),         // 2: learning.StopRequest
-	(*StopResponse)(nil),        // 3: learning.StopResponse
-	(*ReadRequest)(nil),         // 4: learning.ReadRequest
-	(*ReadResponse)(nil),        // 5: learning.ReadResponse
-	nil,                         // 6: learning.StartRequest.LabelsEntry
-	(*durationpb.Duration)(nil), // 7: google.protobuf.Duration
+	(BehaviorKind)(0),           // 0: learning.BehaviorKind
+	(*StartRequest)(nil),        // 1: learning.StartRequest
+	(*StartResponse)(nil),       // 2: learning.StartResponse
+	(*StopRequest)(nil),         // 3: learning.StopRequest
+	(*StopResponse)(nil),        // 4: learning.StopResponse
+	(*ReadRequest)(nil),         // 5: learning.ReadRequest
+	(*ReadResponse)(nil),        // 6: learning.ReadResponse
+	nil,                         // 7: learning.StartRequest.LabelsEntry
+	nil,                         // 8: learning.ReadResponse.NetworkEntry
+	nil,                         // 9: learning.ReadResponse.OpenEntry
+	nil,                         // 10: learning.ReadResponse.ExecEntry
+	(*durationpb.Duration)(nil), // 11: google.protobuf.Duration
 }
 var file_proto_learning_proto_depIdxs = []int32{
-	6, // 0: learning.StartRequest.labels:type_name -> learning.StartRequest.LabelsEntry
-	7, // 1: learning.StartRequest.duration:type_name -> google.protobuf.Duration
-	0, // 2: learning.LearningService.Start:input_type -> learning.StartRequest
-	2, // 3: learning.LearningService.Stop:input_type -> learning.StopRequest
-	4, // 4: learning.LearningService.Read:input_type -> learning.ReadRequest
-	1, // 5: learning.LearningService.Start:output_type -> learning.StartResponse
-	3, // 6: learning.LearningService.Stop:output_type -> learning.StopResponse
-	5, // 7: learning.LearningService.Read:output_type -> learning.ReadResponse
-	5, // [5:8] is the sub-list for method output_type
-	2, // [2:5] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	7,  // 0: learning.StartRequest.labels:type_name -> learning.StartRequest.LabelsEntry
+	11, // 1: learning.StartRequest.duration:type_name -> google.protobuf.Duration
+	0,  // 2: learning.ReadRequest.behavior_kind:type_name -> learning.BehaviorKind
+	8,  // 3: learning.ReadResponse.network:type_name -> learning.ReadResponse.NetworkEntry
+	9,  // 4: learning.ReadResponse.open:type_name -> learning.ReadResponse.OpenEntry
+	10, // 5: learning.ReadResponse.exec:type_name -> learning.ReadResponse.ExecEntry
+	1,  // 6: learning.LearningService.Start:input_type -> learning.StartRequest
+	3,  // 7: learning.LearningService.Stop:input_type -> learning.StopRequest
+	5,  // 8: learning.LearningService.Read:input_type -> learning.ReadRequest
+	2,  // 9: learning.LearningService.Start:output_type -> learning.StartResponse
+	4,  // 10: learning.LearningService.Stop:output_type -> learning.StopResponse
+	6,  // 11: learning.LearningService.Read:output_type -> learning.ReadResponse
+	9,  // [9:12] is the sub-list for method output_type
+	6,  // [6:9] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_proto_learning_proto_init() }
@@ -351,13 +458,14 @@ func file_proto_learning_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_learning_proto_rawDesc), len(file_proto_learning_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   7,
+			NumEnums:      1,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_proto_learning_proto_goTypes,
 		DependencyIndexes: file_proto_learning_proto_depIdxs,
+		EnumInfos:         file_proto_learning_proto_enumTypes,
 		MessageInfos:      file_proto_learning_proto_msgTypes,
 	}.Build()
 	File_proto_learning_proto = out.File

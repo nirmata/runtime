@@ -13,7 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-type egressManager struct {
+type EgressManager struct {
 	pods map[string]*podAttachment
 	rps  map[string]*compiler.EvaluationResult
 	wps  map[string]*workloadProfile
@@ -37,15 +37,15 @@ type podAttachment struct {
 	attachedFilters map[string]*compiler.EvaluationResult
 }
 
-func NewEgressManager() *egressManager {
-	return &egressManager{
+func NewEgressManager() *EgressManager {
+	return &EgressManager{
 		pods: make(map[string]*podAttachment),
 		rps:  make(map[string]*compiler.EvaluationResult),
 		wps:  make(map[string]*workloadProfile),
 	}
 }
 
-func (e *egressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, rpEventType string) error {
+func (e *EgressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, rpEventType string) error {
 	switch rpEventType {
 	case events.EventTypeCreate:
 		return e.rpCreated(compiledRb)
@@ -58,7 +58,7 @@ func (e *egressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult
 	}
 }
 
-func (e *egressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
+func (e *EgressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	switch podEventType {
 	case events.EventTypeCreate:
 		return e.podCreated(pod, cgInfos)

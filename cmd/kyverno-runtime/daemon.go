@@ -88,8 +88,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("NODE_NAME must be provided")
 		os.Exit(1)
 	}
+	// initialize the bpf program wrappers
+	em := egressmgr.NewEgressManager()
+	lsmm := lsmmgr.NewLsmManager()
 
-	eventHandlers := []events.EventIface{egressmgr.NewEgressManager(), lsmmgr.NewLsmManager()}
+	eventHandlers := []events.EventIface{em, lsmm}
 	c, err := v1alpha1client.NewForConfig(cfg)
 	if err != nil {
 		os.Exit(1)
@@ -136,7 +139,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// grpc server
 	grpcServer := grpc.NewServer()
-	pb.RegisterLearningServiceServer(grpcServer, srv.NewLeaningModeSrv([]events.LearningIface{}))
+	pb.RegisterLearningServiceServer(grpcServer, srv.NewLeaningModeSrv(lsmm, em))
 	g.Go(func() error {
 		lis, err := net.Listen("tcp", grpcAddr)
 		if err != nil {

@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (e *egressManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
 	// not sure if it makes sense that i am creating the filter once and attaching it
 	// per container c group id. or idk maybe it does.. in the end of the day learning mode
 	// collects events for a single pod. so yeah maybe all pod containers can share a program
@@ -72,7 +72,7 @@ func (e *egressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	return nil
 }
 
-func (e *egressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
 	pa, ok := e.pods[string(pod.UID)]
 	if !ok {
 		return fmt.Errorf("got a pod event for a pod that doesn't exist")
@@ -96,7 +96,7 @@ func (e *egressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	return nil
 }
 
-func (e *egressManager) podDeleted(podUid string) error {
+func (e *EgressManager) podDeleted(podUid string) error {
 	// a pod being deleted means that its cgroup id is deleted. so any attached links
 	// will automatically die
 	delete(e.pods, podUid)

@@ -6,6 +6,12 @@ import "google/protobuf/duration.proto";
 
 option go_package = "github.com/nirmata/kyverno-runtime/pkg/proto/learning";
 
+enum BehaviorKind {
+  BEHAVIOR_NETWORK = 0;
+  BEHAVIOR_OPEN = 1;
+  BEHAVIOR_EXEC = 2;
+};
+
 service LearningService {
   rpc Start(StartRequest) returns (StartResponse);
   rpc Stop(StopRequest) returns (StopResponse);
@@ -30,7 +36,11 @@ message StopResponse {
 
 message ReadRequest {
   string uid = 1;
+  repeated BehaviorKind behavior_kind = 2;
 }
 
 message ReadResponse {
+  map<int32, int32> network = 1;
+  map<string, int32> open = 2;
+  map<string, int32> exec = 3;
 }

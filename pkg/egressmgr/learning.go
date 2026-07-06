@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (e *egressManager) Start(uid string, matchLabels map[string]string, dur time.Duration) {
+func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur time.Duration) {
 	selector := labels.SelectorFromSet(matchLabels)
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 
@@ -53,7 +53,7 @@ func (e *egressManager) Start(uid string, matchLabels map[string]string, dur tim
 	}()
 }
 
-func (e *egressManager) Stop(uid string) {
+func (e *EgressManager) Stop(uid string) {
 	wp, ok := e.wps[uid]
 	if !ok {
 		return
@@ -63,8 +63,8 @@ func (e *egressManager) Stop(uid string) {
 	wp.cancel()
 }
 
-func (e *egressManager) Read(uid string) (map[uint32]int, error) {
-	ret := make(map[uint32]int)
+func (e *EgressManager) Read(uid string) (map[int32]int32, error) {
+	ret := make(map[int32]int32)
 	wp, ok := e.wps[uid]
 	if !ok {
 		return nil, fmt.Errorf("got a read request for a workload profile that doesn't exist")
@@ -75,7 +75,7 @@ func (e *egressManager) Read(uid string) (map[uint32]int, error) {
 			return nil, err
 		}
 		for learnedIp, count := range learnedFromPod {
-			ret[learnedIp] += count
+			ret[int32(learnedIp)] += int32(count)
 		}
 	}
 
