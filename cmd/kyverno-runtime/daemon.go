@@ -80,6 +80,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	k8sClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
+		logger.Error(err, "failed to create kubernetes client")
 		os.Exit(1)
 	}
 
@@ -89,17 +90,19 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 	// initialize the bpf program wrappers
-	em := egressmgr.NewEgressManager()
-	lsmm := lsmmgr.NewLsmManager()
+	em := egressmgr.NewEgressManager(logger)
+	lsmm := lsmmgr.NewLsmManager(logger)
 
 	eventHandlers := []events.EventIface{em, lsmm}
 	c, err := v1alpha1client.NewForConfig(cfg)
 	if err != nil {
+		logger.Error(err, "failed to create v1alpha1 client")
 		os.Exit(1)
 	}
 
 	rpCompiler, err := compiler.NewCompiler()
 	if err != nil {
+		logger.Error(err, "failed to create runtime policy compiler")
 		os.Exit(1)
 	}
 
@@ -109,6 +112,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// runtime policy informer
 	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, c, rpCompiler)
 	if err != nil {
+		logger.Error(err, "failed to create runtime policy informer")
 		os.Exit(1)
 	}
 	g.Go(func() error {

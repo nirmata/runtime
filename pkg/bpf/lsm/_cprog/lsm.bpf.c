@@ -9,6 +9,11 @@
 #define DEFAULT_DENY 1
 #define LEARNING_MODE 2
 
+// argtype values written into the `argtypes` map from userspace (see lsm.go's
+// argTypeFileOpen / argTypeExecCheck). must stay in sync with those.
+#define ARGTYPE_FILE_OPEN 1
+#define ARGTYPE_EXEC_CHECK 2
+
 
 static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
@@ -121,10 +126,10 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     bpf_printk("lsm: handler triggered: cgid=%llu argtype=%llu", cgid, *argtype);
 
     switch (*argtype) {
-        case 1: {
+        case ARGTYPE_FILE_OPEN: {
             return handle_open(args, &cgid);
         }
-        case 2: {
+        case ARGTYPE_EXEC_CHECK: {
             return handle_exec(args, &cgid);
         }
         default: {

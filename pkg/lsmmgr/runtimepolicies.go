@@ -3,7 +3,6 @@ package lsmmgr
 import (
 	"fmt"
 
-	"github.com/go-logr/logr"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
@@ -16,7 +15,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		return nil
 	}
 	// create the lsm enforcer
-	enf, err := lsm.NewForAttachTarget(&logr.Logger{}, "file_open")
+	enf, err := lsm.NewForAttachTarget(&l.logger, "file_open")
 	if err != nil {
 		return err
 	}
@@ -51,7 +50,6 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	if len(targetCgids) > 0 {
 		err := enf.AddCgids(targetCgids)
 		if err != nil {
-			// todo: handle this
 			return err
 		}
 	}
@@ -97,6 +95,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			// we aren't attached
 			err := la.enf.AddCgids(pod.cgids)
 			if err != nil {
+				l.logger.Error(err, "failed to add cgids for pod", "podUid", podUid)
 				continue
 			}
 		} else {

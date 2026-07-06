@@ -11,6 +11,13 @@ import (
 
 const maxPathLen = 128
 
+// argtype values written into the `argtypes` map, read back out by the BPF program
+// in lsm.bpf.c (ARGTYPE_FILE_OPEN / ARGTYPE_EXEC_CHECK). must stay in sync with those.
+const (
+	argTypeFileOpen  = uint64(1)
+	argTypeExecCheck = uint64(2)
+)
+
 //go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -I./_cprog/include -I./_cprog/maps.c
 type LsmEnforcer struct {
 	logger  *logr.Logger
@@ -35,11 +42,14 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	zero := uint32(0)
 
 	switch target {
-	// todo: maintain a contract with kernel space for these things
 	case "file_open":
-		objs.lsmGenericMaps.Argtypes.Put(&zero, uint64(1))
+		if err := objs.lsmGenericMaps.Argtypes.Put(&zero, argTypeFileOpen); err != nil {
+			return nil, err
+		}
 	case "bprm_check_security":
-		objs.lsmGenericMaps.Argtypes.Put(&zero, uint64(2))
+		if err := objs.lsmGenericMaps.Argtypes.Put(&zero, argTypeExecCheck); err != nil {
+			return nil, err
+		}
 	}
 
 	l := &LsmEnforcer{
@@ -90,18 +100,21 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		l.bpfObjs.lsmGenericMaps.Banned.Put(&key, uint8(0))
+		if err := l.bpfObjs.lsmGenericMaps.Banned.Put(&key, uint8(0)); err != nil {
+			return err
+		}
 	}
 
 	for _, p := range paths.Allow {
 		if len(p) > maxPathLen {
 			return fmt.Errorf("can't enforce limits on paths larger than %d", maxPathLen)
 		}
-		// todo: maybe we can optimize this by calling one big alloc and splitting it up ?
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		l.bpfObjs.lsmGenericMaps.Allowed.Put(&key, uint8(0))
+		if err := l.bpfObjs.lsmGenericMaps.Allowed.Put(&key, uint8(0)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -115,7 +128,9 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		l.bpfObjs.lsmGenericMaps.Banned.Delete(&key)
+		if err := l.bpfObjs.lsmGenericMaps.Banned.Delete(&key); err != nil {
+			l.logger.Error(err, "failed to remove path from banned map")
+		}
 	}
 
 	for _, p := range paths.Allow {
@@ -126,7 +141,9 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		l.bpfObjs.lsmGenericMaps.Banned.Delete(&key)
+		if err := l.bpfObjs.lsmGenericMaps.Allowed.Delete(&key); err != nil {
+			l.logger.Error(err, "failed to remove path from allowed map")
+		}
 	}
 	return nil
 }
@@ -161,16 +178,18 @@ func (l *LsmEnforcer) SetLearningModeForCgids(cgids []uint64, val bool) error {
 			}
 			innerMap, err := ebpf.NewMap(innerSpec)
 			if err != nil {
-				return err
+				l.logger.Error(err, "failed to create inner open events map", "cgid", cgid)
+				continue
 			}
 			if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Put(&cgid, uint32(innerMap.FD())); err != nil {
-				return err
+				l.logger.Error(err, "failed to enable learning mode for cgid", "cgid", cgid)
+				innerMap.Close()
 			}
 			continue
 		}
 		// val was false, delete the entry
 		if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Delete(&cgid); err != nil {
-			return err
+			l.logger.Error(err, "failed to disable learning mode for cgid", "cgid", cgid)
 		}
 	}
 	return nil
@@ -189,7 +208,6 @@ func (l *LsmEnforcer) GetLearningModeForCgids(retMap map[string]uint32, cgids []
 		if err != nil {
 			return err
 		}
-		defer openCountMap.Close()
 
 		var (
 			k string
@@ -199,6 +217,14 @@ func (l *LsmEnforcer) GetLearningModeForCgids(retMap map[string]uint32, cgids []
 		iter := openCountMap.Iterate()
 		for iter.Next(&k, &v) {
 			retMap[k] += v
+		}
+		if err := iter.Err(); err != nil {
+			openCountMap.Close()
+			return fmt.Errorf("failed to iterate open count map for cgid %d: %w", cgid, err)
+		}
+
+		if err := openCountMap.Close(); err != nil {
+			l.logger.Error(err, "failed to close open count map", "cgid", cgid)
 		}
 	}
 

@@ -38,7 +38,9 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 
 	// initialize flag values with zeros
 	zeroFlags := 0
-	objs.egressBlockMaps.Flags.Put(&zeroFlags, &zeroFlags)
+	if err := objs.egressBlockMaps.Flags.Put(&zeroFlags, &zeroFlags); err != nil {
+		return nil, err
+	}
 
 	p := &EgressFilter{
 		logger:  l,
@@ -115,10 +117,12 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 
 	if val {
 		currentval |= idx
-		e.bpfObjs.egressBlockMaps.Flags.Put(&key, &currentval)
 	} else {
 		currentval &^= 1 << idx
-		e.bpfObjs.egressBlockMaps.Flags.Put(&key, &currentval)
+	}
+
+	if err := e.bpfObjs.egressBlockMaps.Flags.Put(&key, &currentval); err != nil {
+		e.logger.Error(err, "failed to write flags map. corrupt state")
 	}
 }
 
@@ -133,6 +137,9 @@ func (e *EgressFilter) ReadLearned() (map[uint32]uint32, error) {
 
 	for iter.Next(&key, &value) {
 		ret[key] = value
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
 	}
 
 	return ret, nil

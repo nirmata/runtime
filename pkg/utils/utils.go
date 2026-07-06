@@ -31,3 +31,9 @@ func BpfLSMEnabled() (bool, error) {
 	}
 	return false, nil
 }
+
+func MergeMapCount[T comparable](dst map[T]uint32, src map[T]uint32) {
+	for k, v := range src {
+		dst[k] += v
+	}
+}

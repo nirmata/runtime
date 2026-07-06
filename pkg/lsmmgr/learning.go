@@ -24,7 +24,9 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 				// all those programs will end up recording the same resuls into their respective
 				// maps for a single pod that matches. so during a read only fetch learned behaviors
 				// from the first entry in the pod's lsmAttachment
-				lsmAtt.enf.SetLearningModeForCgids(pod.cgids, true)
+				if err := lsmAtt.enf.SetLearningModeForCgids(pod.cgids, true); err != nil {
+					l.logger.Error(err, "failed to enable learning mode for pod", "podUid", podUid)
+				}
 				wp.pods[podUid] = pod
 			}
 		}
@@ -40,11 +42,13 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 			return
 		}
 		delete(l.wps, uid)
-		for _, pa := range workloadProfile.pods {
+		for podUid, pa := range workloadProfile.pods {
 			delete(pa.learningEnabled, uid)
 			if len(pa.learningEnabled) == 0 {
 				for _, la := range pa.attachedLsms {
-					la.enf.SetLearningModeForCgids(pa.cgids, false)
+					if err := la.enf.SetLearningModeForCgids(pa.cgids, false); err != nil {
+						l.logger.Error(err, "failed to disable learning mode for pod", "podUid", podUid)
+					}
 				}
 			}
 		}

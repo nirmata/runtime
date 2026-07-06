@@ -3,6 +3,7 @@ package lsmmgr
 import (
 	"context"
 
+	"github.com/go-logr/logr"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -13,6 +14,7 @@ import (
 
 // i will assume exec doesn't exist for now
 type LsmManager struct {
+	logger         logr.Logger
 	pods           map[string]*podRepresentation // pod label storage. todo: take this out of here
 	lsmAttachments map[string]*lsmAttachment
 	wps            map[string]*workloadProfile
@@ -37,8 +39,9 @@ type lsmAttachment struct {
 	files        *compiler.AllowDenyPair
 }
 
-func NewLsmManager() *LsmManager {
+func NewLsmManager(logger logr.Logger) *LsmManager {
 	return &LsmManager{
+		logger:         logger,
 		pods:           make(map[string]*podRepresentation),
 		lsmAttachments: make(map[string]*lsmAttachment),
 	}

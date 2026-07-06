@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/cilium/ebpf/link"
+	"github.com/go-logr/logr"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
@@ -14,13 +15,12 @@ import (
 )
 
 type EgressManager struct {
-	pods map[string]*podAttachment
-	rps  map[string]*compiler.EvaluationResult
-	wps  map[string]*workloadProfile
+	logger logr.Logger
+	pods   map[string]*podAttachment
+	rps    map[string]*compiler.EvaluationResult
+	wps    map[string]*workloadProfile
 }
 
-// no additional information need to exist on it apart from what pods
-// currently are live,
 type workloadProfile struct {
 	cancel context.CancelFunc
 	pods   map[string]*podAttachment
@@ -31,17 +31,18 @@ type podAttachment struct {
 	learningEnabled map[string]struct{} // the ids of the workload profiles that specify we should be learning this pod's behavior
 	// at the end of the learning duration what happens ?
 
-	labels          map[string]string                            // todo: centralize pod label storage in the podwatcher
-	cgs             map[containers.ContainerCgroupInfo]link.Link // todo: can we store this more efficiently
+	labels          map[string]string
+	cgs             map[containers.ContainerCgroupInfo]link.Link
 	filter          *egressfilter.EgressFilter
 	attachedFilters map[string]*compiler.EvaluationResult
 }
 
-func NewEgressManager() *EgressManager {
+func NewEgressManager(logger logr.Logger) *EgressManager {
 	return &EgressManager{
-		pods: make(map[string]*podAttachment),
-		rps:  make(map[string]*compiler.EvaluationResult),
-		wps:  make(map[string]*workloadProfile),
+		logger: logger,
+		pods:   make(map[string]*podAttachment),
+		rps:    make(map[string]*compiler.EvaluationResult),
+		wps:    make(map[string]*workloadProfile),
 	}
 }
 

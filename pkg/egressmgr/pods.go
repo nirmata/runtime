@@ -5,7 +5,6 @@ import (
 	"slices"
 
 	"github.com/cilium/ebpf/link"
-	"github.com/go-logr/logr"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -14,14 +13,7 @@ import (
 )
 
 func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
-	// not sure if it makes sense that i am creating the filter once and attaching it
-	// per container c group id. or idk maybe it does.. in the end of the day learning mode
-	// collects events for a single pod. so yeah maybe all pod containers can share a program
-	// this kinda simplifies things because this means we can have events on the workload profile
-	// api. if it targets this pod. we enable collection for it. for a workload profile, we kinda
-	// don't give a shit about policies. so we can just have another event source that links to pod
-	// attachments
-	filter, err := egressfilter.New(&logr.Logger{})
+	filter, err := egressfilter.New(&e.logger)
 	if err != nil {
 		return err
 	}
