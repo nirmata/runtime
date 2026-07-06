@@ -4,6 +4,7 @@ import (
 	"os"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/workloadprofile"
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
@@ -58,7 +59,13 @@ func runCtrl(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	wpController := workloadprofile.NewWorkloadProfileController(mgr.GetClient(), daemonsetSvcNs, daemonsetSvcName)
+	dsr, err := controller.NewDsEndpointResolver(mgr, daemonsetSvcNs, daemonsetSvcName)
+	if err != nil {
+		logger.Error(err, "failed to create daemonset endpoint resolver")
+		os.Exit(1)
+	}
+
+	wpController := workloadprofile.NewWorkloadProfileController(mgr.GetClient(), dsr.GetEndpoints)
 	err = wpController.SetupWithManager(mgr)
 	if err != nil {
 		logger.Error(err, "error registering the workload profile controller with the manager")

@@ -12,9 +12,7 @@ import (
 	protolearning "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -27,19 +25,14 @@ const (
 
 type workloadProfileReconciler struct {
 	client.Client
-
-	daemonSetEndpoints []string
-	daemonsetSvcName   string
-	daemonsetSvcNs     string
-
+	endpointFunc                func() []string
 	observedWorkloadProfileUids map[string]struct{}
 }
 
-func NewWorkloadProfileController(c client.Client, daemonsetSvcNs string, daemonsetSvcName string) *workloadProfileReconciler {
+func NewWorkloadProfileController(c client.Client, epFunc func() []string) *workloadProfileReconciler {
 	return &workloadProfileReconciler{
 		Client:                      c,
-		daemonsetSvcName:            daemonsetSvcName,
-		daemonsetSvcNs:              daemonsetSvcNs,
+		endpointFunc:                epFunc,
 		observedWorkloadProfileUids: make(map[string]struct{}),
 	}
 }
@@ -109,12 +102,13 @@ func (r *workloadProfileReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *workloadProfileReconciler) handleDeleteWorkloadProfile(ctx context.Context, profileUid string) error {
-	errChan := make(chan error, len(r.daemonSetEndpoints))
+
+	errChan := make(chan error, len(r.endpointFunc()))
 
 	var wg sync.WaitGroup
-	wg.Add(len(r.daemonSetEndpoints))
+	wg.Add(len(r.endpointFunc()))
 
-	for _, dsEndpoint := range r.daemonSetEndpoints {
+	for _, dsEndpoint := range r.endpointFunc() {
 		go func() {
 			defer wg.Done()
 			conn, err := grpc.NewClient(dsEndpoint)
@@ -156,12 +150,12 @@ func (r *workloadProfileReconciler) handleNewWorkloadProfile(ctx context.Context
 
 	// use a buffered channel so that all goroutines can send their errors
 	// without waiting on the caller to consume those errors
-	errChan := make(chan error, len(r.daemonSetEndpoints))
+	errChan := make(chan error, len(r.endpointFunc()))
 
 	var wg sync.WaitGroup
-	wg.Add(len(r.daemonSetEndpoints))
+	wg.Add(len(r.endpointFunc()))
 
-	for _, dsEndpoint := range r.daemonSetEndpoints {
+	for _, dsEndpoint := range r.endpointFunc() {
 		go func() {
 			defer wg.Done()
 			conn, err := grpc.NewClient(dsEndpoint)
@@ -201,57 +195,7 @@ func (r *workloadProfileReconciler) handleNewWorkloadProfile(ctx context.Context
 }
 
 func (r *workloadProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	err := ctrl.NewControllerManagedBy(mgr).
+	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.WorkloadProfile{}).
 		Complete(r)
-
-	informer, err := mgr.GetCache().GetInformer(context.Background(), &discoveryv1.EndpointSlice{})
-	if err != nil {
-		return err
-	}
-	logger := log.FromContext(context.Background())
-
-	_, err = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			es := obj.(*discoveryv1.EndpointSlice)
-			r.handleEndpointSliceEvent(es)
-
-		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			es := newObj.(*discoveryv1.EndpointSlice)
-			r.handleEndpointSliceEvent(es)
-		},
-		DeleteFunc: func(obj interface{}) {
-			es, ok := obj.(*discoveryv1.EndpointSlice)
-			if !ok {
-				// handle cache.DeletedFinalStateUnknown
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-				if !ok {
-					return
-				}
-				es = tombstone.Obj.(*discoveryv1.EndpointSlice)
-			}
-
-			if es.Labels["kubernetes.io/service-name"] != r.daemonsetSvcName || es.Namespace != r.daemonsetSvcNs {
-				return
-			}
-
-			logger.Info("deleting the endpoint slice of the daemon ds will cause degredation in learning mode findings. please recreate it")
-		},
-	})
-	return err
-}
-
-func (r *workloadProfileReconciler) handleEndpointSliceEvent(es *discoveryv1.EndpointSlice) {
-	if es.Labels["kubernetes.io/service-name"] != r.daemonsetSvcName || es.Namespace != r.daemonsetSvcNs {
-		// not the daemon ds endpoint slice. do nothing
-		return
-	}
-	currentEndpoints := make([]string, len(es.Endpoints))
-	for _, e := range es.Endpoints {
-		if e.Conditions.Ready != nil && *e.Conditions.Ready {
-			currentEndpoints = append(currentEndpoints, e.Addresses...)
-		}
-	}
-	r.daemonSetEndpoints = currentEndpoints
 }
