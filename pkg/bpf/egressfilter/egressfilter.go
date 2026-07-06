@@ -10,7 +10,7 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
-//go:generate go tool bpf2go egressBlock ./_cprog/probe.c
+//go:generate go tool bpf2go egressBlock ./_cprog/probe.c -I ./_cprog/maps.c
 
 const (
 	DEFAULT_DENY  = 1
@@ -35,6 +35,10 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		return nil, err
 	}
+
+	// initialize flag values with zeros
+	zeroFlags := 0
+	objs.egressBlockMaps.Flags.Put(&zeroFlags, &zeroFlags)
 
 	p := &EgressFilter{
 		logger:  l,

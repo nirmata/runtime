@@ -11,7 +11,7 @@ import (
 
 const maxPathLen = 128
 
-//go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -I./_cprog/include
+//go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -I./_cprog/include -I./_cprog/maps.c
 type LsmEnforcer struct {
 	logger  *logr.Logger
 	bpfObjs *lsmGenericObjects
@@ -129,4 +129,9 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		l.bpfObjs.lsmGenericMaps.Banned.Delete(&key)
 	}
 	return nil
+}
+
+func (l *LsmEnforcer) SetDefaultDeny(val bool) {
+	if val {
+	}
 }

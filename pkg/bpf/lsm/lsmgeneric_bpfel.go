@@ -66,6 +66,7 @@ type lsmGenericMapSpecs struct {
 	Banned      *ebpf.MapSpec `ebpf:"banned"`
 	Cgids       *ebpf.MapSpec `ebpf:"cgids"`
 	DefaultDeny *ebpf.MapSpec `ebpf:"default_deny"`
+	OpenEvents  *ebpf.MapSpec `ebpf:"open_events"`
 }
 
 // lsmGenericVariableSpecs contains global variables before they are loaded into the kernel.
@@ -99,6 +100,7 @@ type lsmGenericMaps struct {
 	Banned      *ebpf.Map `ebpf:"banned"`
 	Cgids       *ebpf.Map `ebpf:"cgids"`
 	DefaultDeny *ebpf.Map `ebpf:"default_deny"`
+	OpenEvents  *ebpf.Map `ebpf:"open_events"`
 }
 
 func (m *lsmGenericMaps) Close() error {
@@ -108,6 +110,7 @@ func (m *lsmGenericMaps) Close() error {
 		m.Banned,
 		m.Cgids,
 		m.DefaultDeny,
+		m.OpenEvents,
 	)
 }
 
