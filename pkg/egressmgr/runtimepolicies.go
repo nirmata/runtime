@@ -49,6 +49,8 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 	// has default deny wasn't there, but now is
 	hasDefaultDeny := slices.Contains(toAddDeny, "*")
+	// had default deny before, but doesn't anymore
+	defaultDenyRemoved := slices.Contains(toRemoveDeny, "*")
 	// whether the policy's current (post-update) deny list enforces a default deny at all,
 	// used for pods newly matching this policy that have no prior attachment state
 	currentHasDefaultDeny := slices.Contains(compiledRp.IPs.Deny, "*")
@@ -95,6 +97,13 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			if hasDefaultDeny {
 				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
+			} else if defaultDenyRemoved {
+				// this policy no longer enforces a default deny on this pod
+				delete(pod.defaultDeny, string(compiledRp.UID))
+				// no other policy is enforcing default deny on this pod anymore, unset it
+				if len(pod.defaultDeny) == 0 {
+					pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
+				}
 			}
 			continue
 		}
