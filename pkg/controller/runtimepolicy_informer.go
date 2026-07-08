@@ -101,7 +101,15 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 		DeleteFunc: func(obj interface{}) {
 			rp, ok := obj.(*v1alpha1.RuntimePolicy)
 			if !ok {
-				return
+				// handle cache.DeletedFinalStateUnknown
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					return
+				}
+				rp, ok = tombstone.Obj.(*v1alpha1.RuntimePolicy)
+				if !ok {
+					return
+				}
 			}
 			queue.Add(events.Event[*v1alpha1.RuntimePolicy]{Obj: rp, Type: events.EventTypeDelete})
 		},

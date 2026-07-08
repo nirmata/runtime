@@ -20,9 +20,11 @@ import (
 )
 
 type podWatcher struct {
-	factory    informers.SharedInformerFactory
-	informer   cache.SharedIndexInformer
-	podCgInfos map[string][]*containers.ContainerCgroupInfo // todo: we should be also delete dead pod entries
+	factory  informers.SharedInformerFactory
+	informer cache.SharedIndexInformer
+	// we store pod cgroup infos here as well to avoid any case of pods being
+	// deleted and we are unable to retrieve their cgroup infos
+	podCgInfos map[string][]*containers.ContainerCgroupInfo
 	queue      workqueue.TypedRateLimitingInterface[events.Event[*corev1.Pod]]
 
 	nodeName      string
@@ -83,7 +85,15 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
-				return
+				// handle cache.DeletedFinalStateUnknown
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					return
+				}
+				pod, ok = tombstone.Obj.(*corev1.Pod)
+				if !ok {
+					return
+				}
 			}
 			queue.Add(events.Event[*corev1.Pod]{Obj: pod, Type: events.EventTypeDelete})
 		},
