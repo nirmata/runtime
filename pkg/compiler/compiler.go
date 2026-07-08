@@ -93,6 +93,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	}
 
 	return &CompiledRuntimePolicy{
+		UID:           string(rp.UID),
 		compiledNets:  compiledNets,
 		compiledOpens: compiledOpens,
 		compiledExecs: compiledExecs,
