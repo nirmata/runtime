@@ -4,8 +4,6 @@
 #define MAX_PATH_LEN 128
 #define EPERM 1
 
-// lets say that having a 1 set in the u8 means that this cgid should have learning mode enabled
-// which would mean that learning mode on this program shouldn't be just a flag
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
