@@ -159,8 +159,8 @@ spec:
                   type: object
                   x-kubernetes-validations:
                   - message: exactly one of network, exec, or open must be specified
-                    rule: '(self.network != null ? 1 : 0) + (self.exec != null ? 1
-                      : 0) + (self.open != null ? 1 : 0) == 1'
+                    rule: '(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0)
+                      + (has(self.open) ? 1 : 0) == 1'
                 type: array
               evaluationInterval:
                 description: EvaluationInterval specifies how frequently the policy
