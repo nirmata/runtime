@@ -91,6 +91,7 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 
 	w := &podWatcher{
 		factory:       factory,
+		queue:         queue,
 		informer:      podInformer,
 		nodeName:      nodeName,
 		eventHandlers: eventHandlers,
