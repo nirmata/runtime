@@ -102,7 +102,10 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, error) {
 	cp := &compiledBehavior{
-		pair: &AllowDenyPair{},
+		pair: &AllowDenyPair{
+			Allow: []string{},
+			Deny:  []string{},
+		},
 	}
 
 	{
