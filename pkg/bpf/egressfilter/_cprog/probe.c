@@ -29,7 +29,8 @@ int cgroup_egress(struct __sk_buff *skb)
         return 1;
 
     // read the flags
-    __u8 *f = bpf_map_lookup_elem(&flags, 0);
+    __u32 zero_key = 0;
+    __u8 *f = bpf_map_lookup_elem(&flags, &zero_key);
     __u32 daddr = ip->daddr;
 
     // invalid state. it should always be present

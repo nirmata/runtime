@@ -36,8 +36,8 @@ static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
         };
     }
 
-    __u8 *dd_key = 0;
-   __u8 *dd = bpf_map_lookup_elem(&default_deny, dd_key);
+    __u32 dd_key = 0;
+    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
 
     // there's a default deny. consult the allow list
     if (dd) {
@@ -82,8 +82,8 @@ static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     }
 
     // should be if there was a value in the open events map
-    __u8 *dd_key = 0;
-    __u8 *dd = bpf_map_lookup_elem(&default_deny, dd_key);
+    __u32 dd_key = 0;
+    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
 
     // there's a default deny. consult the allow list
     if (dd) {
