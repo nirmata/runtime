@@ -2,6 +2,7 @@ package lsmmgr
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
@@ -22,6 +23,11 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	// add the banned files
 	err = enf.AddTargets(compiledRp.Open)
 	if err != nil {
+		return err
+	}
+
+	// set default deny if the compiled policy had the * in its list of files
+	if err := enf.SetDefaultDeny(slices.Contains(compiledRp.Open.Deny, "*")); err != nil {
 		return err
 	}
 
@@ -77,10 +83,14 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		}
 	}
 	if len(toRemoveAllow) > 0 || len(toRemoveDeny) > 0 {
-		err := la.enf.DeleteTargets(&compiler.AllowDenyPair{Allow: toRemoveAllow, Deny: toAddDeny})
+		err := la.enf.DeleteTargets(&compiler.AllowDenyPair{Allow: toRemoveAllow, Deny: toRemoveDeny})
 		if err != nil {
 			return err
 		}
+	}
+
+	if err := la.enf.SetDefaultDeny(slices.Contains(compiledRp.Open.Deny, "*")); err != nil {
+		return err
 	}
 
 	// set the lsm attachment's file to the incoming compiled rp's open files
@@ -102,7 +112,10 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			// we don't match that pod. did we previously match it ?
 			_, ok := la.attachedPods[podUid]
 			if ok {
-				// yes we did
+				// yes we did. remove its cgids from the enforcer before dropping the attachment
+				if err := la.enf.DeleteCgids(pod.cgids); err != nil {
+					l.logger.Error(err, "failed to remove cgids for pod", "podUid", podUid)
+				}
 				delete(la.attachedPods, podUid)
 				continue
 			}
