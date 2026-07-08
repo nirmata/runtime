@@ -32,11 +32,14 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	if !ok {
 		return fmt.Errorf("got an update for a non existing runtime policy uid")
 	}
-	oldIps := &compiler.AllowDenyPair{}
-
-	// store the old ips becuase we may need to delete them from a pod's attachment if the runtime behavior no longer matches
-	copy(oldIps.Deny, currentRp.IPs.Deny)
-	copy(oldIps.Allow, currentRp.IPs.Allow)
+	// store the old ips because we may need to delete them from a pod's attachment if the
+	// policy no longer matches, regardless of whether the ips themselves changed
+	oldIps := &compiler.AllowDenyPair{
+		Allow: append([]string{}, currentRp.IPs.Allow...),
+		Deny:  append([]string{}, currentRp.IPs.Deny...),
+	}
+	// whether the policy already enforced a default deny on its attachments before this update
+	hadDefaultDeny := slices.Contains(oldIps.Deny, "*")
 
 	toAddAllow := utils.DiffSlice(currentRp.IPs.Allow, compiledRp.IPs.Allow)
 	toRemoveAllow := utils.DiffSlice(compiledRp.IPs.Allow, currentRp.IPs.Allow)
@@ -46,6 +49,9 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 	// has default deny wasn't there, but now is
 	hasDefaultDeny := slices.Contains(toAddDeny, "*")
+	// whether the policy's current (post-update) deny list enforces a default deny at all,
+	// used for pods newly matching this policy that have no prior attachment state
+	currentHasDefaultDeny := slices.Contains(compiledRp.IPs.Deny, "*")
 
 	// update the current runtime behavior's information to point to the new compiled behavior data
 	currentRp.IPs = compiledRp.IPs
@@ -54,7 +60,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	e.rps[string(compiledRp.UID)] = compiledRp
 	for _, pod := range e.pods {
 		rpMatches := compiledRp.Selector.Matches(labels.Set(pod.labels))
-		if ok {
+		if _, attached := pod.attachedFilters[string(compiledRp.UID)]; attached {
 			// there is no diff and rp still matches, do nothing
 			if len(toRemoveAllow) == 0 && len(toAddAllow) == 0 &&
 				len(toAddDeny) == 0 && len(toRemoveDeny) == 0 && rpMatches {
@@ -66,8 +72,8 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 				pod.filter.DeleteIps(oldIps)
 				delete(pod.attachedFilters, string(compiledRp.UID))
 
-				// nothing further to do if the policy didn't have a default deny
-				if !hasDefaultDeny {
+				// nothing further to do if the policy didn't previously have a default deny on this pod
+				if !hadDefaultDeny {
 					continue
 				}
 
@@ -77,6 +83,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 				if len(pod.defaultDeny) == 0 {
 					pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
 				}
+				continue
 			}
 
 			// rp matches and there is a diff. add the new ips, delete the old
@@ -97,7 +104,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			pod.filter.AddIps(compiledRp.IPs)
 			pod.attachedFilters[string(compiledRp.UID)] = currentRp // add that runtime policy's pointer to the attachedFilters map of that pod
 
-			if hasDefaultDeny {
+			if currentHasDefaultDeny {
 				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
 			}
