@@ -117,7 +117,7 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 	}
 
 	if val {
-		currentval |= idx
+		currentval |= 1 << idx
 	} else {
 		currentval &^= 1 << idx
 	}
