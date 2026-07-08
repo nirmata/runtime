@@ -101,7 +101,9 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 }
 
 func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, error) {
-	cp := &compiledBehavior{}
+	cp := &compiledBehavior{
+		pair: &AllowDenyPair{},
+	}
 
 	{
 		// go over the hardcoded values and add them to the pair
