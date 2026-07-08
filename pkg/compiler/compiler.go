@@ -92,12 +92,18 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		}
 	}
 
+	evalIntval := time.Duration(0)
+	if rp.Spec.EvaluationInterval != nil {
+		evalIntval = rp.Spec.EvaluationInterval.Duration
+	}
+
 	return &CompiledRuntimePolicy{
-		UID:           string(rp.UID),
-		compiledNets:  compiledNets,
-		compiledOpens: compiledOpens,
-		compiledExecs: compiledExecs,
-		variables:     variables,
+		UID:            string(rp.UID),
+		ReevalInterval: &evalIntval,
+		compiledNets:   compiledNets,
+		compiledOpens:  compiledOpens,
+		compiledExecs:  compiledExecs,
+		variables:      variables,
 	}, nil
 }
 
