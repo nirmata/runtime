@@ -57,22 +57,21 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	exec := &AllowDenyPair{}
 
 	for _, compiledNet := range c.compiledNets {
-		// todo: program context
-		err := evalCompiledBehavior(net, compiledNet, data)
+		err := evalCompiledBehavior(ctx, net, compiledNet, data)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	for _, compiledOpen := range c.compiledOpens {
-		err := evalCompiledBehavior(open, compiledOpen, data)
+		err := evalCompiledBehavior(ctx, open, compiledOpen, data)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	for _, compiledExec := range c.compiledExecs {
-		err := evalCompiledBehavior(exec, compiledExec, data)
+		err := evalCompiledBehavior(ctx, exec, compiledExec, data)
 		if err != nil {
 			return nil, err
 		}
@@ -87,9 +86,9 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	}, nil
 }
 
-func evalCompiledBehavior(accum *AllowDenyPair, b *compiledBehavior, data map[string]any) error {
+func evalCompiledBehavior(ctx context.Context, accum *AllowDenyPair, b *compiledBehavior, data map[string]any) error {
 	if b.denyProg != nil {
-		out, _, err := b.denyProg.ContextEval(context.Background(), data)
+		out, _, err := b.denyProg.ContextEval(ctx, data)
 		if err != nil {
 			return err
 		}
@@ -101,7 +100,7 @@ func evalCompiledBehavior(accum *AllowDenyPair, b *compiledBehavior, data map[st
 	}
 	accum.Deny = append(accum.Deny, b.pair.Deny...)
 	if b.allowProg != nil {
-		out, _, err := b.allowProg.ContextEval(context.Background(), data)
+		out, _, err := b.allowProg.ContextEval(ctx, data)
 		if err != nil {
 			return err
 		}
