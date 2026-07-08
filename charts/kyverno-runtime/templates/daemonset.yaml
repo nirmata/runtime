@@ -8,16 +8,16 @@ spec:
   selector:
     matchLabels:
       {{- include "kyverno-runtime.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: manager
+      app.kubernetes.io/component: daemon
   template:
     metadata:
       labels:
         {{- include "kyverno-runtime.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: manager
-        {{- with .Values.podLabels }}
+        app.kubernetes.io/component: daemon
+        {{- with .Values.daemon.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- with .Values.daemon.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -25,39 +25,15 @@ spec:
       serviceAccountName: {{ include "kyverno-runtime.serviceAccountName" . }}
       hostPID: true
       containers:
-      - name: manager
+      - name: daemon
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         securityContext:
           privileged: true
           runAsUser: 0
         args:
-        {{- if .Values.leaderElection }}
-        - --leader-elect
-        {{- end }}
-        - --inspektor-gadget-timeout={{ .Values.inspektorGadget.timeout }}
-        - --report-buffer-interval={{ .Values.reportBuffer.interval }}
-        - --report-buffer-max-count={{ .Values.reportBuffer.maxCount }}
-        - --report-suppression-cooldown={{ .Values.reportSuppression.cooldown }}
-        - --report-suppression-burst={{ .Values.reportSuppression.burst }}
-        - --report-event-cooldown={{ .Values.reportEvents.cooldown }}
-        - --report-event-burst={{ .Values.reportEvents.burst }}
-        - --feature-baseline-engine={{ .Values.featureGates.baselineEngine }}
-        - --feature-signature-engine={{ .Values.featureGates.signatureEngine }}
-        - --feature-alert-sinks={{ .Values.featureGates.alertSinks }}
-        - --feature-alert-aggregation={{ .Values.featureGates.alertAggregation }}
-        - --runtimebehavior-auto-create={{ .Values.runtimeBehaviorEnrollment.autoCreate }}
-        - --runtimebehavior-include-controllers={{ .Values.runtimeBehaviorEnrollment.includeControllers }}
-        - --runtimebehavior-include-bare-pods={{ .Values.runtimeBehaviorEnrollment.includeBarePods }}
-        {{- if .Values.runtimeBehaviorEnrollment.includeNamespaces }}
-        - --runtimebehavior-include-namespaces={{ .Values.runtimeBehaviorEnrollment.includeNamespaces }}
-        {{- end }}
-        - --runtimebehavior-exclude-namespaces={{ .Values.runtimeBehaviorEnrollment.excludeNamespaces }}
-        - --runtimebehavior-initial-mode={{ .Values.runtimeBehaviorEnrollment.initialMode }}
-        {{- if .Values.runtimeBehaviorEnrollment.optOutLabel }}
-        - --runtimebehavior-optout-label={{ .Values.runtimeBehaviorEnrollment.optOutLabel }}
-        {{- end }}
-        - --shared-defaults-namespace={{ .Values.runtimeBehaviorEnrollment.sharedDefaultsNamespace }}
+        - daemon
+        - --grpc-bind-address={{ .Values.daemon.grpcBindAddress }}
         env:
         - name: HOST_ROOT
           value: /host
@@ -66,10 +42,8 @@ spec:
             fieldRef:
               fieldPath: spec.nodeName
         ports:
-        - containerPort: 8080
-          name: metrics
-        - containerPort: 8081
-          name: probes
+        - containerPort: 9090
+          name: grpc
         volumeMounts:
         - name: host-root
           mountPath: /host
@@ -85,7 +59,7 @@ spec:
         - name: host-sys-kernel-tracing
           mountPath: /sys/kernel/tracing
         resources:
-          {{- toYaml .Values.resources | nindent 10 }}
+          {{- toYaml .Values.daemon.resources | nindent 10 }}
       volumes:
       - name: host-root
         hostPath:
@@ -111,15 +85,15 @@ spec:
         hostPath:
           path: /sys/kernel/tracing
           type: DirectoryOrCreate
-      {{- with .Values.nodeSelector }}
+      {{- with .Values.daemon.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- with .Values.daemon.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with .Values.daemon.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

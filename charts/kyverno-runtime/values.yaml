@@ -4,64 +4,6 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-leaderElection: true
-
-inspektorGadget:
-  timeout: 8s
-
-# Report buffering: optimize for new installations
-reportBuffer:
-  # Flush interval balances latency vs batching (default: 5s for faster alerts)
-  interval: 5s
-  # Max buffered findings before forced flush (default: 500 to prevent resource exhaustion)
-  maxCount: 500
-
-# Duplicate finding suppression per fingerprint (rolling window)
-reportSuppression:
-  # Window duration used for burst evaluation
-  cooldown: 30s
-  # Max duplicate updates allowed in one cooldown window
-  burst: 20
-
-reportEvents:
-  cooldown: 30s
-  burst: 10
-
-featureGates:
-  # Baseline engine: learn and enforce workload behavioral baselines (default: enabled)
-  baselineEngine: true
-  # Signature engine: detect known attack patterns via 8 built-in rules (default: enabled)
-  signatureEngine: true
-  # Alert sinks: route findings to external systems like syslog, HTTP, etc (default: disabled)
-  alertSinks: false
-  # Alert aggregation: prevent alert storms with cooldown and burst limits (default: enabled)
-  alertAggregation: true
-
-# Default RuntimePolicy Library - curated policies for day-1 protection
-defaultPolicies:
-  # Enable/disable the default policy library as a unit
-  enabled: true
-  # Individual policy controls - set to false to skip a specific policy
-  policies:
-    credentialAccess: true
-    shellExecution: true
-    sensitiveFileAccess: true
-    publicNetworkEgress: true
-    metadataEndpointEgress: true
-    processDiscovery: true
-    securityToolDisruption: true
-    suspiciousDNS: false
-
-runtimeBehaviorEnrollment:
-  autoCreate: true
-  includeControllers: Deployment,StatefulSet,DaemonSet,Job,CronJob,ReplicaSet
-  includeBarePods: false
-  includeNamespaces: ""
-  excludeNamespaces: kube-system,kyverno-runtime
-  initialMode: learning
-  optOutLabel: ""
-  sharedDefaultsNamespace: kyverno-runtime
-
 serviceAccount:
   create: true
   name: ""
@@ -69,9 +11,28 @@ serviceAccount:
 rbac:
   create: true
 
-podLabels: {}
-podAnnotations: {}
-resources: {}
-nodeSelector: {}
-tolerations: []
-affinity: {}
+# daemon: runs the `kyverno-runtime daemon` command as a DaemonSet on every node
+daemon:
+  grpcBindAddress: ":9090"
+  podLabels: {}
+  podAnnotations: {}
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ctrl: runs the `kyverno-runtime ctrl` command as a Deployment, reconciling WorkloadProfiles
+ctrl:
+  replicas: 1
+  leaderElection: true
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
+  # name/namespace of the Service fronting the daemon DaemonSet, used to resolve daemon endpoints
+  daemonsetSvcName: "runtime-ds"
+  daemonsetSvcNs: "kyverno-runtime"
+  podLabels: {}
+  podAnnotations: {}
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

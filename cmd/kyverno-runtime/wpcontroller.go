@@ -24,13 +24,19 @@ var ctrlCmd = &cobra.Command{
 }
 
 var (
-	daemonsetSvcName string
-	daemonsetSvcNs   string
+	daemonsetSvcName     string
+	daemonsetSvcNs       string
+	metricsAddr          string
+	probeAddr            string
+	enableLeaderElection bool
 )
 
 func init() {
 	ctrlCmd.Flags().StringVar(&daemonsetSvcName, "daemonset-svc-name", "runtime-ds", "The name of the kyverno runtime daemon daemonset")
 	ctrlCmd.Flags().StringVar(&daemonsetSvcNs, "daemonset-svc-ns", "kyverno-runtime", "The namespace of the kyverno runtime daemon daemonset")
+	ctrlCmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	ctrlCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	ctrlCmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for the workload profile controller.")
 }
 
 func runCtrl(cmd *cobra.Command, args []string) error {

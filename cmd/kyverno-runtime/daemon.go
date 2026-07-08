@@ -3,7 +3,6 @@ package main
 import (
 	"net"
 	"os"
-	"time"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
@@ -31,19 +30,7 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 )
 
-var (
-	metricsAddr               string
-	probeAddr                 string
-	httpAddr                  string
-	grpcAddr                  string
-	enableLeaderElection      bool
-	reportBufferInterval      time.Duration
-	reportBufferMaxCount      int
-	reportSuppressionCooldown time.Duration
-	reportSuppressionBurst    int
-	reportEventCooldown       time.Duration
-	reportEventBurst          int
-)
+var grpcAddr string
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -52,16 +39,7 @@ var daemonCmd = &cobra.Command{
 }
 
 func init() {
-	daemonCmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-	daemonCmd.Flags().StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	daemonCmd.Flags().StringVar(&httpAddr, "http-bind-address", ":8090", "The address the HTTP server binds to.")
 	daemonCmd.Flags().StringVar(&grpcAddr, "grpc-bind-address", ":9090", "The address the gRPC server binds to.")
-	daemonCmd.Flags().DurationVar(&reportBufferInterval, "report-buffer-interval", 10*time.Second, "Interval to flush buffered PolicyReport updates.")
-	daemonCmd.Flags().IntVar(&reportBufferMaxCount, "report-buffer-max-count", 1000, "Maximum buffered findings before forcing a flush.")
-	daemonCmd.Flags().DurationVar(&reportSuppressionCooldown, "report-suppression-cooldown", 30*time.Second, "Rolling cooldown window for duplicate finding suppression.")
-	daemonCmd.Flags().IntVar(&reportSuppressionBurst, "report-suppression-burst", 20, "Maximum duplicate finding updates per fingerprint in one cooldown window.")
-	daemonCmd.Flags().DurationVar(&reportEventCooldown, "report-event-cooldown", 30*time.Second, "Rolling cooldown window for Kubernetes Event emission dedup/rate-limit.")
-	daemonCmd.Flags().IntVar(&reportEventBurst, "report-event-burst", 10, "Maximum Kubernetes Events emitted per fingerprint in one cooldown window.")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
