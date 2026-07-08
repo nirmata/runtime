@@ -40,6 +40,7 @@ type RuntimePolicyMgr struct {
 func (m *RuntimePolicyMgr) Start(ctx context.Context) error {
 	defer m.queue.ShutDown()
 
+	m.factory.Start(ctx.Done())
 	// wait for 30 seconds tops for cache sync
 	timeOut, cancel := context.WithTimeout(ctx, time.Second*30)
 	defer cancel()
@@ -47,8 +48,6 @@ func (m *RuntimePolicyMgr) Start(ctx context.Context) error {
 	if !cache.WaitForCacheSync(timeOut.Done(), m.rpInformer.HasSynced) {
 		return fmt.Errorf("timed out waiting for cache sync")
 	}
-
-	m.factory.Start(ctx.Done())
 
 	go wait.UntilWithContext(ctx, m.runWorker, time.Second)
 

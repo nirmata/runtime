@@ -48,6 +48,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)
 
+	logger.Info("starting kyverno-runtime daemon", "grpc-bind-address", grpcAddr)
+
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(corev1.AddToScheme(scheme))
