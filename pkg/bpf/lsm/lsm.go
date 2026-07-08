@@ -18,7 +18,7 @@ const (
 	argTypeExecCheck = uint64(2)
 )
 
-//go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -I./_cprog/include -I./_cprog/maps.c
+//go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
 type LsmEnforcer struct {
 	logger  *logr.Logger
 	bpfObjs *lsmGenericObjects
@@ -149,7 +149,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 }
 
 func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
-	k := 0
+	k := uint32(0)
 	if val {
 		err := l.bpfObjs.lsmGenericMaps.DefaultDeny.Put(&k, uint8(0))
 		if err != nil {

@@ -3,7 +3,7 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
-#include <maps.h>
+#include "maps.h"
 
 struct iphdr {
     __u8  ihl_version;

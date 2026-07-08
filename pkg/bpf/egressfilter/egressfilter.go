@@ -10,7 +10,7 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
-//go:generate go tool bpf2go egressBlock ./_cprog/probe.c -I ./_cprog/maps.c
+//go:generate go tool bpf2go egressBlock ./_cprog/probe.c -- -I ./_cprog
 
 const (
 	DEFAULT_DENY  = 1
@@ -37,8 +37,9 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 	}
 
 	// initialize flag values with zeros
-	zeroFlags := 0
-	if err := objs.egressBlockMaps.Flags.Put(&zeroFlags, &zeroFlags); err != nil {
+	var zeroKey uint32
+	var zeroVal uint8
+	if err := objs.egressBlockMaps.Flags.Put(&zeroKey, &zeroVal); err != nil {
 		return nil, err
 	}
 
@@ -107,7 +108,7 @@ func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) {
 }
 
 func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
-	key := 0
+	var key uint32
 	var currentval uint8
 
 	err := e.bpfObjs.egressBlockMaps.Flags.Lookup(&key, &currentval)
