@@ -88,7 +88,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 }
 
 func evalCompiledBehavior(accum *AllowDenyPair, b *compiledBehavior, data map[string]any) error {
-	{
+	if b.denyProg != nil {
 		out, _, err := b.denyProg.ContextEval(context.Background(), data)
 		if err != nil {
 			return err
@@ -98,9 +98,9 @@ func evalCompiledBehavior(accum *AllowDenyPair, b *compiledBehavior, data map[st
 			return fmt.Errorf("invalid program return type. expected array of string")
 		}
 		accum.Deny = append(accum.Deny, exprIps...)
-		accum.Deny = append(accum.Deny, b.pair.Deny...)
 	}
-	{
+	accum.Deny = append(accum.Deny, b.pair.Deny...)
+	if b.allowProg != nil {
 		out, _, err := b.allowProg.ContextEval(context.Background(), data)
 		if err != nil {
 			return err
@@ -110,8 +110,8 @@ func evalCompiledBehavior(accum *AllowDenyPair, b *compiledBehavior, data map[st
 			return fmt.Errorf("invalid program return type. expected array of string")
 		}
 		accum.Allow = append(accum.Allow, exprIps...)
-		accum.Allow = append(accum.Allow, b.pair.Allow...)
 	}
+	accum.Allow = append(accum.Allow, b.pair.Allow...)
 
 	return nil
 }

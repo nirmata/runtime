@@ -108,43 +108,47 @@ func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, err
 		},
 	}
 
-	{
+	if b.Deny != nil {
 		// go over the hardcoded values and add them to the pair
 		for _, v := range b.Deny.Values {
 			cp.pair.Deny = append(cp.pair.Deny, v)
 		}
-		ast, compileErr := c.env.Compile(b.Deny.Expression)
-		if compileErr != nil {
-			return nil, compileErr.Err()
-		}
-		// ensure that the output type is a list of string
-		if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
-			return nil, fmt.Errorf("invalid return type for array")
-		}
-		prog, err := c.env.Program(ast)
-		if err != nil {
-			return nil, err
-		}
+		if b.Deny.Expression != "" {
+			ast, compileErr := c.env.Compile(b.Deny.Expression)
+			if compileErr != nil {
+				return nil, compileErr.Err()
+			}
+			// ensure that the output type is a list of string
+			if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
+				return nil, fmt.Errorf("invalid return type for array")
+			}
+			prog, err := c.env.Program(ast)
+			if err != nil {
+				return nil, err
+			}
 
-		cp.denyProg = prog
+			cp.denyProg = prog
+		}
 	}
-	{
+	if b.Allow != nil {
 		for _, v := range b.Allow.Values {
 			cp.pair.Allow = append(cp.pair.Allow, v)
 		}
-		ast, compileErr := c.env.Compile(b.Allow.Expression)
-		if compileErr != nil {
-			return nil, compileErr.Err()
-		}
-		if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
-			return nil, fmt.Errorf("invalid return type for array")
-		}
-		prog, err := c.env.Program(ast)
-		if err != nil {
-			return nil, err
-		}
+		if b.Allow.Expression != "" {
+			ast, compileErr := c.env.Compile(b.Allow.Expression)
+			if compileErr != nil {
+				return nil, compileErr.Err()
+			}
+			if !ast.OutputType().IsExactType(types.NewListType(types.StringType)) {
+				return nil, fmt.Errorf("invalid return type for array")
+			}
+			prog, err := c.env.Program(ast)
+			if err != nil {
+				return nil, err
+			}
 
-		cp.allowProg = prog
+			cp.allowProg = prog
+		}
 	}
 
 	return cp, nil
