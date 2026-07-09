@@ -46,9 +46,6 @@ func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur tim
 		<-ctx.Done()
 		e.logger.V(2).Info("learning mode window expired", "uid", uid)
 
-		// this goroutine fires an arbitrary amount of time after Start returns, so it
-		// races against PodEvent/RuntimePolicyEvent and any other Start/Stop/Read call
-		// just as much as the rest of the manager does. lock around its own mutation.
 		e.mu.Lock()
 		defer e.mu.Unlock()
 
