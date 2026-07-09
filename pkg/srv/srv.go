@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-logr/logr"
-	"google.golang.org/grpc"
-
 	"github.com/nirmata/kyverno-runtime/pkg/proto/learning"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
+
+	"github.com/go-logr/logr"
+	"google.golang.org/grpc"
 )
 
 type learningModeSrv struct {

@@ -4,6 +4,16 @@ import (
 	"net"
 	"os"
 
+	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/kyverno-runtime/pkg/controller"
+	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
+	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
+	pb "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
+	"github.com/nirmata/kyverno-runtime/pkg/srv"
+
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap/zapcore"
@@ -17,16 +27,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-
-	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/controller"
-	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
-	pb "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
-	"github.com/nirmata/kyverno-runtime/pkg/srv"
 )
 
 var grpcAddr string

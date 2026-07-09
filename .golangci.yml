@@ -28,8 +28,9 @@ formatters:
     gofmt:
       simplify: true
     gci:
+      custom-order: true
       sections:
         - standard
-        - default
         - prefix(github.com/nirmata/kyverno-runtime)
+        - default
 

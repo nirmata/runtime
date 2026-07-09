@@ -4,11 +4,11 @@ import (
 	"encoding/binary"
 	"net"
 
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
-
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
 //go:generate go tool bpf2go egressBlock ./_cprog/probe.c -- -I ./_cprog

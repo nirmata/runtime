@@ -6,19 +6,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
-	ctrl "sigs.k8s.io/controller-runtime"
-
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	v1alpha1informers "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions"
 	v1alpha1listers "github.com/nirmata/kyverno-runtime/pkg/client/listers/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type rpWatch struct {

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"slices"
 
-	"k8s.io/apimachinery/pkg/labels"
-
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
+
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {

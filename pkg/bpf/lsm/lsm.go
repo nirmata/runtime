@@ -3,11 +3,11 @@ package lsm
 import (
 	"fmt"
 
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
-
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
 const maxPathLen = 128

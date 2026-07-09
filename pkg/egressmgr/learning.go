@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/apimachinery/pkg/labels"
-
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur time.Duration) {
