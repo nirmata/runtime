@@ -40,6 +40,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		enf:          enf,
 		attachedPods: make(map[string]*podRepresentation),
 		selector:     compiledRp.Selector,
+		files:        compiledRp.Open,
 	}
 	l.lsmAttachments[compiledRp.UID] = la
 
