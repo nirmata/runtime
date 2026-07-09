@@ -162,15 +162,12 @@ func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
 		return nil
 	}
 
-	err := l.bpfObjs.lsmGenericMaps.DefaultDeny.Delete(&k)
-	if err != nil {
-		return err
-	}
+	// key deletions may error if the key doesn't exist. but thats fine
+	// we don't care about that
+	l.bpfObjs.lsmGenericMaps.DefaultDeny.Delete(&k)
 	return nil
 }
 
-// we can skip having a value of 1 in the cgids map and indicate
-// that learning mode is active by having an entry in the events map
 func (l *LsmEnforcer) SetLearningModeForCgids(cgids []uint64, val bool) error {
 	for _, cgid := range cgids {
 		if val {
