@@ -13,6 +13,7 @@ rules:
 - apiGroups: ["runtime.kyverno.io"]
   resources: ["runtimepolicies"]
   verbs: ["get", "list", "watch"]
+{{- if .Values.ctrl.enabled }}
 # ctrl: reconciles workload profiles and resolves daemon endpoints
 - apiGroups: ["runtime.kyverno.io"]
   resources: ["workloadprofiles"]
@@ -27,5 +28,6 @@ rules:
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}
 {{- end }}
 {{- end }}

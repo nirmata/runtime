@@ -21,8 +21,9 @@ daemon:
   tolerations: []
   affinity: {}
 
-# ctrl: runs the `kyverno-runtime ctrl` command as a Deployment, reconciling WorkloadProfiles
+# ctrl: runs the workload profile controller
 ctrl:
+  enabled: false
   replicas: 1
   leaderElection: true
   metricsBindAddress: ":8080"
