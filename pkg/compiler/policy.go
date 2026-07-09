@@ -23,7 +23,8 @@ type EvaluationResult struct {
 }
 
 type AllowDenyPair struct {
-	// todo: there should be something in that type that indicates that a default deny was found
+	// todo: maybe move default deny detection to be directly on the pair and check it
+	// at compile time ?
 	Allow []string
 	Deny  []string
 }
