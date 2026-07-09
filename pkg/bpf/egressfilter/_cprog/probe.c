@@ -35,7 +35,6 @@ int cgroup_egress(struct __sk_buff *skb)
 
     // invalid state. it should always be present
     if (f == NULL) {
-        bpf_printk("unexpected state\n");
         return 3;
     };
 
@@ -43,11 +42,9 @@ int cgroup_egress(struct __sk_buff *skb)
     if (*f & (1 << DEFAULT_DENY)) {
         __u8 *val = bpf_map_lookup_elem(&allowed_ips, &daddr);
         if (val) {
-            bpf_printk("cgroup_egress (allowlist): ALLOWING daddr=%x\n", daddr);
             return 1;
         }  
 
-        bpf_printk("cgroup_egress (allowlist): BLOCKING daddr=%x\n", daddr);
         return 0;
     };
 
@@ -64,7 +61,6 @@ int cgroup_egress(struct __sk_buff *skb)
 
     __u8 *val = bpf_map_lookup_elem(&banned_ips, &daddr);
     if (val) {
-        bpf_printk("cgroup_egress: BLOCKING daddr=%x\n", daddr);
         return 0;
     };
 
