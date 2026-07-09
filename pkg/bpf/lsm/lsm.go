@@ -33,11 +33,8 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	spec.Programs["generic_lsm_handler"].AttachTo = target
 	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
-	// open_events is a map-of-maps template (its BTF initializer only exists to
-	// describe the inner map type); real entries are populated per-cgid at
-	// runtime in SetLearningModeForCgids, using a u64 cgid key. Clear the
-	// auto-derived template Contents, which cilium/ebpf keys with a uint32(0)
-	// index that doesn't match the map's u64 key size.
+	// make the open events map contents empty for now. we will populate
+	// them later when we decide learning mode should be enabled for a pod
 	spec.Maps["open_events"].Contents = nil
 
 	objs := &lsmGenericObjects{}

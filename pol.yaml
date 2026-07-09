@@ -1,0 +1,18 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: block-shell
+spec:
+  mode: enforce
+  evaluationInterval: 30s
+  podSelector:
+    matchLabels:
+      app: demo
+  variables:
+  - name: dangerousFiles
+    expression: "'/etc/passwd,/etc/shadow'"
+  behaviors:
+  - open:
+      deny:
+        expression: >-
+          variables.dangerousFiles.split(",")
