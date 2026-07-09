@@ -44,6 +44,7 @@ func NewCompiler() (Compiler, error) {
 
 	provider := newVariablesProvider(base.CELTypeProvider())
 	env, err := base.Extend(
+		cel.Variable("variables", VariablesType),
 		cel.CustomTypeProvider(provider),
 	)
 	return &compiler{env: env}, nil
