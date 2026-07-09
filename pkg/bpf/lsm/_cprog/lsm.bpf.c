@@ -110,7 +110,7 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
 {
     __u64 cgid = bpf_get_current_cgroup_id();
     __u32 key = 0;
-    __u64 *argtype = bpf_map_lookup_elem(&argtypes, &key);
+    __u8 *argtype = bpf_map_lookup_elem(&argtypes, &key);
     if (!argtype) {
         bpf_printk("lsm: no argtype configured, skipping");
         return 0;
@@ -122,8 +122,8 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     if (!val) {
         return 0;
     }
- 
-    bpf_printk("lsm: handler triggered: cgid=%llu argtype=%llu", cgid, *argtype);
+
+    bpf_printk("lsm: handler triggered: cgid=%llu argtype=%u", cgid, *argtype);
 
     switch (*argtype) {
         case ARGTYPE_FILE_OPEN: {
@@ -133,7 +133,7 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
             return handle_exec(args, &cgid);
         }
         default: {
-            bpf_printk("lsm: unknown argtype=%llu", *argtype);
+            bpf_printk("lsm: unknown argtype=%u", *argtype);
         }
     };
 

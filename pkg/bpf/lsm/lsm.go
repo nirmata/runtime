@@ -14,8 +14,8 @@ const maxPathLen = 128
 // argtype values written into the `argtypes` map, read back out by the BPF program
 // in lsm.bpf.c (ARGTYPE_FILE_OPEN / ARGTYPE_EXEC_CHECK). must stay in sync with those.
 const (
-	argTypeFileOpen  = uint64(1)
-	argTypeExecCheck = uint64(2)
+	argTypeFileOpen  = uint8(1)
+	argTypeExecCheck = uint8(2)
 )
 
 //go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
