@@ -11,8 +11,10 @@ import (
 )
 
 func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
+	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID)
 	// rp contains no files to ban opening. do nothing with it
 	if len(compiledRp.Open.Allow) == 0 && len(compiledRp.Open.Deny) == 0 {
+		l.logger.V(2).Info("runtime policy has no open files to enforce, skipping", "uid", compiledRp.UID)
 		return nil
 	}
 	// create the lsm enforcer
@@ -27,7 +29,9 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	// set default deny if the compiled policy had the * in its list of files
-	if err := enf.SetDefaultDeny(slices.Contains(compiledRp.Open.Deny, "*")); err != nil {
+	defaultDeny := slices.Contains(compiledRp.Open.Deny, "*")
+	l.logger.V(2).Info("setting default deny", "uid", compiledRp.UID, "defaultDeny", defaultDeny)
+	if err := enf.SetDefaultDeny(defaultDeny); err != nil {
 		return err
 	}
 
@@ -55,6 +59,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 
 	}
 	if len(targetCgids) > 0 {
+		l.logger.V(2).Info("adding matched cgids to new attachment", "uid", compiledRp.UID, "cgids", targetCgids)
 		err := enf.AddCgids(targetCgids)
 		if err != nil {
 			return err
@@ -64,6 +69,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 }
 
 func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
+	l.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID)
 	// a selector change, or a target change. just compute the diff on the target pods and on the banned files
 	la, ok := l.lsmAttachments[compiledRp.UID]
 	if !ok {
@@ -76,6 +82,9 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 	toAddDeny := utils.DiffSlice(la.files.Deny, compiledRp.Open.Deny)
 	toRemoveDeny := utils.DiffSlice(compiledRp.Open.Deny, la.files.Deny)
+
+	l.logger.V(2).Info("computed file diff for runtime policy update", "uid", compiledRp.UID,
+		"toAddAllow", toAddAllow, "toRemoveAllow", toRemoveAllow, "toAddDeny", toAddDeny, "toRemoveDeny", toRemoveDeny)
 
 	if len(toAddAllow) > 0 || len(toAddDeny) > 0 {
 		err := la.enf.AddTargets(&compiler.AllowDenyPair{Allow: toAddAllow, Deny: toAddDeny})
@@ -90,7 +99,9 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		}
 	}
 
-	if err := la.enf.SetDefaultDeny(slices.Contains(compiledRp.Open.Deny, "*")); err != nil {
+	defaultDeny := slices.Contains(compiledRp.Open.Deny, "*")
+	l.logger.V(2).Info("setting default deny", "uid", compiledRp.UID, "defaultDeny", defaultDeny)
+	if err := la.enf.SetDefaultDeny(defaultDeny); err != nil {
 		return err
 	}
 
@@ -104,6 +115,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 				continue
 			}
 			// we aren't attached
+			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", compiledRp.UID, "podUid", podUid, "cgids", pod.cgids)
 			err := la.enf.AddCgids(pod.cgids)
 			if err != nil {
 				l.logger.Error(err, "failed to add cgids for pod", "podUid", podUid)
@@ -114,6 +126,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			_, ok := la.attachedPods[podUid]
 			if ok {
 				// yes we did. remove its cgids from the enforcer before dropping the attachment
+				l.logger.V(2).Info("pod no longer matches runtime policy, removing cgids", "uid", compiledRp.UID, "podUid", podUid, "cgids", pod.cgids)
 				if err := la.enf.DeleteCgids(pod.cgids); err != nil {
 					l.logger.Error(err, "failed to remove cgids for pod", "podUid", podUid)
 				}
@@ -126,6 +139,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 }
 
 func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
+	l.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
 	// delete the pointer from the lsm map
 	// and delete it from any pods that may have it
 	delete(l.lsmAttachments, compiledRp.UID)

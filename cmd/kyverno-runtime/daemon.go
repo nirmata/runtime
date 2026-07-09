@@ -6,6 +6,7 @@ import (
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
@@ -31,6 +32,7 @@ import (
 )
 
 var grpcAddr string
+var logLevel int
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -40,10 +42,11 @@ var daemonCmd = &cobra.Command{
 
 func init() {
 	daemonCmd.Flags().StringVar(&grpcAddr, "grpc-bind-address", ":9090", "The address the gRPC server binds to.")
+	daemonCmd.Flags().IntVar(&logLevel, "log-level", 0, "Verbosity level for debug logs (higher is more verbose).")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
-	opts := zap.Options{Development: true}
+	opts := zap.Options{Development: true, Level: zapcore.Level(-logLevel)}
 
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)

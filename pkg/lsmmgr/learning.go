@@ -9,6 +9,7 @@ import (
 )
 
 func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.Duration) {
+	l.logger.V(2).Info("starting learning mode", "uid", uid, "matchLabels", matchLabels, "duration", dur)
 	selector := labels.SelectorFromSet(matchLabels)
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 
@@ -37,6 +38,7 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 		// this is the last workload profile that specified learning should be active
 		// for a pod, set the learning mode flag to false
 		<-ctx.Done()
+		l.logger.V(2).Info("learning mode window expired", "uid", uid)
 		workloadProfile, ok := l.wps[uid]
 		if !ok {
 			return
@@ -45,6 +47,7 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 		for podUid, pa := range workloadProfile.pods {
 			delete(pa.learningEnabled, uid)
 			if len(pa.learningEnabled) == 0 {
+				l.logger.V(2).Info("no more active learning windows for pod, disabling learning mode", "uid", uid, "podUid", podUid)
 				for _, la := range pa.attachedLsms {
 					if err := la.enf.SetLearningModeForCgids(pa.cgids, false); err != nil {
 						l.logger.Error(err, "failed to disable learning mode for pod", "podUid", podUid)
@@ -56,6 +59,7 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 }
 
 func (l *LsmManager) Stop(uid string) {
+	l.logger.V(2).Info("stopping learning mode", "uid", uid)
 	wp, ok := l.wps[uid]
 	if !ok {
 		return
@@ -64,6 +68,7 @@ func (l *LsmManager) Stop(uid string) {
 }
 
 func (l *LsmManager) Read(uid string) (map[string]uint32, error) {
+	l.logger.V(2).Info("reading learning mode results", "uid", uid)
 	ret := make(map[string]uint32)
 	wp, ok := l.wps[uid]
 	if !ok {

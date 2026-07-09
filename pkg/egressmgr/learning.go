@@ -10,6 +10,7 @@ import (
 )
 
 func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur time.Duration) {
+	e.logger.V(2).Info("starting learning mode", "uid", uid, "matchLabels", matchLabels, "duration", dur)
 	selector := labels.SelectorFromSet(matchLabels)
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 
@@ -39,14 +40,16 @@ func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur tim
 		// this is the last workload profile that specified learning should be active
 		// for a pod, set the learning mode flag to false
 		<-ctx.Done()
+		e.logger.V(2).Info("learning mode window expired", "uid", uid)
 		workloadProfile, ok := e.wps[uid]
 		if !ok {
 			return
 		}
 		delete(e.wps, uid)
-		for _, pa := range workloadProfile.pods {
+		for podUid, pa := range workloadProfile.pods {
 			delete(pa.learningEnabled, uid)
 			if len(pa.learningEnabled) == 0 {
+				e.logger.V(2).Info("no more active learning windows for pod, disabling learning mode", "uid", uid, "podUid", podUid)
 				pa.filter.SetFlagIdx(egressfilter.LEARNING_MODE, true)
 			}
 		}
@@ -54,6 +57,7 @@ func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur tim
 }
 
 func (e *EgressManager) Stop(uid string) {
+	e.logger.V(2).Info("stopping learning mode", "uid", uid)
 	wp, ok := e.wps[uid]
 	if !ok {
 		return
@@ -64,6 +68,7 @@ func (e *EgressManager) Stop(uid string) {
 }
 
 func (e *EgressManager) Read(uid string) (map[uint32]uint32, error) {
+	e.logger.V(2).Info("reading learning mode results", "uid", uid)
 	ret := make(map[uint32]uint32)
 	wp, ok := e.wps[uid]
 	if !ok {

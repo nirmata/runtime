@@ -11,11 +11,13 @@ import (
 )
 
 func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
+	e.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID)
 	e.rps[compiledRp.UID] = compiledRp
-	for _, pod := range e.pods {
+	for podUid, pod := range e.pods {
 		if !compiledRp.Selector.Matches(labels.Set(pod.labels)) {
 			continue
 		}
+		e.logger.V(2).Info("new runtime policy matches existing pod", "uid", compiledRp.UID, "podUid", podUid)
 		pod.filter.AddIps(compiledRp.IPs)
 		pod.attachedFilters[compiledRp.UID] = compiledRp
 
@@ -28,6 +30,7 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 }
 
 func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
+	e.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID)
 	currentRp, ok := e.rps[compiledRp.UID]
 	if !ok {
 		return fmt.Errorf("got an update for a non existing runtime policy uid")
@@ -60,7 +63,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	currentRp.Selector = compiledRp.Selector
 
 	e.rps[string(compiledRp.UID)] = compiledRp
-	for _, pod := range e.pods {
+	for podUid, pod := range e.pods {
 		rpMatches := compiledRp.Selector.Matches(labels.Set(pod.labels))
 		if _, attached := pod.attachedFilters[string(compiledRp.UID)]; attached {
 			// there is no diff and rp still matches, do nothing
@@ -70,6 +73,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			}
 
 			if !rpMatches {
+				e.logger.V(2).Info("runtime policy no longer matches pod, detaching", "uid", compiledRp.UID, "podUid", podUid)
 				// this rp doesn't match anymore. delete the old ips from this attachment's map
 				pod.filter.DeleteIps(oldIps)
 				delete(pod.attachedFilters, string(compiledRp.UID))
@@ -90,6 +94,8 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 			// rp matches and there is a diff. add the new ips, delete the old
 			// and update our tracking data structures
+			e.logger.V(2).Info("applying ip diff for updated runtime policy", "uid", compiledRp.UID, "podUid", podUid,
+				"toAddAllow", toAddAllow, "toRemoveAllow", toRemoveAllow, "toAddDeny", toAddDeny, "toRemoveDeny", toRemoveDeny)
 			pod.filter.AddIps(&compiler.AllowDenyPair{Allow: toAddAllow, Deny: toAddDeny})
 			pod.filter.DeleteIps(&compiler.AllowDenyPair{Allow: toRemoveAllow, Deny: toRemoveDeny})
 
@@ -110,6 +116,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 		// this rp wasn't previously attached to that pod. add its ips if it matches
 		if rpMatches {
+			e.logger.V(2).Info("updated runtime policy newly matches pod", "uid", compiledRp.UID, "podUid", podUid)
 			pod.filter.AddIps(compiledRp.IPs)
 			pod.attachedFilters[string(compiledRp.UID)] = currentRp // add that runtime policy's pointer to the attachedFilters map of that pod
 
@@ -123,9 +130,11 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 }
 
 func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
+	e.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
 	delete(e.rps, string(compiledRp.UID))
-	for _, pod := range e.pods {
+	for podUid, pod := range e.pods {
 		if att, ok := pod.attachedFilters[string(compiledRp.UID)]; ok {
+			e.logger.V(2).Info("removing deleted runtime policy from pod", "uid", compiledRp.UID, "podUid", podUid)
 			pod.filter.DeleteIps(att.IPs)
 			delete(pod.attachedFilters, string(compiledRp.UID))
 

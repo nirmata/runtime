@@ -13,6 +13,7 @@ import (
 )
 
 func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+	e.logger.V(2).Info("pod created", "podUid", pod.UID)
 	filter, err := egressfilter.New(&e.logger)
 	if err != nil {
 		return err
@@ -39,6 +40,7 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		if !filter.Selector.Matches(labels.Set(pod.Labels)) {
 			continue
 		}
+		e.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpName)
 		ips.Allow = append(ips.Allow, filter.IPs.Allow...)
 		ips.Deny = append(ips.Deny, filter.IPs.Deny...)
 
@@ -65,6 +67,7 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 }
 
 func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+	e.logger.V(2).Info("pod updated", "podUid", pod.UID)
 	pa, ok := e.pods[string(pod.UID)]
 	if !ok {
 		return fmt.Errorf("got a pod event for a pod that doesn't exist")
@@ -89,6 +92,7 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 }
 
 func (e *EgressManager) podDeleted(podUid string) error {
+	e.logger.V(2).Info("pod deleted", "podUid", podUid)
 	// a pod being deleted means that its cgroup id is deleted. so any attached links
 	// will automatically die
 	delete(e.pods, podUid)
