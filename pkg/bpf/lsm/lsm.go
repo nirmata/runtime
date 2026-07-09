@@ -182,10 +182,12 @@ func (l *LsmEnforcer) SetLearningModeForCgids(cgids []uint64, val bool) error {
 				l.logger.Error(err, "failed to create inner open events map", "cgid", cgid)
 				continue
 			}
+
 			if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Put(&cgid, uint32(innerMap.FD())); err != nil {
 				l.logger.Error(err, "failed to enable learning mode for cgid", "cgid", cgid)
-				innerMap.Close()
 			}
+
+			innerMap.Close()
 			continue
 		}
 		// val was false, delete the entry
