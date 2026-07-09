@@ -166,13 +166,6 @@ spec:
                 description: EvaluationInterval specifies how frequently the policy
                   is re-evaluated.
                 type: string
-              mode:
-                description: 'Mode controls how policy violations are handled: monitor
-                  or enforce.'
-                enum:
-                - monitor
-                - enforce
-                type: string
               podSelector:
                 description: PodSelector identifies the pods this policy applies to.
                 properties:

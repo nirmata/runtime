@@ -14,11 +14,6 @@ type RuntimePolicySpec struct {
 	// +optional
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
-	// Mode controls how policy violations are handled: monitor or enforce.
-	// +kubebuilder:validation:Enum=monitor;enforce
-	// +optional
-	Mode RuntimePolicyMode `json:"mode,omitempty"`
-
 	// EvaluationInterval specifies how frequently the policy is re-evaluated.
 	// +optional
 	EvaluationInterval *metav1.Duration `json:"evaluationInterval,omitempty"`
