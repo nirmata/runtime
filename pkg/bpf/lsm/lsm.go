@@ -48,11 +48,11 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 
 	switch target {
 	case "file_open":
-		if err := objs.lsmGenericMaps.Argtypes.Put(&zero, argTypeFileOpen); err != nil {
+		if err := objs.Argtypes.Put(&zero, argTypeFileOpen); err != nil {
 			return nil, err
 		}
 	case "bprm_check_security":
-		if err := objs.lsmGenericMaps.Argtypes.Put(&zero, argTypeExecCheck); err != nil {
+		if err := objs.Argtypes.Put(&zero, argTypeExecCheck); err != nil {
 			return nil, err
 		}
 	}
@@ -79,7 +79,7 @@ func (l *LsmEnforcer) Attach() (link.Link, error) {
 
 func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
 	for _, cgid := range cgids {
-		if err := l.bpfObjs.lsmGenericMaps.Cgids.Put(&cgid, uint8(0)); err != nil {
+		if err := l.bpfObjs.Cgids.Put(&cgid, uint8(0)); err != nil {
 			l.logger.Error(err, "failed to add cgid to target map")
 		}
 	}
@@ -89,7 +89,7 @@ func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
 
 func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
 	for _, cgid := range cgids {
-		if err := l.bpfObjs.lsmGenericMaps.Cgids.Delete(&cgid); err != nil {
+		if err := l.bpfObjs.Cgids.Delete(&cgid); err != nil {
 			l.logger.Error(err, "failed to remove cgid from target map")
 		}
 	}
@@ -105,7 +105,7 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.lsmGenericMaps.Banned.Put(&key, uint8(0)); err != nil {
+		if err := l.bpfObjs.Banned.Put(&key, uint8(0)); err != nil {
 			return err
 		}
 	}
@@ -117,7 +117,7 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.lsmGenericMaps.Allowed.Put(&key, uint8(0)); err != nil {
+		if err := l.bpfObjs.Allowed.Put(&key, uint8(0)); err != nil {
 			return err
 		}
 	}
@@ -133,7 +133,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.lsmGenericMaps.Banned.Delete(&key); err != nil {
+		if err := l.bpfObjs.Banned.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from banned map")
 		}
 	}
@@ -146,7 +146,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.lsmGenericMaps.Allowed.Delete(&key); err != nil {
+		if err := l.bpfObjs.Allowed.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from allowed map")
 		}
 	}
@@ -156,7 +156,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
 	k := uint32(0)
 	if val {
-		err := l.bpfObjs.lsmGenericMaps.DefaultDeny.Put(&k, uint8(0))
+		err := l.bpfObjs.DefaultDeny.Put(&k, uint8(0))
 		if err != nil {
 			return err
 		}
@@ -165,7 +165,7 @@ func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
 
 	// key deletions may error if the key doesn't exist. but thats fine
 	// we don't care about that
-	l.bpfObjs.lsmGenericMaps.DefaultDeny.Delete(&k)
+	_ = l.bpfObjs.DefaultDeny.Delete(&k)
 	return nil
 }
 
@@ -184,15 +184,17 @@ func (l *LsmEnforcer) SetLearningModeForCgids(cgids []uint64, val bool) error {
 				continue
 			}
 
-			if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Put(&cgid, uint32(innerMap.FD())); err != nil {
+			if err := l.bpfObjs.OpenEvents.Put(&cgid, uint32(innerMap.FD())); err != nil {
 				l.logger.Error(err, "failed to enable learning mode for cgid", "cgid", cgid)
 			}
 
-			innerMap.Close()
+			if err := innerMap.Close(); err != nil {
+				l.logger.Error(err, "failed to close inner open events map", "cgid", cgid)
+			}
 			continue
 		}
 		// val was false, delete the entry
-		if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Delete(&cgid); err != nil {
+		if err := l.bpfObjs.OpenEvents.Delete(&cgid); err != nil {
 			l.logger.Error(err, "failed to disable learning mode for cgid", "cgid", cgid)
 		}
 	}
@@ -204,7 +206,7 @@ func (l *LsmEnforcer) SetLearningModeForCgids(cgids []uint64, val bool) error {
 func (l *LsmEnforcer) GetLearningModeForCgids(retMap map[string]uint32, cgids []uint64) error {
 	for _, cgid := range cgids {
 		var mapID ebpf.MapID
-		if err := l.bpfObjs.lsmGenericMaps.OpenEvents.Lookup(&cgid, &mapID); err != nil {
+		if err := l.bpfObjs.OpenEvents.Lookup(&cgid, &mapID); err != nil {
 			return fmt.Errorf("failed to lookup inner map id for cgid %d", cgid)
 		}
 
@@ -223,7 +225,9 @@ func (l *LsmEnforcer) GetLearningModeForCgids(retMap map[string]uint32, cgids []
 			retMap[k] += v
 		}
 		if err := iter.Err(); err != nil {
-			openCountMap.Close()
+			// we're already returning an error from the iteration itself; a failure
+			// to close here isn't worth reporting on top of that
+			_ = openCountMap.Close()
 			return fmt.Errorf("failed to iterate open count map for cgid %d: %w", cgid, err)
 		}
 

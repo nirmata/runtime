@@ -57,11 +57,13 @@ func (e *EgressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult
 	defer e.mu.Unlock()
 	switch rpEventType {
 	case events.EventTypeCreate:
-		return e.rpCreated(compiledRb)
+		e.rpCreated(compiledRb)
+		return nil
 	case events.EventTypeUpdate:
 		return e.rpUpdated(compiledRb)
 	case events.EventTypeDelete:
-		return e.rpDeleted(compiledRb)
+		e.rpDeleted(compiledRb)
+		return nil
 	default:
 		return fmt.Errorf("invalid runtime behavior event type")
 	}
@@ -76,7 +78,8 @@ func (e *EgressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 	case events.EventTypeUpdate:
 		return e.podUpdated(pod, cgInfos)
 	case events.EventTypeDelete:
-		return e.podDeleted(string(pod.UID))
+		e.podDeleted(string(pod.UID))
+		return nil
 	default:
 		return fmt.Errorf("invalid pod event type")
 	}

@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
+func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 	e.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID)
 	e.rps[compiledRp.UID] = compiledRp
 	for podUid, pod := range e.pods {
@@ -24,10 +24,9 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 
 		if slices.Contains(compiledRp.IPs.Deny, "*") {
 			pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
-			pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
+			pod.defaultDeny[compiledRp.UID] = struct{}{}
 		}
 	}
-	return nil
 }
 
 func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
@@ -65,10 +64,10 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	currentRp.IPs = compiledRp.IPs
 	currentRp.Selector = compiledRp.Selector
 
-	e.rps[string(compiledRp.UID)] = compiledRp
+	e.rps[compiledRp.UID] = compiledRp
 	for podUid, pod := range e.pods {
 		rpMatches := compiledRp.Selector.Matches(labels.Set(pod.labels))
-		if _, attached := pod.attachedFilters[string(compiledRp.UID)]; attached {
+		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
 			// there is no diff and rp still matches, do nothing
 			if len(toRemoveAllow) == 0 && len(toAddAllow) == 0 &&
 				len(toAddDeny) == 0 && len(toRemoveDeny) == 0 && rpMatches {
@@ -79,7 +78,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 				e.logger.V(2).Info("runtime policy no longer matches pod, detaching", "uid", compiledRp.UID, "podUid", podUid)
 				// this rp doesn't match anymore. delete the old ips from this attachment's map
 				pod.filter.DeleteIps(oldIps)
-				delete(pod.attachedFilters, string(compiledRp.UID))
+				delete(pod.attachedFilters, compiledRp.UID)
 
 				// nothing further to do if the policy didn't previously have a default deny on this pod
 				if !hadDefaultDeny {
@@ -87,7 +86,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 				}
 
 				// delete the policy from the default deny map
-				delete(pod.defaultDeny, string(compiledRp.UID))
+				delete(pod.defaultDeny, compiledRp.UID)
 				// the map is now empty, unset default deny
 				if len(pod.defaultDeny) == 0 {
 					pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
@@ -105,10 +104,10 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			// both those operations are idempotent so its fine to do them even if they were previously done
 			if hasDefaultDeny {
 				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
-				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
+				pod.defaultDeny[compiledRp.UID] = struct{}{}
 			} else if defaultDenyRemoved {
 				// this policy no longer enforces a default deny on this pod
-				delete(pod.defaultDeny, string(compiledRp.UID))
+				delete(pod.defaultDeny, compiledRp.UID)
 				// no other policy is enforcing default deny on this pod anymore, unset it
 				if len(pod.defaultDeny) == 0 {
 					pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
@@ -121,35 +120,34 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		if rpMatches {
 			e.logger.V(2).Info("updated runtime policy newly matches pod", "uid", compiledRp.UID, "podUid", podUid)
 			pod.filter.AddIps(compiledRp.IPs)
-			pod.attachedFilters[string(compiledRp.UID)] = currentRp // add that runtime policy's pointer to the attachedFilters map of that pod
+			pod.attachedFilters[compiledRp.UID] = currentRp // add that runtime policy's pointer to the attachedFilters map of that pod
 
 			if currentHasDefaultDeny {
 				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
-				pod.defaultDeny[string(compiledRp.UID)] = struct{}{}
+				pod.defaultDeny[compiledRp.UID] = struct{}{}
 			}
 		}
 	}
 	return nil
 }
 
-func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
+func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	e.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
-	delete(e.rps, string(compiledRp.UID))
+	delete(e.rps, compiledRp.UID)
 	for podUid, pod := range e.pods {
-		if att, ok := pod.attachedFilters[string(compiledRp.UID)]; ok {
+		if att, ok := pod.attachedFilters[compiledRp.UID]; ok {
 			e.logger.V(2).Info("removing deleted runtime policy from pod", "uid", compiledRp.UID, "podUid", podUid)
 			pod.filter.DeleteIps(att.IPs)
-			delete(pod.attachedFilters, string(compiledRp.UID))
+			delete(pod.attachedFilters, compiledRp.UID)
 
 			// attempt to delete that runtime policy's id from the default deny specifiers.
 			// if it didn't exist the length of the map won't change and hence won't reach zero.
 			// if it was already zero, then no harm in setting the default deny to false since its
 			// an idempotent process
-			delete(pod.defaultDeny, string(compiledRp.UID))
+			delete(pod.defaultDeny, compiledRp.UID)
 			if len(pod.defaultDeny) == 0 {
 				pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
 			}
 		}
 	}
-	return nil
 }

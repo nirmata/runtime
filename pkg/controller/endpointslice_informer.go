@@ -26,7 +26,7 @@ func NewDsEndpointResolver(mgr ctrl.Manager, svcNs, svcName string) (*DsEndpoint
 		daemonsetSvcNs:   svcNs,
 	}
 
-	_, err = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			es := obj.(*discoveryv1.EndpointSlice)
 			dsr.handleEndpointSliceEvent(es)
@@ -53,7 +53,9 @@ func NewDsEndpointResolver(mgr ctrl.Manager, svcNs, svcName string) (*DsEndpoint
 
 			logger.Info("deleting the endpoint slice of the daemon ds will cause degredation in learning mode findings. please recreate it")
 		},
-	})
+	}); err != nil {
+		return nil, err
+	}
 	return dsr, nil
 }
 

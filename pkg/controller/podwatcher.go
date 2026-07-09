@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -68,7 +69,9 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 	podInformer := factory.Core().V1().Pods().Informer()
 	podCgInfos := make(map[string][]*containers.ContainerCgroupInfo)
 
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	// AddEventHandler only errors if the informer has already stopped, which
+	// cannot happen here since it hasn't been started yet.
+	_, _ = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
@@ -177,13 +180,25 @@ func (w *podWatcher) handleCreate(ev events.Event[*corev1.Pod]) error {
 		w.podCgInfos[string(pod.UID)] = cgInfos
 	}
 
+	errChan := make(chan error, len(w.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(w.eventHandlers))
 	for _, e := range w.eventHandlers {
-		go func() { defer wg.Done(); e.PodEvent(*pod, cgInfos, events.EventTypeCreate) }()
+		go func() {
+			defer wg.Done()
+			if err := e.PodEvent(*pod, cgInfos, events.EventTypeCreate); err != nil {
+				errChan <- err
+			}
+		}()
 	}
 	wg.Wait()
-	return nil
+	close(errChan)
+
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (w *podWatcher) handleUpdate(ev events.Event[*corev1.Pod]) error {
@@ -197,14 +212,25 @@ func (w *podWatcher) handleUpdate(ev events.Event[*corev1.Pod]) error {
 		w.podCgInfos[string(pod.UID)] = cgInfos
 	}
 
+	errChan := make(chan error, len(w.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(w.eventHandlers))
 	for _, e := range w.eventHandlers {
-		go func() { defer wg.Done(); e.PodEvent(*pod, cgInfos, events.EventTypeUpdate) }()
+		go func() {
+			defer wg.Done()
+			if err := e.PodEvent(*pod, cgInfos, events.EventTypeUpdate); err != nil {
+				errChan <- err
+			}
+		}()
 	}
-
 	wg.Wait()
-	return nil
+	close(errChan)
+
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (w *podWatcher) handleDelete(ev events.Event[*corev1.Pod]) error {
@@ -212,11 +238,23 @@ func (w *podWatcher) handleDelete(ev events.Event[*corev1.Pod]) error {
 	cgInfos := w.podCgInfos[string(pod.UID)]
 	delete(w.podCgInfos, string(pod.UID))
 
+	errChan := make(chan error, len(w.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(w.eventHandlers))
 	for _, e := range w.eventHandlers {
-		go func() { defer wg.Done(); e.PodEvent(*pod, cgInfos, events.EventTypeDelete) }()
+		go func() {
+			defer wg.Done()
+			if err := e.PodEvent(*pod, cgInfos, events.EventTypeDelete); err != nil {
+				errChan <- err
+			}
+		}()
 	}
 	wg.Wait()
-	return nil
+	close(errChan)
+
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }

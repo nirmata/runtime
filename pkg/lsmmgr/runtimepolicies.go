@@ -139,7 +139,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
+func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	l.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
 	// delete the pointer from the lsm map
 	// and delete it from any pods that may have it
@@ -147,6 +147,4 @@ func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) error {
 	for _, pod := range l.pods {
 		delete(pod.attachedLsms, compiledRp.UID)
 	}
-
-	return nil
 }

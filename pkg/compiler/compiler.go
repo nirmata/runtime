@@ -21,7 +21,6 @@ type CompiledRuntimePolicy struct {
 	UID            string
 
 	variables map[string]cel.Program
-	prog      cel.Program
 	selector  *metav1.LabelSelector
 
 	// these are the hardcoded values in the api spec
@@ -31,10 +30,9 @@ type CompiledRuntimePolicy struct {
 }
 
 type compiledBehavior struct {
-	defaultDeny bool
-	denyProg    cel.Program
-	allowProg   cel.Program
-	pair        *AllowDenyPair
+	denyProg  cel.Program
+	allowProg cel.Program
+	pair      *AllowDenyPair
 }
 
 type compiler struct {
@@ -52,6 +50,9 @@ func NewCompiler() (Compiler, error) {
 		cel.Variable(variablesKey, VariablesType),
 		cel.CustomTypeProvider(provider),
 	)
+	if err != nil {
+		return nil, err
+	}
 	return &compiler{env: env}, nil
 }
 
@@ -124,9 +125,7 @@ func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, err
 
 	if b.Deny != nil {
 		// go over the hardcoded values and add them to the pair
-		for _, v := range b.Deny.Values {
-			cp.pair.Deny = append(cp.pair.Deny, v)
-		}
+		cp.pair.Deny = append(cp.pair.Deny, b.Deny.Values...)
 		if b.Deny.Expression != "" {
 			ast, compileErr := c.env.Compile(b.Deny.Expression)
 			if compileErr != nil {
@@ -145,9 +144,7 @@ func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, err
 		}
 	}
 	if b.Allow != nil {
-		for _, v := range b.Allow.Values {
-			cp.pair.Allow = append(cp.pair.Allow, v)
-		}
+		cp.pair.Allow = append(cp.pair.Allow, b.Allow.Values...)
 		if b.Allow.Expression != "" {
 			ast, compileErr := c.env.Compile(b.Allow.Expression)
 			if compileErr != nil {

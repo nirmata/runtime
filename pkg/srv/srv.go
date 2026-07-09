@@ -34,7 +34,8 @@ func NewLearningModeSrv(ef func() []string, logger logr.Logger) *learningModeSrv
 
 // this thing should return a policy or create one ?
 func (lm *learningModeSrv) ServeHttp(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	// closing a request body error is never actionable here
+	defer func() { _ = r.Body.Close() }()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeErrResp(lm.logger, w, err)

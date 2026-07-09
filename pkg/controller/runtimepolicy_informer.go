@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -83,7 +84,9 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 		log:           ctrl.Log.WithName("runtimepolicy"),
 	}
 
-	rpInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	// AddEventHandler only errors if the informer has already stopped, which
+	// cannot happen here since it hasn't been started yet.
+	_, _ = rpInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			rp, ok := obj.(*v1alpha1.RuntimePolicy)
 			if !ok {
@@ -193,15 +196,27 @@ func (r *RuntimePolicyMgr) handleCreate(ctx context.Context, ev events.Event[*v1
 		return err
 	}
 
+	errChan := make(chan error, len(r.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(r.eventHandlers))
 
 	for _, handler := range r.eventHandlers {
-		go func() { defer wg.Done(); handler.RuntimePolicyEvent(evalRes, events.EventTypeCreate) }()
+		go func() {
+			defer wg.Done()
+			if err := handler.RuntimePolicyEvent(evalRes, events.EventTypeCreate); err != nil {
+				errChan <- err
+			}
+		}()
 	}
 
 	wg.Wait()
-	return nil
+	close(errChan)
+
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1alpha1.RuntimePolicy]) error {
@@ -233,15 +248,27 @@ func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1
 		return err
 	}
 
+	errChan := make(chan error, len(r.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(r.eventHandlers))
 
 	for _, handler := range r.eventHandlers {
-		go func() { defer wg.Done(); handler.RuntimePolicyEvent(evalRes, events.EventTypeUpdate) }()
+		go func() {
+			defer wg.Done()
+			if err := handler.RuntimePolicyEvent(evalRes, events.EventTypeUpdate); err != nil {
+				errChan <- err
+			}
+		}()
 	}
 
 	wg.Wait()
-	return nil
+	close(errChan)
+
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (r *RuntimePolicyMgr) handleDelete(ev events.Event[*v1alpha1.RuntimePolicy]) error {
@@ -252,6 +279,7 @@ func (r *RuntimePolicyMgr) handleDelete(ev events.Event[*v1alpha1.RuntimePolicy]
 		rpwatch.cancel()
 	}
 
+	errChan := make(chan error, len(r.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(r.eventHandlers))
 
@@ -261,12 +289,20 @@ func (r *RuntimePolicyMgr) handleDelete(ev events.Event[*v1alpha1.RuntimePolicy]
 
 			// deletion events should not depend on runtime behavior data. given the UID, mark it for removal from any
 			// internal data structures
-			handler.RuntimePolicyEvent(&compiler.EvaluationResult{UID: string(rp.UID)}, events.EventTypeDelete)
+			if err := handler.RuntimePolicyEvent(&compiler.EvaluationResult{UID: string(rp.UID)}, events.EventTypeDelete); err != nil {
+				errChan <- err
+			}
 		}()
 	}
 
 	wg.Wait()
-	return nil
+	close(errChan)
+
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // if there was an object variable, this function would need to be pod aware
@@ -293,7 +329,12 @@ func (r *RuntimePolicyMgr) evaluateForInterval(ctx context.Context, interval tim
 
 			// and the event handlers would need to be able to receive an event for the combined evaluation result of a pod and a policy
 			for _, handler := range r.eventHandlers {
-				go func() { defer wg.Done(); handler.RuntimePolicyEvent(evalRes, events.EventTypeUpdate) }()
+				go func() {
+					defer wg.Done()
+					if err := handler.RuntimePolicyEvent(evalRes, events.EventTypeUpdate); err != nil {
+						r.log.Error(err, "interval re-evaluation handler failed", "policy", rpUid)
+					}
+				}()
 			}
 
 			wg.Wait()

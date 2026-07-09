@@ -93,7 +93,7 @@ func (e *EgressManager) Read(uid string) (map[uint32]uint32, error) {
 			return nil, err
 		}
 		for learnedIp, count := range learnedFromPod {
-			ret[learnedIp] += uint32(count)
+			ret[learnedIp] += count
 		}
 	}
 

@@ -19,9 +19,8 @@ const (
 )
 
 type EgressFilter struct {
-	logger              *logr.Logger
-	bpfObjs             *egressBlockObjects
-	learningModeEnabled bool
+	logger  *logr.Logger
+	bpfObjs *egressBlockObjects
 }
 
 func New(l *logr.Logger) (*EgressFilter, error) {
@@ -40,7 +39,7 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 	// initialize flag values with zeros
 	var zeroKey uint32
 	var zeroVal uint8
-	if err := objs.egressBlockMaps.Flags.Put(&zeroKey, &zeroVal); err != nil {
+	if err := objs.Flags.Put(&zeroKey, &zeroVal); err != nil {
 		return nil, err
 	}
 
@@ -112,7 +111,7 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 	var key uint32
 	var currentval uint8
 
-	err := e.bpfObjs.egressBlockMaps.Flags.Lookup(&key, &currentval)
+	err := e.bpfObjs.Flags.Lookup(&key, &currentval)
 	if err != nil {
 		panic("failed to read the flags map. corrupt state")
 	}
@@ -123,7 +122,7 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 		currentval &^= 1 << idx
 	}
 
-	if err := e.bpfObjs.egressBlockMaps.Flags.Put(&key, &currentval); err != nil {
+	if err := e.bpfObjs.Flags.Put(&key, &currentval); err != nil {
 		e.logger.Error(err, "failed to write flags map. corrupt state")
 	}
 }
@@ -151,7 +150,7 @@ func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
 	link, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgPath,
 		Attach:  ebpf.AttachCGroupInetEgress,
-		Program: e.bpfObjs.egressBlockPrograms.CgroupEgress,
+		Program: e.bpfObjs.CgroupEgress,
 	})
 	if err != nil {
 		return nil, err

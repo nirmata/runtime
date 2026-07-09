@@ -92,10 +92,9 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	return nil
 }
 
-func (e *EgressManager) podDeleted(podUid string) error {
+func (e *EgressManager) podDeleted(podUid string) {
 	e.logger.V(2).Info("pod deleted", "podUid", podUid)
 	// a pod being deleted means that its cgroup id is deleted. so any attached links
 	// will automatically die
 	delete(e.pods, podUid)
-	return nil
 }

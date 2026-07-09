@@ -66,7 +66,7 @@ func ExtractCgids(cgInfos []*ContainerCgroupInfo) []uint64 {
 }
 
 func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*ContainerCgroupInfo, error) {
-	cg, err := detectCgroup()
+	cg, err := cgroupMount, cgroupErr
 	if err != nil {
 		return nil, err
 	}

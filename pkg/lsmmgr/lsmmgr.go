@@ -66,7 +66,7 @@ func (l *LsmManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, e
 	case events.EventTypeUpdate:
 		return l.rpUpdated(compiledRb)
 	case events.EventTypeDelete:
-		return l.rpDeleted(compiledRb)
+		l.rpDeleted(compiledRb)
 	}
 	return nil
 }
