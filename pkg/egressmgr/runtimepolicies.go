@@ -42,7 +42,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		Allow: append([]string{}, currentRp.IPs.Allow...),
 		Deny:  append([]string{}, currentRp.IPs.Deny...),
 	}
-	// whether the policy already enforced a default deny on its attachments before this update
+	// there was a "*" in oldIps
 	hadDefaultDeny := slices.Contains(oldIps.Deny, "*")
 
 	toAddAllow := utils.DiffSlice(currentRp.IPs.Allow, compiledRp.IPs.Allow)
@@ -51,12 +51,14 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	toAddDeny := utils.DiffSlice(currentRp.IPs.Deny, compiledRp.IPs.Deny)
 	toRemoveDeny := utils.DiffSlice(compiledRp.IPs.Deny, currentRp.IPs.Deny)
 
-	// has default deny wasn't there, but now is
+	// the incoming policy update contains a deny "*"
 	hasDefaultDeny := slices.Contains(toAddDeny, "*")
 	// had default deny before, but doesn't anymore
 	defaultDenyRemoved := slices.Contains(toRemoveDeny, "*")
-	// whether the policy's current (post-update) deny list enforces a default deny at all,
-	// used for pods newly matching this policy that have no prior attachment state
+
+	// the incoming policy has a default deny, regardless of whether or no
+	// the old one did. we need this for newly matched pods in the policy
+	// selector change case
 	currentHasDefaultDeny := slices.Contains(compiledRp.IPs.Deny, "*")
 
 	// update the current runtime behavior's information to point to the new compiled behavior data
