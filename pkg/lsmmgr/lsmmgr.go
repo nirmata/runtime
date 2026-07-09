@@ -2,6 +2,7 @@ package lsmmgr
 
 import (
 	"context"
+	"sync"
 
 	"github.com/go-logr/logr"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
@@ -14,6 +15,10 @@ import (
 
 type LsmManager struct {
 	logger logr.Logger
+
+	// while each informer is serial, both the pod and the policy informers run in parallel.
+	// we need to guard against them both modifying the internal state concurrently
+	mu sync.Mutex
 
 	// we are fine with storing pod labels in multiple places which means more memory
 	// usage. but the alternative is a centralized dependency that you have to consult
@@ -52,6 +57,8 @@ func NewLsmManager(logger logr.Logger) *LsmManager {
 }
 
 func (l *LsmManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, eventType string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	switch eventType {
 	case events.EventTypeCreate:
 		return l.rpCreated(compiledRb)
@@ -64,6 +71,8 @@ func (l *LsmManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, e
 }
 
 func (l *LsmManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, eventType string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	switch eventType {
 	case events.EventTypeCreate:
 		return l.podCreated(pod, cgInfos)

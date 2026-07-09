@@ -13,6 +13,9 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 	selector := labels.SelectorFromSet(matchLabels)
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 
+	// this function is called from the grpc server, which may clash with the informers
+	l.mu.Lock()
+
 	wp := &workloadProfile{
 		pods:   make(map[string]*podRepresentation),
 		cancel: cancel,
@@ -32,6 +35,8 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 			}
 		}
 	}
+	l.mu.Unlock()
+
 	go func() {
 		// when the timeout expires or when someone calls Stop, delete this workload
 		// profile from the tracking data structures (pod maps and the wp map) and if
@@ -39,6 +44,13 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 		// for a pod, set the learning mode flag to false
 		<-ctx.Done()
 		l.logger.V(2).Info("learning mode window expired", "uid", uid)
+
+		// this goroutine fires an arbitrary amount of time after Start returns, so it
+		// races against PodEvent/RuntimePolicyEvent and any other Start/Stop/Read call
+		// just as much as the rest of the manager does. lock around its own mutation.
+		l.mu.Lock()
+		defer l.mu.Unlock()
+
 		workloadProfile, ok := l.wps[uid]
 		if !ok {
 			return
@@ -60,6 +72,8 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 
 func (l *LsmManager) Stop(uid string) {
 	l.logger.V(2).Info("stopping learning mode", "uid", uid)
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	wp, ok := l.wps[uid]
 	if !ok {
 		return
@@ -69,6 +83,8 @@ func (l *LsmManager) Stop(uid string) {
 
 func (l *LsmManager) Read(uid string) (map[string]uint32, error) {
 	l.logger.V(2).Info("reading learning mode results", "uid", uid)
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	ret := make(map[string]uint32)
 	wp, ok := l.wps[uid]
 	if !ok {

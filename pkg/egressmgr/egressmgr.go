@@ -3,6 +3,7 @@ package egressmgr
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
@@ -16,9 +17,14 @@ import (
 
 type EgressManager struct {
 	logger logr.Logger
-	pods   map[string]*podAttachment
-	rps    map[string]*compiler.EvaluationResult
-	wps    map[string]*workloadProfile
+
+	// while each informer is serial, both the pod and the policy informers run in parallel.
+	// we need to guard against them both modifying the internal state concurrently
+	mu sync.Mutex
+
+	pods map[string]*podAttachment
+	rps  map[string]*compiler.EvaluationResult
+	wps  map[string]*workloadProfile
 }
 
 type workloadProfile struct {
@@ -47,6 +53,8 @@ func NewEgressManager(logger logr.Logger) *EgressManager {
 }
 
 func (e *EgressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, rpEventType string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	switch rpEventType {
 	case events.EventTypeCreate:
 		return e.rpCreated(compiledRb)
@@ -60,6 +68,8 @@ func (e *EgressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult
 }
 
 func (e *EgressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	switch podEventType {
 	case events.EventTypeCreate:
 		return e.podCreated(pod, cgInfos)

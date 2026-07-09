@@ -14,6 +14,9 @@ func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur tim
 	selector := labels.SelectorFromSet(matchLabels)
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 
+	// this function is called from the grpc server, which may clash with the informers
+	e.mu.Lock()
+
 	wp := &workloadProfile{
 		pods:   make(map[string]*podAttachment),
 		cancel: cancel,
@@ -33,6 +36,7 @@ func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur tim
 			wp.pods[podUid] = p
 		}
 	}
+	e.mu.Unlock()
 
 	go func() {
 		// when the timeout expires or when someone calls Stop, delete this workload
@@ -41,6 +45,13 @@ func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur tim
 		// for a pod, set the learning mode flag to false
 		<-ctx.Done()
 		e.logger.V(2).Info("learning mode window expired", "uid", uid)
+
+		// this goroutine fires an arbitrary amount of time after Start returns, so it
+		// races against PodEvent/RuntimePolicyEvent and any other Start/Stop/Read call
+		// just as much as the rest of the manager does. lock around its own mutation.
+		e.mu.Lock()
+		defer e.mu.Unlock()
+
 		workloadProfile, ok := e.wps[uid]
 		if !ok {
 			return
@@ -58,6 +69,8 @@ func (e *EgressManager) Start(uid string, matchLabels map[string]string, dur tim
 
 func (e *EgressManager) Stop(uid string) {
 	e.logger.V(2).Info("stopping learning mode", "uid", uid)
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	wp, ok := e.wps[uid]
 	if !ok {
 		return
@@ -69,6 +82,8 @@ func (e *EgressManager) Stop(uid string) {
 
 func (e *EgressManager) Read(uid string) (map[uint32]uint32, error) {
 	e.logger.V(2).Info("reading learning mode results", "uid", uid)
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	ret := make(map[uint32]uint32)
 	wp, ok := e.wps[uid]
 	if !ok {
