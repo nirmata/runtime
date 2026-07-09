@@ -19,7 +19,7 @@ struct {
 } argtypes SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, __u8);
