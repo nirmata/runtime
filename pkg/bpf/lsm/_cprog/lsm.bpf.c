@@ -43,19 +43,15 @@ static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     if (dd) {
         __u8 *val = bpf_map_lookup_elem(&allowed, &key);
         if (val) {
-            bpf_printk("lsm: allowing open: path=%s", key);
             return 0;
         }
-        bpf_printk("lsm: denying open: path=%s", key);
         return -EPERM;
     }
 
     __u8 *val = bpf_map_lookup_elem(&banned, &key);
     if (val) {
-        bpf_printk("lsm: denying open: path=%s", key);
         return -EPERM;
     }
-    bpf_printk("lsm: allowing open: path=%s", key);
     return 0;
 }
 
@@ -66,7 +62,6 @@ static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     const char *fname = BPF_CORE_READ(bprm, filename);
     int len = bpf_probe_read_kernel_str(key, sizeof(key), fname);
     if (len <= 0) {
-        bpf_printk("lsm: exec: failed to read filename (len=%d)", len);
         return 0;
     }
 
@@ -89,19 +84,15 @@ static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     if (dd) {
         __u8 *val = bpf_map_lookup_elem(&allowed, &key);
         if (val) {
-            bpf_printk("lsm: allowing exec: path=%s", key);
             return 0;
         }
-        bpf_printk("lsm: denying exec: path=%s", key);
         return -EPERM;
     }
 
     __u8 *val = bpf_map_lookup_elem(&banned, &key);
     if (val) {
-        bpf_printk("lsm: denying exec: path=%s", key);
         return -EPERM;
     }
-    bpf_printk("lsm: allowing exec: path=%s", key);
     return 0;
 }
 
@@ -112,7 +103,6 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     __u32 key = 0;
     __u8 *argtype = bpf_map_lookup_elem(&argtypes, &key);
     if (!argtype) {
-        bpf_printk("lsm: no argtype configured, skipping");
         return 0;
     }
 
@@ -122,8 +112,6 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     if (!val) {
         return 0;
     }
-
-    bpf_printk("lsm: handler triggered: cgid=%llu argtype=%u", cgid, *argtype);
 
     switch (*argtype) {
         case ARGTYPE_FILE_OPEN: {
