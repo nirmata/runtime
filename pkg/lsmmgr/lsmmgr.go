@@ -12,10 +12,14 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// i will assume exec doesn't exist for now
 type LsmManager struct {
-	logger         logr.Logger
-	pods           map[string]*podRepresentation // pod label storage. todo: take this out of here
+	logger logr.Logger
+
+	// we are fine with storing pod labels in multiple places which means more memory
+	// usage. but the alternative is a centralized dependency that you have to consult
+	// everytime you wanna read the labels. the code already contains enough entanglement
+	// between data structures
+	pods           map[string]*podRepresentation
 	lsmAttachments map[string]*lsmAttachment
 	wps            map[string]*workloadProfile
 }
