@@ -11,6 +11,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
+var (
+	variablesKey = "variables"
+)
+
 type CompiledRuntimePolicy struct {
 	ReevalInterval *time.Duration
 	UID            string
@@ -44,7 +48,7 @@ func NewCompiler() (Compiler, error) {
 
 	provider := newVariablesProvider(base.CELTypeProvider())
 	env, err := base.Extend(
-		cel.Variable("variables", VariablesType),
+		cel.Variable(variablesKey, VariablesType),
 		cel.CustomTypeProvider(provider),
 	)
 	return &compiler{env: env}, nil
