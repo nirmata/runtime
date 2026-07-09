@@ -6,25 +6,28 @@ metadata:
   labels:
     {{- include "kyverno-runtime.labels" . | nindent 4 }}
 rules:
+# daemon: watches pods on its node and runtime policies
 - apiGroups: [""]
-  resources: ["pods", "namespaces"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["pods/portforward"]
-  verbs: ["create"]
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create", "patch", "update"]
-- apiGroups: ["runtime.kyverno.io"]
-  resources: ["runtimepolicies", "runtimepolicies/status"]
+  resources: ["pods"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["runtime.kyverno.io"]
-  resources: ["runtimebehaviors", "runtimebehaviors/status"]
-  verbs: ["get", "list", "watch", "create", "update", "patch"]
-- apiGroups: ["openreports.io"]
-  resources: ["reports"]
-  verbs: ["get", "list", "watch", "create", "update", "patch"]
+  resources: ["runtimepolicies"]
+  verbs: ["get", "list", "watch"]
+{{- if .Values.ctrl.enabled }}
+# ctrl: reconciles workload profiles and resolves daemon endpoints
+- apiGroups: ["runtime.kyverno.io"]
+  resources: ["workloadprofiles"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["runtime.kyverno.io"]
+  resources: ["workloadprofiles/status", "workloadprofiles/finalizers"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list", "watch"]
+{{- if .Values.ctrl.leaderElection }}
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
-  verbs: ["get", "list", "watch", "create", "update", "patch"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}
+{{- end }}
 {{- end }}

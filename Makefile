@@ -1,8 +1,44 @@
+MODULE := github.com/nirmata/kyverno-runtime
+
 KIND_CLUSTER_NAME ?= kyverno-runtime
 IMAGE_REPOSITORY ?= ghcr.io/nirmata/kyverno-runtime
 IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 HOST_PLATFORM ?= linux/$(shell go env GOARCH)
+
+generate-crds:
+	go run sigs.k8s.io/controller-tools/cmd/controller-gen crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
+
+generate-client:
+	go run k8s.io/code-generator/cmd/client-gen \
+		--clientset-name versioned \
+		--input-base "" \
+		--input $(MODULE)/api/v1alpha1 \
+		--output-dir ./pkg/client/clientset \
+		--output-pkg $(MODULE)/pkg/client/clientset \
+		--go-header-file hack/boilerplate.go.txt
+
+generate-listers:
+	go run k8s.io/code-generator/cmd/lister-gen \
+		--output-dir ./pkg/client/listers \
+		--output-pkg $(MODULE)/pkg/client/listers \
+		--go-header-file hack/boilerplate.go.txt \
+		$(MODULE)/api/v1alpha1
+
+generate-informers:
+	go run k8s.io/code-generator/cmd/informer-gen \
+		--output-dir ./pkg/client/informers \
+		--output-pkg $(MODULE)/pkg/client/informers \
+		--versioned-clientset-package $(MODULE)/pkg/client/clientset/versioned \
+		--listers-package $(MODULE)/pkg/client/listers \
+		--go-header-file hack/boilerplate.go.txt \
+		$(MODULE)/api/v1alpha1
+
+generate-proto:
+	protoc \
+		--go_out=. --go_opt=module=$(MODULE) \
+		--go-grpc_out=. --go-grpc_opt=module=$(MODULE) \
+		proto/*.proto
 
 test:
 	go test ./...
@@ -100,21 +136,10 @@ smoke-quickstart: test-e2e-quickstart
 
 premerge-smoke: build kind-install smoke-quickstart
 
-# Release gate: build, deploy to kind, and verify installation health.
-# Only runs tests that do not require eBPF events (no openreports.io/Report
-# assertions). GitHub Actions ubuntu-latest runners lack kernel BTF support
-# needed by Inspektor Gadget, so eBPF-dependent tests always time out there.
-# Full eBPF Chainsaw tests are in test-e2e (run manually via the e2e.yml
-# workflow on a kernel that supports BTF).
-test-e2e-install: kind-install
-	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/ \
-		--include-test-regex "default-policies-installation"
-
-# Full E2E pipeline: build, deploy to kind, and run ALL Chainsaw tests.
-# Requires a kernel with BTF/eBPF support (not available on standard GH runners).
-test-e2e-full: kind-install test-e2e
+# Full CI pipeline: build, deploy to kind, and run e2e tests
+test-e2e-install: kind-install test-e2e
 
 # Full CI pipeline reusing a prebuilt image tag (no ko build)
 test-e2e-install-prebuilt: kind-install-prebuilt test-e2e
 
-.PHONY: test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-full test-e2e-install-prebuilt
+.PHONY: generate-crds generate-client generate-listers generate-informers test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
