@@ -7,9 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-
-	protolearning "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,6 +14,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	protolearning "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
 )
 
 const (

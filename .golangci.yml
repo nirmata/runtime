@@ -22,12 +22,14 @@ linters:
 formatters:
   enable:
     - gofmt
-    - goimports
+    - gci
 
   settings:
     gofmt:
       simplify: true
-    goimports:
-      local-prefixes:
-        - github.com/nirmata/kyverno-runtime
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/nirmata/kyverno-runtime)
 

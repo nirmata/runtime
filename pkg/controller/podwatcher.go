@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -17,6 +15,9 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
+
+	"github.com/nirmata/kyverno-runtime/pkg/containers"
+	"github.com/nirmata/kyverno-runtime/pkg/events"
 )
 
 type podWatcher struct {

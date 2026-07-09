@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"google.golang.org/grpc"
+
 	"github.com/nirmata/kyverno-runtime/pkg/proto/learning"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
-	"google.golang.org/grpc"
 )
 
 type learningModeSrv struct {

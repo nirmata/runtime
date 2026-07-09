@@ -3,10 +3,11 @@ package lsmmgr
 import (
 	"fmt"
 
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+
+	"github.com/nirmata/kyverno-runtime/pkg/containers"
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
 )
 
 func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {

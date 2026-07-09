@@ -3,9 +3,6 @@ package main
 import (
 	"os"
 
-	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/controller"
-	"github.com/nirmata/kyverno-runtime/pkg/workloadprofile"
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +12,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/controller"
+	"github.com/nirmata/kyverno-runtime/pkg/workloadprofile"
 )
 
 var ctrlCmd = &cobra.Command{

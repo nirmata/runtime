@@ -9,14 +9,6 @@ import (
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
-
-	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
-	pb "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
-	"github.com/nirmata/kyverno-runtime/pkg/srv"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -27,8 +19,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
+	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
+	pb "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
+	"github.com/nirmata/kyverno-runtime/pkg/srv"
 )
 
 var grpcAddr string
