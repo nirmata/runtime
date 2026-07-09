@@ -3,6 +3,7 @@ package compiler
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
@@ -92,9 +93,9 @@ func evalCompiledBehavior(ctx context.Context, accum *AllowDenyPair, b *compiled
 		if err != nil {
 			return err
 		}
-		exprIps, ok := out.Value().([]string)
-		if !ok {
-			return fmt.Errorf("invalid program return type. expected array of string")
+		exprIps, err := toStringSlice(out)
+		if err != nil {
+			return err
 		}
 		accum.Deny = append(accum.Deny, exprIps...)
 	}
@@ -104,13 +105,25 @@ func evalCompiledBehavior(ctx context.Context, accum *AllowDenyPair, b *compiled
 		if err != nil {
 			return err
 		}
-		exprIps, ok := out.Value().([]string)
-		if !ok {
-			return fmt.Errorf("invalid program return type. expected array of string")
+		exprIps, err := toStringSlice(out)
+		if err != nil {
+			return err
 		}
 		accum.Allow = append(accum.Allow, exprIps...)
 	}
 	accum.Allow = append(accum.Allow, b.pair.Allow...)
 
 	return nil
+}
+
+func toStringSlice(out ref.Val) ([]string, error) {
+	native, err := out.ConvertToNative(reflect.TypeFor[[]string]())
+	if err != nil {
+		return nil, fmt.Errorf("invalid program return type. expected array of string: %w", err)
+	}
+	exprIps, ok := native.([]string)
+	if !ok {
+		return nil, fmt.Errorf("invalid program return type. expected array of string")
+	}
+	return exprIps, nil
 }
