@@ -7,18 +7,21 @@ import (
 )
 
 var (
-	GroupVersion = schema.GroupVersion{Group: "runtime.kyverno.io", Version: "v1alpha1"}
+	GroupVersion       = schema.GroupVersion{Group: "runtime.kyverno.io", Version: "v1alpha1"}
+	SchemeGroupVersion = GroupVersion
 
 	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 	AddToScheme   = SchemeBuilder.AddToScheme
 )
 
+func Resource(resource string) schema.GroupResource {
+	return GroupVersion.WithResource(resource).GroupResource()
+}
+
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&RuntimePolicy{},
 		&RuntimePolicyList{},
-		&RuntimeBehavior{},
-		&RuntimeBehaviorList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

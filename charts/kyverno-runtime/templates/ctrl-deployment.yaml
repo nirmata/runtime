@@ -1,0 +1,68 @@
+{{- if .Values.ctrl.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kyverno-runtime.fullname" . }}-ctrl
+  labels:
+    {{- include "kyverno-runtime.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.ctrl.replicas }}
+  selector:
+    matchLabels:
+      {{- include "kyverno-runtime.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ctrl
+  template:
+    metadata:
+      labels:
+        {{- include "kyverno-runtime.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ctrl
+        {{- with .Values.ctrl.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.ctrl.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kyverno-runtime.serviceAccountName" . }}
+      containers:
+      - name: ctrl
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args:
+        - ctrl
+        {{- if .Values.ctrl.leaderElection }}
+        - --leader-elect
+        {{- end }}
+        - --metrics-bind-address={{ .Values.ctrl.metricsBindAddress }}
+        - --health-probe-bind-address={{ .Values.ctrl.healthProbeBindAddress }}
+        - --daemonset-svc-name={{ .Values.ctrl.daemonsetSvcName }}
+        - --daemonset-svc-ns={{ .Values.ctrl.daemonsetSvcNs }}
+        ports:
+        - containerPort: 8080
+          name: metrics
+        - containerPort: 8081
+          name: probes
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: probes
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: probes
+        resources:
+          {{- toYaml .Values.ctrl.resources | nindent 10 }}
+      {{- with .Values.ctrl.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ctrl.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ctrl.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
