@@ -19,7 +19,7 @@ spec:
         expression: "..."
 ```
 
-- `network`: IP addresses for egress.
+- `network`: IPv4 addresses for egress.
 - `exec`: command names/paths.
 - `open`: file paths.
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a

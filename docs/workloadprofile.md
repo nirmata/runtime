@@ -1,11 +1,10 @@
 # WorkloadProfile (learning mode)
 
-> **Status: not fully active.** Deploying a `WorkloadProfile` right now does
-> nothing.
+> **Status: experimental.** A `WorkloadProfile` has no effect unless the workload-profile controller (`kyverno-runtime ctrl`, Helm: `ctrl.enabled=true`) is running.
 
 `WorkloadProfile` is a cluster-scoped CRD. It specifies `behaviorsToLearn` and a
-`duration`, and triggers a bounded learning window during which matched behavior
-is recorded instead of enforced, without needing an a-priori allow/deny list.
+`duration`. Currently, `behaviorsToLearn` is not yet plumbed through to the daemons,
+and learning mode records observed behavior while enforcement still applies.
 
 `kyverno-runtime ctrl` watches `WorkloadProfile` objects and calls each daemon's
 gRPC API to start/stop learning windows.
