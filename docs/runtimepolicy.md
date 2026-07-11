@@ -219,4 +219,3 @@ spec:
 kubectl apply -f nginx-baseline.yaml
 kubectl get runtimepolicy nginx-baseline
 ```
-
