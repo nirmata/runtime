@@ -4,8 +4,6 @@ Kyverno Runtime extends Kyverno policy-as-code from admission into runtime. It e
 and observes pod behavior (file access, exec, network egress) using eBPF, driven by two
 cluster-scoped CRDs.
 
-NOTE: learning mode is still incomplete
-
 ## Concepts
 
 - `RuntimePolicy`: cluster-scoped. Selects pods via `podSelector` and defines allow/deny
@@ -75,21 +73,11 @@ kubectl apply -f loopback-egress.yaml
 kubectl get runtimepolicy detect-loopback-egress
 ```
 
-## Example: WorkloadProfile (learning mode)
+See [docs/runtimepolicy.md](docs/runtimepolicy.md) for the full spec reference,
+`allow`/`deny` with `values` and CEL `expression`, and default-deny-with-allow-list
+patterns.
 
-```yaml
-apiVersion: runtime.kyverno.io/v1alpha1
-kind: WorkloadProfile
-metadata:
-  name: nginx-learn
-spec:
-  behaviorsToLearn:
-  - network
-  - open
-  duration: 10m
-```
+See [docs/workloadprofile.md](docs/workloadprofile.md) for `WorkloadProfile`
+(learning mode).
 
-```bash
-kubectl apply -f nginx-learn.yaml
-kubectl get workloadprofile nginx-learn
-```
+NOTE: `WorkloadProfile` (learning mode) is not yet fully active.
