@@ -163,7 +163,7 @@ func (e *EgressFilter) normalizeIP(raw string) net.IP {
 	cleaned := strings.Trim(raw, " \t\"'[]")
 	ip4 := net.ParseIP(cleaned).To4()
 	if ip4 == nil {
-		e.logger.Error(nil, "failed to parse ip, skipping", "ip", raw)
+		e.logger.V(2).Info("failed to parse ip, skipping", "ip", raw)
 		return nil
 	}
 	return ip4
