@@ -107,7 +107,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	g.Go(func() error {
 		for {
 			if err := rpInformer.Start(ctx); err != nil {
-				logger.Error(err, "runtime policy informer error")
+				logger.Error(err, "runtime policy informer error, sleeping 10 seconds and trying again")
+				time.Sleep(time.Second * 10)
 				continue
 			}
 		}
@@ -124,7 +125,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	g.Go(func() error {
 		for {
 			if err := pw.Start(ctx); err != nil {
-				logger.Error(err, "pod watcher error")
+				logger.Error(err, "pod watcher error, sleeping 10 seconds then trying again")
 				time.Sleep(time.Second * 10)
 				continue
 			}
