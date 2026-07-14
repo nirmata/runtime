@@ -3,6 +3,7 @@ package egressfilter
 import (
 	"encoding/binary"
 	"net"
+	"strings"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 
@@ -53,7 +54,7 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 
 func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) {
 	for _, ip := range pair.Allow {
-		ip4 := net.ParseIP(ip).To4()
+		ip4 := e.normalizeIP(ip)
 		if ip4 == nil {
 			continue
 		}
@@ -66,7 +67,7 @@ func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) {
 	}
 
 	for _, ip := range pair.Deny {
-		ip4 := net.ParseIP(ip).To4()
+		ip4 := e.normalizeIP(ip)
 		if ip4 == nil {
 			continue
 		}
@@ -81,7 +82,7 @@ func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) {
 
 func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) {
 	for _, ip := range pair.Allow {
-		ip4 := net.ParseIP(ip).To4()
+		ip4 := e.normalizeIP(ip)
 		if ip4 == nil {
 			continue
 		}
@@ -94,7 +95,7 @@ func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) {
 	}
 
 	for _, ip := range pair.Deny {
-		ip4 := net.ParseIP(ip).To4()
+		ip4 := e.normalizeIP(ip)
 		if ip4 == nil {
 			continue
 		}
@@ -156,4 +157,14 @@ func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
 		return nil, err
 	}
 	return link, nil
+}
+
+func (e *EgressFilter) normalizeIP(raw string) net.IP {
+	cleaned := strings.Trim(raw, " \t\"'")
+	ip4 := net.ParseIP(cleaned).To4()
+	if ip4 == nil {
+		e.logger.Error(nil, "failed to parse ip, skipping", "ip", raw)
+		return nil
+	}
+	return ip4
 }
