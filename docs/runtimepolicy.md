@@ -44,6 +44,10 @@ spec:
   deny list is the union of `deny` entries from every matching policy.
 - `spec.variables` defines named CEL expressions (`admissionregistrationv1.Variable`)
   that can be reused across behaviors via `variables.<name>` inside any `expression`.
+- `expression` must evaluate to a statically-typed `list(string)`. Functions that return
+  `dyn` (e.g. `http.get(...).body`, `json.unmarshal(...)`) need an explicit coercion, since
+  the checker can't infer a concrete element type from `dyn` on its own:
+  `someDynValue.map(x, string(x))`.
 
 ## Example: RuntimePolicy
 
@@ -302,10 +306,9 @@ if __name__ == "__main__":
     http.server.HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
 ```
 
-`http.get(url)` returns a `dyn`-typed value shaped like `{"statusCode": ..., "body": ...}`.
-Since the checker can't statically infer `.body`'s element type as `list(string)`,
-coerce it explicitly with the CEL `map` macro. As with the ConfigMap example, this
-pulls from external, mutable state, so set `evaluationInterval` to keep it fresh:
+`http.get(url)` returns a value shaped like `{"statusCode": ..., "body": ...}`. As with the
+ConfigMap example, this pulls from external, mutable state, so set `evaluationInterval` to
+keep it fresh:
 
 ```yaml
 apiVersion: runtime.kyverno.io/v1alpha1
@@ -333,11 +336,7 @@ kubectl get runtimepolicy deny-http-ips
 The `json` CEL library parses a raw JSON string into a CEL value via `json.unmarshal(str)`,
 letting a policy pull a deny/allow list out of an arbitrary JSON blob instead of requiring
 the source to already be a plain comma-separated string or array. `spec.variables` is a
-convenient place to stage the parsing before it's used in a behavior expression.
-
-`json.unmarshal` returns `dyn`, so indexing into it (e.g. `variables.jsonObj["ips"]`) is
-still `dyn`, not a statically-typed `list(string)` — the same issue as `http.get(...).body`
-above. Coerce it explicitly with the CEL `map` macro, same as the `http` example:
+convenient place to stage the parsing before it's used in a behavior expression:
 
 ```yaml
 apiVersion: runtime.kyverno.io/v1alpha1
