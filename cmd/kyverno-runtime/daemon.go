@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"os"
+	"time"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
@@ -124,6 +125,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		for {
 			if err := pw.Start(ctx); err != nil {
 				logger.Error(err, "pod watcher error")
+				time.Sleep(time.Second * 10)
 				continue
 			}
 		}
