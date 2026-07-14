@@ -74,8 +74,8 @@ kubectl get runtimepolicy detect-loopback-egress
 ```
 
 See [docs/runtimepolicy.md](docs/runtimepolicy.md) for the full spec reference,
-`allow`/`deny` with `values` and CEL `expression`, and default-deny-with-allow-list
-patterns.
+`allow`/`deny` with `values` and CEL `expression`, the `resource` and `http` CEL
+libraries, and default-deny-with-allow-list patterns.
 
 See [docs/workloadprofile.md](docs/workloadprofile.md) for `WorkloadProfile`
 (learning mode).

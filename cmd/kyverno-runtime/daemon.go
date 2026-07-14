@@ -3,6 +3,7 @@ package main
 import (
 	"net"
 	"os"
+	"time"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
@@ -22,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
@@ -44,7 +46,13 @@ func init() {
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
-	opts := zap.Options{Development: true, Level: zapcore.Level(-logLevel)}
+	opts := zap.Options{
+		Development: true,
+		Level:       zapcore.Level(-logLevel),
+		EncoderConfigOptions: []zap.EncoderConfigOption{
+			func(c *zapcore.EncoderConfig) { c.EncodeLevel = verbosityLevelEncoder },
+		},
+	}
 
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)
@@ -81,7 +89,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	rpCompiler, err := compiler.NewCompiler()
+	dclient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		logger.Error(err, "failed to create dynamic client")
+		os.Exit(1)
+	}
+
+	rpCompiler, err := compiler.NewCompiler(dclient)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy compiler")
 		os.Exit(1)
@@ -99,7 +113,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	g.Go(func() error {
 		for {
 			if err := rpInformer.Start(ctx); err != nil {
-				logger.Error(err, "runtime policy informer error")
+				logger.Error(err, "runtime policy informer error, sleeping 10 seconds and trying again")
+				time.Sleep(time.Second * 10)
 				continue
 			}
 		}
@@ -116,7 +131,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	g.Go(func() error {
 		for {
 			if err := pw.Start(ctx); err != nil {
-				logger.Error(err, "pod watcher error")
+				logger.Error(err, "pod watcher error, sleeping 10 seconds then trying again")
+				time.Sleep(time.Second * 10)
 				continue
 			}
 		}

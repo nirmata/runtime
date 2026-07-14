@@ -9,6 +9,7 @@ import (
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -42,7 +43,12 @@ func init() {
 
 func runCtrl(cmd *cobra.Command, args []string) error {
 	// we should configure a proper logger here
-	opts := zap.Options{Development: true}
+	opts := zap.Options{
+		Development: true,
+		EncoderConfigOptions: []zap.EncoderConfigOption{
+			func(c *zapcore.EncoderConfig) { c.EncodeLevel = verbosityLevelEncoder },
+		},
+	}
 
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)

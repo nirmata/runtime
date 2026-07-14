@@ -10,6 +10,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/client-go/dynamic"
 )
 
 var (
@@ -39,8 +40,8 @@ type compiler struct {
 	env *cel.Env
 }
 
-func NewCompiler() (Compiler, error) {
-	base, err := newEnv()
+func NewCompiler(client dynamic.Interface) (Compiler, error) {
+	base, err := newEnv(client)
 	if err != nil {
 		return nil, err
 	}

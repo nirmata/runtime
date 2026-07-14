@@ -1,7 +1,6 @@
 package lsmmgr
 
 import (
-	"fmt"
 	"slices"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
@@ -57,7 +56,6 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 			la.attachedPods[podUid] = pod
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
-
 	}
 	if len(targetCgids) > 0 {
 		l.logger.V(2).Info("adding matched cgids to new attachment", "uid", compiledRp.UID, "cgids", targetCgids)
@@ -74,7 +72,14 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	// a selector change, or a target change. just compute the diff on the target pods and on the banned files
 	la, ok := l.lsmAttachments[compiledRp.UID]
 	if !ok {
-		return fmt.Errorf("got an update for a runtime policy that doesn't exist")
+		// no existing attachment. if the update introduced open targets, this is the first
+		// time the policy needs enforcement, so run it through the creation path.
+		if len(compiledRp.Open.Allow) == 0 && len(compiledRp.Open.Deny) == 0 {
+			l.logger.V(2).Info("runtime policy update has no open files to enforce and no existing attachment, skipping", "uid", compiledRp.UID)
+			return nil
+		}
+		l.logger.V(2).Info("runtime policy update introduced open targets for a previously unattached policy, creating attachment", "uid", compiledRp.UID)
+		return l.rpCreated(compiledRp)
 	}
 	// diff the existing and new files. delete what must be deleted
 	// todo: instead of calling this function twice we can call it once and have it return both array
