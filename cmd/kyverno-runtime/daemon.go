@@ -34,16 +34,6 @@ import (
 var grpcAddr string
 var logLevel int
 
-// verbosityLevelEncoder renders logr's V(n) debug levels (encoded by zapr as
-// negative zap levels) as "DEBUG-N" instead of zap's default "LEVEL(-N)".
-func verbosityLevelEncoder(level zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
-	if level >= zapcore.DebugLevel {
-		zapcore.CapitalLevelEncoder(level, enc)
-		return
-	}
-	enc.AppendString("DEBUG")
-}
-
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
 	Short: "Run the kyverno-runtime daemon",
