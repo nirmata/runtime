@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
@@ -81,7 +82,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	rpCompiler, err := compiler.NewCompiler()
+	dclient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		logger.Error(err, "failed to create dynamic client")
+		os.Exit(1)
+	}
+
+	rpCompiler, err := compiler.NewCompiler(dclient)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy compiler")
 		os.Exit(1)
