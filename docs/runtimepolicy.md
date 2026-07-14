@@ -10,6 +10,7 @@
 - [Example: re-evaluated policy with a selector across multiple behaviors](#example-re-evaluated-policy-with-a-selector-across-multiple-behaviors)
 - [Example: deny IPs from a ConfigMap (resource library)](#example-deny-ips-from-a-configmap-resource-library)
 - [Example: deny IPs from an HTTP endpoint (http library)](#example-deny-ips-from-an-http-endpoint-http-library)
+- [Example: parsing a JSON blob (json library)](#example-parsing-a-json-blob-json-library)
 
 ## Spec reference
 
@@ -325,4 +326,67 @@ spec:
 ```bash
 kubectl apply -f deny-http-ips.yaml
 kubectl get runtimepolicy deny-http-ips
+```
+
+## Example: parsing a JSON blob (json library)
+
+The `json` CEL library parses a raw JSON string into a CEL value via `json.unmarshal(str)`,
+letting a policy pull a deny/allow list out of an arbitrary JSON blob instead of requiring
+the source to already be a plain comma-separated string or array. `spec.variables` is a
+convenient place to stage the parsing before it's used in a behavior expression.
+
+`json.unmarshal` returns `dyn`, so indexing into it (e.g. `variables.jsonObj["ips"]`) is
+still `dyn`, not a statically-typed `list(string)` — the same issue as `http.get(...).body`
+above. Coerce it explicitly with the CEL `map` macro, same as the `http` example:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: deny-json-ips
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  variables:
+  - name: jsonStr
+    expression: "\"{\\\"ips\\\":[\\\"198.51.100.23\\\",\\\"198.51.100.24\\\",\\\"203.0.113.9\\\"]}\""
+  - name: jsonObj
+    expression: json.unmarshal(variables.jsonStr)
+  behaviors:
+  - network:
+      deny:
+        expression: variables.jsonObj["ips"].map(x, string(x))
+```
+
+```bash
+kubectl apply -f deny-json-ips.yaml
+kubectl get runtimepolicy deny-json-ips
+```
+
+This composes with the `resource` and `http` libraries — for example, unmarshaling a JSON
+blob fetched from a ConfigMap or an HTTP endpoint instead of a hardcoded variable:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: deny-configmap-json-ips
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  evaluationInterval: 5m
+  variables:
+  - name: jsonObj
+    expression: json.unmarshal(resource.get("v1", "configmaps", "default", "ip-blocklist-json").data["ips"])
+  behaviors:
+  - network:
+      deny:
+        expression: variables.jsonObj["ips"].map(x, string(x))
+```
+
+```bash
+kubectl apply -f deny-configmap-json-ips.yaml
+kubectl get runtimepolicy deny-configmap-json-ips
 ```
