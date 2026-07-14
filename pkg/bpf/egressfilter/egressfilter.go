@@ -160,7 +160,7 @@ func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
 }
 
 func (e *EgressFilter) normalizeIP(raw string) net.IP {
-	cleaned := strings.Trim(raw, " \t\"'")
+	cleaned := strings.Trim(raw, " \t\"'[]")
 	ip4 := net.ParseIP(cleaned).To4()
 	if ip4 == nil {
 		e.logger.Error(nil, "failed to parse ip, skipping", "ip", raw)
