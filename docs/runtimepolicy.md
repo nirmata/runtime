@@ -1,5 +1,16 @@
 # RuntimePolicy
 
+## Table of Contents
+
+- [Spec reference](#spec-reference)
+- [Example: RuntimePolicy](#example-runtimepolicy)
+- [Example: deny using a CEL expression](#example-deny-using-a-cel-expression)
+- [Example: allow using values and expressions](#example-allow-using-values-and-expressions)
+- [Example: default deny with an allow list](#example-default-deny-with-an-allow-list)
+- [Example: re-evaluated policy with a selector across multiple behaviors](#example-re-evaluated-policy-with-a-selector-across-multiple-behaviors)
+- [Example: deny IPs from a ConfigMap (resource library)](#example-deny-ips-from-a-configmap-resource-library)
+- [Example: deny IPs from an HTTP endpoint (http library)](#example-deny-ips-from-an-http-endpoint-http-library)
+
 ## Spec reference
 
 Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, or `open`.
@@ -218,4 +229,100 @@ spec:
 ```bash
 kubectl apply -f nginx-baseline.yaml
 kubectl get runtimepolicy nginx-baseline
+```
+
+## Example: deny IPs from a ConfigMap (resource library)
+
+The `resource` CEL library lets a behavior expression look up other cluster resources at
+evaluation time, so a deny/allow list can be sourced from a ConfigMap instead of being
+inlined in the policy. Because the list now lives in external, mutable state, set
+`evaluationInterval` so the policy is periodically re-evaluated and picks up ConfigMap
+changes without requiring an update to the `RuntimePolicy` itself:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ip-blocklist
+  namespace: default
+data:
+  ips: "192.0.2.55,203.0.113.9"
+```
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: deny-configmap-ips
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  evaluationInterval: 5m
+  behaviors:
+  - network:
+      deny:
+        expression: resource.get("v1", "configmaps", "default", "ip-blocklist").data["ips"].split(",")
+```
+
+```bash
+kubectl apply -f ip-blocklist.yaml
+kubectl apply -f deny-configmap-ips.yaml
+kubectl get runtimepolicy deny-configmap-ips
+```
+
+## Example: deny IPs from an HTTP endpoint (http library)
+
+The `http` CEL library lets a behavior expression fetch a deny/allow list from an
+external endpoint at evaluation time. This is a minimal Python server returning a JSON
+array of IPs to block:
+
+```python
+#!/usr/bin/env python3
+"""Minimal HTTP server returning a JSON list of IPs, for testing the CEL http library."""
+
+import http.server
+import json
+
+IPS = ["198.51.100.23", "198.51.100.24", "203.0.113.9"]
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps(IPS).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+if __name__ == "__main__":
+    http.server.HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+```
+
+`http.get(url)` returns a `dyn`-typed value shaped like `{"statusCode": ..., "body": ...}`.
+Since the checker can't statically infer `.body`'s element type as `list(string)`,
+coerce it explicitly with the CEL `map` macro. As with the ConfigMap example, this
+pulls from external, mutable state, so set `evaluationInterval` to keep it fresh:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: deny-http-ips
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  evaluationInterval: 5m
+  behaviors:
+  - network:
+      deny:
+        expression: http.get("http://ip-server.default.svc.cluster.local:8080").body.map(x, string(x))
+```
+
+```bash
+kubectl apply -f deny-http-ips.yaml
+kubectl get runtimepolicy deny-http-ips
 ```

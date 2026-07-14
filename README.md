@@ -74,46 +74,8 @@ kubectl get runtimepolicy detect-loopback-egress
 ```
 
 See [docs/runtimepolicy.md](docs/runtimepolicy.md) for the full spec reference,
-`allow`/`deny` with `values` and CEL `expression`, and default-deny-with-allow-list
-patterns.
-
-### Example: deny IPs from a ConfigMap (resource library)
-
-The `resource` CEL library lets a behavior expression look up other cluster resources at
-evaluation time, so a deny/allow list can be sourced from a ConfigMap instead of being
-inlined in the policy:
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ip-blocklist
-  namespace: default
-data:
-  ips: "192.0.2.55,203.0.113.9"
-```
-
-```yaml
-apiVersion: runtime.kyverno.io/v1alpha1
-kind: RuntimePolicy
-metadata:
-  name: deny-configmap-ips
-spec:
-  podSelector:
-    matchLabels:
-      app: nginx
-  behaviors:
-  - network:
-      deny:
-        expression: resource.get("v1", "configmaps", "default", "ip-blocklist").data["ips"].split(",")
-```
-
-```bash
-kubectl apply -f ip-blocklist.yaml
-kubectl apply -f deny-configmap-ips.yaml
-kubectl get runtimepolicy deny-configmap-ips
-```
-
+`allow`/`deny` with `values` and CEL `expression`, the `resource` and `http` CEL
+libraries, and default-deny-with-allow-list patterns.
 
 See [docs/workloadprofile.md](docs/workloadprofile.md) for `WorkloadProfile`
 (learning mode).
