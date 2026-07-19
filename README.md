@@ -1,8 +1,8 @@
 # Kyverno Runtime
 
 Kyverno Runtime extends Kyverno policy-as-code from admission into runtime. It enforces
-and observes pod behavior (file access, exec, network egress) using eBPF, driven by two
-cluster-scoped CRDs.
+and observes pod behavior (file access, exec, network egress) using eBPF, driven by a
+cluster-scoped CRD.
 
 ## Concepts
 
@@ -10,19 +10,12 @@ cluster-scoped CRDs.
   rules for `network`, `exec`, or `open` behaviors, either as a literal list of values or
   a CEL expression. Enforced continuously once matched pods are observed; optionally
   re-evaluated on `evaluationInterval`.
-- `WorkloadProfile`: cluster-scoped. Specifies `behaviorsToLearn` and a `duration`, and
-  triggers a bounded learning window during which matched behavior is recorded instead of
-  enforced, without needing an a-priori allow/deny list.
 
 ## Components
 
 - `kyverno-runtime daemon`: runs per node (requires `NODE_NAME`). Watches `RuntimePolicy`
   and `Pod` events, attaches eBPF LSM hooks (file open/exec) and an egress IP filter per
-  matched pod's cgroup, and exposes a gRPC learning-mode API (`Start`/`Stop`/`Read`).
-- `kyverno-runtime ctrl`: cluster-scoped controller. Watches `WorkloadProfile` and calls
-  each daemon's gRPC API to start/stop learning windows. Pod-label targeting for this
-  flow is currently a no-op (`Labels` isn't populated from the `WorkloadProfile` yet), so
-  treat learning mode as functional but not yet scoped correctly.
+  matched pod's cgroup.
 
 ## Installation
 
@@ -76,8 +69,3 @@ kubectl get runtimepolicy detect-loopback-egress
 See [docs/runtimepolicy.md](docs/runtimepolicy.md) for the full spec reference,
 `allow`/`deny` with `values` and CEL `expression`, the `resource` and `http` CEL
 libraries, and default-deny-with-allow-list patterns.
-
-See [docs/workloadprofile.md](docs/workloadprofile.md) for `WorkloadProfile`
-(learning mode).
-
-NOTE: `WorkloadProfile` (learning mode) is not yet fully active.
