@@ -1,6 +1,6 @@
 # Instructions for coding agents
 
-Read the [DESIGN](docs/dev/DESIGN.md) and [PLAN](./docs/dev/PLAN.md) before making any significant change.
+Read the [DESIGN](docs/dev/DESIGN.md) before making any significant change.
 
 ## Documentation Guidelines
 
@@ -14,34 +14,32 @@ Read the [DESIGN](docs/dev/DESIGN.md) and [PLAN](./docs/dev/PLAN.md) before maki
 - Integration patterns and workflows
 - **Keep this synchronized with the actual codebase** (what's deployed on `main`)
 
-**[PLAN.md](docs/dev/PLAN.md)** describes *planned* work and future enhancements:
-
-- Development roadmap organized by phase
-- Deliverables, status, and acceptance criteria for each phase
-- Known issues and design open questions
-- **Remove completed items** from PLAN.md and move their documentation to DESIGN.md
+**PLAN.md** would describe *planned* work and future enhancements (development roadmap by
+phase, deliverables/status/acceptance criteria, known issues and open design questions), but it
+does not currently exist in this repository. If forward-looking roadmap tracking becomes
+necessary, create `docs/dev/PLAN.md` following the same "current vs. planned" split described
+here, and update this file to reference it again. Until then, skip any PLAN.md-specific step
+below.
 
 ### When Completing a Feature
 
 1. Ensure code changes are merged to `main` with tests passing
-2. Update [PLAN.md](docs/dev/PLAN.md):
-   - Change status to **COMPLETED** ✅ for the phase/item
-   - Or remove the item if entire phase is done
-3. Update [DESIGN.md](docs/dev/DESIGN.md):
+2. Update [DESIGN.md](docs/dev/DESIGN.md):
    - Add new sections or expand existing ones to document the feature
    - Include code examples, configuration, and operational guidance
    - Update diagrams if architecture changed
-4. Verify [DEVELOPMENT.md](DEVELOPMENT.md) is current:
+3. Verify [DEVELOPMENT.md](DEVELOPMENT.md) is current:
    - Add new build targets or workflows if needed
    - Update common development tasks section
    - Document any new operational behaviors
+4. If a `docs/dev/PLAN.md` exists at the time, remove/complete the corresponding item there too.
 
 ### When Modifying Architecture
 
 1. Update [DESIGN.md](docs/dev/DESIGN.md) first to describe the new design
 2. Update this file ([Agents.md](Agents.md)) if runtime policies or development guidelines change
 3. Update [DEVELOPMENT.md](DEVELOPMENT.md) for new workflows or behaviors
-4. Review [PLAN.md](docs/dev/PLAN.md) for any affected planned items
+4. If a `docs/dev/PLAN.md` exists at the time, review it for any affected planned items
 
 ## Dev Documents
 
