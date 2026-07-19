@@ -1,7 +1,6 @@
 package main
 
 import (
-	"net"
 	"os"
 	"time"
 
@@ -12,14 +11,11 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
-	pb "github.com/nirmata/kyverno-runtime/pkg/proto/learning"
-	"github.com/nirmata/kyverno-runtime/pkg/srv"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -31,7 +27,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-var grpcAddr string
 var logLevel int
 
 var daemonCmd = &cobra.Command{
@@ -41,7 +36,6 @@ var daemonCmd = &cobra.Command{
 }
 
 func init() {
-	daemonCmd.Flags().StringVar(&grpcAddr, "grpc-bind-address", ":9090", "The address the gRPC server binds to.")
 	daemonCmd.Flags().IntVar(&logLevel, "log-level", 0, "Verbosity level for debug logs (higher is more verbose).")
 }
 
@@ -57,7 +51,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)
 
-	logger.Info("starting kyverno-runtime daemon", "grpc-bind-address", grpcAddr)
+	logger.Info("starting kyverno-runtime daemon")
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -136,24 +130,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 				continue
 			}
 		}
-	})
-
-	// grpc server
-	grpcServer := grpc.NewServer()
-	pb.RegisterLearningServiceServer(grpcServer, srv.NewLeaningModeSrv(lsmm, em))
-	g.Go(func() error {
-		lis, err := net.Listen("tcp", grpcAddr)
-		if err != nil {
-			logger.Error(err, "failed to listen for gRPC server")
-			return err
-		}
-
-		logger.Info("starting gRPC server", "address", grpcAddr)
-		if err := grpcServer.Serve(lis); err != nil {
-			logger.Error(err, "gRPC server error")
-			os.Exit(1)
-		}
-		return nil
 	})
 
 	if err := g.Wait(); err != nil {

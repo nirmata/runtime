@@ -1,7 +1,6 @@
 package egressmgr
 
 import (
-	"context"
 	"fmt"
 	"sync"
 
@@ -24,18 +23,10 @@ type EgressManager struct {
 
 	pods map[string]*podAttachment
 	rps  map[string]*compiler.EvaluationResult
-	wps  map[string]*workloadProfile
-}
-
-type workloadProfile struct {
-	cancel context.CancelFunc
-	pods   map[string]*podAttachment
 }
 
 type podAttachment struct {
-	defaultDeny     map[string]struct{} // the group of runtime policy uids that contained a default deny
-	learningEnabled map[string]struct{} // the ids of the workload profiles that specify we should be learning this pod's behavior
-	// at the end of the learning duration what happens ?
+	defaultDeny map[string]struct{} // the group of runtime policy uids that contained a default deny
 
 	labels          map[string]string
 	cgs             map[containers.ContainerCgroupInfo]link.Link
@@ -48,7 +39,6 @@ func NewEgressManager(logger logr.Logger) *EgressManager {
 		logger: logger,
 		pods:   make(map[string]*podAttachment),
 		rps:    make(map[string]*compiler.EvaluationResult),
-		wps:    make(map[string]*workloadProfile),
 	}
 }
 

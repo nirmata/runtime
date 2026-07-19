@@ -15,8 +15,7 @@ import (
 //go:generate go tool bpf2go egressBlock ./_cprog/probe.c -- -I ./_cprog
 
 const (
-	DEFAULT_DENY  = 1
-	LEARNING_MODE = 2
+	DEFAULT_DENY = 1
 )
 
 type EgressFilter struct {
@@ -126,25 +125,6 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 	if err := e.bpfObjs.Flags.Put(&key, &currentval); err != nil {
 		e.logger.Error(err, "failed to write flags map. corrupt state")
 	}
-}
-
-func (e *EgressFilter) ReadLearned() (map[uint32]uint32, error) {
-	ret := make(map[uint32]uint32)
-	iter := e.bpfObjs.IpEvents.Iterate()
-
-	var (
-		key   uint32
-		value uint32
-	)
-
-	for iter.Next(&key, &value) {
-		ret[key] = value
-	}
-	if err := iter.Err(); err != nil {
-		return nil, err
-	}
-
-	return ret, nil
 }
 
 func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
