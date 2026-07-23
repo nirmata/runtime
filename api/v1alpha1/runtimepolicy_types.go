@@ -25,6 +25,10 @@ type RuntimePolicySpec struct {
 	// Behaviors defines the allowed and denied runtime behaviors.
 	// +optional
 	Behaviors []PolicyBehavior `json:"behaviors,omitempty"`
+
+	// Mode defines the operational mode of the policy.
+	// +optional
+	Mode *RuntimePolicyMode `json:"mode,omitempty"`
 }
 
 // RuntimePolicyMode represents the operational mode for policy enforcement.

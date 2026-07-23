@@ -20,6 +20,7 @@ var (
 type CompiledRuntimePolicy struct {
 	ReevalInterval *time.Duration
 	UID            string
+	mode           string
 
 	variables map[string]cel.Program
 	selector  *metav1.LabelSelector
@@ -105,10 +106,16 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		evalIntval = rp.Spec.EvaluationInterval.Duration
 	}
 
+	mode := ""
+	if rp.Spec.Mode != nil {
+		mode = string(*rp.Spec.Mode)
+	}
+
 	return &CompiledRuntimePolicy{
 		UID:            string(rp.UID),
 		ReevalInterval: &evalIntval,
 		selector:       rp.Spec.PodSelector,
+		mode:           mode,
 		compiledNets:   compiledNets,
 		compiledOpens:  compiledOpens,
 		compiledExecs:  compiledExecs,
