@@ -24,27 +24,23 @@ rather than glossed over.
 - [Compilation and evaluation pipeline](#compilation-and-evaluation-pipeline)
 - [CEL extension libraries](#cel-extension-libraries)
 - [Enforcement: eBPF LSM hooks and egress filtering](#enforcement-ebpf-lsm-hooks-and-egress-filtering)
-- [Learning mode and the gRPC API](#learning-mode-and-the-grpc-api)
-- [WorkloadProfile](#workloadprofile)
 - [Helm chart / deployment shape](#helm-chart--deployment-shape)
 - [Known Gaps / Future Work](#known-gaps--future-work)
 
 ## Overview
 
 kyverno-runtime enforces and observes pod behavior — file opens, process execution, and network
-egress — using eBPF, driven by two cluster-scoped CRDs:
+egress — using eBPF, driven by a single cluster-scoped CRD:
 
 - `RuntimePolicy` (`api/v1alpha1/runtimepolicy_types.go`): selects pods and declares allow/deny
   rules for `network`, `exec`, and `open` behaviors.
-- `WorkloadProfile` (`api/v1alpha1/workloadprofile_types.go`): declares a bounded learning window
-  (experimental — see [WorkloadProfile](#workloadprofile)).
 
 There is no admission webhook in this project; policies are enforced entirely at runtime via
 eBPF programs attached from a per-node daemon.
 
 ## Components
 
-The binary at `cmd/kyverno-runtime/` (`root.go`) exposes two subcommands:
+The binary at `cmd/kyverno-runtime/` (`root.go`) exposes one subcommand:
 
 ### `kyverno-runtime daemon`
 
@@ -65,26 +61,9 @@ On startup it wires together:
 - `pkg/lsmmgr.LsmManager` and `pkg/egressmgr.EgressManager`: the two `events.EventIface`
   implementations that receive `PodEvent` and `RuntimePolicyEvent` callbacks and drive the actual
   eBPF attachments (see [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
-- A gRPC server (`pkg/srv/grpc.go`, `pkg/proto/learning`) exposing `Start`/`Stop`/`Read` for
-  learning mode, backed by `LsmManager`/`EgressManager`.
 
 The daemon waits for the `RuntimePolicy` informer cache to sync before starting the pod watcher,
 so newly-observed pods are evaluated against the full set of currently-known policies.
-
-### `kyverno-runtime ctrl`
-
-Implemented in `cmd/kyverno-runtime/wpcontroller.go`. A cluster-scoped, non-DaemonSet Deployment
-(`charts/kyverno-runtime/templates/ctrl-deployment.yaml`, disabled by default —
-`ctrl.enabled: false` in `values.yaml`) built on `controller-runtime`. It:
-
-- Watches `WorkloadProfile` objects (`pkg/workloadprofile.NewWorkloadProfileController`).
-- Resolves daemon pod endpoints from the daemon `DaemonSet`'s `Service`/`EndpointSlice`
-  (`pkg/controller.NewDsEndpointResolver`, configured via `--daemonset-svc-name`/`--daemonset-svc-ns`).
-- Calls each daemon's gRPC learning API (`Start`/`Stop`) to begin/end a learning window when a
-  `WorkloadProfile` is created/deleted.
-
-`ctrl` supports leader election (`--leader-elect`, default `true` when enabled via the chart) and
-exposes standard `/healthz`/`/readyz` probes and a metrics endpoint.
 
 ## RuntimePolicy: schema and semantics
 
@@ -96,6 +75,7 @@ exposes standard `/healthz`/`/readyz` probes and a metrics endpoint.
 | `evaluationInterval` | `*metav1.Duration` | If set, the policy is periodically re-evaluated (`controller.evaluateForInterval`) instead of only on create/update. |
 | `variables` | `[]admissionregistrationv1.Variable` | Named CEL expressions reusable across behaviors via `variables.<name>`. |
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
+| `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. Added in `4a8bcb1`. Only `enforce` currently does anything — see [Known Gaps](#known-gaps--future-work). |
 
 Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, or `open`, enforced by
 an `XValidation` rule: `(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1`.
@@ -208,57 +188,6 @@ default-deny-union-across-policies bookkeeping described above, per pod (`podAtt
 (`CompiledRuntimePolicy.compiledExecs` / `EvaluationResult.Exec`) — see
 [Known Gaps](#known-gaps--future-work) for the enforcement status.
 
-## Learning mode and the gRPC API
-
-Each daemon exposes a gRPC `LearningService` (`proto/learning.proto`,
-`pkg/proto/learning/learning_grpc.pb.go`), served by `pkg/srv/grpc.go`:
-
-- `Start(uid, labels, duration)`: fans out to both `LsmManager.Start` and `EgressManager.Start`
-  (`events.LearningIface`), each of which finds currently-attached pods whose labels match
-  `labels` and flips a per-cgid "learning mode" flag in the relevant BPF map
-  (`SetLearningModeForCgids` for open events / an analogous mechanism for egress) for `duration`,
-  tracked under `uid`.
-- `Stop(uid)`: cancels the learning window early.
-- `Read(uid, behaviorKind)`: reads back per-pod counts from the BPF maps recorded during the
-  window — `BEHAVIOR_NETWORK` from `EgressManager`, `BEHAVIOR_OPEN`/`BEHAVIOR_EXEC` both read from
-  `LsmManager` (see [Known Gaps](#known-gaps--future-work)).
-
-`pkg/srv/srv.go` additionally implements an HTTP handler (`learningModeSrv.ServeHttp`) that
-fans a single request out over gRPC to every known daemon endpoint (as resolved by `ctrl`'s
-`DsEndpointResolver`) and merges the per-daemon `Read` results — this is the path `ctrl` (or any
-future caller) would use to collect learned behavior across the whole cluster for one workload
-profile UID.
-
-## WorkloadProfile
-
-`WorkloadProfileSpec` (`api/v1alpha1/workloadprofile_types.go`) has two fields:
-`behaviorsToLearn []string` and `duration *metav1.Duration`, with an `XValidation` rule making the
-whole spec immutable (`self == oldSelf`). The CRD is cluster-scoped, has a `Ready` status field,
-and a `finalizer` (`runtime.kyverno.io/finalizer`) to guarantee `Stop` is attempted on daemons
-before the object is removed (`pkg/workloadprofile/workloadprofile_reconciler.go`).
-
-**This is present as a CRD and reconciler, but is not yet functionally complete**:
-
-- The reconciler's `handleNewWorkloadProfile` builds a gRPC `StartRequest` with
-  `Labels: make(map[string]string), // todo` — an empty, unpopulated label map. Since
-  `LsmManager.Start`/`EgressManager.Start` select pods via
-  `labels.SelectorFromSet(matchLabels)`, an empty map is the "select everything" selector, not the
-  workload the user intended to target. Pod-label targeting from `WorkloadProfile` to the daemons
-  is a no-op today.
-- `behaviorsToLearn` is accepted by the schema and immutability-checked, but is never read anywhere
-  in `pkg/workloadprofile` or plumbed into the `StartRequest` — the daemons currently always learn
-  every behavior kind they support for the (currently unfiltered) matched pods, regardless of what
-  `behaviorsToLearn` says.
-- `kyverno-runtime ctrl` (and therefore `WorkloadProfile` reconciliation) is disabled by default in
-  the Helm chart (`ctrl.enabled: false`).
-
-Treat `WorkloadProfile` as an experimental, in-progress mechanism: the CRD, controller wiring, and
-gRPC learning-window plumbing exist and run, but do not yet scope learning to the intended pods or
-behaviors. `docs/workloadprofile.md` documents this from a user-facing perspective; a separate,
-concurrent change is removing `WorkloadProfile` from user-facing docs (e.g. `README.md`) for
-initial OSS release scoping. That is a documentation-scoping decision for user docs — it does not
-change what's true in code, which is what this file describes.
-
 ## Helm chart / deployment shape
 
 `charts/kyverno-runtime/` installs:
@@ -267,15 +196,13 @@ change what's true in code, which is what this file describes.
   privileged, `hostPID: true`, with host mounts for `/`, `/run`, `/var/run`, `/sys/fs/bpf`,
   `/sys/kernel/debug`, and `/sys/kernel/tracing`, and `NODE_NAME` injected from
   `spec.nodeName`.
-- A `Deployment` (`templates/ctrl-deployment.yaml`) running `kyverno-runtime ctrl`, gated behind
-  `.Values.ctrl.enabled` (default `false`).
 - A shared `ClusterRole`/`ClusterRoleBinding`/`ServiceAccount`
   (`templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml`, `templates/serviceaccount.yaml`),
   with `values.daemon.rbac.extraRules` as an escape hatch for granting the daemon access to
   additional resource types referenced by the `resource` CEL library.
-- CRDs for `RuntimePolicy` and `WorkloadProfile` (`charts/kyverno-runtime/crds/`), plus the
-  vendored OpenReports CRDs (`openreports.io_*`) — the OpenReports API is registered into both
-  binaries' schemes (`openreportsv1alpha1.Install(scheme)`) but is not otherwise used by any code
+- The `RuntimePolicy` CRD (`charts/kyverno-runtime/crds/`), plus the
+  vendored OpenReports CRDs (`openreports.io_*`) — the OpenReports API is registered into the
+  daemon's scheme (`openreportsv1alpha1.Install(scheme)`) but is not otherwise used by any code
   path described above; no component in this repo currently creates or reconciles `Report`/`ClusterReport`
   objects.
 
@@ -284,18 +211,21 @@ change what's true in code, which is what this file describes.
 These are verified, current limitations — not planned features to build toward, which belong in a
 future `PLAN.md`:
 
-- **`spec.mode` is wired into the CRD's print column but not into the API type.**
-  `RuntimePolicyMode` (`monitor`/`enforce`) and the constants `PolicyModeMonitor`/`PolicyModeEnforce`
-  are defined in `api/v1alpha1/runtimepolicy_types.go`, and `RuntimePolicy` carries a
-  `+kubebuilder:printcolumn:name="Mode",JSONPath=".spec.mode"` marker (reflected in the generated
-  CRD YAML, `charts/kyverno-runtime/crds/runtime.kyverno.io_runtimepolicies.yaml`). However,
-  `RuntimePolicySpec` has **no `Mode` field** — only `PodSelector`, `EvaluationInterval`,
-  `Variables`, and `Behaviors`. The `Mode` printer column will render empty for every policy, and
-  there is no monitor-vs-enforce distinction anywhere in the evaluation or enforcement code today;
-  every policy is unconditionally enforced. This is incomplete wiring left over from an earlier
-  design, not a working (even partial) feature — do not build on `RuntimePolicyMode` without
-  first adding the field to the spec and threading it through `pkg/compiler`, `pkg/lsmmgr`, and
-  `pkg/egressmgr`.
+- **`spec.mode: monitor` silently disables a policy instead of observing it.** The `Mode` field
+  was added to `RuntimePolicySpec` in `4a8bcb1` and is threaded through `pkg/compiler`
+  (`CompiledRuntimePolicy.mode` → `EvaluationResult.Mode`), so the field and its print column now
+  work. But both managers treat it purely as an on/off gate: `rpCreated` returns early unless the
+  mode is exactly `enforce` (`pkg/egressmgr/runtimepolicies.go`, `pkg/lsmmgr/runtimepolicies.go`),
+  and `rpUpdated` treats any non-`enforce` mode as a *delete*. Nothing else in the tree reads
+  `Mode`. A `monitor`-mode policy therefore enforces nothing, reports nothing, and writes no
+  status — it is indistinguishable from having no policy at all, which is the opposite of what a
+  user trialling a policy before enforcing it would expect.
+
+  Monitor mode is not implementable without three pieces that do not exist yet: a kernel→userspace
+  event channel (both BPF programs are map-lookup enforcers with no ring buffer, and
+  `events.EventIface` carries only pod and policy lifecycle callbacks), a finding sink
+  (`openreportsv1alpha1.Install(scheme)` is called but no code ever writes a `Report`), and status
+  reporting. Tracked in #41; the pipeline it needs overlaps #17 and #29.
 - **`exec` behaviors compile and evaluate but are not enforced.** `PolicyBehavior.Exec` is
   compiled by `pkg/compiler` and appears in `EvaluationResult.Exec`, and the BPF LSM program
   (`pkg/bpf/lsm/_cprog/lsm.bpf.c`) supports a second attach target for this
@@ -304,15 +234,22 @@ future `PLAN.md`:
   "file_open")` in `pkg/lsmmgr/runtimepolicies.go`) and only ever reads/writes
   `compiledRp.Open`; `compiledRp.Exec` is never consulted by `lsmmgr` or `egressmgr`. A
   `RuntimePolicy` with only `exec` rules will compile, apply, and report success, but has no
-  runtime effect. The gRPC `Read` API's `BEHAVIOR_EXEC` case also currently reads from the same
-  open-events map as `BEHAVIOR_OPEN` (`pkg/srv/grpc.go`), which is consistent with there being no
-  distinct exec enforcer yet.
-- **`WorkloadProfile` pod-label targeting is a no-op.** See [WorkloadProfile](#workloadprofile)
-  above — `workloadProfileReconciler.handleNewWorkloadProfile` sends an empty `Labels` map in the
-  `StartRequest`, so learning mode currently applies to all pods a daemon has attached rather than
-  the workload the profile named, and `behaviorsToLearn` is not read at all.
-- **No in-repo promotion workflow.** There is currently no code path that turns learned/observed
-  behavior (via the `Read` gRPC API) into a proposed `RuntimePolicy` allow/deny list. The intent is
-  for that promotion step to become a separate, LLM-assisted project rather than a CLI command
-  added to this repository; a full design for that is out of scope here and belongs in a future
-  `PLAN.md`.
+  runtime effect. Tracked in #34.
+- **Container attribution only covers containerd with the systemd cgroup driver.**
+  `pkg/containers.buildCandidatePaths` only ever generates `cri-containerd-<id>.scope` leaf names,
+  so on CRI-O or Docker nodes no candidate path resolves, no cgroup ID reaches the `cgids` maps
+  both engines gate on, and **no policy is enforced on that node** — silently, with the policy
+  still appearing healthy. cgroup v1 is likewise unhandled. Tracked in #38.
+- **Non-IPv4 network targets are silently dropped.** `egressfilter.normalizeIP` accepts only bare
+  IPv4 literals; IPv6 addresses, CIDR blocks, and hostnames fail to parse, are logged at `V(2)`,
+  and are skipped. The BPF program is IPv4-only by construction (`u32` map key, reads only
+  `ip->daddr`, no L4 parsing). Tracked in #43.
+- **No reporting, metrics, or status.** Nothing writes `Report`/`ClusterReport` objects, no metrics
+  are registered, and `RuntimePolicyStatus`'s `ObservedPods`/`ViolatingPods`/`LastEvaluatedTime`
+  are declared and print-columned but never populated (#44). The only observable output today is
+  `logger.V(2)` lines and the `-EPERM`/packet-drop side effects themselves. Tracked in #29 and #17.
+- **No tests.** `go test ./...` reports `[no test files]` for every package, and eBPF paths are not
+  exercised in CI at all. Tracked in #15.
+- **No promotion workflow.** There is no code path that turns observed behavior into a proposed
+  `RuntimePolicy` allow/deny list. The intent is for that promotion step to become a separate,
+  LLM-assisted project rather than a CLI command added to this repository.

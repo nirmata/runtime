@@ -56,8 +56,21 @@ Follow these rules when generating and updating code:
 
 ## Runtime event filtering policy
 
-- connect/tcpconnect events without k8s namespace+pod metadata must be treated as node/system noise and filtered out of pod-specific reporting.
-- open/exec events may be retained even when metadata is sparse to preserve valid workload detections.
+There is currently **no runtime event pipeline** in this repository. The `connect`/`tcpconnect`
+event filtering rules that used to live here described the Inspektor Gadget-based collector that
+was removed in `f806f25`; both eBPF programs today are map-lookup enforcers with no
+kernel-to-userspace event channel, so there are no events to filter.
+
+When an event pipeline is (re)introduced, the rules that applied before and should apply again:
+
+- Network events without Kubernetes namespace + pod metadata must be treated as node/system noise
+  and filtered out of pod-specific reporting.
+- `open`/`exec` events may be retained even when metadata is sparse, to preserve valid workload
+  detections.
+
+Note that "filter out unattributed events" only holds if attribution actually works — see the
+container attribution gap in [DESIGN.md](docs/dev/DESIGN.md), where whole runtimes currently
+resolve no cgroup at all. Silently dropping unattributed events would hide that.
 
 Keep this behavior aligned with docs/dev/DESIGN.md when making datasource or
 collection-path changes.
