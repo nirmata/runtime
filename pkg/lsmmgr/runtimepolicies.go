@@ -226,8 +226,7 @@ func (l *LsmManager) syncProgType(uid string, la *lsmAttachment, newFiles *compi
 }
 
 func (l *LsmManager) initEnforcer(uid string, la *lsmAttachment, enf **lsm.LsmEnforcer, newFiles *compiler.AllowDenyPair, progType string) error {
-	var err error
-	*enf, err = lsm.NewForAttachTarget(&l.logger, progType)
+	newEnf, err := lsm.NewForAttachTarget(&l.logger, progType)
 	if err != nil {
 		return err
 	}
@@ -247,6 +246,6 @@ func (l *LsmManager) initEnforcer(uid string, la *lsmAttachment, enf **lsm.LsmEn
 			l.logger.Error(err, "failed to add cgids for existing pod", "uid", uid, "cgids", pod.cgids)
 		}
 	}
+	*enf = newEnf
 	return nil
-
 }
