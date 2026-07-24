@@ -32,6 +32,9 @@ type AllowDenyPair struct {
 }
 
 func (p *AllowDenyPair) HasEntries() bool {
+	if p == nil {
+		return false
+	}
 	return len(p.Allow) != 0 || len(p.Deny) != 0
 }
 

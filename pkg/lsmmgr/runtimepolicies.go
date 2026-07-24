@@ -151,47 +151,44 @@ func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType st
 }
 
 func (l *LsmManager) syncProgType(uid string, la *lsmAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
-	enf, oldFiles := la.access(progType)
+	enf, filesPtr := la.access(progType)
+	oldFiles := *filesPtr
 
-	toAddPair := (*oldFiles).DiffPair(newFiles)
-	toRemovePair := newFiles.DiffPair(newFiles)
-	// no diff resulting from the old and the new pair. so we don't need to modify
-	// the enforcer pointer or return a new set of files
-	if !toAddPair.HasEntries() && !toRemovePair.HasEntries() {
-		return nil
+	var toAddPair, toRemovePair *compiler.AllowDenyPair
+	if oldFiles != nil {
+		toAddPair = oldFiles.DiffPair(newFiles)
+		toRemovePair = newFiles.DiffPair(oldFiles)
+	} else {
+		toAddPair = newFiles
 	}
 
-	if *enf == nil {
-		var err error
-		*enf, err = lsm.NewForAttachTarget(&l.logger, progType)
-		if err != nil {
-			return err
+	hasFileChanges := (toAddPair != nil && toAddPair.HasEntries()) || (toRemovePair != nil && toRemovePair.HasEntries())
+
+	if hasFileChanges {
+		if *enf == nil {
+			err := l.initEnforcer(uid, la, enf, newFiles, progType)
+			if err != nil {
+				return err
+			}
+		} else {
+			if toAddPair != nil && toAddPair.HasEntries() {
+				if err := (*enf).AddTargets(toAddPair); err != nil {
+					return err
+				}
+			}
+			if toRemovePair != nil && toRemovePair.HasEntries() {
+				if err := (*enf).DeleteTargets(toRemovePair); err != nil {
+					return err
+				}
+			}
+			defaultDeny := slices.Contains(newFiles.Deny, "*")
+			if err := (*enf).SetDefaultDeny(defaultDeny); err != nil {
+				return err
+			}
 		}
-
-		_, err = (*enf).Attach()
-		if err != nil {
-			return err
-		}
 	}
 
-	if toAddPair.HasEntries() {
-		err := (*enf).AddTargets(toAddPair)
-		if err != nil {
-			return err
-		}
-	}
-
-	if toRemovePair.HasEntries() {
-		err := (*enf).DeleteTargets(toRemovePair)
-		if err != nil {
-			return err
-		}
-	}
-
-	defaultDeny := slices.Contains(newFiles.Deny, "*")
-	if err := (*enf).SetDefaultDeny(defaultDeny); err != nil {
-		return err
-	}
+	*filesPtr = newFiles
 
 	for podUid, pod := range l.pods {
 		if la.selector.Matches(labels.Set(pod.labels)) {
@@ -202,10 +199,12 @@ func (l *LsmManager) syncProgType(uid string, la *lsmAttachment, newFiles *compi
 			}
 			// we aren't attached
 			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-			err := (*enf).AddCgids(pod.cgids)
-			if err != nil {
-				l.logger.Error(err, "failed to add cgids for pod", "podUid", podUid)
-				continue
+			if *enf != nil {
+				err := (*enf).AddCgids(pod.cgids)
+				if err != nil {
+					l.logger.Error(err, "failed to add cgids for pod", "podUid", podUid)
+					continue
+				}
 			}
 			la.attachedPods[podUid] = pod
 		} else {
@@ -214,13 +213,40 @@ func (l *LsmManager) syncProgType(uid string, la *lsmAttachment, newFiles *compi
 			if ok {
 				// yes we did. remove its cgids from the enforcer before dropping the attachment
 				l.logger.V(2).Info("pod no longer matches runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-				if err := (*enf).DeleteCgids(pod.cgids); err != nil {
-					l.logger.Error(err, "failed to remove cgids for pod", "podUid", podUid)
+				if *enf != nil {
+					if err := (*enf).DeleteCgids(pod.cgids); err != nil {
+						l.logger.Error(err, "failed to remove cgids for pod", "podUid", podUid)
+					}
 				}
 				delete(la.attachedPods, podUid)
-				continue
 			}
 		}
 	}
 	return nil
+}
+
+func (l *LsmManager) initEnforcer(uid string, la *lsmAttachment, enf **lsm.LsmEnforcer, newFiles *compiler.AllowDenyPair, progType string) error {
+	var err error
+	*enf, err = lsm.NewForAttachTarget(&l.logger, progType)
+	if err != nil {
+		return err
+	}
+	if err := (*enf).AddTargets(newFiles); err != nil {
+		return err
+	}
+	defaultDeny := slices.Contains(newFiles.Deny, "*")
+	if err := (*enf).SetDefaultDeny(defaultDeny); err != nil {
+		return err
+	}
+	if _, err := (*enf).Attach(); err != nil {
+		return err
+	}
+	// backfill cgids for pods that were already attached to this policy
+	for _, pod := range la.attachedPods {
+		if err := (*enf).AddCgids(pod.cgids); err != nil {
+			l.logger.Error(err, "failed to add cgids for existing pod", "uid", uid, "cgids", pod.cgids)
+		}
+	}
+	return nil
+
 }

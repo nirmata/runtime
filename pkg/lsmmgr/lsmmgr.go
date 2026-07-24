@@ -56,7 +56,7 @@ func (la *lsmAttachment) access(progType string) (enf **lsm.LsmEnforcer, files *
 	case lsm.PROG_TYPE_LSM_OPEN:
 		return &la.openEnforcer, &la.openFiles
 	case lsm.PROG_TYPE_LSM_EXEC:
-		return &la.execEnforcer, &la.openFiles
+		return &la.execEnforcer, &la.execFiles
 	}
 	panic("unknown program type")
 }
@@ -66,6 +66,7 @@ func NewLsmManager(logger logr.Logger) *LsmManager {
 		logger:         logger,
 		pods:           make(map[string]*podRepresentation),
 		lsmAttachments: make(map[string]*lsmAttachment),
+		wps:            make(map[string]*workloadProfile),
 	}
 }
 
