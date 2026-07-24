@@ -13,6 +13,9 @@ import (
 
 func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 	e.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID)
+	if compiledRp.Mode != "enforce" {
+		return
+	}
 	e.rps[compiledRp.UID] = compiledRp
 	for podUid, pod := range e.pods {
 		if !compiledRp.Selector.Matches(labels.Set(pod.labels)) {
@@ -31,6 +34,10 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 
 func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	e.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID)
+	if compiledRp.Mode != "enforce" {
+		e.rpDeleted(compiledRp)
+		return nil
+	}
 	currentRp, ok := e.rps[compiledRp.UID]
 	if !ok {
 		return fmt.Errorf("got an update for a non existing runtime policy uid")

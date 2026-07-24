@@ -12,6 +12,9 @@ import (
 
 func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID)
+	if compiledRp.Mode != "enforce" {
+		return nil
+	}
 	// rp contains no files to ban opening. do nothing with it
 	if len(compiledRp.Open.Allow) == 0 && len(compiledRp.Open.Deny) == 0 {
 		l.logger.V(2).Info("runtime policy has no open files to enforce, skipping", "uid", compiledRp.UID)
@@ -69,6 +72,10 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 
 func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	l.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID)
+	if compiledRp.Mode != "enforce" {
+		l.rpDeleted(compiledRp)
+		return nil
+	}
 	// a selector change, or a target change. just compute the diff on the target pods and on the banned files
 	la, ok := l.lsmAttachments[compiledRp.UID]
 	if !ok {

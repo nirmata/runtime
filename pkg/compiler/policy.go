@@ -20,6 +20,7 @@ type EvaluationResult struct {
 	Open     *AllowDenyPair
 	Exec     *AllowDenyPair
 	Selector labels.Selector
+	Mode     string
 }
 
 type AllowDenyPair struct {
@@ -85,6 +86,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		Open:     open,
 		Exec:     exec,
 		Selector: selector,
+		Mode:     c.mode,
 	}, nil
 }
 
