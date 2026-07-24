@@ -225,7 +225,7 @@ future `PLAN.md`:
   event channel (both BPF programs are map-lookup enforcers with no ring buffer, and
   `events.EventIface` carries only pod and policy lifecycle callbacks), a finding sink
   (`openreportsv1alpha1.Install(scheme)` is called but no code ever writes a `Report`), and status
-  reporting. Tracked in #41; the pipeline it needs overlaps #17 and #29.
+  reporting. Tracked in #42; the pipeline it needs overlaps #17 and #29.
 - **`exec` behaviors compile and evaluate but are not enforced.** `PolicyBehavior.Exec` is
   compiled by `pkg/compiler` and appears in `EvaluationResult.Exec`, and the BPF LSM program
   (`pkg/bpf/lsm/_cprog/lsm.bpf.c`) supports a second attach target for this
@@ -243,7 +243,7 @@ future `PLAN.md`:
 - **Non-IPv4 network targets are silently dropped.** `egressfilter.normalizeIP` accepts only bare
   IPv4 literals; IPv6 addresses, CIDR blocks, and hostnames fail to parse, are logged at `V(2)`,
   and are skipped. The BPF program is IPv4-only by construction (`u32` map key, reads only
-  `ip->daddr`, no L4 parsing). Tracked in #43.
+  `ip->daddr`, no L4 parsing). Tracked in #41.
 - **No reporting, metrics, or status.** Nothing writes `Report`/`ClusterReport` objects, no metrics
   are registered, and `RuntimePolicyStatus`'s `ObservedPods`/`ViolatingPods`/`LastEvaluatedTime`
   are declared and print-columned but never populated (#44). The only observable output today is
