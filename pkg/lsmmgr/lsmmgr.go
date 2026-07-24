@@ -43,10 +43,22 @@ type workloadProfile struct {
 }
 
 type lsmAttachment struct {
-	enf          *lsm.LsmEnforcer
+	openEnforcer *lsm.LsmEnforcer
+	execEnforcer *lsm.LsmEnforcer
 	selector     labels.Selector
 	attachedPods map[string]*podRepresentation
-	files        *compiler.AllowDenyPair
+	openFiles    *compiler.AllowDenyPair
+	execFiles    *compiler.AllowDenyPair
+}
+
+func (la *lsmAttachment) access(progType string) (enf **lsm.LsmEnforcer, files **compiler.AllowDenyPair) {
+	switch progType {
+	case lsm.PROG_TYPE_LSM_OPEN:
+		return &la.openEnforcer, &la.openFiles
+	case lsm.PROG_TYPE_LSM_EXEC:
+		return &la.execEnforcer, &la.openFiles
+	}
+	panic("unknown program type")
 }
 
 func NewLsmManager(logger logr.Logger) *LsmManager {

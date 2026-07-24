@@ -60,12 +60,23 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 		if _, ok := la.attachedPods[string(pod.UID)]; !ok {
 			continue
 		}
-		if err := la.enf.AddCgids(toAdd); err != nil {
-			return err
+		if la.execEnforcer != nil {
+			if err := la.execEnforcer.AddCgids(toAdd); err != nil {
+				return err
+			}
+			if err := la.execEnforcer.DeleteCgids(toRemove); err != nil {
+				return err
+			}
 		}
-		if err := la.enf.DeleteCgids(toRemove); err != nil {
-			return err
+		if la.openEnforcer != nil {
+			if err := la.openEnforcer.AddCgids(toAdd); err != nil {
+				return err
+			}
+			if err := la.openEnforcer.DeleteCgids(toRemove); err != nil {
+				return err
+			}
 		}
+
 	}
 	return nil
 

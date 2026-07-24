@@ -19,6 +19,11 @@ const (
 	argTypeExecCheck = uint8(2)
 )
 
+const (
+	PROG_TYPE_LSM_OPEN = "file_open"
+	PROG_TYPE_LSM_EXEC = "bprm_check_security"
+)
+
 //go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
 type LsmEnforcer struct {
 	logger  *logr.Logger
@@ -47,11 +52,11 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	zero := uint32(0)
 
 	switch target {
-	case "file_open":
+	case PROG_TYPE_LSM_OPEN:
 		if err := objs.Argtypes.Put(&zero, argTypeFileOpen); err != nil {
 			return nil, err
 		}
-	case "bprm_check_security":
+	case PROG_TYPE_LSM_EXEC:
 		if err := objs.Argtypes.Put(&zero, argTypeExecCheck); err != nil {
 			return nil, err
 		}

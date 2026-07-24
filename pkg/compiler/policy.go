@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apiserver/pkg/cel/lazy"
@@ -28,6 +29,19 @@ type AllowDenyPair struct {
 	// at compile time ?
 	Allow []string
 	Deny  []string
+}
+
+func (p *AllowDenyPair) HasEntries() bool {
+	return len(p.Allow) != 0 || len(p.Deny) != 0
+}
+
+// given a pair p, and a target..return another pair that represents what's in the target
+// but not p.
+func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
+	toAddAllow := utils.DiffSlice(p.Allow, target.Allow)
+	toAddDeny := utils.DiffSlice(p.Deny, target.Deny)
+
+	return &AllowDenyPair{Allow: toAddAllow, Deny: toAddDeny}
 }
 
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
