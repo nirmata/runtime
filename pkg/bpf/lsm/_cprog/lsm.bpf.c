@@ -59,7 +59,7 @@ static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
     struct linux_binprm *bprm = (struct linux_binprm *)arg0;
     char key[MAX_PATH_LEN] = {};
-    const char *fname = BPF_CORE_READ(bprm, filename);
+    const char *fname = bprm->filename;
     int len = bpf_probe_read_kernel_str(key, sizeof(key), fname);
     if (len <= 0) {
         return 0;
