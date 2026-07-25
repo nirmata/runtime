@@ -230,19 +230,19 @@ func (l *LsmManager) initEnforcer(uid string, la *lsmAttachment, enf **lsm.LsmEn
 	if err != nil {
 		return err
 	}
-	if err := (*enf).AddTargets(newFiles); err != nil {
+	if err := newEnf.AddTargets(newFiles); err != nil {
 		return err
 	}
 	defaultDeny := slices.Contains(newFiles.Deny, "*")
-	if err := (*enf).SetDefaultDeny(defaultDeny); err != nil {
+	if err := newEnf.SetDefaultDeny(defaultDeny); err != nil {
 		return err
 	}
-	if _, err := (*enf).Attach(); err != nil {
+	if _, err := newEnf.Attach(); err != nil {
 		return err
 	}
 	// backfill cgids for pods that were already attached to this policy
 	for _, pod := range la.attachedPods {
-		if err := (*enf).AddCgids(pod.cgids); err != nil {
+		if err := newEnf.AddCgids(pod.cgids); err != nil {
 			l.logger.Error(err, "failed to add cgids for existing pod", "uid", uid, "cgids", pod.cgids)
 		}
 	}
