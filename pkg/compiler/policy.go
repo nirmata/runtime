@@ -42,10 +42,10 @@ func (p *AllowDenyPair) HasEntries() bool {
 // given a pair p, and a target..return another pair that represents what's in the target
 // but not p.
 func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
-	toAddAllow := utils.DiffSlice(p.Allow, target.Allow)
-	toAddDeny := utils.DiffSlice(p.Deny, target.Deny)
+	newAllowInTarget := utils.DiffSlice(p.Allow, target.Allow)
+	newDenyInTarget := utils.DiffSlice(p.Deny, target.Deny)
 
-	return &AllowDenyPair{Allow: toAddAllow, Deny: toAddDeny}
+	return &AllowDenyPair{Allow: newAllowInTarget, Deny: newDenyInTarget}
 }
 
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
