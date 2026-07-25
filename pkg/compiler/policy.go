@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
+
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apiserver/pkg/cel/lazy"
