@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/cilium/ebpf v0.21.0
 	github.com/go-logr/logr v1.4.3
-	github.com/google/cel-go v0.28.0
+	github.com/google/cel-go v0.29.0
 	github.com/kyverno/sdk v0.0.0-20260710162940-953f943fc2d0
 	github.com/openreports/reports-api v0.2.1
 	github.com/spf13/cobra v1.10.2
