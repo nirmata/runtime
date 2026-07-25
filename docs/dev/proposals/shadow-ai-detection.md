@@ -4,41 +4,44 @@
 | --- | --- |
 | **Status** | Draft — for discussion, not accepted |
 | **Scope** | Detecting LLM, MCP, and A2A traffic originating from a workload or pod |
-| **Baseline** | Verified against `4a8bcb1`, assuming #32 (WorkloadProfile removal) lands |
-| **Assumes** | [AIControls](https://docs.aicontrols.dev) is deployed alongside — see [§3](#phase-3--integration-with-aicontrols) |
-
-> **Revision note.** The first draft of this document assumed kyverno-runtime would have to obtain
-> HTTP plaintext itself, and recommended against any MITM proxy. That assumption is dropped:
-> AIControls provides an L7 proxy with TLS interception, so this proposal now treats plaintext as
-> *available from a complementary system* and re-scopes kyverno-runtime to what only a kernel
-> vantage point can do. The consequence is large — roughly 8–14 weeks of eBPF uprobe work is
-> **removed** from the plan. §2.2's original analysis is kept intact for the record, with the
-> revised recommendation stated in [§3](#phase-3--integration-with-aicontrols).
+| **Baseline** | Verified against `4a8bcb1`, with #32 applied |
+| **Assumes** | A TLS-intercepting MITM proxy is deployed alongside — [AIControls](https://docs.aicontrols.dev) is the assumed one; see [§3](#part-3--integration-with-aicontrols) |
 
 ## Purpose
 
-"Shadow AI" here means unsanctioned or simply unknown AI usage by workloads in the cluster. This
-document does two things: it records what the runtime can actually observe today, and it proposes
+This document is a design proposal to extend **kyverno-runtime** to detect and report shadow AI traffic. "Shadow AI" means unsanctioned or simply unknown AI usage by workloads in the Kubernetes cluster.
+
+For scalability and separation of concerns, **kyverno-runtime does not decrypt traffic.** HTTP plaintext, where this proposal needs it, comes from a complementary in-path system that terminates TLS with a CA the workloads trust — [AIControls' HTTP Network Egress Proxy](https://docs.aicontrols.dev/docs/concepts/network-egress-filtering), or any equivalent MITM proxy. kyverno-runtime's vantage point is the kernel: every flow from every cgroup, regardless of whether the workload cooperates with that proxy. The whole design follows
+from that split.
+
+This document does two things: it records what the runtime can actually observe today, and it proposes
 how to get from there to detecting three classes of traffic — LLM provider APIs, Model Context
 Protocol, and Agent2Agent.
 
 Part 1 is descriptive and overlaps [DESIGN.md](../DESIGN.md); it is included because the design
 constraints it identifies are what dictate the proposal, and several of them are load-bearing.
-Part 2 is the proposal proper. [Part 3](#phase-3--integration-with-aicontrols) revises Part 2 for
-the case where AIControls is deployed alongside — which is the assumed deployment model, and which
-removes more work than it adds. **Read Part 3 before acting on Part 2's phasing.**
+Part 2 is the proposal proper. [Part 3](#part-3--integration-with-aicontrols) covers the
+integration with AIControls specifically: division of labour, the detections that exist only in the
+combined system, and the identity join.
 
-The short version: three things this needs do not exist yet — a kernel-to-userspace **event
-plane**, an **event-time CEL evaluator**, and a **finding sink**. None of them are AI-specific, all
-three are prerequisites for #17 and #29 as well, and the recommendation is to build them as generic
-layers with an AI classifier on top rather than as an "AI feature."
+The short version: three things this needs do not exist yet:
 
-The second short version, which is the actual thesis once AIControls is in the picture:
-**kyverno-runtime should not try to see inside AI traffic. It should verify that AI traffic is
-going where it is supposed to go.** AIControls has full semantic visibility but only over traffic
+- a kernel-to-userspace **eventplane**
+- an **event-time CEL evaluator**, and
+- a **finding sink**
+
+None of them are shadow AI-specific, all three are prerequisites for #17 and #29 as well, and the recommendation is to build them as generic layers with an AI classifier on top rather than as an "shadow AI feature."
+
+The thesis:
+
+**kyverno-runtime should not try to see inside AI traffic. It should verify that AI traffic is going where it is supposed to go.**
+
+AIControls, specifically its HTTP Network Egress Proxy, has full semantic visibility but only over traffic
 that cooperates with it; it cannot audit its own bypass, because the traffic that evades it is
 precisely the traffic it never sees. A kernel vantage point can, and that is the division of
 labour this document settles on.
+
+## Premise
 
 ## Related issues
 
@@ -55,28 +58,24 @@ Bugs and gaps this proposal depends on or is blocked by, filed separately:
 | #44 | Policy status is never written |
 | #15 | No tests; §2.3 argues the classifier should be pure and table-tested |
 
-## PHASE 1 — What the code actually does today
+## PART 1 — What the code actually does today
 
-> This section describes `4a8bcb1` as it stands, **including** the WorkloadProfile / learning-mode /
-> `ctrl` subsystem that #32 removes. It is left in because the constraints it documents (map-polling
-> instead of event streaming, no reverse cgroup index, IPv4-only egress) are exactly what the
-> proposal has to work around, and because the reasons that subsystem failed inform §2.7. Where a
-> component is going away, the proposal below says so and does not build on it.
+> This section describes the codebase at `4a8bcb1` with #32 applied. The constraints it documents —
+> no kernel→userspace event stream, no reverse cgroup index, IPv4-only egress, no finding sink — are
+> exactly what the proposal has to work around.
 
 ### 1.1 Repo layout / build
 
 - Module `github.com/nirmata/kyverno-runtime`, `go 1.26.0` (`go.mod:1-3`).
-- Key deps: `github.com/cilium/ebpf v0.21.0`, `github.com/google/cel-go v0.28.0`, `github.com/kyverno/sdk` (CEL libs), `github.com/openreports/reports-api v0.2.1`, `grpc`, `controller-runtime v0.24.1`, `k8s.io/apiserver` (for `k8s.io/apiserver/pkg/cel/library` + `lazy`). Tool directive: `github.com/cilium/ebpf/cmd/bpf2go` (`go.mod:35`).
+- Key deps: `github.com/cilium/ebpf v0.21.0`, `github.com/google/cel-go v0.28.0`, `github.com/kyverno/sdk` (CEL libs), `github.com/openreports/reports-api v0.2.1`, `controller-runtime v0.24.1`, `k8s.io/apiserver` (for `k8s.io/apiserver/pkg/cel/library` + `lazy`). Tool directive: `github.com/cilium/ebpf/cmd/bpf2go` (`go.mod:35`).
 - **No** inspektor-gadget, **no** containerd, **no** prometheus client in use — those were dropped in the `f806f25` "alpha release" rewrite. `github.com/prometheus/client_golang` is present only transitively.
-- Two commands, one binary (`cmd/kyverno-runtime/root.go`):
-  - `daemon` (`cmd/kyverno-runtime/daemon.go:37-165`) — per-node DaemonSet, privileged, `hostPID: true`, hostPath mounts of `/`, `/run`, `/sys/fs/bpf`, `/sys/kernel/debug`, `/sys/kernel/tracing` (`charts/kyverno-runtime/templates/daemonset.yaml:25-60`).
-  - `ctrl` (`cmd/kyverno-runtime/wpcontroller.go:22-95`) — cluster-scoped WorkloadProfile controller, **disabled by default** (`charts/kyverno-runtime/values.yaml`, `ctrl.enabled: false`).
+- One command, one binary (`cmd/kyverno-runtime/root.go`): `daemon` (`cmd/kyverno-runtime/daemon.go`) — per-node DaemonSet, privileged, `hostPID: true`, hostPath mounts of `/`, `/run`, `/sys/fs/bpf`, `/sys/kernel/debug`, `/sys/kernel/tracing` (`charts/kyverno-runtime/templates/daemonset.yaml:25-60`). There is **no control-plane Deployment** — everything runs per node.
 - eBPF C sources live in `pkg/bpf/*/_cprog/`, compiled via `//go:generate go tool bpf2go` and the resulting `*_bpfel.o` / `*_bpfeb.o` are **committed to the repo**. Note `pkg/bpf/lsm/_cprog/lsm.bpf.c:3` includes `include/vmlinux.h` which is *not* in the tree — so regenerating BPF objects requires generating vmlinux.h locally; the checked-in `.o` files are what actually ship.
 - `pkg/bpf/traceopen/traceopen.go` is a **one-line empty package stub** (package declaration only) — dead placeholder.
 
 ### 1.2 API types (`api/v1alpha1/`)
 
-`RuntimePolicy` (cluster-scoped, `rpol`, `api/v1alpha1/runtimepolicy_types.go:96-112`):
+`RuntimePolicy` is the only CRD (cluster-scoped, `rpol`, `api/v1alpha1/runtimepolicy_types.go:96-112`):
 
 - `spec.podSelector` (`*metav1.LabelSelector`, :15)
 - `spec.evaluationInterval` (:19)
@@ -86,8 +85,6 @@ Bugs and gaps this proposal depends on or is blocked by, filed separately:
 - `Behavior` = `{allow?: BehaviorRule, deny?: BehaviorRule}`; `BehaviorRule` = `{values []string, expression string}` (`:44-79`)
 - `status`: `observedPods`, `violatingPods`, `lastEvaluatedTime` (`:82-94`) — **all three are declared but never written by any code**. Nothing in the repo updates RuntimePolicy status.
 - DeepCopy is implemented via JSON round-trip (`:140-143`), not generated deepcopy.
-
-`WorkloadProfile` (cluster-scoped, `wp`, `api/v1alpha1/workloadprofile_types.go:29-35`): `spec.behaviorsToLearn []string`, `spec.duration`, spec immutable via XValidation (`:9`); `status.ready` (never written). `behaviorsToLearn` is **not plumbed anywhere** — the reconciler sends `Labels: make(map[string]string) // todo` (`pkg/workloadprofile/workloadprofile_reconciler.go:169`), so learning is unscoped and `behaviorsToLearn` is ignored.
 
 #### What `.mode` actually does (important for the shadow-AI design)
 
@@ -103,7 +100,7 @@ So **`mode: monitor` is a literal no-op today** — there is no monitor path, be
 Two independent enforcement engines, both keyed on cgroup:
 
 **(a) Egress IP filter** — `cgroup_skb/egress` program, `pkg/bpf/egressfilter/_cprog/probe.c:21-68`, attached per container cgroup path via `link.AttachCgroup(... AttachCGroupInetEgress ...)` (`pkg/bpf/egressfilter/egressfilter.go:150-160`).
-What it sees: it casts `skb->data` to a hand-rolled `struct iphdr` (`probe.c:8-19`) and reads **`ip->daddr` only**. Maps (`_cprog/maps.h`): `banned_ips`, `allowed_ips` (hash u32→u8, 1024 entries), `flags` (bit 1 `DEFAULT_DENY`, bit 2 `LEARNING_MODE`), `ip_events` (hash u32→u32 counters for learning).
+What it sees: it casts `skb->data` to a hand-rolled `struct iphdr` (`probe.c:8-19`) and reads **`ip->daddr` only**. Maps (`_cprog/maps.h`): `banned_ips`, `allowed_ips` (hash u32→u8, 1024 entries), `flags` (bit 1 `DEFAULT_DENY`), and an `ip_events` counter map that the BPF object still defines but no Go code reads.
 Consequences: **IPv4 only**, `To4()`-only normalization (`egressfilter.go:162-170` silently drops IPv6/CIDR/hostnames), **no L4 header parsing at all** (no dst port), no protocol check, no DNS, no TLS, no SNI, no HTTP. A separate `EgressFilter` instance (separate map set) is created **per pod** (`pkg/egressmgr/pods.go:18`), so the 1024-entry cap is per pod.
 
 **(b) LSM enforcer** — `SEC("lsm/generic_handler")` (`pkg/bpf/lsm/_cprog/lsm.bpf.c:99-129`), one program instance per `RuntimePolicy`, `AttachTo` retargeted at load time to either `file_open` or `bprm_check_security` (`pkg/bpf/lsm/lsm.go:34-58`), dispatched by an `argtypes` map value.
@@ -115,7 +112,7 @@ Consequences: **IPv4 only**, `To4()`-only normalization (`egressfilter.go:162-17
 
 **Attribution** (`pkg/containers/containers.go`): `ResolveCgInfos(pod)` walks `pod.Status.ContainerStatuses`, strips the `<runtime>://` prefix, and `stat()`s candidate cgroupv2 paths (`:89-119`) to get `{ID: stat.Ino, Path: string}`. Only `cri-containerd-<id>.scope` shapes are built — **CRI-O / Docker shim naming is not handled** (`:104-115`), and cgroup v1 layout is a TODO (`:92`). Identity known per pod is `pod.UID` + `pod.Labels` (stored in `podAttachment.labels` / `podRepresentation.labels`); namespace/name/owner are *not* retained in the managers.
 
-**Wiring**: `podWatcher` (`pkg/controller/podwatcher.go:53-117`) uses a field-selector-scoped informer `spec.nodeName=$NODE_NAME,status.phase=Running`; `RuntimePolicyMgr` (`pkg/controller/runtimepolicy_informer.go`) watches RuntimePolicies, compiles + evaluates, and fans out to `[]events.EventIface` (`pkg/events/iface.go:22-25`) — currently exactly `[em, lsmm]` (`cmd/kyverno-runtime/daemon.go:82-85`). `EventIface` has only two methods: `PodEvent` and `RuntimePolicyEvent`. **There is no "runtime event ingress" interface at all** — nothing flows kernel→userspace except polled learning counters.
+**Wiring**: `podWatcher` (`pkg/controller/podwatcher.go:53-117`) uses a field-selector-scoped informer `spec.nodeName=$NODE_NAME,status.phase=Running`; `RuntimePolicyMgr` (`pkg/controller/runtimepolicy_informer.go`) watches RuntimePolicies, compiles + evaluates, and fans out to `[]events.EventIface` (`pkg/events/iface.go`) — currently exactly `[em, lsmm]`, assembled in `cmd/kyverno-runtime/daemon.go`. `EventIface` has only two methods: `PodEvent` and `RuntimePolicyEvent`. **There is no "runtime event ingress" interface at all** — nothing flows kernel→userspace, in any form.
 
 ### 1.4 CEL layer
 
@@ -130,7 +127,7 @@ Consequences: **IPv4 only**, `To4()`-only normalization (`egressfilter.go:162-17
 
 | Capability | Status |
 | --- | --- |
-| Destination IPv4 address (egress) | **Yes** — `probe.c:34`, allow/deny + learning counters |
+| Destination IPv4 address (egress) | **Yes** — `probe.c:34`, allow/deny only |
 | Destination port / L4 | **No** — L4 header never parsed |
 | IPv6 | **No** — `To4()` drops it (`egressfilter.go:164`) |
 | CIDR / hostname targets | **No** — parse fails, entry silently skipped |
@@ -138,8 +135,7 @@ Consequences: **IPv4 only**, `To4()`-only normalization (`egressfilter.go:162-17
 | TCP connect events (`connect`/`tcpconnect`) | **No** — removed with inspektor-gadget; only `Agents.md:61` still references it |
 | TLS SNI / ALPN / JA3 | **No** |
 | HTTP request line / headers / body | **No** |
-| Egress "learning" | **Yes but IP-only** — `ip_events` map → `EgressFilter.ReadLearned()` → `egressmgr.Read()` → gRPC `ReadResponse.network map<uint32,uint32>` (`proto/learning.proto:43`) — raw little-endian u32 IPs, not even stringified |
-| Kubernetes service/endpoint → IP resolution | **No** (the `EndpointSlice` informer in `pkg/controller/endpointslice_informer.go` is only used to find *daemon pod IPs* for gRPC fan-out) |
+| Kubernetes service/endpoint → IP resolution | **No** — no `EndpointSlice` or `Service` informer exists |
 
 So: today there is **zero** protocol-layer network visibility. Everything for shadow AI beyond "this pod talked to 160.79.104.10" is net-new.
 
@@ -147,21 +143,21 @@ So: today there is **zero** protocol-layer network visibility. Everything for sh
 
 There is effectively **none**:
 
-- No OpenReports writer. `openreportsv1alpha1.Install(scheme)` is called in both commands (`daemon.go:65`, `wpcontroller.go:59`) and the chart ships `openreports.io_reports.yaml` / `clusterreports.yaml` CRDs, but **no Go code creates, reads, or updates a `Report`**. `grep -rn "openreports" pkg/` → nothing.
-- No metrics registration (only controller-runtime's default `/metrics` on the `ctrl` deployment, `wpcontroller.go:65`).
+- No OpenReports writer. `openreportsv1alpha1.Install(scheme)` is called in `daemon.go` and the chart ships `openreports.io_reports.yaml` / `clusterreports.yaml` CRDs, but **no Go code creates, reads, or updates a `Report`**. `grep -rn "openreports" pkg/` → nothing.
+- No metrics registration at all — nothing serves `/metrics`.
 - No Kubernetes Events, no status writes, no webhooks/sinks.
-- The only observable output is (a) `logger.V(2)` lines, (b) `-EPERM`/packet-drop side effects, (c) the learning-mode read path: HTTP `learningModeSrv.ServeHttp` (`pkg/srv/srv.go:36-93`) fanning out gRPC `Read` to daemons (`pkg/srv/grpc.go:51-78`), merging counter maps. That HTTP handler isn't even wired to a listener in `daemon.go`.
+- The only observable output is (a) `logger.V(2)` lines and (b) `-EPERM`/packet-drop side effects.
 - The whole prior reporter/metrics design (fingerprint dedup, truncation, `kyverno_runtime_reporter_*` counters) existed pre-`f806f25` and was **deleted**; it survives only in git history (`git show f806f25^:docs/dev/DESIGN.md`).
 
 ### 1.7 Docs / roadmap in-repo
 
-- `README.md`, `docs/runtimepolicy.md` (391 lines, spec + CEL library examples), `docs/workloadprofile.md` (marked experimental).
+- `README.md` and `docs/runtimepolicy.md` (391 lines, spec + CEL library examples).
 - `Agents.md:3` points at `docs/dev/DESIGN.md` and `docs/dev/PLAN.md` — **both deleted in `f806f25`**. `Agents.md:59-66` still encodes filtering rules for `connect`/`tcpconnect` events that no longer exist. Those docs are stale and should be rewritten as part of this work.
 - The deleted `PLAN.md` is still the best statement of intent and explicitly lists **`dns` (trace_dns) = Planned** and **`http` (trace_http) = Future** — i.e. shadow-AI detection is directionally on the old roadmap, and DNS was already the intended next signal.
 
 ---
 
-## PHASE 2 — Shadow-AI detection: implementation plan
+## PART 2 — Shadow-AI detection: implementation plan
 
 ### 2.0 Design premise
 
@@ -171,9 +167,12 @@ Three things must be built that don't exist: **(1) an event plane** (kernel→us
 
 #### Class 1 — LLM API traffic
 
+"Survives TLS = No" means the signal is unavailable to the kernel and belongs to the MITM proxy;
+tier C is listed for completeness of the classifier's input model, not as kyverno-runtime work.
+
 | Tier | Signal | Fidelity | Cost | Survives TLS |
 | --- | --- | --- | --- | --- |
-| A | DNS query name (`api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`, `*-aiplatform.googleapis.com`, `bedrock-runtime.*.amazonaws.com`, `*.openai.azure.com`, `api.mistral.ai`, `api.cohere.com`, `openrouter.ai`) | High for hosted providers; zero for self-hosted-by-IP | Very low (one uprobe-free tracepoint/socket filter on 53) | **Yes** |
+| A | DNS query name (`api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`, `*-aiplatform.googleapis.com`, `bedrock-runtime.*.amazonaws.com`, `*.openai.azure.com`, `api.mistral.ai`, `api.cohere.com`, `openrouter.ai`) | High for hosted providers; zero for self-hosted-by-IP | Very low (one tracepoint/socket filter on 53) | **Yes** |
 | A | TLS ClientHello SNI | High; authoritative for the actual connection (DNS can be cached/shared) | Low (parse first TX segment on 443) | **Yes** |
 | B | dst IP → provider prefix / ASN (Cloudflare, Azure, GCP, AWS) | Medium; provider CDNs are shared, high FP rate alone | Very low (already have dst IP) | **Yes** |
 | B | dst port + ALPN (`h2`) + JA3/JA4 hash | Low alone; useful as SDK fingerprint corroboration | Low | **Yes** |
@@ -212,52 +211,36 @@ Two transports, two entirely different signal classes:
 - Response body containing an agent card (`{"protocolVersion":…,"skills":[…],"capabilities":{…}}`) — requires response-side plaintext.
 - Metadata-only: none usable. A2A over HTTPS to an arbitrary host is indistinguishable from any other HTTPS. **A2A is plaintext-or-nothing.**
 
-### 2.2 The TLS problem
+### 2.2 TLS, and where plaintext comes from
 
-**Survives encryption:** DNS query names; TLS ClientHello **SNI** (plaintext in the handshake, absent ECH); **ALPN** (plaintext in ClientHello, absent ECH); dst IP/port; JA3/JA4 client fingerprint; packet size/timing/direction (weakly indicative of streaming); certificate SAN in the ServerHello (TLS 1.2 only — encrypted in 1.3).
+**Survives encryption — kyverno-runtime observes these directly:** DNS query names; TLS ClientHello **SNI** (plaintext in the handshake, absent ECH); **ALPN** (plaintext in ClientHello, absent ECH); dst IP/port; JA3/JA4 client fingerprint; packet size/timing/direction (weakly indicative of streaming); certificate SAN in the ServerHello (TLS 1.2 only — encrypted in 1.3).
 
-**Requires plaintext:** HTTP method/path, all headers (`anthropic-version`, `MCP-Session-Id`, `MCP-Protocol-Version`, `Accept: text/event-stream`, `Authorization` scheme, `User-Agent`), JSON-RPC method names, request/response body shape, `model` field, token counts.
+**Requires plaintext — supplied by the MITM proxy, not by kyverno-runtime:** HTTP method/path, all headers (`anthropic-version`, `MCP-Session-Id`, `MCP-Protocol-Version`, `Accept: text/event-stream`, `Authorization` scheme, `User-Agent`), JSON-RPC method names, request/response body shape, `model` field, token counts.
 
-Options:
+Two exceptions where plaintext needs no interception at all, and kyverno-runtime gets it for free:
 
-**(A) eBPF uprobes on TLS library write/read.** Attach uretprobe/uprobe to `SSL_write`/`SSL_read` (OpenSSL/BoringSSL), `gnutls_record_send/recv`, `NSS PR_Write`. Grab the buffer + length, stream via ring buffer.
+- **cleartext HTTP on any port** — self-hosted inference endpoints in-cluster (Ollama `:11434`, vLLM `:8000`) are overwhelmingly plaintext, and a `cgroup_skb/egress` peek reads them without decrypting anything;
+- **stdio MCP** — no network traffic exists at all; the signal is `execve` argv and `file_open`.
 
-- Pros: no traffic redirect, no cert handling, no MITM, works for Python/Node/Java/Ruby (all use OpenSSL or a shared lib), gives request *and* response, plus PID→cgroup attribution for free.
-- Cons: needs per-container binary discovery (the lib lives in the container's mount ns — resolvable via `/proc/<pid>/root/...`, which the daemon already can reach given `hostPID` + hostPath `/`), symbol offsets vary by build, statically-linked/musl/distroless images break it, attach must happen on container start and re-attach on exec, and OpenSSL 3.x + `SSL_write_ex` variants multiply targets.
-- **Go is the hard case**: Go's `crypto/tls` is pure Go and statically linked; there is no `SSL_write` symbol. You must uprobe Go symbols directly — `crypto/tls.(*Conn).Write` / `.Read` (or better `(*Conn).writeRecordLocked`) — resolved per-binary from the ELF symbol table (`.gopclntab`/`.symtab`), which requires: (i) reading the binary out of `/proc/<pid>/root/<exe>`, (ii) handling stripped binaries (`-ldflags="-s -w"` removes `.symtab` but **`.gopclntab` survives** — that's the reliable path, same trick eBPF-based tools use), (iii) **Go register ABI (go1.17+) puts args in registers, not stack**, so arg extraction is arch+ABI+Go-version dependent, and (iv) return-value probes on Go are hazardous because goroutine stack growth invalidates classic uretprobes — you must probe the return *address sites* instead. This is real, well-trodden, and expensive engineering. **For Go workloads, budget several weeks and expect version-fragility.**
+#### Why kyverno-runtime does not obtain plaintext itself
 
-**(B) Sidecar / service mesh TLS termination.** Route egress through an Envoy/Istio egress gateway with `ORIGINATE`/`TLS origination`, so the app speaks plaintext to the sidecar.
+Three approaches were considered and all three are rejected:
 
-- Pros: full L7 fidelity including bodies, mature, no kernel work, works for Go/static/anything.
-- Cons: requires a mesh or injection (this project is deliberately agentless-in-the-pod today — the daemon is a DaemonSet), only covers meshed namespaces, changes the trust model, adds latency and a large operational surface, and is trivially bypassed by any pod not in the mesh. **Fundamentally at odds with this codebase's architecture.** Reject as primary; support as an *optional* enrichment source.
+**(A) eBPF uprobes on TLS library write/read** — attach uprobe/uretprobe to `SSL_write`/`SSL_read` (OpenSSL/BoringSSL), `gnutls_record_send/recv`, `NSS PR_Write`, stream the buffer via ring buffer. Technically viable and attribution comes for free, but the cost is per-container binary discovery in the container's mount ns, symbol offsets that vary by build, breakage on musl/distroless/static images, attach lifecycle on every container start and exec, and OpenSSL 1.1-vs-3.x `SSL_write_ex` variance. Go is worse still: `crypto/tls` is pure Go with no `SSL_write` symbol, so it needs per-binary `.gopclntab` resolution, register-ABI argument extraction that varies by arch and Go version, and return-*site* probing because goroutine stack growth invalidates classic uretprobes — with expected breakage on each Go release. This buys nothing that the proxy does not already supply by cooperation.
 
-**(C) Explicit forward proxy with CONNECT.** Set `HTTPS_PROXY` (or transparently redirect 443 to a node-local proxy) and either (c1) read `CONNECT host:443` — metadata only, equivalent to SNI, or (c2) MITM with a trusted CA injected into every pod's trust store.
+**(B) Sidecar / service mesh TLS termination** — an Envoy/Istio egress gateway with TLS origination gives full L7 fidelity with no kernel work, but requires a mesh or injection (this project is deliberately agentless-in-the-pod; the daemon is a DaemonSet), covers only meshed namespaces, and is trivially bypassed by any pod outside the mesh. Reject as primary; support as an *optional* enrichment source.
 
-- Pros: (c1) is trivial and gives you the hostname with zero kernel work; (c2) gives full plaintext including Go.
-- Cons: (c1) adds nothing over SNI; (c2) needs CA distribution into every container, breaks pinned clients and mTLS, is a high-value MITM target holding every workload's API keys in plaintext, and is bypassed by ignoring `HTTPS_PROXY`. **Reject (c2)** for a security-posture product; a MITM proxy that decrypts every LLM prompt in the cluster is a worse liability than the shadow AI it detects.
-
-**(D) Accept metadata-only.** DNS + SNI + IP + port + ALPN + JA3 only.
-
-- Covers: all hosted LLM providers (high confidence), plaintext self-hosted (fully, since plaintext needs no interception), remote MCP/A2A to *known* hostnames (host-level only, cannot distinguish MCP from ordinary API traffic to the same host).
-- Misses: MCP/A2A discrimination on arbitrary HTTPS hosts, model names, token volumes, prompt content.
+**(C) kyverno-runtime operating its own MITM proxy** — duplicating what AIControls already is. CA distribution into every container, a second high-value target holding every workload's API keys in plaintext, and a second thing to bypass. Consuming a proxy someone else operates is a materially different proposition from operating one; kyverno-runtime should never operate one.
 
 #### Recommendation
 
-> **Superseded — see [§3](#phase-3--integration-with-aicontrols).** The recommendation below was
-> written assuming kyverno-runtime had to solve the plaintext problem alone. With AIControls
-> deployed, options (A) and (c2) are both off the table for different reasons: (A) because plaintext
-> arrives by cooperation instead, and (c2) because AIControls *is* the MITM proxy and building a
-> second one would be pure duplication. What survives unchanged is tier 1 — and tier 1 turns out to
-> be most of the value.
+**Kernel-side, in this order:**
 
-**Tiered, in this order:**
+1. **Metadata + cleartext first** — DNS + SNI/ALPN + connect-with-port + cleartext HTTP parsing, in one collector. No uprobes, no per-binary symbol work, no cert handling. This already delivers: full hosted-provider LLM inventory, full self-hosted/Ollama/vLLM detection, cleartext MCP/A2A detection, and the `.well-known/agent.json` signal for in-cluster A2A. Plus the **stdio-MCP exec signal**, which is orthogonal and cheap.
+2. **Then the `governed` bit** — is this flow going to the proxy or around it? Needs no plaintext, and is the highest-value output of the combined system ([§3.3](#33-new-detections-that-exist-only-in-the-combined-system)).
+3. **Semantics stay with the proxy** — model, prompt, tokens, tool names, arguments. kyverno-runtime consumes them as enrichment at most, never on the event path ([§3.6](#36-identity-join-and-one-hard-constraint)).
 
-1. **Ship (D) first** — DNS + SNI + connect-with-port + plaintext HTTP parsing. This is one collector, no uprobes, no per-binary symbol work, no MITM, and it already delivers: full hosted-provider LLM inventory, full self-hosted/Ollama/vLLM detection (plaintext), plaintext MCP/A2A detection, and the `.well-known/agent.json` signal for in-cluster A2A. Plus the **stdio-MCP exec signal**, which is orthogonal and cheap.
-2. ~~**Then (A), OpenSSL/BoringSSL uprobes only**, opt-in per namespace/workload via policy.~~ **Dropped in §3.**
-3. ~~**Then (A) for Go**, via `.gopclntab` symbol resolution.~~ **Dropped in §3.** This was the highest-risk item in the plan.
-4. **Never (c2)** — *as something kyverno-runtime builds.* This still holds; §3 explains why consuming someone else's proxy is a different proposition from operating one.
-
-Rationale: fidelity per engineering-week is dramatically higher for tier 1, and tier 1 is a hard prerequisite for the pipeline that tiers 2–3 feed anyway. Also, encryption-surviving signals are the *evasion-resistant* ones — an attacker can avoid a recognizable User-Agent far more easily than they can avoid a DNS lookup or an SNI. That last point is what makes the kernel vantage point durable even when a cooperating proxy is available: **cooperation can be withdrawn, a DNS lookup cannot.**
+Rationale: encryption-surviving signals are the *evasion-resistant* ones — an attacker can avoid a recognizable `User-Agent` far more easily than a DNS lookup or an SNI. That is what makes the kernel vantage point durable even when a cooperating proxy is available: **cooperation can be withdrawn, a DNS lookup cannot.**
 
 ### 2.3 Where the code changes go
 
@@ -284,11 +267,6 @@ pkg/bpf/exectrace/          NET-NEW  tracepoint/sched/sched_process_exec, argv[0
   _cprog/exec.bpf.c                  -> ringbuf. Observation-only; complements the LSM exec hook.
   exectrace.go
 
-pkg/bpf/ssltrace/           DROPPED  was: uprobe SSL_write/SSL_read + Go crypto/tls symbol
-                                     resolution. Removed in §3 — AIControls supplies plaintext,
-                                     so the OpenSSL-variance and Go-register-ABI work is
-                                     unnecessary. ~8-14 weeks and the plan's worst risk.
-
 pkg/aicontrols/             NET-NEW  §3: AIControls integration. Resolves the proxy's Service
   endpoint.go                        address(es) so netflow can classify governed vs. ungoverned
   reconcile.go                       flows; optional audit-log reconciliation. NO per-event calls.
@@ -306,7 +284,7 @@ pkg/collector/              NET-NEW  owns all Sources, one ringbuf reader gorout
 
 pkg/attribution/            NET-NEW  cgid -> {podUID, ns, name, labels, container, ownerRef}
   index.go                           reverse index maintained from podWatcher events;
-                                     also pid -> cgid via /proc/<pid>/cgroup for uprobe events
+                                     also pid -> cgid via /proc/<pid>/cgroup for exec events
 
 pkg/detect/                 NET-NEW  the AI classifier. Pure functions over runtimeevent.Event.
   ai/providers.go                    provider catalog: hostname patterns, path patterns, header
@@ -330,16 +308,16 @@ pkg/metrics/                NET-NEW  prometheus collectors (events, drops, findi
 
 #### Extends existing
 
-- `pkg/events/iface.go:22-25` — **extend `EventIface`** or, cleaner, leave it alone and add a parallel `runtimeevent.Sink` set; the existing interface is policy/pod-lifecycle-shaped and shouldn't be overloaded with per-packet events.
+- `pkg/events/iface.go` — **extend `EventIface`** or, cleaner, leave it alone and add a parallel `runtimeevent.Sink` set; the existing interface is policy/pod-lifecycle-shaped and shouldn't be overloaded with per-packet events.
 - `pkg/compiler/env.go:42-53` — register the new `ai` and `net` CEL libs alongside `http`/`resource`/`json`.
 - `pkg/compiler/compiler.go:74-102` — extend the behavior switch for the new behavior kinds; **and add a second compilation mode** that produces a `bool`-typed predicate program rather than a `list(string)` (see §2.4).
 - `pkg/compiler/policy.go:17-24` — `EvaluationResult` gains the compiled predicate + the parsed AI rule set.
 - `api/v1alpha1/runtimepolicy_types.go:56-68` — new `PolicyBehavior` member and its XValidation update (`:55` currently hardcodes "exactly one of network, exec, or open").
-- `pkg/containers/containers.go:89-119` — needs CRI-O/Docker path templates and a `/proc/<pid>/cgroup`-based fallback, because uprobe/tracepoint events arrive with a PID and the current code only maps pod→cgroup, never cgroup→pod or pid→pod.
+- `pkg/containers/containers.go:89-119` — needs CRI-O/Docker path templates and a `/proc/<pid>/cgroup`-based fallback, because tracepoint events arrive with a PID and the current code only maps pod→cgroup, never cgroup→pod or pid→pod.
 - `pkg/lsmmgr/runtimepolicies.go:24` — instantiate the **`bprm_check_security`** target that already exists in `pkg/bpf/lsm/lsm.go:54-58` and wire `compiledRp.Exec` (currently computed and thrown away) so exec allow/deny becomes real. Needed for *blocking* stdio MCP.
-- `cmd/kyverno-runtime/daemon.go:82-85` — construct the collector + attribution index + classifier + reporter and add them to the wiring.
+- `cmd/kyverno-runtime/daemon.go` — construct the collector + attribution index + classifier + reporter and add them to the wiring.
 - `charts/kyverno-runtime/templates/clusterrole.yaml` — add `openreports.io: reports, clusterreports` create/update/patch for the daemon (currently daemon RBAC is pods+runtimepolicies read-only).
-- No gRPC transport work is proposed. #32 deletes `proto/learning.proto`, `pkg/srv`, and `pkg/controller/endpointslice_informer.go`, so there is no cross-daemon RPC path left to extend — and the old one carried raw little-endian `u32` IPs in a `map<uint32,uint32>`, which was never an adequate shape for inventory anyway. Daemons should write their own inventory shard directly to the API instead (see §2.7).
+- No cross-daemon transport work is proposed. There is no daemon-to-daemon RPC path, and none should be added: each daemon writes its own inventory shard directly to the API server (see §2.7), which needs no always-on control-plane component.
 
 #### What the eBPF changes look like concretely
 
@@ -594,17 +572,14 @@ cgroupID(uint64) -> PodIdentity{ podUID, namespace, name, labels,
                                 containerName, containerID, ownerKind, ownerName, nodeName }
 ```
 
-- Populated in a new `EventIface` implementation added to the `eventHandlers` slice at `cmd/kyverno-runtime/daemon.go:85` — this is a clean extension point: `PodEvent(pod, cgInfos, create)` already delivers exactly `{pod, []ContainerCgroupInfo}`.
-- For uprobe-sourced events (which have a PID but possibly a stale cgid), fall back to reading `/proc/<pid>/cgroup` — available because the daemon runs with `hostPID: true` and mounts `/` (`daemonset.yaml:26,52-54`).
+- Populated in a new `EventIface` implementation added to the `eventHandlers` slice in `cmd/kyverno-runtime/daemon.go` — this is a clean extension point: `PodEvent(pod, cgInfos, create)` already delivers exactly `{pod, []ContainerCgroupInfo}`.
+- For tracepoint-sourced events (which have a PID but possibly a stale cgid), fall back to reading `/proc/<pid>/cgroup` — available because the daemon runs with `hostPID: true` and mounts `/` (`daemonset.yaml:26,52-54`).
 - Owner resolution (`Deployment`/`StatefulSet`/`CronJob` name) needs `ownerReferences` traversal, which needs ReplicaSet read RBAC — a new ClusterRole rule.
 - **Two existing bugs to fix here**: `cgroupInfoFromContainer` only builds `cri-containerd-*.scope` paths (`:104-115`), so CRI-O and Docker nodes get zero attribution; and `containerID` parsing does `strings.SplitN(...)[1]` (`:74`) which **panics** if `ContainerID` is empty (a container that isn't running yet — the exact case the TODO at `:40-42` flags). Attribution failures currently manifest as "policy silently doesn't apply."
-- **No WorkloadProfile tie-in.** An earlier draft of this proposal hung AI discovery off
-  `WorkloadProfileSpec.BehaviorsToLearn`. That is no longer available: #32 removes `WorkloadProfile`,
-  the learning-mode gRPC API, and the `ctrl` component outright, because pod targeting was a no-op
-  and `behaviorsToLearn` was read by nothing (#43). Discovery mode in §2.7 is therefore proposed as
-  a `RuntimePolicy` mode plus a dedicated inventory CR, with no dependency on the removed
-  subsystem — which is the better factoring anyway, since it keeps discovery on the same object
-  users already write policy against.
+- **Discovery hangs off `RuntimePolicy`, not a second CRD.** Discovery mode in §2.7 is a
+  `RuntimePolicy` mode plus a dedicated inventory CR for the rollup. Keeping targeting on the same
+  object users already write policy against means one selector, one mode axis, and no second
+  pod-matching path to keep correct.
 
 ### 2.7 Reporting, and the `.mode` tie-in
 
@@ -652,7 +627,7 @@ Also finally write `RuntimePolicyStatus.ObservedPods`/`ViolatingPods`/`LastEvalu
 
 `monitor` becoming real is the single highest-leverage change in this plan: it turns `.mode` from a placeholder into the observe/enforce axis the product needs, and it's what makes shadow-AI detection expressible at all. The `discover`/`monitor` split matters operationally — discovery on a 500-pod cluster would generate tens of thousands of findings if it emitted per-event; it must aggregate instead.
 
-For inventory surfacing, a net-new **cluster-scoped `AIInventory` CR** whose status holds the rollup (per workload: providers, endpoint kinds, models, transports, first/last seen, request counts) is better than stuffing it into RuntimePolicy status, and gives `kubectl get aiinventory` as the "what AI is my cluster using" answer. Each daemon should write **its own per-node shard** of that status directly to the API. There is no alternative to weigh any more — #32 removes the gRPC fan-out and the `ctrl` Deployment that drove it — but it was the better option regardless: it needs no always-on control-plane component, and it avoids a single cluster-scoped object being contended by every node in the DaemonSet. Sharding per node also means a node whose collectors are dropping events can report that fact locally rather than having it averaged away.
+For inventory surfacing, a net-new **cluster-scoped `AIInventory` CR** whose status holds the rollup (per workload: providers, endpoint kinds, models, transports, first/last seen, request counts) is better than stuffing it into RuntimePolicy status, and gives `kubectl get aiinventory` as the "what AI is my cluster using" answer. Each daemon should write **its own per-node shard** of that status directly to the API: it needs no always-on control-plane component, and it avoids a single cluster-scoped object being contended by every node in the DaemonSet. Sharding per node also means a node whose collectors are dropping events can report that fact locally rather than having it averaged away.
 
 ### 2.8 Phasing
 
@@ -670,12 +645,12 @@ needs no plaintext — only the destination and whether it was the proxy. See
 [§3.3](#33-new-detections-that-exist-only-in-the-combined-system). Ship it as part of the first
 release, not after.
 
-**Phase 2 — plaintext L7. ~2-3 weeks. Risk: low-medium. Narrowed by §3.**
-`pkg/bpf/l7peek` + userspace HTTP/JSON-RPC parsing. With AIControls deployed this no longer needs
-to cover hosted providers or remote MCP — the proxy sees those in plaintext already. What remains
-is genuinely uncovered: **in-cluster plaintext to self-hosted endpoints** (Ollama `:11434`, vLLM
-`:8000`) that a pod can reach directly without honouring the proxy and that AIControls only sees if
-configured as an upstream. Keep, but demote below Phase 1a.
+**Phase 2 — cleartext L7. ~2-3 weeks. Risk: low-medium.**
+`pkg/bpf/l7peek` + userspace HTTP/JSON-RPC parsing. Deliberately narrow: hosted providers and
+remote MCP are the proxy's job, since it sees those in plaintext already. What remains genuinely
+uncovered is **in-cluster cleartext to self-hosted endpoints** (Ollama `:11434`, vLLM `:8000`) that
+a pod can reach directly without honouring the proxy and that AIControls only sees if configured as
+an upstream. Keep, but sequence below Phase 1a.
 
 **Phase 2a — compelled routing (enforcement). ~2 weeks. Risk: medium.**
 Cgroup-level default-deny egress except the AIControls Service, DNS, and an explicit allowlist. See
@@ -683,18 +658,7 @@ Cgroup-level default-deny egress except the AIControls Service, DNS, and an expl
 should own, and it reuses the existing per-pod egress filter almost as-is. Risk is in the
 `AddIps`-vs-DNS-TTL race and the IPv4-only map (#41), both of which need resolving first.
 
-**~~Phase 3 — OpenSSL/BoringSSL uprobes.~~ DROPPED (§3).**
-Was ~4-6 weeks at high risk: per-container attach lifecycle, OpenSSL 1.1/3.x symbol variance,
-musl/Alpine, distroless, attach-storm on pod churn, and real perf cost on write-heavy workloads.
-AIControls obtains the same plaintext by cooperation, so none of that complexity buys anything.
-
-**~~Phase 4 — Go `crypto/tls` uprobes.~~ DROPPED (§3).**
-Was ~4-8 weeks at high risk *with ongoing maintenance*: `.gopclntab` symbol resolution,
-register-ABI argument extraction, return-site probing, and expected breakage on every Go release.
-This was the worst risk in the original plan and removing it is the largest single benefit of the
-AIControls integration.
-
-**Phase 5 — polish.** Optional mesh/Envoy access-log enrichment source; ASN/prefix enrichment for provider IP ranges; correlation (exec of an AI SDK + egress to an unknown host = higher confidence); default policy library shipped in the chart (the Makefile already references a `templates/default-policies.yaml` that doesn't exist — `Makefile` kind-install-manifests guards on `-f`).
+**Phase 3 — polish.** Optional mesh/Envoy access-log enrichment source; ASN/prefix enrichment for provider IP ranges; correlation (exec of an AI SDK + egress to an unknown host = higher confidence); default policy library shipped in the chart (the Makefile already references a `templates/default-policies.yaml` that doesn't exist — `Makefile` kind-install-manifests guards on `-f`).
 
 ### 2.9 Known limitations and evasion paths
 
@@ -702,7 +666,7 @@ AIControls integration.
 - **ECH (Encrypted Client Hello)**: removes SNI. Not yet common for LLM provider endpoints, but this is the signal most likely to erode over the next few years — plan for it rather than depending on SNI permanently.
 - **IP-literal connections**: `https://104.18.7.192/v1/messages` with a `Host` header defeats DNS+SNI; only plaintext or IP-catalog matching helps. IP catalogs for provider CDNs (Cloudflare-fronted) are high-FP.
 - **Self-hosted on 443 with a private CA**: no recognizable hostname, no plaintext, no provider match. Detectable only via body shape (needs plaintext) or SDK file-open fingerprints.
-- ~~**Static Go binaries** and **stripped/obfuscated** builds: uprobe attach fails.~~ Moot once uprobes are dropped (§3) — but the same workloads are now covered *only* if they honour the proxy, so the limitation reappears in a different form as "non-cooperating Go workload", see [§3.5](#35-residual-gaps-in-the-combined-system).
+- **Non-cooperating workloads**: any workload that ignores the proxy is covered by metadata only. Go binaries are the common case in practice — they neither honour `HTTPS_PROXY` automatically in every HTTP client nor expose an `SSL_write` symbol — so plaintext for them exists only if they were configured to use the proxy. See [§3.5](#35-residual-gaps-in-the-combined-system).
 - **Proxy chaining**: routing LLM calls through an internal reverse proxy or a "gateway" service makes the egress originate from the *gateway's* pod, not the agent's. Attribution then names the wrong workload. Partial mitigation: detect the internal hop and treat the gateway as a known aggregation point, but per-caller attribution genuinely requires the gateway to propagate identity.
 - **Non-HTTP transports**: gRPC-based inference (Vertex `PredictionService` over gRPC, Triton), WebSocket-based realtime APIs. `h2`/`websocket` ALPN + provider host still catches hosted cases; body parsing does not apply.
 - **stdio MCP evasion**: renaming the server binary, running it from an unexpected path, or spawning via a shell wrapper defeats argv matching. `execve` of *something* is still observed — so a default-deny exec allowlist (Phase 2, using the LSM exec hook) is far more robust than an argv denylist.
@@ -713,7 +677,7 @@ AIControls integration.
 
 ---
 
-## PHASE 3 — Integration with AIControls
+## PART 3 — Integration with AIControls
 
 [AIControls](https://docs.aicontrols.dev) governs AI traffic with three in-path enforcement points:
 LLM proxying (provider upstreams with model routing), MCP proxying (tool-call interception, schema
@@ -724,10 +688,12 @@ policy on the plaintext.
 
 kyverno-runtime becomes the **fourth enforcement point, below all three, in the kernel**.
 
-### 3.1 Why this changes the proposal
+### 3.1 Why the split falls where it does
 
-The two systems have exactly complementary blind spots, and the asymmetry is structural rather than
-incidental.
+The two systems' blind spots are largely complementary, and — importantly — the asymmetry is
+structural rather than incidental: it follows from *how* each system is in path, not from any gap
+either could close by shipping more features. Largely, not entirely: §3.5 lists what neither layer
+sees.
 
 **Everything AIControls sees requires cooperation.** Traffic reaches it because the workload was
 configured to send it there — `HTTP_PROXY`/`HTTPS_PROXY` pointed at its Service, a provider base-URL
@@ -846,8 +812,8 @@ refuse to claim enforcement it cannot deliver.
   "observed but not compelled." kyverno-runtime should report that state rather than let it pass
   silently.
 - **Non-cooperating workload + IP literal on 443 with a private CA** defeats both layers: no proxy
-  transit, no SNI, no DNS, no plaintext. Narrow but real. This is the same population that used to
-  be the "static Go binary" gap in §2.9 — the failure mode moved rather than disappeared.
+  transit, no SNI, no DNS, no plaintext. Narrow but real, and the one case where neither layer
+  contributes anything.
 - **DoH/DoT and ECH** continue to erode the metadata signals independently of AIControls, and ECH in
   particular removes the SNI that detection (1) depends on. Plan for it.
 - **Attribution gaps cap everything.** #38 means CRI-O and Docker nodes resolve no cgroup at all, so
