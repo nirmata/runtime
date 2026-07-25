@@ -5,6 +5,15 @@
 | **Status** | Draft — for discussion, not accepted |
 | **Scope** | Detecting LLM, MCP, and A2A traffic originating from a workload or pod |
 | **Baseline** | Verified against `4a8bcb1`, assuming #32 (WorkloadProfile removal) lands |
+| **Assumes** | [AIControls](https://docs.aicontrols.dev) is deployed alongside — see [§3](#phase-3--integration-with-aicontrols) |
+
+> **Revision note.** The first draft of this document assumed kyverno-runtime would have to obtain
+> HTTP plaintext itself, and recommended against any MITM proxy. That assumption is dropped:
+> AIControls provides an L7 proxy with TLS interception, so this proposal now treats plaintext as
+> *available from a complementary system* and re-scopes kyverno-runtime to what only a kernel
+> vantage point can do. The consequence is large — roughly 8–14 weeks of eBPF uprobe work is
+> **removed** from the plan. §2.2's original analysis is kept intact for the record, with the
+> revised recommendation stated in [§3](#phase-3--integration-with-aicontrols).
 
 ## Purpose
 
@@ -15,12 +24,21 @@ Protocol, and Agent2Agent.
 
 Part 1 is descriptive and overlaps [DESIGN.md](../DESIGN.md); it is included because the design
 constraints it identifies are what dictate the proposal, and several of them are load-bearing.
-Part 2 is the proposal proper.
+Part 2 is the proposal proper. [Part 3](#phase-3--integration-with-aicontrols) revises Part 2 for
+the case where AIControls is deployed alongside — which is the assumed deployment model, and which
+removes more work than it adds. **Read Part 3 before acting on Part 2's phasing.**
 
 The short version: three things this needs do not exist yet — a kernel-to-userspace **event
 plane**, an **event-time CEL evaluator**, and a **finding sink**. None of them are AI-specific, all
 three are prerequisites for #17 and #29 as well, and the recommendation is to build them as generic
 layers with an AI classifier on top rather than as an "AI feature."
+
+The second short version, which is the actual thesis once AIControls is in the picture:
+**kyverno-runtime should not try to see inside AI traffic. It should verify that AI traffic is
+going where it is supposed to go.** AIControls has full semantic visibility but only over traffic
+that cooperates with it; it cannot audit its own bypass, because the traffic that evades it is
+precisely the traffic it never sees. A kernel vantage point can, and that is the division of
+labour this document settles on.
 
 ## Related issues
 
@@ -225,14 +243,21 @@ Options:
 
 #### Recommendation
 
+> **Superseded — see [§3](#phase-3--integration-with-aicontrols).** The recommendation below was
+> written assuming kyverno-runtime had to solve the plaintext problem alone. With AIControls
+> deployed, options (A) and (c2) are both off the table for different reasons: (A) because plaintext
+> arrives by cooperation instead, and (c2) because AIControls *is* the MITM proxy and building a
+> second one would be pure duplication. What survives unchanged is tier 1 — and tier 1 turns out to
+> be most of the value.
+
 **Tiered, in this order:**
 
 1. **Ship (D) first** — DNS + SNI + connect-with-port + plaintext HTTP parsing. This is one collector, no uprobes, no per-binary symbol work, no MITM, and it already delivers: full hosted-provider LLM inventory, full self-hosted/Ollama/vLLM detection (plaintext), plaintext MCP/A2A detection, and the `.well-known/agent.json` signal for in-cluster A2A. Plus the **stdio-MCP exec signal**, which is orthogonal and cheap.
-2. **Then (A), OpenSSL/BoringSSL uprobes only**, opt-in per namespace/workload via policy. This covers Python and Node — which is where essentially all LLM/MCP/A2A client code lives today. Deliberately defer Go.
-3. **Then (A) for Go**, via `.gopclntab` symbol resolution, opt-in, clearly labelled experimental, with a documented fallback to metadata-only.
-4. **Never (c2)**. Offer (B) only as an optional external enrichment input (e.g. accept L7 records from an Envoy access-log tap) for users who already run a mesh.
+2. ~~**Then (A), OpenSSL/BoringSSL uprobes only**, opt-in per namespace/workload via policy.~~ **Dropped in §3.**
+3. ~~**Then (A) for Go**, via `.gopclntab` symbol resolution.~~ **Dropped in §3.** This was the highest-risk item in the plan.
+4. **Never (c2)** — *as something kyverno-runtime builds.* This still holds; §3 explains why consuming someone else's proxy is a different proposition from operating one.
 
-Rationale: fidelity per engineering-week is dramatically higher for tier 1, and tier 1 is a hard prerequisite for the pipeline that tiers 2–3 feed anyway. Also, encryption-surviving signals are the *evasion-resistant* ones — an attacker can avoid a recognizable User-Agent far more easily than they can avoid a DNS lookup or an SNI.
+Rationale: fidelity per engineering-week is dramatically higher for tier 1, and tier 1 is a hard prerequisite for the pipeline that tiers 2–3 feed anyway. Also, encryption-surviving signals are the *evasion-resistant* ones — an attacker can avoid a recognizable User-Agent far more easily than they can avoid a DNS lookup or an SNI. That last point is what makes the kernel vantage point durable even when a cooperating proxy is available: **cooperation can be withdrawn, a DNS lookup cannot.**
 
 ### 2.3 Where the code changes go
 
@@ -259,10 +284,14 @@ pkg/bpf/exectrace/          NET-NEW  tracepoint/sched/sched_process_exec, argv[0
   _cprog/exec.bpf.c                  -> ringbuf. Observation-only; complements the LSM exec hook.
   exectrace.go
 
-pkg/bpf/ssltrace/           NET-NEW  PHASE 3+: uprobe SSL_write/SSL_read (and Go crypto/tls)
-  _cprog/ssl.bpf.c
-  ssltrace.go
-  elf/                               symbol resolution: OpenSSL dynsym + Go .gopclntab
+pkg/bpf/ssltrace/           DROPPED  was: uprobe SSL_write/SSL_read + Go crypto/tls symbol
+                                     resolution. Removed in §3 — AIControls supplies plaintext,
+                                     so the OpenSSL-variance and Go-register-ABI work is
+                                     unnecessary. ~8-14 weeks and the plan's worst risk.
+
+pkg/aicontrols/             NET-NEW  §3: AIControls integration. Resolves the proxy's Service
+  endpoint.go                        address(es) so netflow can classify governed vs. ungoverned
+  reconcile.go                       flows; optional audit-log reconciliation. NO per-event calls.
 
 pkg/runtimeevent/           NET-NEW  the normalized event plane. This is the keystone.
   event.go                           type Event struct { Kind; Time; CgroupID; PID; Comm;
@@ -634,14 +663,36 @@ For inventory surfacing, a net-new **cluster-scoped `AIInventory` CR** whose sta
 `pkg/bpf/dnstrace`, `pkg/bpf/netflow` (dst IP+port), `pkg/bpf/tlspeek` (SNI+ALPN), `pkg/bpf/exectrace` (argv), `pkg/detect/ai` with the provider catalog, `event` CEL variable + `ai` lib, `spec.behaviors[].ai`, `mode: discover` + `AIInventory`.
 **This is the fastest useful signal and should be the first release**: full hosted-LLM-provider inventory, stdio-MCP detection via `npx @modelcontextprotocol/server-*`, and MCP-config-file discovery reusing the *already-working* `file_open` LSM hook. Risk concentrates in `tlspeek` (SNI extension walking under the verifier, ClientHello segment-spanning) — de-risk by shipping DNS + netflow + exec first and SNI second; DNS alone already covers hosted providers.
 
-**Phase 2 — plaintext L7. ~2-3 weeks. Risk: low-medium.**
-`pkg/bpf/l7peek` + userspace HTTP/JSON-RPC parsing. Unlocks: self-hosted OpenAI-compatible (Ollama `:11434`, vLLM `:8000`), in-cluster MCP over HTTP/SSE, all A2A `.well-known/agent.json` and JSON-RPC methods, model names. Cheap relative to its payoff because there's no crypto involved. Ship enforcement for AI classes here (default-deny MCP allowlist).
+**Phase 1a — proxy-bypass detection. ~1 week on top of Phase 1. Risk: low.**
+`pkg/aicontrols/endpoint.go` + a `governed` bit on each flow event. This is the single
+highest-value detection in the combined system and it is almost free once Phase 1 lands, because it
+needs no plaintext — only the destination and whether it was the proxy. See
+[§3.3](#33-new-detections-that-exist-only-in-the-combined-system). Ship it as part of the first
+release, not after.
 
-**Phase 3 — OpenSSL/BoringSSL uprobes. ~4-6 weeks. Risk: high.**
-`pkg/bpf/ssltrace` + dynamic symbol resolution per container. Opt-in per policy. Covers Python/Node HTTPS, which is where the bulk of real LLM/MCP client code lives. Risks: per-container attach lifecycle, OpenSSL 1.1/3.x symbol variance, musl/Alpine, distroless, attach-storm on pod churn, and a genuine performance cost on write-heavy workloads. Gate behind an explicit opt-in and a documented perf budget.
+**Phase 2 — plaintext L7. ~2-3 weeks. Risk: low-medium. Narrowed by §3.**
+`pkg/bpf/l7peek` + userspace HTTP/JSON-RPC parsing. With AIControls deployed this no longer needs
+to cover hosted providers or remote MCP — the proxy sees those in plaintext already. What remains
+is genuinely uncovered: **in-cluster plaintext to self-hosted endpoints** (Ollama `:11434`, vLLM
+`:8000`) that a pod can reach directly without honouring the proxy and that AIControls only sees if
+configured as an upstream. Keep, but demote below Phase 1a.
 
-**Phase 4 — Go `crypto/tls` uprobes. ~4-8 weeks. Risk: high, ongoing maintenance.**
-`.gopclntab` symbol resolution, register-ABI argument extraction, return-site probing. Label experimental. Expect breakage on each Go release. Only worth it once Phase 3 proves demand.
+**Phase 2a — compelled routing (enforcement). ~2 weeks. Risk: medium.**
+Cgroup-level default-deny egress except the AIControls Service, DNS, and an explicit allowlist. See
+[§3.4](#34-enforcement-division-of-labour). This is the one enforcement primitive kyverno-runtime
+should own, and it reuses the existing per-pod egress filter almost as-is. Risk is in the
+`AddIps`-vs-DNS-TTL race and the IPv4-only map (#41), both of which need resolving first.
+
+**~~Phase 3 — OpenSSL/BoringSSL uprobes.~~ DROPPED (§3).**
+Was ~4-6 weeks at high risk: per-container attach lifecycle, OpenSSL 1.1/3.x symbol variance,
+musl/Alpine, distroless, attach-storm on pod churn, and real perf cost on write-heavy workloads.
+AIControls obtains the same plaintext by cooperation, so none of that complexity buys anything.
+
+**~~Phase 4 — Go `crypto/tls` uprobes.~~ DROPPED (§3).**
+Was ~4-8 weeks at high risk *with ongoing maintenance*: `.gopclntab` symbol resolution,
+register-ABI argument extraction, return-site probing, and expected breakage on every Go release.
+This was the worst risk in the original plan and removing it is the largest single benefit of the
+AIControls integration.
 
 **Phase 5 — polish.** Optional mesh/Envoy access-log enrichment source; ASN/prefix enrichment for provider IP ranges; correlation (exec of an AI SDK + egress to an unknown host = higher confidence); default policy library shipped in the chart (the Makefile already references a `templates/default-policies.yaml` that doesn't exist — `Makefile` kind-install-manifests guards on `-f`).
 
@@ -651,7 +702,7 @@ For inventory surfacing, a net-new **cluster-scoped `AIInventory` CR** whose sta
 - **ECH (Encrypted Client Hello)**: removes SNI. Not yet common for LLM provider endpoints, but this is the signal most likely to erode over the next few years — plan for it rather than depending on SNI permanently.
 - **IP-literal connections**: `https://104.18.7.192/v1/messages` with a `Host` header defeats DNS+SNI; only plaintext or IP-catalog matching helps. IP catalogs for provider CDNs (Cloudflare-fronted) are high-FP.
 - **Self-hosted on 443 with a private CA**: no recognizable hostname, no plaintext, no provider match. Detectable only via body shape (needs plaintext) or SDK file-open fingerprints.
-- **Static Go binaries** (Phase 4 caveat) and **stripped/obfuscated** builds: uprobe attach fails; degrades to metadata-only. Also anything using a bundled-static OpenSSL.
+- ~~**Static Go binaries** and **stripped/obfuscated** builds: uprobe attach fails.~~ Moot once uprobes are dropped (§3) — but the same workloads are now covered *only* if they honour the proxy, so the limitation reappears in a different form as "non-cooperating Go workload", see [§3.5](#35-residual-gaps-in-the-combined-system).
 - **Proxy chaining**: routing LLM calls through an internal reverse proxy or a "gateway" service makes the egress originate from the *gateway's* pod, not the agent's. Attribution then names the wrong workload. Partial mitigation: detect the internal hop and treat the gateway as a known aggregation point, but per-caller attribution genuinely requires the gateway to propagate identity.
 - **Non-HTTP transports**: gRPC-based inference (Vertex `PredictionService` over gRPC, Triton), WebSocket-based realtime APIs. `h2`/`websocket` ALPN + provider host still catches hosted cases; body parsing does not apply.
 - **stdio MCP evasion**: renaming the server binary, running it from an unexpected path, or spawning via a shell wrapper defeats argv matching. `execve` of *something* is still observed — so a default-deny exec allowlist (Phase 2, using the LSM exec hook) is far more robust than an argv denylist.
@@ -659,3 +710,172 @@ For inventory surfacing, a net-new **cluster-scoped `AIInventory` CR** whose sta
 - **Ring buffer drops** under load look identical to "no AI traffic." Drop counters must be exported as metrics *and* surfaced in the inventory as an explicit "coverage incomplete" signal, or users will read silence as safety.
 - **Enforcement is coarse**: the existing egress enforcement is a per-pod IPv4 exact-match map with a 1024-entry cap (`_cprog/maps.h:8-20`) and no IPv6. "Block MCP to non-allowlisted servers" therefore degrades to "block these resolved IPs" — racy against DNS TTLs and round-robin, and silently ineffective for IPv6-reachable endpoints. Honest enforcement for hostname-based AI policy needs either a DNS-driven dynamic IP map (resolve-and-program on DNS response, which the `dnstrace` collector enables) or connection-level kill (`bpf_sock_ops` / `tcp_close`) — worth an explicit design decision in Phase 2.
 - **`spec.mode` semantics**: today `monitor` silently disables a policy entirely. Any user who writes a monitor-mode AI policy before Phase 0 lands gets nothing, with no error. Consider a validating webhook or a status condition so "this policy is inert" is visible.
+
+---
+
+## PHASE 3 — Integration with AIControls
+
+[AIControls](https://docs.aicontrols.dev) governs AI traffic with three in-path enforcement points:
+LLM proxying (provider upstreams with model routing), MCP proxying (tool-call interception, schema
+pinning, shadow-server quarantine), and — beneath both — a
+[network egress filter](https://docs.aicontrols.dev/docs/concepts/network-egress-filtering) that
+terminates TLS with certificates "signed by a root CA that AIControls controls" and evaluates CEL
+policy on the plaintext.
+
+kyverno-runtime becomes the **fourth enforcement point, below all three, in the kernel**.
+
+### 3.1 Why this changes the proposal
+
+The two systems have exactly complementary blind spots, and the asymmetry is structural rather than
+incidental.
+
+**Everything AIControls sees requires cooperation.** Traffic reaches it because the workload was
+configured to send it there — `HTTP_PROXY`/`HTTPS_PROXY` pointed at its Service, a provider base-URL
+override, or a sidecar init container installing `iptables NAT`/`REDIRECT` rules — *and* because the
+client trusts its root CA (installed in the container trust store or referenced via `SSL_CERT_FILE`
+/ `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE`).
+
+Their documentation is admirably direct about what follows from that, and each item is a place where
+a kernel vantage point is the only thing that can help:
+
+| AIControls limitation (per their docs) | Consequence |
+| --- | --- |
+| Certificate-pinned upstreams must go on a passthrough allowlist — raw TCP relay, no TLS termination, no policy evaluation; "every entry is a hole in the egress governance boundary" | Pinned clients are ungoverned by design; passthrough flows are logged with host and byte counts only |
+| Centralized topology "cannot do kernel-level redirect"; the backstop is a default-deny egress `NetworkPolicy`, and both bypass-resistance mechanisms are "optional and off by default" | In a default install, a workload that ignores `HTTPS_PROXY` simply is not governed |
+| Sidecar transparent redirect works only in a shared network namespace — "it has no effect on traffic from a different pod" | Cross-pod traffic escapes redirect |
+| Sidecar redirect "depends on a UID-separation constraint" | A process running as the proxy's UID escapes its own redirect rules |
+| `networkFilter.warnFallback` defaults to `allow` | Unvouched egress is permitted by default, flagged only in the audit trail |
+
+The load-bearing conclusion: **AIControls cannot audit its own bypass.** Traffic that evades the
+proxy is precisely the traffic absent from its audit log, so a clean AIControls report is
+indistinguishable from a workload that never spoke to it at all. kyverno-runtime sees every flow
+from every cgroup regardless of environment variables, CA trust, pinning, or cooperation — which
+makes "is governance actually being applied?" a question only it can answer.
+
+### 3.2 Division of labour
+
+| Concern | Owner | Why |
+| --- | --- | --- |
+| LLM semantics — model, prompt, tokens, cost | **AIControls** | `object.llm.{model,currentPrompt,messages,inputTokens}`, budgets, `tier`, `upstream.jurisdiction` |
+| MCP semantics — tool, arguments, drift, shadow servers | **AIControls** | `object.mcp.{tool,arguments,command,trustTier}`, `tools/list` schema pinning, quarantine |
+| HTTP L7 — method, host, path, body snippet | **AIControls** | `object.http.*` on decrypted traffic |
+| SSRF floor | **AIControls** | Pre-CEL, hardcoded, resolves DNS and checks the *resolved IP*, with anti-rebinding |
+| Human approval, cost governance, risk scoring | **AIControls** | `Approve` mode, HITL, identity risk 0–100 |
+| **Proxy-bypass detection** | **kyverno-runtime** | Only the kernel sees traffic that skipped the proxy |
+| **stdio MCP** | **kyverno-runtime** | No network traffic exists to proxy — see §3.3 |
+| **Passthrough-hole visibility** | **kyverno-runtime** | Restores per-flow detail where AIControls has host+bytes only |
+| **Compelled routing** | **kyverno-runtime** | Per-cgroup kernel enforcement, stronger than a CNI `NetworkPolicy` |
+| **Coverage attestation** | **kyverno-runtime** | "Which pods are protected by neither layer?" |
+
+The rule of thumb: **AIControls answers "what is this AI call doing?", kyverno-runtime answers "is
+this AI call subject to governance at all?"** kyverno-runtime should not attempt the former.
+
+### 3.3 New detections that exist only in the combined system
+
+**(1) Ungoverned AI egress — the flagship.** Needs no plaintext whatsoever, so Phase 1 already
+delivers the raw signal:
+
+```text
+netflow/tlspeek observes:  pod=agent-7c9f  dst=104.18.7.192:443  sni=api.openai.com
+aicontrols endpoint set:   10.96.14.22:8080  (AIControls Service ClusterIP)
+dst ∉ endpoint set  →  finding: ungoverned LLM egress, severity high
+```
+
+Every flow gets a `governed` bit: destination is the AIControls Service, or it is not. Combined with
+the SNI/DNS provider match already proposed in §2.1, "this pod is talking to OpenAI directly,
+bypassing governance" becomes a high-confidence finding built entirely from encryption-surviving
+metadata. This is the highest-value output of the whole combined system and among the cheapest to
+build.
+
+**(2) stdio MCP — structurally invisible to AIControls.** Their MCP governance intercepts "at the
+protocol layer before being forwarded to the upstream MCP server" and presumes traffic transits the
+proxy; the docs never mention stdio transport. A locally spawned
+`npx @modelcontextprotocol/server-filesystem` communicating over pipes generates **no network
+traffic at all** — there is nothing to intercept, catalog, or pin. Only `sched_process_exec` (argv)
+and the `file_open` LSM hook see it.
+
+This promotes §2.1's Class 2b from a cheap extra to a headline capability, and it is the one class
+where kyverno-runtime is not merely complementary but *sole*. Note the `file_open` half works with
+the hook that already ships today: opens of `.mcp.json`, `.cursor/mcp.json`, and
+`claude_desktop_config.json` are catchable with no new BPF work.
+
+**(3) Passthrough-hole visibility.** For hosts on the passthrough allowlist AIControls records host
+and byte counts only. kyverno-runtime sees the same flows at the kernel and can report destination,
+duration, byte volume, and originating pod — partially restoring visibility into the holes
+AIControls explicitly acknowledges.
+
+**(4) Audit reconciliation.** AIControls' audit log reports *N* calls for identity *I*;
+kyverno-runtime reports *M* provider connections from the pod backing *I*. `M > N` quantifies
+bypass. This is a batch/periodic reconciliation in userspace, **not** a per-event lookup — see the
+constraint in §3.6.
+
+**(5) Coverage attestation.** Because both AIControls bypass-resistance mechanisms are off by
+default, "which pods are governed by neither the proxy nor a kyverno-runtime policy?" is a real and
+currently unanswerable question. It is also the right thing to put on the inventory CR, since
+silence must never read as safety.
+
+### 3.4 Enforcement division of labour
+
+kyverno-runtime's enforcement is a per-pod IPv4 exact-match map with a 1024-entry cap and no L4
+parsing. It should not attempt semantic AI enforcement — AIControls already has
+`Audit`/`Warn`/`Deny`/`Approve` over tool names, models, hosts, paths, and budgets, and duplicating
+a weaker version would be strictly worse.
+
+It should own the **one enforcement AIControls cannot perform on itself: compelling traffic through
+the proxy.** Cgroup-level default-deny egress permitting only DNS, the AIControls Service, and an
+explicit allowlist. This is stronger than the `NetworkPolicy` backstop their docs recommend:
+
+- enforced per pod in the kernel rather than by the CNI, so it holds where NetworkPolicy support is
+  partial or absent;
+- unaffected by the cross-pod sidecar-redirect gap and by the UID-separation escape;
+- expressible with the *existing* `EgressFilter` and its `DEFAULT_DENY` flag — no new BPF program.
+
+Two honest caveats, both pre-existing bugs rather than new work: the allowlist is
+resolved-IP-based, so it races DNS TTLs and round-robin unless driven by the `dnstrace` collector
+programming addresses as they resolve; and #41 means it silently does nothing on IPv6-reachable
+endpoints. Both must be fixed before this is trustworthy, and until they are, this mode should
+refuse to claim enforcement it cannot deliver.
+
+### 3.5 Residual gaps in the combined system
+
+- **Trust now rests on the AIControls CA.** Its root CA can mint a certificate for any host any
+  cooperating workload trusts. That is the deliberate bargain of TLS inspection, but it makes the
+  proxy a high-value target holding plaintext prompts and provider credentials — worth stating
+  plainly in a threat model rather than leaving implicit.
+- **Bypass-resistance is off by default**, so the default posture of the combined system is
+  "observed but not compelled." kyverno-runtime should report that state rather than let it pass
+  silently.
+- **Non-cooperating workload + IP literal on 443 with a private CA** defeats both layers: no proxy
+  transit, no SNI, no DNS, no plaintext. Narrow but real. This is the same population that used to
+  be the "static Go binary" gap in §2.9 — the failure mode moved rather than disappeared.
+- **DoH/DoT and ECH** continue to erode the metadata signals independently of AIControls, and ECH in
+  particular removes the SNI that detection (1) depends on. Plan for it.
+- **Attribution gaps cap everything.** #38 means CRI-O and Docker nodes resolve no cgroup at all, so
+  on those nodes kyverno-runtime contributes nothing and the identity join in §3.6 silently
+  degrades. #36 and #37 are outright panics. Phase 0 must fix these first; they are the floor
+  everything else stands on.
+
+### 3.6 Identity join, and one hard constraint
+
+**The join is clean.** AIControls' verified path is: pod presents its projected ServiceAccount
+token, the proxy validates signature/issuer/audience against the cluster OIDC/JWKS issuer, and the
+result is an Agent identity with `object.identity.verification_method == "k8s-sa"`.
+kyverno-runtime resolves cgroup → pod → ServiceAccount. Both sides land on the same Kubernetes
+ServiceAccount, so findings correlate on it without inventing a new identifier.
+
+**The constraint: never call AIControls per event.** §2.4 already establishes that the per-event CEL
+environment must exclude `http` and `resource`, because a program evaluated at 10k events/s cannot
+make network calls. The same applies to enrichment. Concretely:
+
+- **Allowed** — pull the proxy's Service address and `defaults.egress.allowedDomains` on
+  `evaluationInterval` using the *existing* `http.get()` CEL library. This matches the pattern
+  `75afe1e` established and needs no new machinery.
+- **Allowed** — periodic, batched audit-log reconciliation in `pkg/aicontrols/reconcile.go`.
+- **Forbidden** — any AIControls lookup on the event path.
+
+**Redaction gets stricter, not looser.** §2.7 already forbids `Authorization`/`x-api-key` values and
+raw bodies in findings. With AIControls in the picture, enriched fields must be treated the same way:
+`object.http.bodySnippet`, `object.llm.currentPrompt`, and `object.llm.messages` must **never** be
+copied into a `Report`. Reports are cluster-readable, so mirroring prompt content into them would
+turn kyverno-runtime into a second disclosure surface for the data AIControls exists to protect.
+This applies to enrichment as strictly as to direct observation, and should not be configurable off.
