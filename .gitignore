@@ -1,6 +1,7 @@
 bin/
 .DS_Store
 /kyverno-runtime
+/cmd/kyverno-runtime/kyverno-runtime
 *.log
 .vscode
 vmlinux.h
