@@ -139,7 +139,8 @@ func detectCgroup() (*cgroupInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	// read-only file; nothing to report on close
+	defer func() { _ = f.Close() }()
 
 	return parseMountInfo(f)
 }
