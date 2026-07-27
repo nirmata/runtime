@@ -63,7 +63,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	for podUid, pod := range l.pods {
 		if compiledRp.Selector.Matches(labels.Set(pod.labels)) {
 			// add a pointer to this attached pod
-			la.attachedPods[podUid] = pod
+			attach(compiledRp.UID, la, podUid, pod)
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
 	}
@@ -118,8 +118,11 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 }
 
 func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
-	l.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
-	for _, prog := range l.lsmAttachments[compiledRp.UID].progs {
+	la, ok := l.lsmAttachments[compiledRp.UID]
+	if !ok {
+		return
+	}
+	for _, prog := range la.progs {
 		if err := prog.enf.Close(); err != nil {
 			l.logger.Error(err, "failed to close bpf lsm enforcer")
 		}
@@ -235,7 +238,7 @@ func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDen
 func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 	for podUid, pod := range l.pods {
 		// there is an implicit assumption here that la.selector contains the new selector from the update.
-		// if this is no longer the case, the function will be using the old selctor to check if we should
+		// if this is no longer the case, the function will be using the old selector to check if we should
 		// still match a given pod or no
 		if la.selector.Matches(labels.Set(pod.labels)) {
 			_, ok := la.attachedPods[podUid]
