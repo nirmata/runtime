@@ -1,7 +1,9 @@
 package containers
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -71,7 +73,10 @@ func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Cont
 		return nil, err
 	}
 
-	containerID := strings.SplitN(cs.ContainerID, "://", 2)[1]
+	containerID, err := parseContainerID(cs.ContainerID)
+	if err != nil {
+		return nil, err
+	}
 	podUID := strings.ReplaceAll(string(pod.UID), "-", "_")
 	qos := strings.ToLower(string(pod.Status.QOSClass))
 
@@ -84,6 +89,17 @@ func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Cont
 	}
 
 	return nil, fmt.Errorf("cgroup path not found for container %s", containerID)
+}
+
+// parseContainerID strips the runtime scheme from a CRI container id
+// (e.g. "containerd://<id>"). Containers that have not started yet report an
+// empty id, which previously panicked on the split result.
+func parseContainerID(raw string) (string, error) {
+	parts := strings.SplitN(raw, "://", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return "", fmt.Errorf("invalid container id %q", raw)
+	}
+	return parts[1], nil
 }
 
 func buildCandidatePaths(root, podUID, containerID, qos string) []string {
@@ -119,16 +135,28 @@ func buildCandidatePaths(root, podUID, containerID, qos string) []string {
 }
 
 func detectCgroup() (*cgroupInfo, error) {
-	data, err := os.ReadFile("/proc/self/mountinfo")
+	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
+	return parseMountInfo(f)
+}
+
+// parseMountInfo scans mountinfo formatted content and returns the first cgroup
+// or cgroup2 mount it finds. It is pure so that it can be tested without a
+// procfs.
+func parseMountInfo(r io.Reader) (*cgroupInfo, error) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
 		// the mount point is at the 4th index in /proc/self/mountinfo and
 		// the fields before it are fixed. its reliable for us to expect the
-		// mount point to be there
+		// mount point to be there, but malformed/short lines must not panic
+		if len(fields) < 5 {
+			continue
+		}
 		mountPoint := fields[4]
 
 		// scan fields until we get the hyphen separator which after it we will
@@ -145,6 +173,9 @@ func detectCgroup() (*cgroupInfo, error) {
 				return &cgroupInfo{mountPoint: mountPoint, version: 1}, nil
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 
 	return nil, fmt.Errorf("no cgroup mount found")

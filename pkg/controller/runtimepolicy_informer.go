@@ -227,18 +227,35 @@ func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1
 	}
 
 	if currentRb, ok := r.rpThreadMap[string(rp.UID)]; ok {
+		// either side of the comparison can be absent: a tracked policy may
+		// have had no interval, and the incoming policy may have dropped its
+		// evaluationInterval. treat a missing interval as zero.
+		var newInterval time.Duration
+		if rp.Spec.EvaluationInterval != nil {
+			newInterval = rp.Spec.EvaluationInterval.Duration
+		}
+		var currentInterval time.Duration
+		if currentRb.compiled != nil && currentRb.compiled.ReevalInterval != nil {
+			currentInterval = *currentRb.compiled.ReevalInterval
+		}
+
 		// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
-		if *currentRb.compiled.ReevalInterval != rp.Spec.EvaluationInterval.Duration {
+		if currentInterval != newInterval {
 			// there was a previously existing cancel function (different interval). cancel the re-evalutation
 			// thread that runs on that interval
 			if currentRb.cancel != nil {
 				currentRb.cancel()
 			}
-			ctx, cancel := context.WithCancel(ctx)
-			go r.evaluateForInterval(ctx, rp.Spec.EvaluationInterval.Duration, string(rp.UID))
-			r.rpThreadMap[string(rp.UID)] = &rpWatch{
-				compiled: compiledRb,
-				cancel:   cancel,
+			if newInterval <= 0 {
+				// the policy no longer asks for periodic re-evaluation
+				delete(r.rpThreadMap, string(rp.UID))
+			} else {
+				ctx, cancel := context.WithCancel(ctx)
+				go r.evaluateForInterval(ctx, newInterval, string(rp.UID))
+				r.rpThreadMap[string(rp.UID)] = &rpWatch{
+					compiled: compiledRb,
+					cancel:   cancel,
+				}
 			}
 		}
 	}
