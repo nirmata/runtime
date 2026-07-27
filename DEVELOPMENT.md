@@ -253,8 +253,9 @@ kyverno-runtime/
 ├── charts/                     # Helm chart
 ├── docs/
 │   ├── dev/                    # Developer documentation
-│   │   ├── DESIGN.md           # Architecture and design decisions
-│   │   └── PLAN.md             # Development plan
+│   │   └── DESIGN.md           # Architecture and design decisions
+│   │       # (docs/dev/PLAN.md does not currently exist; see
+│   │       # "Design and Planning Documents" below)
 │   └── users/                  # User documentation
 ├── test/e2e/                   # Chainsaw E2E tests
 ├── samples/                    # User-facing policy examples
@@ -437,23 +438,22 @@ kubectl delete runtimebehavior --all
 This project maintains clear separation between **current implementation** and **planned work**:
 
 - **[DESIGN.md](docs/dev/DESIGN.md)** - Describes the *current* architecture and implementation
-  - Updated when the architecture changes or when completing major features from PLAN.md
+  - Updated when the architecture changes or when completing major previously-planned features
   - Should accurately reflect the deployed system (what you see in `main` branch)
   - Includes design decisions, component responsibilities, and integration patterns
-  - Add new sections here to document completed features from PLAN.md
+  - Add new sections here to document completed features that were previously tracked as planned work
 
-- **[PLAN.md](docs/dev/PLAN.md)** - Roadmap for *future* work and enhancements
-  - Describes planned features, phases, and requirements
-  - Tracks implementation status for each phase (PROPOSED, IN PROGRESS, COMPLETED, etc.)
-  - Remove completed items and move their documentation to DESIGN.md
-  - Keep only truly planned or in-progress items
+- **`docs/dev/PLAN.md`** - Roadmap for *future* work and enhancements (does not currently exist)
+  - There is currently no forward-looking roadmap document in this repository
+  - If forward-looking roadmap tracking becomes necessary, create `docs/dev/PLAN.md` following the same current-vs-planned split described here: planned features, phases, and requirements, with an implementation status per phase (PROPOSED, IN PROGRESS, COMPLETED, etc.)
+  - Once created, remove completed items from it and move their documentation to DESIGN.md; keep only truly planned or in-progress items
 
 ### Guidelines for Contributing
 
-**When implementing a feature from PLAN.md:**
+**When implementing a previously planned feature:**
 
 1. Make your code changes and get them merged to `main`
-2. Update [PLAN.md](docs/dev/PLAN.md): Change status to **COMPLETED** ✅ or move to a completed section
+2. If `docs/dev/PLAN.md` exists, update it: change status to **COMPLETED** ✅ or move to a completed section
 3. Update [DESIGN.md](docs/dev/DESIGN.md): Add or expand sections documenting the new feature
 4. Update this file ([DEVELOPMENT.md](DEVELOPMENT.md)): Add any new build targets, workflows, or gotchas
 5. Update [README.md](../../README.md): Update examples or next-steps if user-facing
@@ -463,7 +463,7 @@ This project maintains clear separation between **current implementation** and *
 1. Update [DESIGN.md](docs/dev/DESIGN.md) first (before code changes when possible)
 2. Update [Agents.md](../../Agents.md) if the change affects coding guidelines or runtime behavior
 3. Update diagrams and examples to reflect the new design
-4. Add a note in [PLAN.md](docs/dev/PLAN.md) if this affects planned items
+4. If `docs/dev/PLAN.md` exists, add a note there if this affects planned items
 
 **When writing significant documentation changes:**
 
@@ -478,7 +478,8 @@ This project maintains clear separation between **current implementation** and *
 Read these documents in this order:
 
 1. [DESIGN.md](docs/dev/DESIGN.md) - Understand the current architecture
-2. [PLAN.md](docs/dev/PLAN.md) - See what's planned or in-flight
+2. `docs/dev/PLAN.md`, if present - See what's planned or in-flight (this file does not
+   currently exist in the repository; there is no active forward-looking roadmap document)
 3. [Agents.md](../../Agents.md) - Review development guidelines and runtime policies
 
 ## Getting Help
