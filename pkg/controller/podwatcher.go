@@ -126,6 +126,9 @@ func (w *podWatcher) processNextWorkItem() bool {
 	if shutdown {
 		return false
 	}
+	// without Done the item stays in the queue's processing set forever, which
+	// means requeued events are never handed out again
+	defer w.queue.Done(ev)
 
 	var err error
 
