@@ -9,12 +9,15 @@
 #define DEFAULT_DENY 1
 #define LEARNING_MODE 2
 
-// argtype values written into the `argtypes` map from userspace (see lsm.go's
-// argTypeFileOpen / argTypeExecCheck). must stay in sync with those.
-#define ARGTYPE_FILE_OPEN 1
-#define ARGTYPE_EXEC_CHECK 2
+#if !defined(LSM_FILE_OPEN) && !defined(LSM_EXEC_CHECK)
+#error "must build lsm.bpf.c with exactly one of -DLSM_FILE_OPEN or -DLSM_EXEC_CHECK defined"
+#endif
 
+#if defined(LSM_FILE_OPEN) && defined(LSM_EXEC_CHECK)
+#error "must build lsm.bpf.c with exactly one of -DLSM_FILE_OPEN or -DLSM_EXEC_CHECK defined"
+#endif
 
+#if defined(LSM_FILE_OPEN)
 static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
     struct file *f = (struct file *)arg0;
@@ -22,8 +25,7 @@ static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     bpf_d_path(&f->f_path, buf, sizeof(buf));
 
     char key[MAX_PATH_LEN] = {};
-    bpf_probe_read_kernel_str(key, sizeof(key), buf); 
-
+    bpf_probe_read_kernel_str(key, sizeof(key), buf);
 
     struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
     if (count_map) {
@@ -54,16 +56,17 @@ static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     }
     return 0;
 }
+#endif // LSM_FILE_OPEN
 
+#if defined(LSM_EXEC_CHECK)
 static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
     struct linux_binprm *bprm = (struct linux_binprm *)arg0;
+    char buf[MAX_PATH_LEN] = {};
+    bpf_d_path(&bprm->file->f_path, buf, sizeof(buf));
+
     char key[MAX_PATH_LEN] = {};
-    const char *fname = BPF_CORE_READ(bprm, filename);
-    int len = bpf_probe_read_kernel_str(key, sizeof(key), fname);
-    if (len <= 0) {
-        return 0;
-    }
+    bpf_probe_read_kernel_str(key, sizeof(key), buf);
 
     struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
     if (count_map) {
@@ -95,17 +98,12 @@ static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     }
     return 0;
 }
+#endif // LSM_EXEC_CHECK
 
 SEC("lsm/generic_handler")
 int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
 {
     __u64 cgid = bpf_get_current_cgroup_id();
-    __u32 key = 0;
-    __u8 *argtype = bpf_map_lookup_elem(&argtypes, &key);
-    if (!argtype) {
-        return 0;
-    }
-
     __u64 *args = (__u64*)ctx;
 
     __u8 *val = bpf_map_lookup_elem(&cgids, &cgid);
@@ -113,19 +111,11 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
         return 0;
     }
 
-    switch (*argtype) {
-        case ARGTYPE_FILE_OPEN: {
-            return handle_open(args, &cgid);
-        }
-        case ARGTYPE_EXEC_CHECK: {
-            return handle_exec(args, &cgid);
-        }
-        default: {
-            bpf_printk("lsm: unknown argtype=%u", *argtype);
-        }
-    };
-
-    return 0;
+#if defined(LSM_FILE_OPEN)
+    return handle_open(args, &cgid);
+#elif defined(LSM_EXEC_CHECK)
+    return handle_exec(args, &cgid);
+#endif
 }
 
 char LICENSE[] SEC("license") = "GPL";

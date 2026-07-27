@@ -42,11 +42,15 @@ type workloadProfile struct {
 	pods   map[string]*podRepresentation
 }
 
+type progState struct {
+	enf   *lsm.LsmEnforcer
+	files *compiler.AllowDenyPair
+}
+
 type lsmAttachment struct {
-	enf          *lsm.LsmEnforcer
+	progs        map[string]*progState
 	selector     labels.Selector
 	attachedPods map[string]*podRepresentation
-	files        *compiler.AllowDenyPair
 }
 
 func NewLsmManager(logger logr.Logger) *LsmManager {
@@ -54,6 +58,7 @@ func NewLsmManager(logger logr.Logger) *LsmManager {
 		logger:         logger,
 		pods:           make(map[string]*podRepresentation),
 		lsmAttachments: make(map[string]*lsmAttachment),
+		wps:            make(map[string]*workloadProfile),
 	}
 }
 
@@ -76,11 +81,13 @@ func (l *LsmManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgr
 	defer l.mu.Unlock()
 	switch eventType {
 	case events.EventTypeCreate:
-		return l.podCreated(pod, cgInfos)
+		l.podCreated(pod, cgInfos)
+		return nil
 	case events.EventTypeUpdate:
 		return l.podUpdated(pod, cgInfos)
 	case events.EventTypeDelete:
-		return l.podDeleted(string(pod.UID))
+		l.podDeleted(string(pod.UID))
+		return nil
 	}
 	return nil
 }

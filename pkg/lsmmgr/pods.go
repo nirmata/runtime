@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) {
 	l.logger.V(2).Info("pod created", "podUid", pod.UID)
 	pr := &podRepresentation{
 		labels:       pod.Labels,
@@ -20,15 +20,16 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	for rpUid, la := range l.lsmAttachments {
 		if la.selector.Matches(labels.Set(pod.Labels)) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
-			err := la.enf.AddCgids(pr.cgids)
-			if err != nil {
-				return err
+			for _, prog := range la.progs {
+				if err := prog.enf.AddCgids(pr.cgids); err != nil {
+					l.logger.Error(err, "failed to add cgids to enforcer", "podUid", pod.UID, "rpUid", rpUid)
+				}
 			}
-			pr.attachedLsms[rpUid] = la
+
+			attach(rpUid, la, string(pod.UID), pr)
 		}
 	}
 	l.pods[string(pod.UID)] = pr
-	return nil
 }
 
 func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
@@ -60,18 +61,20 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 		if _, ok := la.attachedPods[string(pod.UID)]; !ok {
 			continue
 		}
-		if err := la.enf.AddCgids(toAdd); err != nil {
-			return err
-		}
-		if err := la.enf.DeleteCgids(toRemove); err != nil {
-			return err
+		for _, prog := range la.progs {
+			if err := prog.enf.AddCgids(toAdd); err != nil {
+				l.logger.Error(err, "failed to add cgids to enforcer", "podUid", pod.UID)
+			}
+			if err := prog.enf.DeleteCgids(toRemove); err != nil {
+				l.logger.Error(err, "failed to remove cgids from enforcer", "podUid", pod.UID)
+			}
 		}
 	}
 	return nil
 
 }
 
-func (l *LsmManager) podDeleted(podUid string) error {
+func (l *LsmManager) podDeleted(podUid string) {
 	l.logger.V(2).Info("pod deleted", "podUid", podUid)
 	// delete those cgids
 	delete(l.pods, podUid)
@@ -80,12 +83,11 @@ func (l *LsmManager) podDeleted(podUid string) error {
 		if !ok {
 			continue
 		}
-		err := la.enf.DeleteCgids(podAttachment.cgids)
-		if err != nil {
-			return err
+		for _, prog := range la.progs {
+			if err := prog.enf.DeleteCgids(podAttachment.cgids); err != nil {
+				l.logger.Error(err, "failed to remove cgids from enforcer", "podUid", podUid)
+			}
 		}
 		delete(la.attachedPods, podUid)
 	}
-	return nil
-
 }

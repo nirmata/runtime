@@ -1,12 +1,10 @@
 package egressmgr
 
 import (
-	"fmt"
 	"slices"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -32,15 +30,16 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 	}
 }
 
-func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
+func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	e.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID)
 	if compiledRp.Mode != "enforce" {
 		e.rpDeleted(compiledRp)
-		return nil
+		return
 	}
 	currentRp, ok := e.rps[compiledRp.UID]
 	if !ok {
-		return fmt.Errorf("got an update for a non existing runtime policy uid")
+		e.rpCreated(compiledRp)
+		return
 	}
 	// store the old ips because we may need to delete them from a pod's attachment if the
 	// policy no longer matches, regardless of whether the ips themselves changed
@@ -51,16 +50,13 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	// there was a "*" in oldIps
 	hadDefaultDeny := slices.Contains(oldIps.Deny, "*")
 
-	toAddAllow := utils.DiffSlice(currentRp.IPs.Allow, compiledRp.IPs.Allow)
-	toRemoveAllow := utils.DiffSlice(compiledRp.IPs.Allow, currentRp.IPs.Allow)
-
-	toAddDeny := utils.DiffSlice(currentRp.IPs.Deny, compiledRp.IPs.Deny)
-	toRemoveDeny := utils.DiffSlice(compiledRp.IPs.Deny, currentRp.IPs.Deny)
+	toAddPair := currentRp.IPs.DiffPair(compiledRp.IPs)
+	toRemovePair := compiledRp.IPs.DiffPair(currentRp.IPs)
 
 	// the incoming policy update contains a deny "*"
-	hasDefaultDeny := slices.Contains(toAddDeny, "*")
+	hasDefaultDeny := slices.Contains(toAddPair.Deny, "*")
 	// had default deny before, but doesn't anymore
-	defaultDenyRemoved := slices.Contains(toRemoveDeny, "*")
+	defaultDenyRemoved := slices.Contains(toRemovePair.Deny, "*")
 
 	// the incoming policy has a default deny, regardless of whether or no
 	// the old one did. we need this for newly matched pods in the policy
@@ -76,8 +72,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		rpMatches := compiledRp.Selector.Matches(labels.Set(pod.labels))
 		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
 			// there is no diff and rp still matches, do nothing
-			if len(toRemoveAllow) == 0 && len(toAddAllow) == 0 &&
-				len(toAddDeny) == 0 && len(toRemoveDeny) == 0 && rpMatches {
+			if !toAddPair.HasEntries() && !toRemovePair.HasEntries() && rpMatches {
 				continue
 			}
 
@@ -104,9 +99,9 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			// rp matches and there is a diff. add the new ips, delete the old
 			// and update our tracking data structures
 			e.logger.V(2).Info("applying ip diff for updated runtime policy", "uid", compiledRp.UID, "podUid", podUid,
-				"toAddAllow", toAddAllow, "toRemoveAllow", toRemoveAllow, "toAddDeny", toAddDeny, "toRemoveDeny", toRemoveDeny)
-			pod.filter.AddIps(&compiler.AllowDenyPair{Allow: toAddAllow, Deny: toAddDeny})
-			pod.filter.DeleteIps(&compiler.AllowDenyPair{Allow: toRemoveAllow, Deny: toRemoveDeny})
+				"toAddAllow", toAddPair.Allow, "toRemoveAllow", toRemovePair.Allow, "toAddDeny", toAddPair.Deny, "toRemoveDeny", toRemovePair.Deny)
+			pod.filter.AddIps(toAddPair)
+			pod.filter.DeleteIps(toRemovePair)
 
 			// both those operations are idempotent so its fine to do them even if they were previously done
 			if hasDefaultDeny {
@@ -135,7 +130,6 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			}
 		}
 	}
-	return nil
 }
 
 func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
