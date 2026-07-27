@@ -73,11 +73,15 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	if openEnforcer != nil {
-		openEnforcer.AddCgids(targetCgids)
+		if err := openEnforcer.AddCgids(targetCgids); err != nil {
+			l.logger.Error(err, "failed to add cgids to open enforcer", "uid", compiledRp.UID)
+		}
 	}
 
 	if execEnforcer != nil {
-		execEnforcer.AddCgids(targetCgids)
+		if err := execEnforcer.AddCgids(targetCgids); err != nil {
+			l.logger.Error(err, "failed to add cgids to exec enforcer", "uid", compiledRp.UID)
+		}
 	}
 
 	return nil
@@ -191,7 +195,9 @@ func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDen
 			return err
 		}
 		for _, pod := range la.attachedPods {
-			enforcer.AddCgids(pod.cgids)
+			if err := enforcer.AddCgids(pod.cgids); err != nil {
+				l.logger.Error(err, "failed to add cgids to enforcer", "progType", progType)
+			}
 		}
 
 		ps := &progState{
@@ -254,7 +260,9 @@ func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 			// we aren't attached
 			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
 			for _, prog := range la.progs {
-				prog.enf.AddCgids(pod.cgids)
+				if err := prog.enf.AddCgids(pod.cgids); err != nil {
+					l.logger.Error(err, "failed to add cgids to enforcer", "uid", uid, "podUid", podUid)
+				}
 			}
 
 			attach(uid, la, podUid, pod)
@@ -265,7 +273,9 @@ func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 				// yes we did. remove its cgids from the enforcer before dropping the attachment
 				l.logger.V(2).Info("pod no longer matches runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
 				for _, prog := range la.progs {
-					prog.enf.DeleteCgids(pod.cgids)
+					if err := prog.enf.DeleteCgids(pod.cgids); err != nil {
+						l.logger.Error(err, "failed to remove cgids from enforcer", "uid", uid, "podUid", podUid)
+					}
 				}
 
 				detach(uid, la, podUid, podAttachment)

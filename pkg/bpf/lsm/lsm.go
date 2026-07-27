@@ -1,6 +1,7 @@
 package lsm
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -129,22 +130,24 @@ func (l *LsmEnforcer) Attach() (link.Link, error) {
 	return link, nil
 }
 
-func (l *LsmEnforcer) AddCgids(cgids []uint64) {
+func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
+	var errs []error
 	for _, cgid := range cgids {
-		// ignore the errors from adding an individual cgid
 		if err := l.cgids.Put(&cgid, uint8(0)); err != nil {
-			l.logger.Error(err, "failed to add cgid to target map")
+			errs = append(errs, err)
 		}
 	}
+	return errors.Join(errs...)
 }
 
-func (l *LsmEnforcer) DeleteCgids(cgids []uint64) {
+func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
+	var errs []error
 	for _, cgid := range cgids {
-		// ignore the errors from deleting an individual cgid
 		if err := l.cgids.Delete(&cgid); err != nil {
-			l.logger.Error(err, "failed to remove cgid from target map")
+			errs = append(errs, err)
 		}
 	}
+	return errors.Join(errs...)
 }
 
 func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
