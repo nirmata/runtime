@@ -134,10 +134,20 @@ func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 
 func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType string) (*lsm.LsmEnforcer, error) {
 	// create the lsm enforcer
+	cleanup := false
 	enf, err := lsm.NewForAttachTarget(&l.logger, progType)
 	if err != nil {
 		return nil, err
 	}
+
+	defer func() {
+		if cleanup {
+			if err := enf.Close(); err != nil {
+				l.logger.Error(err, "failed to cleanup lsm enforcer on error")
+			}
+		}
+	}()
+	cleanup = true
 
 	// add targets
 	err = enf.AddTargets(pair)
@@ -155,7 +165,7 @@ func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType st
 	if err != nil {
 		return nil, err
 	}
-
+	cleanup = false
 	return enf, nil
 }
 
