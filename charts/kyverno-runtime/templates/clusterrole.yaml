@@ -18,21 +18,4 @@ rules:
 # the resource library in policy expressions
 {{- toYaml . | nindent 0 }}
 {{- end }}
-{{- if .Values.ctrl.enabled }}
-# ctrl: reconciles workload profiles and resolves daemon endpoints
-- apiGroups: ["runtime.kyverno.io"]
-  resources: ["workloadprofiles"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["runtime.kyverno.io"]
-  resources: ["workloadprofiles/status", "workloadprofiles/finalizers"]
-  verbs: ["get", "update", "patch"]
-- apiGroups: ["discovery.k8s.io"]
-  resources: ["endpointslices"]
-  verbs: ["get", "list", "watch"]
-{{- if .Values.ctrl.leaderElection }}
-- apiGroups: ["coordination.k8s.io"]
-  resources: ["leases"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-{{- end }}
-{{- end }}
 {{- end }}

@@ -1,7 +1,6 @@
 package lsmmgr
 
 import (
-	"context"
 	"sync"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
@@ -27,19 +26,12 @@ type LsmManager struct {
 	// between data structures
 	pods           map[string]*podRepresentation
 	lsmAttachments map[string]*lsmAttachment
-	wps            map[string]*workloadProfile
 }
 
 type podRepresentation struct {
-	cgids           []uint64
-	labels          map[string]string
-	attachedLsms    map[string]*lsmAttachment
-	learningEnabled map[string]struct{}
-}
-
-type workloadProfile struct {
-	cancel context.CancelFunc
-	pods   map[string]*podRepresentation
+	cgids        []uint64
+	labels       map[string]string
+	attachedLsms map[string]*lsmAttachment
 }
 
 type progState struct {
@@ -58,7 +50,6 @@ func NewLsmManager(logger logr.Logger) *LsmManager {
 		logger:         logger,
 		pods:           make(map[string]*podRepresentation),
 		lsmAttachments: make(map[string]*lsmAttachment),
-		wps:            make(map[string]*workloadProfile),
 	}
 }
 

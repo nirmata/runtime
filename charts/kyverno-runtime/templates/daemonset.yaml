@@ -33,7 +33,6 @@ spec:
           runAsUser: 0
         args:
         - daemon
-        - --grpc-bind-address={{ .Values.daemon.grpcBindAddress }}
         env:
         - name: HOST_ROOT
           value: /host
@@ -41,9 +40,6 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        ports:
-        - containerPort: 9090
-          name: grpc
         volumeMounts:
         - name: host-root
           mountPath: /host
