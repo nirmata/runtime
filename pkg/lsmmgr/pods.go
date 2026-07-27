@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) {
 	l.logger.V(2).Info("pod created", "podUid", pod.UID)
 	pr := &podRepresentation{
 		labels:       pod.Labels,
@@ -28,7 +28,6 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 		}
 	}
 	l.pods[string(pod.UID)] = pr
-	return nil
 }
 
 func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
@@ -69,7 +68,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 
 }
 
-func (l *LsmManager) podDeleted(podUid string) error {
+func (l *LsmManager) podDeleted(podUid string) {
 	l.logger.V(2).Info("pod deleted", "podUid", podUid)
 	// delete those cgids
 	delete(l.pods, podUid)
@@ -83,6 +82,4 @@ func (l *LsmManager) podDeleted(podUid string) error {
 		}
 		delete(la.attachedPods, podUid)
 	}
-	return nil
-
 }
