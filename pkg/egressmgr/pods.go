@@ -15,7 +15,7 @@ import (
 
 func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
 	e.logger.V(2).Info("pod created", "podUid", pod.UID)
-	filter, err := egressfilter.New(&e.logger)
+	filter, err := e.newFilter(&e.logger)
 	if err != nil {
 		return err
 	}

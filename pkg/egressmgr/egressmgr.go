@@ -14,6 +14,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// egressFilter is the narrow set of *egressfilter.EgressFilter methods that the
+// manager actually uses. It exists so that the manager's bookkeeping can be
+// exercised without loading or attaching BPF programs.
+type egressFilter interface {
+	AddIps(pair *compiler.AllowDenyPair)
+	DeleteIps(pair *compiler.AllowDenyPair)
+	SetFlagIdx(idx uint8, val bool)
+	Attach(cgPath string) (link.Link, error)
+}
+
 type EgressManager struct {
 	logger logr.Logger
 
@@ -23,6 +33,10 @@ type EgressManager struct {
 
 	pods map[string]*podAttachment
 	rps  map[string]*compiler.EvaluationResult
+
+	// newFilter builds the per pod egress filter. it defaults to the real
+	// egressfilter constructor and is only swapped out in tests.
+	newFilter func(logger *logr.Logger) (egressFilter, error)
 }
 
 type podAttachment struct {
@@ -30,7 +44,7 @@ type podAttachment struct {
 
 	labels          map[string]string
 	cgs             map[containers.ContainerCgroupInfo]link.Link
-	filter          *egressfilter.EgressFilter
+	filter          egressFilter
 	attachedFilters map[string]*compiler.EvaluationResult
 }
 
@@ -39,6 +53,9 @@ func NewEgressManager(logger logr.Logger) *EgressManager {
 		logger: logger,
 		pods:   make(map[string]*podAttachment),
 		rps:    make(map[string]*compiler.EvaluationResult),
+		newFilter: func(logger *logr.Logger) (egressFilter, error) {
+			return egressfilter.New(logger)
+		},
 	}
 }
 
