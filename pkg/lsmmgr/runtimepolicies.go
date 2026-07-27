@@ -16,8 +16,8 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	var (
-		openEnforcer *lsm.LsmEnforcer
-		execEnforcer *lsm.LsmEnforcer
+		openEnforcer enforcer
+		execEnforcer enforcer
 		progMap      = make(map[string]*progState)
 		err          error
 	)
@@ -37,6 +37,12 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	if compiledRp.Exec.HasEntries() {
 		execEnforcer, err = l.createForProgType(compiledRp.Exec, lsm.PROG_TYPE_LSM_EXEC)
 		if err != nil {
+			// don't leak the open enforcer's bpf objects, nothing else references it yet
+			if openEnforcer != nil {
+				if closeErr := openEnforcer.Close(); closeErr != nil {
+					l.logger.Error(closeErr, "failed to cleanup open lsm enforcer", "uid", compiledRp.UID)
+				}
+			}
 			return err
 		}
 
@@ -144,10 +150,10 @@ func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	}
 }
 
-func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType string) (*lsm.LsmEnforcer, error) {
+func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType string) (enforcer, error) {
 	// create the lsm enforcer
 	cleanup := false
-	enf, err := lsm.NewForAttachTarget(&l.logger, progType)
+	enf, err := l.newEnforcer(&l.logger, progType)
 	if err != nil {
 		return nil, err
 	}
@@ -212,10 +218,13 @@ func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDen
 	// the newfiles specify no entries, so we should delete the enforcer for that
 	// program type
 	if !newFiles.HasEntries() {
-		if err := prog.enf.Close(); err != nil {
-			return err
-		}
+		closeErr := prog.enf.Close()
+		// drop the prog state even if the close failed. keeping a closed enforcer
+		// around would make every later sync operate on dead bpf maps
 		delete(la.progs, progType)
+		if closeErr != nil {
+			return closeErr
+		}
 		return nil
 	}
 
