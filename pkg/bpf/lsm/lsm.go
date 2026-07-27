@@ -122,23 +122,22 @@ func (l *LsmEnforcer) Attach() (link.Link, error) {
 	return link, nil
 }
 
-func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
+func (l *LsmEnforcer) AddCgids(cgids []uint64) {
 	for _, cgid := range cgids {
+		// ignore the errors from adding an individual cgid
 		if err := l.cgids.Put(&cgid, uint8(0)); err != nil {
 			l.logger.Error(err, "failed to add cgid to target map")
 		}
 	}
-
-	return nil
 }
 
-func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
+func (l *LsmEnforcer) DeleteCgids(cgids []uint64) {
 	for _, cgid := range cgids {
+		// ignore the errors from deleting an individual cgid
 		if err := l.cgids.Delete(&cgid); err != nil {
 			l.logger.Error(err, "failed to remove cgid from target map")
 		}
 	}
-	return nil
 }
 
 func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {

@@ -65,17 +65,11 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	if openEnforcer != nil {
-		err := openEnforcer.AddCgids(targetCgids)
-		if err != nil {
-			return err
-		}
+		openEnforcer.AddCgids(targetCgids)
 	}
 
 	if execEnforcer != nil {
-		err := execEnforcer.AddCgids(targetCgids)
-		if err != nil {
-			return err
-		}
+		execEnforcer.AddCgids(targetCgids)
 	}
 
 	return nil
@@ -111,6 +105,10 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		return err
 	}
 
+	// now that we run sync pod attachment once and inside it we check that both enforcers aren't nil
+	// previous member ship should be denoted by having an entry for a given pod and new membership
+	// should be denoted by compiledrp.selector.matches
+	l.syncPodAttachment(compiledRp.UID, la)
 	return nil
 }
 
@@ -190,39 +188,6 @@ func (l *LsmManager) syncProgType(uid string, la *lsmAttachment, newFiles *compi
 	}
 
 	*filesPtr = newFiles
-
-	for podUid, pod := range l.pods {
-		if la.selector.Matches(labels.Set(pod.labels)) {
-			_, ok := la.attachedPods[podUid]
-			if ok {
-				// we are already attached to this pod cgid. nothing to do
-				continue
-			}
-			// we aren't attached
-			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-			if *enf != nil {
-				err := (*enf).AddCgids(pod.cgids)
-				if err != nil {
-					l.logger.Error(err, "failed to add cgids for pod", "podUid", podUid)
-					continue
-				}
-			}
-			la.attachedPods[podUid] = pod
-		} else {
-			// we don't match that pod. did we previously match it ?
-			_, ok := la.attachedPods[podUid]
-			if ok {
-				// yes we did. remove its cgids from the enforcer before dropping the attachment
-				l.logger.V(2).Info("pod no longer matches runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-				if *enf != nil {
-					if err := (*enf).DeleteCgids(pod.cgids); err != nil {
-						l.logger.Error(err, "failed to remove cgids for pod", "podUid", podUid)
-					}
-				}
-				delete(la.attachedPods, podUid)
-			}
-		}
-	}
 	return nil
 }
 
@@ -243,10 +208,48 @@ func (l *LsmManager) initEnforcer(uid string, la *lsmAttachment, enf **lsm.LsmEn
 	}
 	// backfill cgids for pods that were already attached to this policy
 	for _, pod := range la.attachedPods {
-		if err := newEnf.AddCgids(pod.cgids); err != nil {
-			l.logger.Error(err, "failed to add cgids for existing pod", "uid", uid, "cgids", pod.cgids)
-		}
+		newEnf.AddCgids(pod.cgids)
 	}
 	*enf = newEnf
 	return nil
+}
+
+func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
+	for podUid, pod := range l.pods {
+		// there is an implicit assumption here that la.selector contains the new selector from the update.
+		// if this is no longer the case, the function will be using the old selctor to check if we should
+		// still match a given pod or no
+		if la.selector.Matches(labels.Set(pod.labels)) {
+			_, ok := la.attachedPods[podUid]
+			if ok {
+				// we are already attached to this pod cgid. nothing to do
+				continue
+			}
+			// we aren't attached
+			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
+			if la.openEnforcer != nil {
+				la.openEnforcer.AddCgids(pod.cgids)
+			}
+
+			if la.execEnforcer != nil {
+				la.execEnforcer.AddCgids(pod.cgids)
+			}
+			la.attachedPods[podUid] = pod
+		} else {
+			// we don't match that pod. did we previously match it ?
+			_, ok := la.attachedPods[podUid]
+			if ok {
+				// yes we did. remove its cgids from the enforcer before dropping the attachment
+				l.logger.V(2).Info("pod no longer matches runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
+				if la.openEnforcer != nil {
+					la.openEnforcer.DeleteCgids(pod.cgids)
+				}
+
+				if la.execEnforcer != nil {
+					la.execEnforcer.DeleteCgids(pod.cgids)
+				}
+				delete(la.attachedPods, podUid)
+			}
+		}
+	}
 }
