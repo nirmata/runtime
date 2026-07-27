@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
+
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +22,7 @@ type EvaluationResult struct {
 	Open     *AllowDenyPair
 	Exec     *AllowDenyPair
 	Selector labels.Selector
+	Mode     string
 }
 
 type AllowDenyPair struct {
@@ -27,6 +30,29 @@ type AllowDenyPair struct {
 	// at compile time ?
 	Allow []string
 	Deny  []string
+}
+
+func (p *AllowDenyPair) HasEntries() bool {
+	if p == nil {
+		return false
+	}
+	return len(p.Allow) != 0 || len(p.Deny) != 0
+}
+
+// given a pair p, and a target..return another pair that represents what's in the target
+// but not p.
+func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
+	if target == nil {
+		return &AllowDenyPair{}
+	}
+	if p == nil {
+		return target
+	}
+
+	newAllowInTarget := utils.DiffSlice(p.Allow, target.Allow)
+	newDenyInTarget := utils.DiffSlice(p.Deny, target.Deny)
+
+	return &AllowDenyPair{Allow: newAllowInTarget, Deny: newDenyInTarget}
 }
 
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
@@ -85,6 +111,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		Open:     open,
 		Exec:     exec,
 		Selector: selector,
+		Mode:     c.mode,
 	}, nil
 }
 

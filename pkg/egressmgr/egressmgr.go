@@ -50,7 +50,8 @@ func (e *EgressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult
 		e.rpCreated(compiledRb)
 		return nil
 	case events.EventTypeUpdate:
-		return e.rpUpdated(compiledRb)
+		e.rpUpdated(compiledRb)
+		return nil
 	case events.EventTypeDelete:
 		e.rpDeleted(compiledRb)
 		return nil

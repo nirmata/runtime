@@ -1,7 +1,9 @@
 package lsm
 
 import (
+	"errors"
 	"fmt"
+	"io"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 
@@ -12,26 +14,45 @@ import (
 
 const maxPathLen = 128
 
-// argtype values written into the `argtypes` map, read back out by the BPF program
-// in lsm.bpf.c (ARGTYPE_FILE_OPEN / ARGTYPE_EXEC_CHECK). must stay in sync with those.
 const (
-	argTypeFileOpen  = uint8(1)
-	argTypeExecCheck = uint8(2)
+	PROG_TYPE_LSM_OPEN = "file_open"
+	PROG_TYPE_LSM_EXEC = "bprm_check_security"
 )
 
-//go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmFileOpen ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmExecCheck ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
 type LsmEnforcer struct {
-	logger  *logr.Logger
-	bpfObjs *lsmGenericObjects
-	link    link.Link
+	logger *logr.Logger
+	link   link.Link
+	closer io.Closer
+
+	prog        *ebpf.Program
+	cgids       *ebpf.Map
+	banned      *ebpf.Map
+	allowed     *ebpf.Map
+	defaultDeny *ebpf.Map
+	openEvents  *ebpf.Map
 }
 
 func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error) {
-	spec, err := loadLsmGeneric()
+	switch target {
+	case PROG_TYPE_LSM_OPEN:
+		return newForFileOpen(logger)
+	case PROG_TYPE_LSM_EXEC:
+		return newForExec(logger)
+	default:
+		return nil, fmt.Errorf("unknown lsm attach target %q", target)
+	}
+}
+
+func newForFileOpen(logger *logr.Logger) (*LsmEnforcer, error) {
+	l := &LsmEnforcer{logger: logger}
+
+	spec, err := loadLsmFileOpen()
 	if err != nil {
 		return nil, err
 	}
-	spec.Programs["generic_lsm_handler"].AttachTo = target
+	spec.Programs["generic_lsm_handler"].AttachTo = PROG_TYPE_LSM_OPEN
 	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
 	// the open_events map is defined in the bpf program but is currently unused
@@ -39,36 +60,69 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 	// keep its contents empty so it stays inert.
 	spec.Maps["open_events"].Contents = nil
 
-	objs := &lsmGenericObjects{}
-
-	// this will load the program, but not attach it to anything
+	objs := &lsmFileOpenObjects{}
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		return nil, err
 	}
-	zero := uint32(0)
+	// take out the relevant bpf objects from the program type specific variant
+	// into generic fields and store them on the LsmEnforcer. this is to avoid
+	// embedding both lsmFileOpenObjects and lsmExecCheckOptions and later in
+	// the code having to check which one isn't nil
+	l.closer = objs
+	l.prog = objs.GenericLsmHandler
+	l.cgids = objs.Cgids
+	l.banned = objs.Banned
+	l.allowed = objs.Allowed
+	l.defaultDeny = objs.DefaultDeny
+	l.openEvents = objs.OpenEvents
+	return l, nil
+}
 
-	switch target {
-	case "file_open":
-		if err := objs.Argtypes.Put(&zero, argTypeFileOpen); err != nil {
-			return nil, err
-		}
-	case "bprm_check_security":
-		if err := objs.Argtypes.Put(&zero, argTypeExecCheck); err != nil {
-			return nil, err
-		}
-	}
+func newForExec(logger *logr.Logger) (*LsmEnforcer, error) {
 
-	l := &LsmEnforcer{
-		logger:  logger,
-		bpfObjs: objs,
+	l := &LsmEnforcer{logger: logger}
+	spec, err := loadLsmExecCheck()
+	if err != nil {
+		return nil, err
 	}
+	spec.Programs["generic_lsm_handler"].AttachTo = PROG_TYPE_LSM_EXEC
+	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
+	spec.Maps["open_events"].Contents = nil
+
+	objs := &lsmExecCheckObjects{}
+	if err := spec.LoadAndAssign(objs, nil); err != nil {
+		return nil, err
+	}
+	l.closer = objs
+	l.prog = objs.GenericLsmHandler
+	l.cgids = objs.Cgids
+	l.banned = objs.Banned
+	l.allowed = objs.Allowed
+	l.defaultDeny = objs.DefaultDeny
+	l.openEvents = objs.OpenEvents
 
 	return l, nil
 }
 
+func (l *LsmEnforcer) Close() error {
+	var retErr error
+	if l.link != nil {
+		if err := l.link.Close(); err != nil {
+			retErr = err
+		}
+	}
+	// try to close the bpf objects even if closing the link errored
+	if l.closer != nil {
+		if err := l.closer.Close(); err != nil && retErr == nil {
+			retErr = err
+		}
+	}
+	return retErr
+}
+
 func (l *LsmEnforcer) Attach() (link.Link, error) {
 	link, err := link.AttachLSM(link.LSMOptions{
-		Program: l.bpfObjs.GenericLsmHandler,
+		Program: l.prog,
 	})
 	if err != nil {
 		return nil, err
@@ -79,22 +133,23 @@ func (l *LsmEnforcer) Attach() (link.Link, error) {
 }
 
 func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
+	var errs []error
 	for _, cgid := range cgids {
-		if err := l.bpfObjs.Cgids.Put(&cgid, uint8(0)); err != nil {
-			l.logger.Error(err, "failed to add cgid to target map")
+		if err := l.cgids.Put(&cgid, uint8(0)); err != nil {
+			errs = append(errs, err)
 		}
 	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
+	var errs []error
 	for _, cgid := range cgids {
-		if err := l.bpfObjs.Cgids.Delete(&cgid); err != nil {
-			l.logger.Error(err, "failed to remove cgid from target map")
+		if err := l.cgids.Delete(&cgid); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
@@ -106,7 +161,7 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Banned.Put(&key, uint8(0)); err != nil {
+		if err := l.banned.Put(&key, uint8(0)); err != nil {
 			return err
 		}
 	}
@@ -118,7 +173,7 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Allowed.Put(&key, uint8(0)); err != nil {
+		if err := l.allowed.Put(&key, uint8(0)); err != nil {
 			return err
 		}
 	}
@@ -134,7 +189,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Banned.Delete(&key); err != nil {
+		if err := l.banned.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from banned map")
 		}
 	}
@@ -147,7 +202,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Allowed.Delete(&key); err != nil {
+		if err := l.allowed.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from allowed map")
 		}
 	}
@@ -157,7 +212,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
 	k := uint32(0)
 	if val {
-		err := l.bpfObjs.DefaultDeny.Put(&k, uint8(0))
+		err := l.defaultDeny.Put(&k, uint8(0))
 		if err != nil {
 			return err
 		}
@@ -166,6 +221,6 @@ func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
 
 	// key deletions may error if the key doesn't exist. but thats fine
 	// we don't care about that
-	_ = l.bpfObjs.DefaultDeny.Delete(&k)
+	_ = l.defaultDeny.Delete(&k)
 	return nil
 }
