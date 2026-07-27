@@ -408,6 +408,120 @@ func TestHandleUpdateKeepsThreadWhenIntervalUnchanged(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateRefreshesCompiledWhenIntervalUnchanged pins the stale policy
+// bug: when the interval did not change, handleUpdate kept the existing rpWatch
+// but left its old compiled pointer in place. evaluateForInterval reads compiled
+// from that entry on every tick, so interval re-evaluations kept applying the
+// pre-update policy until the interval happened to change.
+func TestHandleUpdateRefreshesCompiledWhenIntervalUnchanged(t *testing.T) {
+	fresh := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
+	m := newTestRpMgr(t, &fakeCompiler{compiled: fresh}, handlers(&recordingHandler{name: "h"}))
+
+	stale := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
+	m.rpThreadMap["uid-1"] = &rpWatch{compiled: stale, cancel: func() {}}
+
+	if err := m.handleUpdate(context.Background(), events.Event[*v1alpha1.RuntimePolicy]{
+		Obj: rp("p", "uid-1", dur(time.Hour)), Type: events.EventTypeUpdate,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := m.rpThreadMap["uid-1"].compiled
+	if got == stale {
+		t.Error("rpThreadMap entry still holds the pre-update compiled policy; interval ticks would evaluate a stale policy")
+	}
+	if got != fresh {
+		t.Errorf("compiled = %p, want the freshly compiled policy %p", got, fresh)
+	}
+}
+
+// TestHandleUpdateStartsThreadWhenPolicyGainsInterval covers a policy created
+// without spec.evaluationInterval (so handleCreate registered no thread) that
+// later gains one. handleUpdate used to only reconcile policies already present
+// in rpThreadMap, so no re-evaluation goroutine was ever started.
+func TestHandleUpdateStartsThreadWhenPolicyGainsInterval(t *testing.T) {
+	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
+	m := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(&recordingHandler{name: "h"}))
+
+	// nothing tracked: the policy was created without an interval
+	if len(m.rpThreadMap) != 0 {
+		t.Fatalf("precondition failed, rpThreadMap = %v", m.rpThreadMap)
+	}
+
+	if err := m.handleUpdate(context.Background(), events.Event[*v1alpha1.RuntimePolicy]{
+		Obj: rp("p", "uid-1", dur(time.Hour)), Type: events.EventTypeUpdate,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	watch, ok := m.rpThreadMap["uid-1"]
+	if !ok {
+		t.Fatal("no interval thread was registered for a policy that gained an evaluationInterval")
+	}
+	if watch.compiled != compiled {
+		t.Error("registered entry does not hold the compiled policy")
+	}
+	if watch.cancel == nil {
+		t.Error("registered entry has no cancel func, so the thread can never be stopped")
+	}
+}
+
+// TestHandleUpdateNoIntervalStaysUntracked is the counterpart: a policy with no
+// interval, not already tracked, must not start a goroutine.
+func TestHandleUpdateNoIntervalStaysUntracked(t *testing.T) {
+	m := newTestRpMgr(t,
+		&fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}},
+		handlers(&recordingHandler{name: "h"}))
+
+	if err := m.handleUpdate(context.Background(), events.Event[*v1alpha1.RuntimePolicy]{
+		Obj: rp("p", "uid-1", nil), Type: events.EventTypeUpdate,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(m.rpThreadMap) != 0 {
+		t.Errorf("rpThreadMap = %v, want empty for a policy with no evaluationInterval", m.rpThreadMap)
+	}
+}
+
+// TestIntervalThreadConcurrentWithUpdates exercises rpThreadMap from an
+// evaluateForInterval goroutine while the worker updates and deletes the same
+// entry. Meant to be run under -race: the map was previously read by every
+// interval goroutine with no lock while handleUpdate wrote to it.
+func TestIntervalThreadConcurrentWithUpdates(t *testing.T) {
+	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Millisecond)}
+	m := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(&recordingHandler{name: "h"}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// register the entry and start the ticking goroutine the way handleCreate does
+	threadCtx, threadCancel := context.WithCancel(ctx)
+	m.rpThreadMap["uid-1"] = &rpWatch{compiled: compiled, cancel: threadCancel}
+	go m.evaluateForInterval(threadCtx, 20*time.Microsecond, "uid-1")
+
+	for i := 0; i < 2000; i++ {
+		if err := m.handleUpdate(ctx, events.Event[*v1alpha1.RuntimePolicy]{
+			Obj: rp("p", "uid-1", dur(time.Millisecond)), Type: events.EventTypeUpdate,
+		}); err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if err := m.handleDelete(events.Event[*v1alpha1.RuntimePolicy]{
+		Obj: rp("p", "uid-1", dur(time.Millisecond)), Type: events.EventTypeDelete,
+	}); err != nil {
+		t.Fatalf("unexpected delete error: %v", err)
+	}
+
+	m.threadMu.Lock()
+	remaining := len(m.rpThreadMap)
+	m.threadMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("rpThreadMap has %d entries after delete, want 0", remaining)
+	}
+}
+
 func TestHandleUpdateFansOutAndJoinsErrors(t *testing.T) {
 	errA := errors.New("handler a failed")
 	errB := errors.New("handler b failed")

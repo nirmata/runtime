@@ -33,9 +33,12 @@ type RuntimePolicyMgr struct {
 	factory       v1alpha1informers.SharedInformerFactory
 	rpInformer    cache.SharedIndexInformer
 	compiler      compiler.Compiler
-	rpThreadMap   map[string]*rpWatch
-	lister        v1alpha1listers.RuntimePolicyLister
-	log           logr.Logger
+	// rpThreadMap is written by the informer worker and read by every
+	// evaluateForInterval goroutine, so it needs guarding
+	threadMu    sync.Mutex
+	rpThreadMap map[string]*rpWatch
+	lister      v1alpha1listers.RuntimePolicyLister
+	log         logr.Logger
 }
 
 func (m *RuntimePolicyMgr) Start(ctx context.Context) error {
@@ -185,10 +188,12 @@ func (r *RuntimePolicyMgr) handleCreate(ctx context.Context, ev events.Event[*v1
 	if rp.Spec.EvaluationInterval != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		go r.evaluateForInterval(ctx, rp.Spec.EvaluationInterval.Duration, string(rp.UID))
+		r.threadMu.Lock()
 		r.rpThreadMap[string(rp.UID)] = &rpWatch{
 			compiled: compiledRb,
 			cancel:   cancel,
 		}
+		r.threadMu.Unlock()
 	}
 
 	evalRes, err := compiledRb.Evaluate(ctx)
@@ -219,6 +224,63 @@ func (r *RuntimePolicyMgr) handleCreate(ctx context.Context, ev events.Event[*v1
 	return errors.Join(errs...)
 }
 
+// syncIntervalThread reconciles the periodic re-evaluation goroutine for a
+// policy with the interval that policy now asks for. Either side of the
+// comparison can be absent: a tracked policy may have had no interval, and the
+// incoming policy may have dropped its evaluationInterval, so a missing
+// interval is treated as zero.
+func (r *RuntimePolicyMgr) syncIntervalThread(ctx context.Context, rp *v1alpha1.RuntimePolicy, compiledRb *compiler.CompiledRuntimePolicy) {
+	uid := string(rp.UID)
+
+	var newInterval time.Duration
+	if rp.Spec.EvaluationInterval != nil {
+		newInterval = rp.Spec.EvaluationInterval.Duration
+	}
+
+	r.threadMu.Lock()
+	defer r.threadMu.Unlock()
+
+	current, tracked := r.rpThreadMap[uid]
+
+	var currentInterval time.Duration
+	if tracked && current.compiled != nil && current.compiled.ReevalInterval != nil {
+		currentInterval = *current.compiled.ReevalInterval
+	}
+
+	// nothing tracked and nothing asked for
+	if !tracked && newInterval <= 0 {
+		return
+	}
+
+	// the interval is unchanged, so the existing goroutine stays. it must still
+	// be handed the freshly compiled policy: evaluateForInterval reads
+	// compiled from this entry on every tick, so leaving the old pointer here
+	// would keep re-evaluating a stale policy until the interval next changed.
+	if tracked && currentInterval == newInterval {
+		current.compiled = compiledRb
+		return
+	}
+
+	// the interval changed, or a policy that was not tracked has gained one.
+	// stop the goroutine running on the old interval, if there was one.
+	if tracked && current.cancel != nil {
+		current.cancel()
+	}
+
+	if newInterval <= 0 {
+		// the policy no longer asks for periodic re-evaluation
+		delete(r.rpThreadMap, uid)
+		return
+	}
+
+	threadCtx, cancel := context.WithCancel(ctx)
+	go r.evaluateForInterval(threadCtx, newInterval, uid)
+	r.rpThreadMap[uid] = &rpWatch{
+		compiled: compiledRb,
+		cancel:   cancel,
+	}
+}
+
 func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1alpha1.RuntimePolicy]) error {
 	rp := ev.Obj
 	compiledRb, err := r.compiler.Compile(*rp)
@@ -226,39 +288,7 @@ func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1
 		return err
 	}
 
-	if currentRb, ok := r.rpThreadMap[string(rp.UID)]; ok {
-		// either side of the comparison can be absent: a tracked policy may
-		// have had no interval, and the incoming policy may have dropped its
-		// evaluationInterval. treat a missing interval as zero.
-		var newInterval time.Duration
-		if rp.Spec.EvaluationInterval != nil {
-			newInterval = rp.Spec.EvaluationInterval.Duration
-		}
-		var currentInterval time.Duration
-		if currentRb.compiled != nil && currentRb.compiled.ReevalInterval != nil {
-			currentInterval = *currentRb.compiled.ReevalInterval
-		}
-
-		// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
-		if currentInterval != newInterval {
-			// there was a previously existing cancel function (different interval). cancel the re-evalutation
-			// thread that runs on that interval
-			if currentRb.cancel != nil {
-				currentRb.cancel()
-			}
-			if newInterval <= 0 {
-				// the policy no longer asks for periodic re-evaluation
-				delete(r.rpThreadMap, string(rp.UID))
-			} else {
-				ctx, cancel := context.WithCancel(ctx)
-				go r.evaluateForInterval(ctx, newInterval, string(rp.UID))
-				r.rpThreadMap[string(rp.UID)] = &rpWatch{
-					compiled: compiledRb,
-					cancel:   cancel,
-				}
-			}
-		}
-	}
+	r.syncIntervalThread(ctx, rp, compiledRb)
 
 	evalRes, err := compiledRb.Evaluate(ctx)
 	if err != nil {
@@ -291,10 +321,12 @@ func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1
 func (r *RuntimePolicyMgr) handleDelete(ev events.Event[*v1alpha1.RuntimePolicy]) error {
 	rp := ev.Obj
 	// if there was a re-eval thread running, stop it
+	r.threadMu.Lock()
 	if rpwatch, ok := r.rpThreadMap[string(rp.UID)]; ok {
 		delete(r.rpThreadMap, string(rp.UID))
 		rpwatch.cancel()
 	}
+	r.threadMu.Unlock()
 
 	errChan := make(chan error, len(r.eventHandlers))
 	var wg sync.WaitGroup
@@ -330,12 +362,18 @@ func (r *RuntimePolicyMgr) evaluateForInterval(ctx context.Context, interval tim
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			r.threadMu.Lock()
 			rp, ok := r.rpThreadMap[rpUid]
+			var compiled *compiler.CompiledRuntimePolicy
+			if ok {
+				compiled = rp.compiled
+			}
+			r.threadMu.Unlock()
 			if !ok {
 				return
 			}
 
-			evalRes, err := rp.compiled.Evaluate(ctx)
+			evalRes, err := compiled.Evaluate(ctx)
 			if err != nil {
 				r.log.Error(err, "evaluation failed in interval loop", "policy", rpUid)
 				continue
