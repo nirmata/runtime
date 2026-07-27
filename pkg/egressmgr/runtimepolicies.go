@@ -67,7 +67,6 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	currentRp.IPs = compiledRp.IPs
 	currentRp.Selector = compiledRp.Selector
 
-	e.rps[compiledRp.UID] = compiledRp
 	for podUid, pod := range e.pods {
 		rpMatches := compiledRp.Selector.Matches(labels.Set(pod.labels))
 		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
