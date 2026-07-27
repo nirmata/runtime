@@ -100,6 +100,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		return l.rpCreated(compiledRp)
 	}
 
+	la.selector = compiledRp.Selector
 	err := l.syncProgType(compiledRp.UID, la, compiledRp.Open, lsm.PROG_TYPE_LSM_OPEN)
 	if err != nil {
 		return err

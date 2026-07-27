@@ -72,7 +72,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 		rpMatches := compiledRp.Selector.Matches(labels.Set(pod.labels))
 		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
 			// there is no diff and rp still matches, do nothing
-			if !toAddPair.HasEntries() && !toRemovePair.HasEntries() {
+			if !toAddPair.HasEntries() && !toRemovePair.HasEntries() && rpMatches {
 				continue
 			}
 
