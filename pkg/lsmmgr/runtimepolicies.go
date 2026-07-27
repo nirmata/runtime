@@ -119,6 +119,11 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	l.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
+	for _, prog := range l.lsmAttachments[compiledRp.UID].progs {
+		if err := prog.enf.Close(); err != nil {
+			l.logger.Error(err, "failed to close bpf lsm enforcer")
+		}
+	}
 	// delete the pointer from the lsm map
 	// and delete it from any pods that may have it
 	delete(l.lsmAttachments, compiledRp.UID)
@@ -157,6 +162,12 @@ func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType st
 func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
 	prog, ok := la.progs[progType]
 	if !ok {
+		// we are syncing a program type we didn't have an enforcer loaded for before
+		// but there aren't any files. we can just ignore that
+		if !newFiles.HasEntries() {
+			return nil
+		}
+
 		enforcer, err := l.createForProgType(newFiles, progType)
 		if err != nil {
 			return err
@@ -172,6 +183,16 @@ func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDen
 
 		la.progs[progType] = ps
 		prog = ps
+	}
+
+	// the newfiles specify no entries, so we should delete the enforcer for that
+	// program type
+	if !newFiles.HasEntries() {
+		if err := prog.enf.Close(); err != nil {
+			return err
+		}
+		delete(la.progs, progType)
+		return nil
 	}
 
 	var toAddPair, toRemovePair *compiler.AllowDenyPair

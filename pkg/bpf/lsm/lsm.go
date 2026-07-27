@@ -102,12 +102,19 @@ func newForExec(logger *logr.Logger) (*LsmEnforcer, error) {
 }
 
 func (l *LsmEnforcer) Close() error {
+	var retErr error
 	if l.link != nil {
 		if err := l.link.Close(); err != nil {
-			return err
+			retErr = err
 		}
 	}
-	return l.closer.Close()
+	// try to close the bpf objects even if closing the link errored
+	if l.closer != nil {
+		if err := l.closer.Close(); err != nil && retErr == nil {
+			retErr = err
+		}
+	}
+	return retErr
 }
 
 func (l *LsmEnforcer) Attach() (link.Link, error) {
