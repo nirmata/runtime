@@ -15,6 +15,11 @@ rather than glossed over.
 > was replaced in commit `f806f25` ("kyverno-runtime alpha release") with the eBPF LSM + CEL
 > architecture described below. The old `DESIGN.md`/`PLAN.md` were removed in that same commit;
 > this document replaces them for the current architecture.
+>
+> A second round of removals landed in `fd9dfe0` (#32): the `WorkloadProfile` CRD, the learning-mode
+> gRPC API (`pkg/srv`), and the `ctrl` component are gone, so `RuntimePolicy` is now the only CRD
+> this project owns and `daemon` is the only component. Some residue of learning mode is still
+> visible in the BPF sources — see [Known Gaps](#known-gaps--future-work).
 
 ## Table of Contents
 
@@ -75,7 +80,7 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 | `evaluationInterval` | `*metav1.Duration` | If set, the policy is periodically re-evaluated (`controller.evaluateForInterval`) instead of only on create/update. |
 | `variables` | `[]admissionregistrationv1.Variable` | Named CEL expressions reusable across behaviors via `variables.<name>`. |
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
-| `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. Added in `4a8bcb1`. Only `enforce` currently does anything — see [Known Gaps](#known-gaps--future-work). |
+| `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. Added in `4a8bcb1`. Optional with no default, and both managers act only on `enforce`, so a policy that omits `mode` (or sets `monitor`) enforces nothing — see [Known Gaps](#known-gaps--future-work). |
 
 Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, or `open`, enforced by
 an `XValidation` rule: `(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1`.
@@ -87,16 +92,17 @@ Semantics (see `docs/runtimepolicy.md` for the full reference with examples):
 
 - `network` values are IPv4 addresses (egress), `exec` values are command names/paths, `open`
   values are file paths.
-- `deny.values: ["*"]` (or an expression producing `["*"]`) is a **default-deny** sentinel for
-  that behavior type. This is evaluated **across all `RuntimePolicy` objects matching a pod**: if
-  any matching policy sets default-deny for a behavior, that behavior becomes deny-all-except-allowed
-  for the pod, and the allow list is the union of every matching policy's `allow` entries for that
-  behavior. If no matching policy sets default-deny, the behavior defaults to allow-all-except-denied,
-  with the deny list being the union of every matching policy's `deny` entries. This union-across-policies
-  behavior is implemented per-behavior-type in `pkg/egressmgr` (network/IPs) and `pkg/lsmmgr` (open)
-  by tracking, per pod, the set of policy UIDs that assert a default deny
-  (`podAttachment.defaultDeny` / equivalent) and only clearing the default-deny eBPF flag once none
-  remain.
+- `deny.values: ["*"]` (or an expression producing `["*"]`) is a **default-deny** sentinel for that
+  behavior type: that behavior becomes deny-all-except-allowed for matched pods, instead of the
+  default allow-all-except-denied.
+- `docs/runtimepolicy.md` specifies the multi-policy case as a **union across all `RuntimePolicy`
+  objects matching a pod** — any matching policy asserting default-deny flips the behavior, and the
+  effective allow (or deny) list is the union of every matching policy's entries. **That is only
+  implemented for `network`.** `pkg/egressmgr` attaches one filter per pod and merges every matching
+  policy's IPs into it, tracking the set of policy UIDs that assert default-deny in
+  `podAttachment.defaultDeny` so the eBPF flag is cleared only once none remain. `pkg/lsmmgr` has no
+  such bookkeeping: it attaches a separate LSM program per policy, so `open`/`exec` compose as an
+  intersection rather than a union — see [Known Gaps](#known-gaps--future-work).
 - `expression` must evaluate to a statically-typed `list(string)`; the compiler rejects any other
   output type at `Compile` time (`ast.OutputType().IsExactType(types.NewListType(types.StringType))`).
 
@@ -157,36 +163,64 @@ up changes.
 
 ## Enforcement: eBPF LSM hooks and egress filtering
 
-### File open (`pkg/lsmmgr`, `pkg/bpf/lsm`)
+### File open and exec (`pkg/lsmmgr`, `pkg/bpf/lsm`)
 
-`LsmManager` (`pkg/lsmmgr/lsmmgr.go`) is the `events.EventIface` responsible for the `open`
-behavior. On `RuntimePolicyEvent` create, if the evaluated policy has any `Open.Allow`/`Open.Deny`
-entries, `rpCreated` (`pkg/lsmmgr/runtimepolicies.go`) instantiates one
-`lsm.NewForAttachTarget(logger, "file_open")` enforcer (`pkg/bpf/lsm/lsm.go`), loads the compiled
-`lsmGeneric` BPF object (`pkg/bpf/lsm/_cprog/lsm.bpf.c`, attach type `ebpf.AttachLSMMac`), attaches
-it, populates its `Banned`/`Allowed` path maps from the policy's `Open` pair, and sets a
-`DefaultDeny` map entry if the policy's deny list contains `"*"`. Matched pods' cgroup IDs
-(resolved by `pkg/containers`) are added to the enforcer's `Cgids` map so the BPF program only
-acts on those cgroups. `PodEvent` and `rpUpdated` incrementally add/remove cgids and path entries
-as pods and policies change.
+`LsmManager` (`pkg/lsmmgr/lsmmgr.go`) is the `events.EventIface` responsible for both the `open` and
+the `exec` behavior. On `RuntimePolicyEvent` create, `rpCreated` (`pkg/lsmmgr/runtimepolicies.go`)
+returns early unless the policy's mode is `enforce`, then instantiates **one LSM enforcer per
+behavior type that has entries** via `createForProgType`:
+
+| Behavior | `lsm.NewForAttachTarget` target | LSM hook |
+| --- | --- | --- |
+| `open` | `lsm.PROG_TYPE_LSM_OPEN` | `file_open` |
+| `exec` | `lsm.PROG_TYPE_LSM_EXEC` | `bprm_check_security` |
+
+Both are compiled from the same source (`pkg/bpf/lsm/_cprog/lsm.bpf.c`) into two distinct BPF
+objects — `lsmFileOpen` and `lsmExecCheck` — via `bpf2go` with mutually exclusive
+`-DLSM_FILE_OPEN` / `-DLSM_EXEC_CHECK` build flags; the source `#error`s if neither or both are
+set. The split replaced the earlier single `lsmGeneric` object that branched on a runtime
+`argtypes` map entry, which the verifier rejects for `bprm_check_security` because the context
+argument's type is only known at attach time (#51, `3568f42`). `LsmEnforcer` (`pkg/bpf/lsm/lsm.go`)
+hides the two object types behind generic `prog`/`cgids`/`banned`/`allowed`/`defaultDeny` fields
+plus an `io.Closer`, so `pkg/lsmmgr` is program-type agnostic.
+
+Per enforcer, `createForProgType` populates the `banned`/`allowed` path maps from that behavior's
+`AllowDenyPair`, sets the `default_deny` map entry if the deny list contains `"*"`, and attaches
+with `link.AttachLSM` (`ebpf.AttachLSMMac`); on any failure the partially-built enforcer is closed.
+Matched pods' cgroup IDs (resolved by `pkg/containers`) go into that enforcer's `cgids` map, and the
+BPF program returns 0 immediately for any cgroup not in it. In the kernel the decision is a pure map
+lookup: if `default_deny` is set, allow only paths present in `allowed`, otherwise deny only paths
+present in `banned`; `-EPERM` otherwise.
+
+State per policy lives in `lsmAttachment{progs map[string]*progState, selector, attachedPods}`,
+where `progState` pairs an enforcer with the `AllowDenyPair` it was last programmed with. `rpUpdated`
+treats a non-`enforce` mode as a delete, runs `syncProgType` for each behavior type — creating an
+enforcer that didn't exist, closing one whose behavior no longer has entries, or applying the
+`DiffPair` of added/removed paths and re-setting default-deny — and then `syncPodAttachment`
+reconciles cgids against the (possibly changed) selector. `rpDeleted` closes every enforcer for the
+policy and drops it from each pod's `attachedLsms`. `PodEvent` adds/removes cgids across all of a
+matching policy's enforcers.
+
+Note the consequence of one program per policy: N enforce-mode policies matching a pod attach N LSM
+programs to the same hook, each with its own map set. The kernel denies if any of them denies, so
+`open`/`exec` rules from separate policies intersect rather than union
+(see [Known Gaps](#known-gaps--future-work)).
 
 ### Network egress (`pkg/egressmgr`, `pkg/bpf/egressfilter`)
 
 `EgressManager` (`pkg/egressmgr/egressmgr.go`) is the `events.EventIface` for the `network`
-behavior. Unlike `LsmManager` (one shared LSM program with a cgid allowlist), each matched pod
-gets its own `egressfilter.EgressFilter` (`pkg/bpf/egressfilter/egressfilter.go`), a
+behavior. Where `LsmManager` keys its BPF state by policy, `EgressManager` keys it by pod: each
+matched pod gets one `egressfilter.EgressFilter` (`pkg/bpf/egressfilter/egressfilter.go`), a
 `cgroup/skb egress` BPF program (`pkg/bpf/egressfilter/_cprog/probe.c`) attached per-container
 cgroup path via `link.AttachCgroup(..., Attach: ebpf.AttachCGroupInetEgress)`. `AddIps`/`DeleteIps`
 populate that pod's `AllowedIps`/`BannedIps` maps (parsed as IPv4 only —
 `egressfilter.normalizeIP`), and `SetFlagIdx(egressfilter.DEFAULT_DENY, ...)` toggles default-deny
-for that pod's filter. `pkg/egressmgr/runtimepolicies.go` implements the same
-default-deny-union-across-policies bookkeeping described above, per pod (`podAttachment.defaultDeny`).
-
-### Exec behavior
-
-`exec` behaviors are fully supported through compilation and evaluation
-(`CompiledRuntimePolicy.compiledExecs` / `EvaluationResult.Exec`) — see
-[Known Gaps](#known-gaps--future-work) for the enforcement status.
+for that pod's filter. `rpCreated`/`rpUpdated`/`rpDeleted` (`pkg/egressmgr/runtimepolicies.go`)
+implement the default-deny-union-across-policies bookkeeping described above, per pod
+(`podAttachment.defaultDeny`), and gate on `Mode == "enforce"` exactly as `LsmManager` does.
+`rpUpdated` mutates the stored `EvaluationResult`'s `IPs`/`Selector` in place rather than replacing
+the pointer that pods' `attachedFilters` entries share (`82acb1f`), so a policy update does not leave
+pods pointing at stale IP data.
 
 ## Helm chart / deployment shape
 
@@ -209,32 +243,48 @@ default-deny-union-across-policies bookkeeping described above, per pod (`podAtt
 ## Known Gaps / Future Work
 
 These are verified, current limitations — not planned features to build toward, which belong in a
-future `PLAN.md`:
+future `PLAN.md`. They were re-verified against `51d1320`.
 
-- **`spec.mode: monitor` silently disables a policy instead of observing it.** The `Mode` field
+> One item that used to be listed here is gone: `exec` enforcement landed in #51 (`3568f42`) and is
+> described under [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering). Issue #34
+> ("exec behaviors are compiled/evaluated but never enforced") is still open but no longer
+> reflects the code and can be closed.
+
+- **`spec.mode: monitor` — and an omitted `spec.mode` — silently disable a policy.** The `Mode` field
   was added to `RuntimePolicySpec` in `4a8bcb1` and is threaded through `pkg/compiler`
   (`CompiledRuntimePolicy.mode` → `EvaluationResult.Mode`), so the field and its print column now
-  work. But both managers treat it purely as an on/off gate: `rpCreated` returns early unless the
-  mode is exactly `enforce` (`pkg/egressmgr/runtimepolicies.go`, `pkg/lsmmgr/runtimepolicies.go`),
-  and `rpUpdated` treats any non-`enforce` mode as a *delete*. Nothing else in the tree reads
-  `Mode`. A `monitor`-mode policy therefore enforces nothing, reports nothing, and writes no
-  status — it is indistinguishable from having no policy at all, which is the opposite of what a
-  user trialling a policy before enforcing it would expect.
+  work. But both managers treat it purely as an on/off gate: `rpCreated` returns early unless
+  `compiledRp.Mode == "enforce"` (`pkg/egressmgr/runtimepolicies.go`,
+  `pkg/lsmmgr/runtimepolicies.go`), and `rpUpdated` treats any other value as a *delete*. Nothing
+  else in the tree reads `Mode`. A `monitor`-mode policy therefore enforces nothing, reports nothing,
+  and writes no status — it is indistinguishable from having no policy at all, which is the opposite
+  of what a user trialling a policy before enforcing it would expect.
+
+  The same gate makes `mode` effectively required: it is `+optional` with no `+kubebuilder:default`
+  (`api/v1alpha1/runtimepolicy_types.go`), so `Mode` compiles to `""`, which is not `enforce`, and a
+  policy that simply omits the field is inert. None of the 11 `RuntimePolicy` examples in
+  `docs/runtimepolicy.md` set `mode`, so as written every documented example enforces nothing.
 
   Monitor mode is not implementable without three pieces that do not exist yet: a kernel→userspace
   event channel (both BPF programs are map-lookup enforcers with no ring buffer, and
   `events.EventIface` carries only pod and policy lifecycle callbacks), a finding sink
   (`openreportsv1alpha1.Install(scheme)` is called but no code ever writes a `Report`), and status
   reporting. Tracked in #42; the pipeline it needs overlaps #17 and #29.
-- **`exec` behaviors compile and evaluate but are not enforced.** `PolicyBehavior.Exec` is
-  compiled by `pkg/compiler` and appears in `EvaluationResult.Exec`, and the BPF LSM program
-  (`pkg/bpf/lsm/_cprog/lsm.bpf.c`) supports a second attach target for this
-  (`bprm_check_security`, `argTypeExecCheck` in `pkg/bpf/lsm/lsm.go`). But `pkg/lsmmgr` only ever
-  instantiates an LSM enforcer for the `file_open` target (`lsm.NewForAttachTarget(&l.logger,
-  "file_open")` in `pkg/lsmmgr/runtimepolicies.go`) and only ever reads/writes
-  `compiledRp.Open`; `compiledRp.Exec` is never consulted by `lsmmgr` or `egressmgr`. A
-  `RuntimePolicy` with only `exec` rules will compile, apply, and report success, but has no
-  runtime effect. Tracked in #34.
+- **`open`/`exec` rules from separate policies intersect instead of unioning.**
+  `docs/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
+  policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each
+  policy its own LSM program with its own `allowed`/`banned`/`default_deny` maps and has no
+  cross-policy default-deny tracking. Since the kernel denies when any attached LSM program returns
+  `-EPERM`, a policy that default-denies `open` cannot be relaxed by a second policy's `allow` list:
+  paths that policy A does not allow stay blocked no matter what policy B says. Untracked — no
+  issue filed yet.
+- **Learning-mode residue in the BPF programs.** #32 removed the userspace side of learning mode,
+  but both LSM variants still increment per-path counters in the `open_events` hash-of-maps on every
+  hook invocation, and `maps.h` still defines its inner map while `lsm.bpf.c` still defines a
+  `LEARNING_MODE` flag constant. Nothing populates the outer map (`spec.Maps["open_events"].Contents`
+  is explicitly nil'd at load) and nothing reads it, so every lookup misses and the counters are dead
+  weight on the hot path. Untracked; #52 describes a bug in the userspace reader that no longer
+  exists.
 - **Container attribution only covers containerd with the systemd cgroup driver.**
   `pkg/containers.buildCandidatePaths` only ever generates `cri-containerd-<id>.scope` leaf names,
   so on CRI-O or Docker nodes no candidate path resolves, no cgroup ID reaches the `cgids` maps
