@@ -62,12 +62,11 @@ static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
 static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
     struct linux_binprm *bprm = (struct linux_binprm *)arg0;
+    char buf[MAX_PATH_LEN] = {};
+    bpf_d_path(&bprm->file->f_path, buf, sizeof(buf));
+
     char key[MAX_PATH_LEN] = {};
-    const char *fname = bprm->filename;
-    int len = bpf_probe_read_kernel_str(key, sizeof(key), fname);
-    if (len <= 0) {
-        return 0;
-    }
+    bpf_probe_read_kernel_str(key, sizeof(key), buf);
 
     struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
     if (count_map) {

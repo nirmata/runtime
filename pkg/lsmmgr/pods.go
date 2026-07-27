@@ -20,17 +20,11 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	for rpUid, la := range l.lsmAttachments {
 		if la.selector.Matches(labels.Set(pod.Labels)) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
-			if la.openEnforcer != nil {
-				if err := la.openEnforcer.AddCgids(pr.cgids); err != nil {
-					return err
-				}
+			for _, prog := range la.progs {
+				prog.enf.AddCgids(pr.cgids)
 			}
-			if la.execEnforcer != nil {
-				if err := la.execEnforcer.AddCgids(pr.cgids); err != nil {
-					return err
-				}
-			}
-			pr.attachedLsms[rpUid] = la
+
+			attach(rpUid, la, string(pod.UID), pr)
 		}
 	}
 	l.pods[string(pod.UID)] = pr
@@ -66,23 +60,10 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 		if _, ok := la.attachedPods[string(pod.UID)]; !ok {
 			continue
 		}
-		if la.execEnforcer != nil {
-			if err := la.execEnforcer.AddCgids(toAdd); err != nil {
-				return err
-			}
-			if err := la.execEnforcer.DeleteCgids(toRemove); err != nil {
-				return err
-			}
+		for _, prog := range la.progs {
+			prog.enf.AddCgids(toAdd)
+			prog.enf.DeleteCgids(toRemove)
 		}
-		if la.openEnforcer != nil {
-			if err := la.openEnforcer.AddCgids(toAdd); err != nil {
-				return err
-			}
-			if err := la.openEnforcer.DeleteCgids(toRemove); err != nil {
-				return err
-			}
-		}
-
 	}
 	return nil
 
@@ -97,15 +78,8 @@ func (l *LsmManager) podDeleted(podUid string) error {
 		if !ok {
 			continue
 		}
-		if la.openEnforcer != nil {
-			if err := la.openEnforcer.DeleteCgids(podAttachment.cgids); err != nil {
-				return err
-			}
-		}
-		if la.execEnforcer != nil {
-			if err := la.execEnforcer.DeleteCgids(podAttachment.cgids); err != nil {
-				return err
-			}
+		for _, prog := range la.progs {
+			prog.enf.DeleteCgids(podAttachment.cgids)
 		}
 		delete(la.attachedPods, podUid)
 	}

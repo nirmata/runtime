@@ -28,13 +28,8 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 				// all those programs will end up recording the same resuls into their respective
 				// maps for a single pod that matches. so during a read only fetch learned behaviors
 				// from the first entry in the pod's lsmAttachment
-				if lsmAtt.openEnforcer != nil {
-					if err := lsmAtt.openEnforcer.SetLearningModeForCgids(pod.cgids, true); err != nil {
-						l.logger.Error(err, "failed to enable learning mode for pod", "podUid", podUid)
-					}
-				}
-				if lsmAtt.execEnforcer != nil {
-					if err := lsmAtt.execEnforcer.SetLearningModeForCgids(pod.cgids, true); err != nil {
+				for _, prog := range lsmAtt.progs {
+					if err := prog.enf.SetLearningModeForCgids(pod.cgids, true); err != nil {
 						l.logger.Error(err, "failed to enable learning mode for pod", "podUid", podUid)
 					}
 				}
@@ -65,13 +60,8 @@ func (l *LsmManager) Start(uid string, matchLabels map[string]string, dur time.D
 			if len(pa.learningEnabled) == 0 {
 				l.logger.V(2).Info("no more active learning windows for pod, disabling learning mode", "uid", uid, "podUid", podUid)
 				for _, la := range pa.attachedLsms {
-					if la.openEnforcer != nil {
-						if err := la.openEnforcer.SetLearningModeForCgids(pa.cgids, false); err != nil {
-							l.logger.Error(err, "failed to disable learning mode for pod", "podUid", podUid)
-						}
-					}
-					if la.execEnforcer != nil {
-						if err := la.execEnforcer.SetLearningModeForCgids(pa.cgids, false); err != nil {
+					for _, prog := range la.progs {
+						if err := prog.enf.SetLearningModeForCgids(pa.cgids, false); err != nil {
 							l.logger.Error(err, "failed to disable learning mode for pod", "podUid", podUid)
 						}
 					}
@@ -105,17 +95,10 @@ func (l *LsmManager) Read(uid string) (map[string]uint32, error) {
 		// all attached lsm enforcers's event tracking map will contain the same data.
 		// just get the values from the first entry, break the loop to move on to the next pod
 		for _, la := range pod.attachedLsms {
-			if la.openEnforcer != nil {
-				if err := la.openEnforcer.GetLearningModeForCgids(ret, pod.cgids); err != nil {
+			for _, prog := range la.progs {
+				if err := prog.enf.GetLearningModeForCgids(ret, pod.cgids); err != nil {
 					return nil, err
 				}
-				break
-			}
-			if la.execEnforcer != nil {
-				if err := la.execEnforcer.GetLearningModeForCgids(ret, pod.cgids); err != nil {
-					return nil, err
-				}
-				break
 			}
 		}
 	}

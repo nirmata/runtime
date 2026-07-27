@@ -19,6 +19,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		openEnforcer *lsm.LsmEnforcer
 		execEnforcer *lsm.LsmEnforcer
 		err          error
+		progMap      = make(map[string]*progState)
 	)
 
 	if compiledRp.Open.HasEntries() {
@@ -26,12 +27,22 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		if err != nil {
 			return err
 		}
+
+		progMap[lsm.PROG_TYPE_LSM_OPEN] = &progState{
+			files: compiledRp.Open,
+			enf:   openEnforcer,
+		}
 	}
 
 	if compiledRp.Exec.HasEntries() {
 		execEnforcer, err = l.createForProgType(compiledRp.Exec, lsm.PROG_TYPE_LSM_EXEC)
 		if err != nil {
 			return err
+		}
+
+		progMap[lsm.PROG_TYPE_LSM_EXEC] = &progState{
+			files: compiledRp.Exec,
+			enf:   execEnforcer,
 		}
 	}
 
@@ -41,12 +52,9 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	la := &lsmAttachment{
-		openEnforcer: openEnforcer,
-		execEnforcer: execEnforcer,
+		progs:        progMap,
 		attachedPods: make(map[string]*podRepresentation),
 		selector:     compiledRp.Selector,
-		openFiles:    compiledRp.Open,
-		execFiles:    compiledRp.Exec,
 	}
 	l.lsmAttachments[compiledRp.UID] = la
 
@@ -95,19 +103,16 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	la.selector = compiledRp.Selector
-	err := l.syncProgType(compiledRp.UID, la, compiledRp.Open, lsm.PROG_TYPE_LSM_OPEN)
+	err := l.syncProgType(la, compiledRp.Open, lsm.PROG_TYPE_LSM_OPEN)
 	if err != nil {
 		return err
 	}
 
-	err = l.syncProgType(compiledRp.UID, la, compiledRp.Exec, lsm.PROG_TYPE_LSM_EXEC)
+	err = l.syncProgType(la, compiledRp.Exec, lsm.PROG_TYPE_LSM_EXEC)
 	if err != nil {
 		return err
 	}
 
-	// now that we run sync pod attachment once and inside it we check that both enforcers aren't nil
-	// previous member ship should be denoted by having an entry for a given pod and new membership
-	// should be denoted by compiledrp.selector.matches
 	l.syncPodAttachment(compiledRp.UID, la)
 	return nil
 }
@@ -149,69 +154,69 @@ func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType st
 	return enf, nil
 }
 
-func (l *LsmManager) syncProgType(uid string, la *lsmAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
-	enf, filesPtr := la.access(progType)
-	oldFiles := *filesPtr
+func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
+	prog, ok := la.progs[progType]
+	if !ok {
+		enforcer, err := l.initEnforcer(la, newFiles, progType)
+		if err != nil {
+			return err
+		}
+		ps := &progState{
+			enf:   enforcer,
+			files: newFiles,
+		}
+
+		la.progs[progType] = ps
+		prog = ps
+	}
 
 	var toAddPair, toRemovePair *compiler.AllowDenyPair
-	if oldFiles != nil {
-		toAddPair = oldFiles.DiffPair(newFiles)
-		toRemovePair = newFiles.DiffPair(oldFiles)
-	} else {
-		toAddPair = newFiles
-	}
+	toAddPair = prog.files.DiffPair(newFiles)
+	toRemovePair = newFiles.DiffPair(prog.files)
 
 	hasFileChanges := (toAddPair != nil && toAddPair.HasEntries()) || (toRemovePair != nil && toRemovePair.HasEntries())
 
 	if hasFileChanges {
-		if *enf == nil {
-			err := l.initEnforcer(uid, la, enf, newFiles, progType)
-			if err != nil {
-				return err
-			}
-		} else {
-			if toAddPair != nil && toAddPair.HasEntries() {
-				if err := (*enf).AddTargets(toAddPair); err != nil {
-					return err
-				}
-			}
-			if toRemovePair != nil && toRemovePair.HasEntries() {
-				if err := (*enf).DeleteTargets(toRemovePair); err != nil {
-					return err
-				}
-			}
-			defaultDeny := slices.Contains(newFiles.Deny, "*")
-			if err := (*enf).SetDefaultDeny(defaultDeny); err != nil {
+		if toAddPair.HasEntries() {
+			if err := prog.enf.AddTargets(toAddPair); err != nil {
 				return err
 			}
 		}
+		if toRemovePair.HasEntries() {
+			if err := prog.enf.DeleteTargets(toRemovePair); err != nil {
+				return err
+			}
+		}
+		defaultDeny := slices.Contains(newFiles.Deny, "*")
+		if err := prog.enf.SetDefaultDeny(defaultDeny); err != nil {
+			return err
+		}
 	}
 
-	*filesPtr = newFiles
+	prog.files = newFiles
 	return nil
 }
 
-func (l *LsmManager) initEnforcer(uid string, la *lsmAttachment, enf **lsm.LsmEnforcer, newFiles *compiler.AllowDenyPair, progType string) error {
+func (l *LsmManager) initEnforcer(la *lsmAttachment, files *compiler.AllowDenyPair, progType string) (*lsm.LsmEnforcer, error) {
 	newEnf, err := lsm.NewForAttachTarget(&l.logger, progType)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := newEnf.AddTargets(newFiles); err != nil {
-		return err
+	if err := newEnf.AddTargets(files); err != nil {
+		return nil, err
 	}
-	defaultDeny := slices.Contains(newFiles.Deny, "*")
+	defaultDeny := slices.Contains(files.Deny, "*")
 	if err := newEnf.SetDefaultDeny(defaultDeny); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := newEnf.Attach(); err != nil {
-		return err
+		return nil, err
 	}
 	// backfill cgids for pods that were already attached to this policy
 	for _, pod := range la.attachedPods {
 		newEnf.AddCgids(pod.cgids)
 	}
-	*enf = newEnf
-	return nil
+	return newEnf, nil
 }
 
 func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
@@ -227,29 +232,33 @@ func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 			}
 			// we aren't attached
 			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-			if la.openEnforcer != nil {
-				la.openEnforcer.AddCgids(pod.cgids)
+			for _, prog := range la.progs {
+				prog.enf.AddCgids(pod.cgids)
 			}
 
-			if la.execEnforcer != nil {
-				la.execEnforcer.AddCgids(pod.cgids)
-			}
-			la.attachedPods[podUid] = pod
+			attach(uid, la, podUid, pod)
 		} else {
 			// we don't match that pod. did we previously match it ?
-			_, ok := la.attachedPods[podUid]
+			podAttachment, ok := la.attachedPods[podUid]
 			if ok {
 				// yes we did. remove its cgids from the enforcer before dropping the attachment
 				l.logger.V(2).Info("pod no longer matches runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-				if la.openEnforcer != nil {
-					la.openEnforcer.DeleteCgids(pod.cgids)
+				for _, prog := range la.progs {
+					prog.enf.DeleteCgids(pod.cgids)
 				}
 
-				if la.execEnforcer != nil {
-					la.execEnforcer.DeleteCgids(pod.cgids)
-				}
-				delete(la.attachedPods, podUid)
+				detach(uid, la, podUid, podAttachment)
 			}
 		}
 	}
+}
+
+func attach(policyUid string, la *lsmAttachment, podUid string, pod *podRepresentation) {
+	la.attachedPods[podUid] = pod
+	pod.attachedLsms[policyUid] = la
+}
+
+func detach(policyUid string, la *lsmAttachment, podUid string, pod *podRepresentation) {
+	delete(la.attachedPods, podUid)
+	delete(pod.attachedLsms, policyUid)
 }

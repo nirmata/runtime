@@ -42,6 +42,13 @@ func (p *AllowDenyPair) HasEntries() bool {
 // given a pair p, and a target..return another pair that represents what's in the target
 // but not p.
 func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
+	if target == nil {
+		return &AllowDenyPair{}
+	}
+	if p == nil {
+		return target
+	}
+
 	newAllowInTarget := utils.DiffSlice(p.Allow, target.Allow)
 	newDenyInTarget := utils.DiffSlice(p.Deny, target.Deny)
 
