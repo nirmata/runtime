@@ -18,8 +18,8 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	var (
 		openEnforcer *lsm.LsmEnforcer
 		execEnforcer *lsm.LsmEnforcer
-		err          error
 		progMap      = make(map[string]*progState)
+		err          error
 	)
 
 	if compiledRp.Open.HasEntries() {
@@ -157,10 +157,14 @@ func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType st
 func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
 	prog, ok := la.progs[progType]
 	if !ok {
-		enforcer, err := l.initEnforcer(la, newFiles, progType)
+		enforcer, err := l.createForProgType(newFiles, progType)
 		if err != nil {
 			return err
 		}
+		for _, pod := range la.attachedPods {
+			enforcer.AddCgids(pod.cgids)
+		}
+
 		ps := &progState{
 			enf:   enforcer,
 			files: newFiles,
@@ -195,28 +199,6 @@ func (l *LsmManager) syncProgType(la *lsmAttachment, newFiles *compiler.AllowDen
 
 	prog.files = newFiles
 	return nil
-}
-
-func (l *LsmManager) initEnforcer(la *lsmAttachment, files *compiler.AllowDenyPair, progType string) (*lsm.LsmEnforcer, error) {
-	newEnf, err := lsm.NewForAttachTarget(&l.logger, progType)
-	if err != nil {
-		return nil, err
-	}
-	if err := newEnf.AddTargets(files); err != nil {
-		return nil, err
-	}
-	defaultDeny := slices.Contains(files.Deny, "*")
-	if err := newEnf.SetDefaultDeny(defaultDeny); err != nil {
-		return nil, err
-	}
-	if _, err := newEnf.Attach(); err != nil {
-		return nil, err
-	}
-	// backfill cgids for pods that were already attached to this policy
-	for _, pod := range la.attachedPods {
-		newEnf.AddCgids(pod.cgids)
-	}
-	return newEnf, nil
 }
 
 func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
