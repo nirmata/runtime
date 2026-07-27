@@ -113,6 +113,11 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		return err
 	}
 
+	if len(la.progs) == 0 {
+		l.rpDeleted(compiledRp)
+		return nil
+	}
+
 	l.syncPodAttachment(compiledRp.UID, la)
 	return nil
 }
