@@ -30,16 +30,16 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 	}
 }
 
-func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
+func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	e.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID)
 	if compiledRp.Mode != "enforce" {
 		e.rpDeleted(compiledRp)
-		return nil
+		return
 	}
 	currentRp, ok := e.rps[compiledRp.UID]
 	if !ok {
 		e.rpCreated(compiledRp)
-		return nil
+		return
 	}
 	// store the old ips because we may need to delete them from a pod's attachment if the
 	// policy no longer matches, regardless of whether the ips themselves changed
@@ -130,7 +130,6 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 			}
 		}
 	}
-	return nil
 }
 
 func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
