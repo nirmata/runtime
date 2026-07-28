@@ -11,6 +11,10 @@ HOST_PLATFORM ?= linux/$(shell go env GOARCH)
 # unpinned `go run` makes that annotation flap with whatever each developer or
 # runner happens to resolve. Bump this deliberately and regenerate.
 CONTROLLER_GEN_VERSION ?= v0.20.0
+# Must track k8s.io/client-go in go.mod: the generated clientset/informers are
+# written against that library's API. Unpinned, these targets fail outright
+# because k8s.io/code-generator is not a module dependency.
+CODE_GENERATOR_VERSION ?= v0.36.0
 CHAINSAW_VERSION ?= v0.2.15
 
 generate-crds:
@@ -66,7 +70,7 @@ verify-bpf: generate-bpf
 	fi
 
 generate-client:
-	go run k8s.io/code-generator/cmd/client-gen \
+	go run k8s.io/code-generator/cmd/client-gen@$(CODE_GENERATOR_VERSION) \
 		--clientset-name versioned \
 		--input-base "" \
 		--input $(MODULE)/api/v1alpha1 \
@@ -75,14 +79,14 @@ generate-client:
 		--go-header-file hack/boilerplate.go.txt
 
 generate-listers:
-	go run k8s.io/code-generator/cmd/lister-gen \
+	go run k8s.io/code-generator/cmd/lister-gen@$(CODE_GENERATOR_VERSION) \
 		--output-dir ./pkg/client/listers \
 		--output-pkg $(MODULE)/pkg/client/listers \
 		--go-header-file hack/boilerplate.go.txt \
 		$(MODULE)/api/v1alpha1
 
 generate-informers:
-	go run k8s.io/code-generator/cmd/informer-gen \
+	go run k8s.io/code-generator/cmd/informer-gen@$(CODE_GENERATOR_VERSION) \
 		--output-dir ./pkg/client/informers \
 		--output-pkg $(MODULE)/pkg/client/informers \
 		--versioned-clientset-package $(MODULE)/pkg/client/clientset/versioned \
@@ -111,7 +115,7 @@ test-unit:
 # and no eBPF-capable kernel.
 test-chainsaw:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/aiinventories.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
 	chainsaw test --config test/chainsaw/.chainsaw.yaml --test-dir test/chainsaw/
 
 fmt:
@@ -159,7 +163,7 @@ kind-install-prebuilt:
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/aiinventories.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \

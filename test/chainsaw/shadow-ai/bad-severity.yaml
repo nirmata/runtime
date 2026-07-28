@@ -1,0 +1,11 @@
+# severity is an enum: info;low;medium;high;critical
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-ai-bad-severity
+spec:
+  mode: monitor
+  behaviors:
+  - ai:
+      classes: [llm]
+      severity: catastrophic

@@ -2,9 +2,15 @@ package runtimeevent
 
 import (
 	"context"
+	"errors"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// ErrSourceNotWired is returned by sources whose kernel-side bindings are not
+// available on this build/platform. The collector logs it once and does not
+// restart the source.
+var ErrSourceNotWired = errors.New("runtimeevent: source not wired: BPF bindings not generated on this platform")
 
 // Source produces events.
 type Source interface {

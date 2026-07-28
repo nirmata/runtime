@@ -1,0 +1,12 @@
+# minConfidence is a percentage bounded to 0-100. Accepting 200 would silently
+# gate out every finding the policy was written to produce.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-ai-bad-confidence
+spec:
+  mode: monitor
+  behaviors:
+  - ai:
+      classes: [llm]
+      minConfidence: 200

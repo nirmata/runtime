@@ -24,6 +24,33 @@ type EvaluationResult struct {
 	Exec     *AllowDenyPair
 	Selector labels.Selector
 	Mode     string
+	// AI holds one rule per `ai` behavior, in spec order. Nil/empty means the
+	// policy carries no AI detection rules.
+	AI []*AIRule
+}
+
+// AIRule is one evaluated `ai` behavior: the policy-time part of an AI
+// detection rule (target lists and gates), plus the compiled per-event
+// predicate the detection engine evaluates for each classified event.
+type AIRule struct {
+	// Classes restricts the rule to these traffic classes ("llm", "mcp",
+	// "a2a"); empty means all classes.
+	Classes []string
+	// Allow and Deny are destination identities: hostname globs,
+	// "provider:<name>", "mcp-server:<package>", IPv4 literals/CIDRs, or the
+	// "*" default-deny sentinel. Each is the union of the behavior's
+	// hardcoded values and its evaluated expression, exactly like the
+	// network/exec/open behaviors.
+	Allow []string
+	Deny  []string
+	// Match is the compiled `match` predicate, nil when the behavior sets
+	// none. A nil Match means "no additional condition", so callers must check
+	// for nil rather than relying on Eval (which reports false).
+	Match *EventPredicate
+	// MinConfidence gates findings by classifier confidence (0-100).
+	MinConfidence int32
+	// Severity is the severity of findings emitted for this rule.
+	Severity string
 }
 
 type AllowDenyPair struct {
@@ -107,6 +134,27 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		}
 	}
 
+	var aiRules []*AIRule
+	for _, compiledAI := range c.compiledAIs {
+		// AI targets reuse the behavior accumulator, so `values` and
+		// `expression` union exactly as they do for the other behaviors.
+		// Start from empty rather than nil slices, matching compileBehavior, so
+		// a consumer never has to distinguish "no entries" from "unset".
+		targets := &AllowDenyPair{Allow: []string{}, Deny: []string{}}
+		if err := evalCompiledBehavior(ctx, targets, compiledAI.behavior, data); err != nil {
+			return nil, err
+		}
+		aiRules = append(aiRules, &AIRule{
+			// Copy so a consumer cannot mutate the compiled policy's state.
+			Classes:       append([]string(nil), compiledAI.classes...),
+			Allow:         targets.Allow,
+			Deny:          targets.Deny,
+			Match:         compiledAI.match,
+			MinConfidence: compiledAI.minConfidence,
+			Severity:      compiledAI.severity,
+		})
+	}
+
 	return &EvaluationResult{
 		UID:      c.UID,
 		Name:     c.Name,
@@ -115,6 +163,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		Exec:     exec,
 		Selector: selector,
 		Mode:     c.mode,
+		AI:       aiRules,
 	}, nil
 }
 

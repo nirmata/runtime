@@ -1,0 +1,113 @@
+[
+  {
+    "namespace": "ai-workloads",
+    "kind": "Deployment",
+    "name": "inference-gateway",
+    "classes": [
+      "llm"
+    ],
+    "providers": [
+      "ollama"
+    ],
+    "endpointKinds": [
+      "ollama.chat"
+    ],
+    "models": [
+      "llama3"
+    ],
+    "transports": [
+      "http"
+    ],
+    "eventCount": 1,
+    "ungovernedCount": 1,
+    "firstSeen": "2026-07-27T10:00:03Z",
+    "lastSeen": "2026-07-27T10:00:03Z"
+  },
+  {
+    "namespace": "ai-workloads",
+    "kind": "ReplicaSet",
+    "name": "a2a-broker",
+    "classes": [
+      "a2a"
+    ],
+    "providers": [
+      "unknown"
+    ],
+    "endpointKinds": [
+      "a2a.agent-card"
+    ],
+    "transports": [
+      "http"
+    ],
+    "eventCount": 1,
+    "ungovernedCount": 1,
+    "firstSeen": "2026-07-27T10:00:08Z",
+    "lastSeen": "2026-07-27T10:00:08Z"
+  },
+  {
+    "namespace": "ai-workloads",
+    "kind": "ReplicaSet",
+    "name": "agent-frontend-abc",
+    "classes": [
+      "llm"
+    ],
+    "providers": [
+      "anthropic",
+      "openai",
+      "self-hosted"
+    ],
+    "endpointKinds": [
+      "chat.completions"
+    ],
+    "models": [
+      "gpt-4",
+      "gpt-4o"
+    ],
+    "transports": [
+      "http",
+      "https"
+    ],
+    "eventCount": 5,
+    "ungovernedCount": 1,
+    "firstSeen": "2026-07-27T10:00:00Z",
+    "lastSeen": "2026-07-27T10:00:12Z"
+  },
+  {
+    "namespace": "ai-workloads",
+    "kind": "ReplicaSet",
+    "name": "mcp-client-agent",
+    "classes": [
+      "mcp"
+    ],
+    "providers": [
+      "unknown"
+    ],
+    "endpointKinds": [
+      "mcp.stdio",
+      "mcp.streamable-http"
+    ],
+    "transports": [
+      "sse",
+      "stdio"
+    ],
+    "eventCount": 3,
+    "ungovernedCount": 1,
+    "firstSeen": "2026-07-27T10:00:05Z",
+    "lastSeen": "2026-07-27T10:00:07Z"
+  },
+  {
+    "namespace": "default",
+    "kind": "Pod",
+    "name": "debug-shell",
+    "classes": [
+      "llm"
+    ],
+    "providers": [
+      "vllm"
+    ],
+    "eventCount": 1,
+    "ungovernedCount": 1,
+    "firstSeen": "2026-07-27T10:00:04Z",
+    "lastSeen": "2026-07-27T10:00:04Z"
+  }
+]

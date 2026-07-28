@@ -1,0 +1,117 @@
+# CRD conformance for the `ai` behavior, `mode: discover`, and AIInventory.
+#
+# This asserts the SCHEMA only: that the five sample policies in
+# test/samples/shadow-ai/policies are accepted by a real API server, and that
+# malformed AI behaviors are rejected for the right reason. It does NOT assert
+# that any AI traffic is detected — the five BPF sources are not wired, so there
+# is nothing to detect on a cluster. See test/samples/shadow-ai/README.md.
+#
+# Requires: charts/kyverno-runtime/crds applied. No daemon, no image, no eBPF.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: shadow-ai
+spec:
+  steps:
+  - name: the-five-sample-policies-are-accepted
+    # The sample is the feature's worked example. If the API server rejects any
+    # of them, the sample is lying to whoever copies it.
+    try:
+    - apply:
+        file: ../../samples/shadow-ai/policies/01-ai-discovery.yaml
+    - apply:
+        file: ../../samples/shadow-ai/policies/02-unsanctioned-llm.yaml
+    - apply:
+        file: ../../samples/shadow-ai/policies/03-mcp-allowlist.yaml
+    - apply:
+        file: ../../samples/shadow-ai/policies/04-a2a-discovery.yaml
+    - apply:
+        file: ../../samples/shadow-ai/policies/05-degraded-metadata.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: ai-discovery
+          spec:
+            mode: discover
+    - assert:
+        # Round-trip the fields most likely to be pruned by a schema mistake:
+        # an int32 pointer, an enum, and a multi-line CEL string.
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: unsanctioned-llm-egress
+          spec:
+            behaviors:
+            - ai:
+                classes: [llm]
+                severity: high
+                minConfidence: 60
+
+  - name: discover-mode-is-accepted
+    try:
+    - apply:
+        file: valid-discover.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-ai-discover
+          spec:
+            mode: discover
+
+  - name: ai-with-another-behavior-kind-is-rejected
+    # The XValidation on PolicyBehavior became a 4-way exactly-one check when the
+    # ai kind was added. Without it, an item carrying both would compile
+    # ambiguously and one kind would be silently dropped.
+    try:
+    - apply:
+        file: bad-ai-plus-network.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'exactly one of network, exec, open, or ai must be specified'))": true
+
+  - name: bad-severity-is-rejected
+    try:
+    - apply:
+        file: bad-severity.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'severity'))": true
+            "(contains($error, 'Unsupported value'))": true
+
+  - name: out-of-range-min-confidence-is-rejected
+    # minConfidence is a percentage: 0-100. 200 must not be accepted and then
+    # silently gate every finding out.
+    try:
+    - apply:
+        file: bad-min-confidence.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'minConfidence'))": true
+
+  - name: unknown-traffic-class-is-rejected
+    try:
+    - apply:
+        file: bad-class.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'Unsupported value'))": true
+
+  - name: aiinventory-is-cluster-scoped-with-a-writable-status
+    try:
+    - apply:
+        file: valid-aiinventory.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: AIInventory
+          metadata:
+            name: cluster

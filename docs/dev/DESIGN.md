@@ -33,6 +33,7 @@ rather than glossed over.
 - [Redaction chokepoint](#redaction-chokepoint)
 - [Status reporting](#status-reporting)
 - [Metrics](#metrics)
+- [Shadow AI detection](#shadow-ai-detection)
 - [Helm chart / deployment shape](#helm-chart--deployment-shape)
 - [Known Gaps / Future Work](#known-gaps--future-work)
 
@@ -455,6 +456,60 @@ Populated today, all under the `kyverno_runtime` namespace:
 `inventory_syncs_total` are registered so that the code paths that will feed them add no new metrics
 file, but nothing increments them yet.
 
+## Shadow AI detection
+
+`RuntimePolicy` also carries an `ai` behavior (`PolicyBehavior.AI *AIBehavior`,
+4-way exclusive with `network`/`exec`/`open`) that classifies traffic as LLM,
+MCP, or A2A instead of matching raw IPs/commands/paths, plus a `discover`
+`RuntimePolicyMode` that rolls classified traffic into a cluster-scoped
+`AIInventory` singleton instead of emitting per-event findings. The packages
+behind this exist and are unit-tested:
+
+- `pkg/detect/ai`: a pure classifier (`Classifier.Classify`) over a
+  hot-reloadable provider catalog (`providers.go`, embedded `catalog.json`,
+  18 providers), with confidence scoring (`confidence.go`) and an `ai` CEL
+  library (`cellib.go`, library name `kyverno.ai`) exposing catalog lookups
+  as `ai.isProvider`/`ai.provider`/`ai.isLLMPath`/`ai.isMCPMethod`/
+  `ai.isA2AMethod`/`ai.isMCPServerPackage`.
+- `pkg/inventory`: `Rollup` accumulates classified events per
+  `(namespace, kind, name)` workload key (bounded sets, capped at 64 entries
+  / 128 bytes each — model names are attacker-influenced); `Syncer` publishes
+  that as this node's shard of the `AIInventory` singleton
+  (`SingletonName = "cluster"`) under `RetryOnConflict`.
+- `pkg/aicontrols`: `EndpointResolver` (a `collector.Stage`) sets
+  `NetFacts.Governed` (`nil`/`true`/`false`) by comparing a destination
+  against the configured AIControls proxy's Service + EndpointSlice
+  addresses, refreshed periodically — never per-event. This is the seam with
+  the AIControls product: kyverno-runtime answers "is this AI call governed
+  at all", AIControls answers "what is this AI call doing" (LLM/MCP
+  semantics, SSRF floor, approval flows).
+- `runtimeevent.AIFacts` (`pkg/runtimeevent/ai.go`) is the classifier's
+  output type, attached to an event as `Event.AI`. Every field is one of
+  class/provider/model/endpointKind/JSON-RPC-method/transport/confidence/
+  evidence-tokens/sanctioned — evidence tokens are names only (host, path,
+  header name, port), never a header value or body content
+  (`pkg/detect/ai/confidence.go: Token`), consistent with the redaction
+  chokepoints described elsewhere in this document.
+
+Full reference (worked YAML for `discover`/`monitor`/`enforce`, the
+`AIInventory` CR shape, the provider catalog and how to extend it via
+ConfigMap, the `event`/`ai.*` CEL surface, redaction guarantees, and
+evasion/limitations) is in [`docs/shadow-ai.md`](../shadow-ai.md) — including,
+prominently, the current honest gaps:
+
+- The five BPF sources these packages are meant to consume
+  (`pkg/bpf/{dnstrace,netflow,tlspeek,l7peek,exectrace}`) ship their C and their
+  decoders but are **not compiled or loaded**: `bpf2go` needs `clang` and a
+  generated `vmlinux.h`, neither of which is available on the build host, so each
+  constructor reports `runtimeevent.ErrSourceNotWired`. Until that lands, the
+  classifier only ever sees synthetic events.
+- `cmd/kyverno-runtime/daemon.go` wires the observation pipeline (metrics,
+  attribution, reporter, status writer, monitor, collector) but not yet the AI
+  stages — classifier, endpoint resolver, detect engine and inventory syncer.
+- AI `enforce` mode is not implemented. An `enforce`-mode `ai` behavior is
+  intended to downgrade to `monitor` and set `AIEnforcementImplemented=False`,
+  per `AIBehavior`'s doc comment, but no code path sets that condition yet.
+
 ## Helm chart / deployment shape
 
 `charts/kyverno-runtime/` installs:
@@ -495,8 +550,13 @@ future `PLAN.md`.
     more than that within one interval loses the excess (read-and-reset mitigates, does not
     eliminate).
   - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
-  - No DNS, TLS SNI, or HTTP visibility exists, and no new kernel programs are loaded by this
-    code.
+  - No DNS, TLS SNI, or HTTP visibility exists. The `dns`/`tls`/`http` event kinds are declared
+    but nothing produces them, and no new kernel programs are loaded by this code.
+- **The AI stages are wired into the daemon but have nothing to classify.** `cmd/kyverno-runtime/daemon.go`
+  constructs the classifier, endpoint resolver, detect engine and inventory syncer, but the only
+  sources feeding the collector are the two observation-map polls. With no BPF sources wired there
+  is no DNS, TLS or HTTP traffic for the classifier to see. See
+  [Shadow AI detection](#shadow-ai-detection).
 - **`open`/`exec` rules from separate policies intersect instead of unioning.**
   `docs/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
   policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each
@@ -536,6 +596,14 @@ future `PLAN.md`.
   interfaces, and a kind-based lane covers egress enforcement and program load. LSM-behavioral
   tests need `lsm=bpf` in the kernel command line, which hosted runners do not provide, so that job
   is `workflow_dispatch`-gated (#60).
+- **The five shadow-AI BPF sources are not compiled at all.** `pkg/bpf/{dnstrace,netflow,tlspeek,
+  l7peek,exectrace}` ship reviewed C and exhaustively tested pure decoders, but `bpf2go` needs
+  `clang` and a generated `vmlinux.h`, so no object exists and no verifier has ever seen them. Each
+  constructor reports `runtimeevent.ErrSourceNotWired`. The decoders are tested; the kernel side is
+  unproven — treat the C as a proposal until a Linux toolchain lane compiles and loads it.
+<!-- The stale gap list that used to follow was removed: #38 (CRI-O/Docker attribution),
+     #41 (silently dropped targets), #52, and "reporting/metrics/status are never constructed"
+     were all fixed in the foundations PR. Re-verify against the code before re-adding a gap. -->
 - **No promotion workflow.** There is no code path that turns observed behavior into a proposed
   `RuntimePolicy` allow/deny list. The intent is for that promotion step to become a separate,
   LLM-assisted project rather than a CLI command added to this repository.

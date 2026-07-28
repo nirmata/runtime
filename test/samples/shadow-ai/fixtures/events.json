@@ -1,0 +1,161 @@
+[
+  {
+    "kind": "dns",
+    "time": "2026-07-27T10:00:00Z",
+    "cgroupID": 1001,
+    "pid": 4101,
+    "comm": "python3",
+    "dns": { "qname": "api.openai.com", "qtype": 1 }
+  },
+  {
+    "kind": "tls",
+    "time": "2026-07-27T10:00:01Z",
+    "cgroupID": 1001,
+    "pid": 4101,
+    "comm": "python3",
+    "tls": { "sni": "api.openai.com", "alpn": ["h2"] },
+    "net": { "destPort": 443, "protocol": "tcp" }
+  },
+  {
+    "kind": "dns",
+    "time": "2026-07-27T10:00:02Z",
+    "cgroupID": 1001,
+    "pid": 4101,
+    "comm": "python3",
+    "dns": { "qname": "api.anthropic.com", "qtype": 1 }
+  },
+  {
+    "kind": "http",
+    "time": "2026-07-27T10:00:03Z",
+    "cgroupID": 1003,
+    "pid": 5203,
+    "comm": "python3",
+    "http": {
+      "method": "POST",
+      "path": "/api/chat",
+      "host": "ollama",
+      "headers": { "Content-Type": "application/json" },
+      "bodyPreview": "{\"model\":\"llama3\",\"messages\":[{\"role\":\"user\",\"content\":\"CANARY-PROMPT\"}]}"
+    },
+    "net": { "destIP": "10.42.3.17", "destPort": 11434, "protocol": "tcp" }
+  },
+  {
+    "kind": "net",
+    "time": "2026-07-27T10:00:04Z",
+    "cgroupID": 1004,
+    "pid": 6304,
+    "comm": "curl",
+    "net": { "destIP": "10.42.9.201", "destPort": 8000, "protocol": "tcp" }
+  },
+  {
+    "kind": "exec",
+    "time": "2026-07-27T10:00:05Z",
+    "cgroupID": 1005,
+    "pid": 7105,
+    "comm": "npx",
+    "exec": {
+      "filename": "/usr/bin/npx",
+      "argv": ["npx", "-y", "@modelcontextprotocol/server-git"],
+      "ppid": 7100
+    }
+  },
+  {
+    "kind": "exec",
+    "time": "2026-07-27T10:00:06Z",
+    "cgroupID": 1005,
+    "pid": 7206,
+    "comm": "uvx",
+    "exec": {
+      "filename": "/usr/local/bin/uvx",
+      "argv": ["uvx", "mcp-server-sqlite", "--db", "/data/app.db"],
+      "ppid": 7100
+    }
+  },
+  {
+    "kind": "http",
+    "time": "2026-07-27T10:00:07Z",
+    "cgroupID": 1005,
+    "pid": 7307,
+    "comm": "node",
+    "http": {
+      "method": "POST",
+      "path": "/mcp",
+      "host": "mcp.internal.corp",
+      "headers": {
+        "Mcp-Session-Id": "sess-9f21",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream"
+      },
+      "bodyPreview": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"id\":7}"
+    },
+    "net": { "destIP": "10.42.5.44", "destPort": 443, "protocol": "tcp" }
+  },
+  {
+    "kind": "http",
+    "time": "2026-07-27T10:00:08Z",
+    "cgroupID": 1006,
+    "pid": 8106,
+    "comm": "curl",
+    "http": {
+      "method": "GET",
+      "path": "/.well-known/agent.json",
+      "host": "partner-agent.example.com",
+      "headers": { "Accept": "application/json" }
+    },
+    "net": { "destIP": "203.0.113.44", "destPort": 443, "protocol": "tcp" }
+  },
+  {
+    "kind": "tls",
+    "time": "2026-07-27T10:00:09Z",
+    "cgroupID": 1002,
+    "pid": 9102,
+    "comm": "curl",
+    "tls": { "sni": "cdn.unknown-vendor.example", "alpn": ["h2", "http/1.1"] },
+    "net": { "destPort": 443, "protocol": "tcp" }
+  },
+  {
+    "kind": "http",
+    "time": "2026-07-27T10:00:10Z",
+    "cgroupID": 1001,
+    "pid": 4101,
+    "comm": "python3",
+    "http": {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "host": "api.openai.com",
+      "headers": {
+        "Openai-Organization": "org-123",
+        "Content-Type": "application/json"
+      },
+      "bodyPreview": "{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"summarize this doc\"}]}"
+    },
+    "net": { "destIP": "10.96.14.22", "destPort": 443, "protocol": "tcp" }
+  },
+  {
+    "kind": "net",
+    "time": "2026-07-27T10:00:11Z",
+    "cgroupID": 1003,
+    "pid": 5203,
+    "comm": "gateway",
+    "net": { "destIP": "10.0.5.20", "destPort": 5432, "protocol": "tcp" }
+  },
+  {
+    "kind": "http",
+    "time": "2026-07-27T10:00:12Z",
+    "cgroupID": 1001,
+    "pid": 4101,
+    "comm": "python3",
+    "http": {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "host": "internal-llm-gateway.svc.cluster.local",
+      "headers": {
+        "Authorization": "Bearer sk-canary-XYZ",
+        "X-Api-Key": "canary-KEY-123",
+        "Content-Type": "application/json"
+      },
+      "bodyPreview": "{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
+    },
+    "net": { "destIP": "10.42.7.9", "destPort": 443, "protocol": "tcp" }
+  }
+]

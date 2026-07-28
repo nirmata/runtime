@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/detect/ai"
+	"github.com/nirmata/kyverno-runtime/pkg/metrics"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -30,6 +32,7 @@ type CompiledRuntimePolicy struct {
 	compiledNets  []*compiledBehavior
 	compiledOpens []*compiledBehavior
 	compiledExecs []*compiledBehavior
+	compiledAIs   []*compiledAIBehavior
 }
 
 type compiledBehavior struct {
@@ -38,11 +41,54 @@ type compiledBehavior struct {
 	pair      *AllowDenyPair
 }
 
-type compiler struct {
-	env *cel.Env
+// compiledAIBehavior is a compiled `ai` behavior. Its allow/deny targets reuse
+// compiledBehavior verbatim -- the same policy-time list(string) machinery as
+// network/exec/open, so `values` ∪ `expression` semantics are identical for the
+// author -- while `match` compiles into a per-event predicate.
+type compiledAIBehavior struct {
+	behavior      *compiledBehavior
+	classes       []string
+	match         *EventPredicate
+	minConfidence int32
+	severity      string
 }
 
-func NewCompiler(client dynamic.Interface) (Compiler, error) {
+type compiler struct {
+	env *cel.Env
+	// eventEnv is the I/O-free per-event env used by `match` expressions.
+	eventEnv *cel.Env
+	metrics  *metrics.Metrics
+}
+
+// Option configures a Compiler.
+type Option func(*compilerOptions)
+
+type compilerOptions struct {
+	catalog *ai.Catalog
+	metrics *metrics.Metrics
+}
+
+// WithCatalog sets the AI provider catalog backing the `ai` CEL lib in the
+// per-event environment. A nil catalog (or no option) uses the embedded
+// default.
+func WithCatalog(cat *ai.Catalog) Option {
+	return func(o *compilerOptions) { o.catalog = cat }
+}
+
+// WithMetrics records per-event predicate failures in
+// PolicyEvalErrors{stage:"predicate"}.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(o *compilerOptions) { o.metrics = m }
+}
+
+func NewCompiler(client dynamic.Interface, opts ...Option) (Compiler, error) {
+	var o compilerOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+
 	base, err := newEnv(client)
 	if err != nil {
 		return nil, err
@@ -56,7 +102,12 @@ func NewCompiler(client dynamic.Interface) (Compiler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &compiler{env: env}, nil
+
+	eventEnv, err := newEventEnv(o.catalog)
+	if err != nil {
+		return nil, err
+	}
+	return &compiler{env: env, eventEnv: eventEnv, metrics: o.metrics}, nil
 }
 
 func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
@@ -68,6 +119,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	compiledNets := []*compiledBehavior{}
 	compiledOpens := []*compiledBehavior{}
 	compiledExecs := []*compiledBehavior{}
+	compiledAIs := []*compiledAIBehavior{}
 
 	// we use the path to propagate errors with context on which field's compilation errored
 	path := field.NewPath("spec").Child("behaviors")
@@ -106,6 +158,15 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 			compiledOpens = append(compiledOpens, compiledOpen)
 		}
+		if b.AI != nil {
+			errPath := path.Index(i).Child("ai")
+			compiledAI, err := c.compileAIBehavior(errPath, b.AI, rp.Name)
+			if err != nil {
+				return nil, err
+			}
+
+			compiledAIs = append(compiledAIs, compiledAI)
+		}
 	}
 
 	evalIntval := time.Duration(0)
@@ -127,8 +188,67 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		compiledNets:   compiledNets,
 		compiledOpens:  compiledOpens,
 		compiledExecs:  compiledExecs,
+		compiledAIs:    compiledAIs,
 		variables:      variables,
 	}, nil
+}
+
+// compileAIBehavior compiles an `ai` behavior. Allow/deny go through the
+// existing policy-time machinery (compileBehavior); only `match` uses the
+// per-event env. An `ai` behavior in an `enforce` policy compiles normally --
+// the DOWNGRADE to monitor semantics belongs to the detection engine, which
+// also raises the AIEnforcementImplemented=False condition, so the policy is
+// never silently ignored here.
+func (c *compiler) compileAIBehavior(path *field.Path, b *v1alpha1.AIBehavior, policy string) (*compiledAIBehavior, error) {
+	// AI targets are destination identities (hostname globs, "provider:x",
+	// "mcp-server:y", IPv4/CIDR), so validateNetworkBehavior deliberately does
+	// NOT apply: rejecting a hostname here would reject the common case.
+	behavior, err := c.compileBehavior(&v1alpha1.Behavior{Allow: b.Allow, Deny: b.Deny})
+	if err != nil {
+		return nil, field.Invalid(path, b, err.Error())
+	}
+
+	compiled := &compiledAIBehavior{
+		behavior: behavior,
+		severity: b.Severity,
+	}
+	for _, class := range b.Classes {
+		compiled.classes = append(compiled.classes, string(class))
+	}
+	if b.MinConfidence != nil {
+		compiled.minConfidence = *b.MinConfidence
+	}
+	if b.Match != "" {
+		predicate, err := c.compileMatchExpression(b.Match)
+		if err != nil {
+			return nil, field.Invalid(path.Child("match"), b.Match, err.Error())
+		}
+		predicate.policy = policy
+		compiled.match = predicate
+	}
+	return compiled, nil
+}
+
+// compileMatchExpression compiles a per-event boolean predicate. It asserts a
+// bool output type, mirroring compileBehavior's list(string) assertion: an
+// expression that type-checks to something else is a policy rejection, not a
+// surprise at event time.
+func (c *compiler) compileMatchExpression(expr string) (*EventPredicate, error) {
+	if c.eventEnv == nil {
+		return nil, fmt.Errorf("per-event CEL environment is not configured")
+	}
+	ast, issues := c.eventEnv.Compile(expr)
+	if err := issues.Err(); err != nil {
+		return nil, err
+	}
+	if !ast.OutputType().IsExactType(types.BoolType) {
+		return nil, fmt.Errorf("invalid return type %s for match expression, expected bool", ast.OutputType())
+	}
+	prog, err := c.eventEnv.Program(ast)
+	if err != nil {
+		return nil, err
+	}
+	return &EventPredicate{prog: prog, src: expr, metrics: c.metrics}, nil
 }
 
 func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, error) {

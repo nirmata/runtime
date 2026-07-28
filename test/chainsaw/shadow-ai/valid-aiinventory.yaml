@@ -1,0 +1,6 @@
+# The inventory is a cluster-scoped singleton; each node writes its own shard of
+# status.nodes, so no node's write clobbers another's.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: AIInventory
+metadata:
+  name: cluster

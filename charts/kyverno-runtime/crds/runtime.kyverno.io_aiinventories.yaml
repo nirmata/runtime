@@ -1,0 +1,154 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: aiinventories.runtime.kyverno.io
+spec:
+  group: runtime.kyverno.io
+  names:
+    kind: AIInventory
+    listKind: AIInventoryList
+    plural: aiinventories
+    shortNames:
+    - aiinv
+    singular: aiinventory
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.summary.workloads
+      name: Workloads
+      type: integer
+    - jsonPath: .status.summary.providers
+      name: Providers
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AIInventory is a cluster-scoped singleton (named "cluster") holding the
+          observed AI usage inventory. Any node's daemon creates it on demand; each
+          daemon writes only its own shard in status.nodes.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AIInventorySpec is reserved for future configuration.
+            type: object
+          status:
+            description: AIInventoryStatus is the observed AI usage, sharded per node.
+            properties:
+              nodes:
+                description: Nodes holds one shard per node, written only by that
+                  node's daemon.
+                items:
+                  description: AINodeInventory is one node's shard of the AI inventory.
+                  properties:
+                    droppedEvents:
+                      description: 'DroppedEvents surfaces collector drops: silence
+                        must never read as safety.'
+                      format: int64
+                      type: integer
+                    nodeName:
+                      type: string
+                    updatedAt:
+                      format: date-time
+                      type: string
+                    workloads:
+                      items:
+                        description: AIWorkloadInventory is the observed AI usage
+                          of a single workload.
+                        properties:
+                          classes:
+                            items:
+                              type: string
+                            type: array
+                          endpointKinds:
+                            items:
+                              type: string
+                            type: array
+                          eventCount:
+                            format: int64
+                            type: integer
+                          firstSeen:
+                            format: date-time
+                            type: string
+                          kind:
+                            description: Kind is the owner kind, or "Pod" for a bare
+                              pod.
+                            type: string
+                          lastSeen:
+                            format: date-time
+                            type: string
+                          models:
+                            items:
+                              type: string
+                            type: array
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          providers:
+                            items:
+                              type: string
+                            type: array
+                          transports:
+                            items:
+                              type: string
+                            type: array
+                          ungovernedCount:
+                            description: |-
+                              UngovernedCount counts events whose destination bypassed the
+                              governance proxy (governed == false).
+                            format: int64
+                            type: integer
+                        required:
+                        - kind
+                        - name
+                        - namespace
+                        type: object
+                      type: array
+                  required:
+                  - nodeName
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - nodeName
+                x-kubernetes-list-type: map
+              summary:
+                description: AIInventorySummary is the cluster-wide rollup across
+                  all node shards.
+                properties:
+                  providers:
+                    description: Providers is a comma-separated, deduplicated provider
+                      list.
+                    type: string
+                  workloads:
+                    format: int32
+                    type: integer
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

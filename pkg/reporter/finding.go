@@ -31,7 +31,7 @@ import (
 type Finding struct {
 	PolicyName string
 	PolicyUID  string
-	Behavior   string // "network"|"open"|"exec"
+	Behavior   string // "network"|"open"|"exec"|"ai"
 	Severity   string // info|low|medium|high|critical (default medium)
 	Result     string // "fail"|"warn" (monitor findings are "fail")
 	// Enforced is true when the kernel actually denied the operation (an
@@ -42,18 +42,33 @@ type Finding struct {
 	Pod       runtimeevent.PodIdentity
 	Net       *NetSummary
 	Process   *ProcessSummary
+	AI        *AISummary
 	Timestamp time.Time
 }
 
 // NetSummary summarizes the destination of a network finding.
 type NetSummary struct {
 	DestIP   string
+	DestPort uint16
 	DestHost string
 }
 
-// ProcessSummary summarizes the process of an exec/open finding.
+// ProcessSummary summarizes the process of an exec/open finding. Argv is
+// pre-joined by the producer; sanitize bounds and scrubs it.
 type ProcessSummary struct {
 	Comm string
+	Argv string
+}
+
+// AISummary summarizes classifier output. Evidence holds tokens only
+// ("sni:api.openai.com", "header:anthropic-version") — names, never values;
+// sanitizeEvidence enforces that shape.
+type AISummary struct {
+	Class, Provider, EndpointKind, Model, Transport string
+	Confidence                                      int
+	Evidence                                        []string
+	Sanctioned                                      *bool
+	Governed                                        *bool
 }
 
 // Severity values accepted by OpenReports.
@@ -109,6 +124,10 @@ func normalizeResult(res string) string {
 // two occurrences of the same policy hitting the same destination from the
 // same pod are the same finding.
 func (f Finding) Fingerprint() string {
+	var aiClass, aiProvider, aiEndpointKind string
+	if f.AI != nil {
+		aiClass, aiProvider, aiEndpointKind = f.AI.Class, f.AI.Provider, f.AI.EndpointKind
+	}
 	var destHost, destIP string
 	if f.Net != nil {
 		destHost, destIP = f.Net.DestHost, f.Net.DestIP
@@ -122,6 +141,9 @@ func (f Finding) Fingerprint() string {
 		f.PolicyUID,
 		f.Pod.UID,
 		f.Behavior,
+		aiClass,
+		aiProvider,
+		aiEndpointKind,
 		destHost,
 		destIP,
 		comm,

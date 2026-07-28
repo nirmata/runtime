@@ -1,0 +1,10 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-ai-discover
+spec:
+  mode: discover
+  podSelector: {}
+  behaviors:
+  - ai:
+      classes: [llm, mcp, a2a]

@@ -1,0 +1,16 @@
+# Inventory / discovery -- "what AI is my cluster using".
+#
+# mode: discover means no findings are emitted and nothing is enforced: this
+# policy exists purely to make every classified AI flow (LLM, MCP, A2A) count
+# toward AIInventory. See DESIGN.md §2.7 for the discover/monitor/enforce
+# distinction and §3.10 for this sample's role in the B10 pipeline test.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: ai-discovery
+spec:
+  mode: discover
+  podSelector: {} # all pods
+  behaviors:
+  - ai:
+      classes: [llm, mcp, a2a]

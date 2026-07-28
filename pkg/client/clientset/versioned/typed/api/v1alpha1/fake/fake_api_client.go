@@ -27,6 +27,10 @@ type FakeRuntimeV1alpha1 struct {
 	*testing.Fake
 }
 
+func (c *FakeRuntimeV1alpha1) AIInventories() v1alpha1.AIInventoryInterface {
+	return newFakeAIInventories(c)
+}
+
 func (c *FakeRuntimeV1alpha1) RuntimePolicies() v1alpha1.RuntimePolicyInterface {
 	return newFakeRuntimePolicies(c)
 }

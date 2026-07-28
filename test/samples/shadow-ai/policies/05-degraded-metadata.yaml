@@ -1,0 +1,35 @@
+# Metadata-only degraded mode is expressible, so users can reason about
+# classifier fidelity instead of trusting an opaque confidence number blindly.
+#
+# Deviation from proposal.md §2.4(5): the literal proposal text --
+#   event.ai.evidence == "sni" && event.ai.provider == "unknown" && event.net.destPort == 443
+# -- has two problems against the code actually committed on this branch:
+#   1. event.ai.evidence is list(string) (pkg/runtimeevent/ai.go), not string,
+#      so `== "sni"` is a CEL type error; it must be a list predicate.
+#   2. An unrecognized TLS SNI does not classify as provider "unknown" at
+#      all: pkg/detect/ai/llm.go's llmFromTLS returns nil (no AIFacts, no
+#      finding) when cat.MatchHost(sni) fails. "provider: unknown" is only
+#      reachable via llmFromHTTP's fallback (a matched LLM path with no
+#      resolvable provider), which needs plaintext HTTP visibility -- the
+#      opposite of "metadata-only".
+# The genuinely-reachable low-fidelity case is llmFromNet: a self-hosted
+# inference port (11434/8000/1234) observed with NO other visibility
+# (no DNS, no SNI, no plaintext HTTP), scored ScorePortSelfHosted=40 with
+# evidence ["port:<n>", "provider:<name>"] and no host/path/body evidence at
+# all. This is what fixtures/events.json's net-port-only-vllm scenario
+# produces, and what this match expression is written against.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: degraded-metadata-visibility
+spec:
+  mode: monitor
+  podSelector: {}
+  behaviors:
+  - ai:
+      classes: [llm]
+      severity: low
+      match: >-
+        event.ai.class == "llm" &&
+        event.ai.confidence < 60 &&
+        event.ai.evidence.exists(e, e.startsWith("port:"))

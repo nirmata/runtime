@@ -1,0 +1,129 @@
+[
+  {
+    "policy": "external-a2a-discovery",
+    "severity": "medium",
+    "result": "fail",
+    "message": "Unsanctioned A2A traffic: partner-agent.example.com (unknown, a2a.agent-card)",
+    "pod": "ai-workloads/a2a-broker-2c9e",
+    "class": "a2a",
+    "provider": "unknown",
+    "endpointKind": "a2a.agent-card",
+    "confidence": 95,
+    "evidence": [
+      "host:partner-agent.example.com",
+      "http-path:/.well-known/agent.json"
+    ],
+    "governed": false,
+    "destHost": "partner-agent.example.com",
+    "destPort": 443,
+    "fingerprint": "41b8edd8cdc46023c02a955467f17aaa267fa2a17ced9b930ca437123c4ebc22"
+  },
+  {
+    "policy": "unsanctioned-llm-egress",
+    "severity": "high",
+    "result": "fail",
+    "message": "Unsanctioned LLM traffic: api.openai.com (openai)",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "openai",
+    "confidence": 70,
+    "evidence": [
+      "dns:api.openai.com",
+      "provider:openai"
+    ],
+    "fingerprint": "1561e488f7fdb0d947daa9773245104a3e0e6a4166dccd14fbee517e44ec5e51"
+  },
+  {
+    "policy": "unsanctioned-llm-egress",
+    "severity": "high",
+    "result": "fail",
+    "message": "Unsanctioned LLM traffic: api.openai.com (openai)",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "openai",
+    "confidence": 70,
+    "evidence": [
+      "alpn:h2",
+      "provider:openai",
+      "sni:api.openai.com"
+    ],
+    "destHost": "api.openai.com",
+    "destPort": 443,
+    "fingerprint": "ec110ec5ae10406e6cc0f8c21d1299fc62b1f0c6091d8f5edfbd74c195a19b95"
+  },
+  {
+    "policy": "unsanctioned-llm-egress",
+    "severity": "high",
+    "result": "fail",
+    "message": "Unsanctioned LLM traffic: api.openai.com (openai, chat.completions)",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "openai",
+    "endpointKind": "chat.completions",
+    "confidence": 99,
+    "evidence": [
+      "body-shape:model+messages",
+      "header:openai-organization",
+      "host:api.openai.com",
+      "http-path:/v1/chat/completions",
+      "provider:openai"
+    ],
+    "governed": true,
+    "destHost": "api.openai.com",
+    "destPort": 443,
+    "fingerprint": "369a55192caff0713b89c65ca0e41c11fae66917cc8b5367a18ce2605e4ae37b"
+  },
+  {
+    "policy": "unsanctioned-llm-egress",
+    "severity": "high",
+    "result": "fail",
+    "message": "Unsanctioned LLM traffic: internal-llm-gateway.svc.cluster.local (self-hosted, chat.completions)",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "self-hosted",
+    "endpointKind": "chat.completions",
+    "confidence": 99,
+    "evidence": [
+      "body-shape:model+messages",
+      "host:internal-llm-gateway.svc.cluster.local",
+      "http-path:/v1/chat/completions"
+    ],
+    "governed": false,
+    "destHost": "internal-llm-gateway.svc.cluster.local",
+    "destPort": 443,
+    "fingerprint": "afe5d53ffacbe8bde1101931e941a984d4b528834d5dcbfc2b3d057805190fff"
+  },
+  {
+    "policy": "mcp-allowlist",
+    "severity": "critical",
+    "result": "fail",
+    "message": "Unsanctioned MCP traffic: /usr/local/bin/uvx (unknown, mcp.stdio)",
+    "pod": "ai-workloads/mcp-client-agent-5f1a",
+    "class": "mcp",
+    "provider": "unknown",
+    "endpointKind": "mcp.stdio",
+    "confidence": 95,
+    "evidence": [
+      "argv:mcp-server-sqlite",
+      "comm:uvx"
+    ],
+    "fingerprint": "a8c29295d90accec05fe77aabe7a6ae094d28c08f2fe3a09cf73ccc1eb2aac68"
+  },
+  {
+    "policy": "degraded-metadata-visibility",
+    "severity": "low",
+    "result": "fail",
+    "message": "Unsanctioned LLM traffic: 10.42.9.201 (vllm)",
+    "pod": "default/debug-shell",
+    "class": "llm",
+    "provider": "vllm",
+    "confidence": 40,
+    "evidence": [
+      "port:8000",
+      "provider:vllm"
+    ],
+    "governed": false,
+    "destPort": 8000,
+    "fingerprint": "6bcd5870de792cf31550e86410f8951abdbb36bc0c91dbae2c65a5124cfe9e38"
+  }
+]

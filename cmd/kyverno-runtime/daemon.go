@@ -5,13 +5,17 @@ import (
 	"time"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/aicontrols"
 	"github.com/nirmata/kyverno-runtime/pkg/attribution"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/collector"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
+	"github.com/nirmata/kyverno-runtime/pkg/detect"
+	"github.com/nirmata/kyverno-runtime/pkg/detect/ai"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/inventory"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/metrics"
 	"github.com/nirmata/kyverno-runtime/pkg/monitor"
@@ -158,18 +162,58 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// matches into findings.
 	mon := monitor.New(logger.WithName("monitor"), rep, m)
 
+	// AIControls integration: resolves the proxy's addresses on an interval so
+	// each flow can be marked governed or not. Disabled unless AICONTROLS_* is
+	// configured, in which case the bit stays nil (unknown) rather than
+	// asserting that traffic is ungoverned.
+	acCfg, err := aicontrols.ConfigFromEnv()
+	if err != nil {
+		logger.Error(err, "invalid AIControls configuration")
+		os.Exit(1)
+	}
+	acResolver := aicontrols.NewEndpointResolver(k8sClient, acCfg, logger.WithName("aicontrols"))
+
+	// AI classifier: pure, catalog-driven, runs as a collector stage.
+	classifier := ai.NewClassifier(ai.DefaultCatalog(), ai.WithMetrics(m))
+
+	// inventory: discover-mode rollup plus this node's shard of the AIInventory
+	// singleton. Carries the collector's drop count so incomplete coverage is
+	// visible rather than implied.
+	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
+	inv := inventory.New(logger.WithName("inventory"), inventory.WithDroppedCounter(col.Dropped))
+	invSyncer := inventory.NewSyncer(c, nodeName, inv, inventory.DefaultSyncInterval,
+		logger.WithName("inventory-syncer"), inventory.WithMetrics(m))
+
+	// detect engine: routes classified events against ai behaviors.
+	engine := detect.NewEngine(detect.Config{
+		Findings:  rep,
+		Inventory: inv,
+		Status:    sw,
+		Catalog:   classifier.Catalog(),
+		Metrics:   m,
+		Log:       logger.WithName("detect"),
+	})
+
 	// Handlers are dispatched concurrently, so ordering between them is not
 	// guaranteed. An event observed before attribution has indexed its pod is
 	// dropped by the attribution stage and counted, never misattributed.
 	podHandlers := []events.PodEventHandler{em, lsmm, attrIdx}
-	policyHandlers := []events.RuntimePolicyEventHandler{em, lsmm, sw, mon}
+	policyHandlers := []events.RuntimePolicyEventHandler{em, lsmm, sw, mon, engine}
 
-	// Poll the managers' observation maps, attribute, then hand to the monitor.
-	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
+	// Poll the managers' observation maps, attribute, classify, then hand to
+	// the monitor and AI sinks.
 	col.AddSource(collector.NewPollSource("egress-observe", observeInterval, em.CollectObservations))
 	col.AddSource(collector.NewPollSource("lsm-observe", observeInterval, lsmm.CollectObservations))
+	// The five kernel sources for DNS, flows, TLS, cleartext HTTP and exec are
+	// not wired: bpf2go needs clang and a generated vmlinux.h, so no object
+	// exists to load. Each constructor reports ErrSourceNotWired, which the
+	// collector logs once and never retries. Until that lands, the AI stages
+	// below only ever see the map-poll observations above.
 	col.AddStage(attrIdx)
+	col.AddStage(acResolver) // governed bit, before classification
+	col.AddStage(classifier) // sets ev.AI
 	col.AddSink(mon)
+	col.AddSink(engine)
 
 	// runtime policy informer
 	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler)
@@ -208,6 +252,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	g.Go(func() error { return col.Run(ctx) })
 	g.Go(func() error { return sw.Run(ctx) })
 	g.Go(func() error { return rep.Run(ctx) })
+	// Both are no-ops when their feature is unconfigured: the resolver returns
+	// immediately when AICONTROLS_* is unset, and the syncer writes an empty
+	// shard when no discover-mode policy ever records anything.
+	g.Go(func() error { return acResolver.Run(ctx) })
+	g.Go(func() error { return invSyncer.Run(ctx) })
 
 	if err := g.Wait(); err != nil {
 		logger.Error(err, "failed to wait for informer threads")

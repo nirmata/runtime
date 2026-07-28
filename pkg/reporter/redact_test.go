@@ -156,10 +156,26 @@ func TestRedactionChokepoint(t *testing.T) {
 		},
 		Net: &NetSummary{
 			DestIP:   "1.2.3.4 " + canaries[0].value,
+			DestPort: 443,
 			DestHost: "api.example.com " + canaries[8].value,
 		},
 		Process: &ProcessSummary{
 			Comm: "curl " + canaries[1].value,
+			Argv: "curl -H " + canaries[2].value + " " + canaries[7].value,
+		},
+		AI: &AISummary{
+			Class:        "llm " + canaries[0].value,
+			Provider:     "openai " + canaries[1].value,
+			EndpointKind: "chat " + canaries[3].value,
+			Model:        "gpt-4o " + canaries[4].value,
+			Transport:    "https " + canaries[5].value,
+			Confidence:   90,
+			Evidence: []string{
+				"sni:api.openai.com",
+				"header:authorization=" + canaries[1].value,
+				"body:" + canaries[7].value,
+				canaries[9].value,
+			},
 		},
 		Timestamp: fixedTime,
 	}
@@ -229,20 +245,28 @@ func TestRedactionChokepoint(t *testing.T) {
 func TestRedactionChokepointCoversEveryFindingStringField(t *testing.T) {
 	wantFindingFields := []string{
 		"PolicyName", "PolicyUID", "Behavior", "Severity", "Result", "Enforced", "Message",
-		"Pod", "Net", "Process", "Timestamp",
+		"Pod", "Net", "Process", "AI", "Timestamp",
 	}
 	if diff := cmp.Diff(wantFindingFields, structFieldNames(Finding{})); diff != "" {
 		t.Errorf("Finding fields changed (-want +got):\n%s\nplant the new field in TestRedactionChokepoint and emit it via buildResult", diff)
 	}
 
-	wantNet := []string{"DestIP", "DestHost"}
+	wantNet := []string{"DestIP", "DestPort", "DestHost"}
 	if diff := cmp.Diff(wantNet, structFieldNames(NetSummary{})); diff != "" {
 		t.Errorf("NetSummary fields changed (-want +got):\n%s", diff)
 	}
 
-	wantProcess := []string{"Comm"}
+	wantProcess := []string{"Comm", "Argv"}
 	if diff := cmp.Diff(wantProcess, structFieldNames(ProcessSummary{})); diff != "" {
 		t.Errorf("ProcessSummary fields changed (-want +got):\n%s", diff)
+	}
+
+	wantAI := []string{
+		"Class", "Provider", "EndpointKind", "Model", "Transport",
+		"Confidence", "Evidence", "Sanctioned", "Governed",
+	}
+	if diff := cmp.Diff(wantAI, structFieldNames(AISummary{})); diff != "" {
+		t.Errorf("AISummary fields changed (-want +got):\n%s", diff)
 	}
 }
 

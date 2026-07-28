@@ -20,6 +20,24 @@ rules:
 - apiGroups: ["openreports.io"]
   resources: ["reports", "clusterreports"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# daemon: shadow-AI discovery mode maintains the cluster-scoped AIInventory
+# singleton. Any node's daemon may create it; each writes only its own shard in
+# status.nodes, so status needs update/patch but the object itself never needs
+# delete.
+- apiGroups: ["runtime.kyverno.io"]
+  resources: ["aiinventories"]
+  verbs: ["get", "list", "watch", "create"]
+- apiGroups: ["runtime.kyverno.io"]
+  resources: ["aiinventories/status"]
+  verbs: ["get", "update", "patch"]
+# daemon: resolves the AIControls governance proxy endpoints so observed flows
+# can be marked governed / ungoverned.
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list", "watch"]
 {{- with .Values.daemon.rbac.extraRules }}
 # daemon: user-supplied extra rules, e.g. access to CRDs referenced by
 # the resource library in policy expressions

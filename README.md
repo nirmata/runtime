@@ -7,12 +7,17 @@ cluster-scoped CRD.
 ## Concepts
 
 - `RuntimePolicy`: cluster-scoped. Selects pods via `podSelector` and defines allow/deny
-  rules for `network`, `exec`, or `open` behaviors, either as a literal list of values or
-  a CEL expression. Enforced continuously once matched pods are observed; optionally
+  rules for `network`, `exec`, `open`, or `ai` behaviors, either as a literal list of values
+  or a CEL expression. `spec.mode` (`monitor`/`enforce`/`discover`) controls whether matched
+  behavior is reported, enforced, or (for `ai`) rolled into a cluster inventory. Optionally
   re-evaluated on `evaluationInterval`.
 - `spec.mode`: `enforce` blocks matching behavior in the kernel; `monitor` attaches the same
   eBPF programs with empty deny lists and *reports* what a workload does instead of blocking
   it — useful for trialling a policy before enforcing it.
+- Shadow AI detection: the `ai` behavior classifies LLM/MCP/A2A traffic (provider, model,
+  confidence-scored evidence) instead of matching raw IPs/commands/paths. See
+  [docs/shadow-ai.md](docs/shadow-ai.md) for the reference and the current honest status of
+  what is and isn't wired up yet.
 
 ## Components
 

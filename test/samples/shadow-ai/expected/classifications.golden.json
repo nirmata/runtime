@@ -1,0 +1,172 @@
+[
+  {
+    "kind": "dns",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "openai",
+    "confidence": 70,
+    "evidence": [
+      "dns:api.openai.com",
+      "provider:openai"
+    ]
+  },
+  {
+    "kind": "tls",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "openai",
+    "transport": "https",
+    "confidence": 70,
+    "evidence": [
+      "alpn:h2",
+      "provider:openai",
+      "sni:api.openai.com"
+    ]
+  },
+  {
+    "kind": "dns",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "anthropic",
+    "confidence": 70,
+    "evidence": [
+      "dns:api.anthropic.com",
+      "provider:anthropic"
+    ]
+  },
+  {
+    "kind": "http",
+    "pod": "ai-workloads/inference-gateway-9k3",
+    "class": "llm",
+    "provider": "ollama",
+    "endpointKind": "ollama.chat",
+    "model": "llama3",
+    "transport": "http",
+    "confidence": 99,
+    "evidence": [
+      "body-shape:model+messages",
+      "host:ollama",
+      "http-path:/api/chat",
+      "port:11434",
+      "provider:ollama"
+    ],
+    "governed": false
+  },
+  {
+    "kind": "net",
+    "pod": "default/debug-shell",
+    "class": "llm",
+    "provider": "vllm",
+    "confidence": 40,
+    "evidence": [
+      "port:8000",
+      "provider:vllm"
+    ],
+    "governed": false
+  },
+  {
+    "kind": "exec",
+    "pod": "ai-workloads/mcp-client-agent-5f1a",
+    "class": "mcp",
+    "provider": "unknown",
+    "endpointKind": "mcp.stdio",
+    "transport": "stdio",
+    "confidence": 95,
+    "evidence": [
+      "argv:@modelcontextprotocol/server-git",
+      "comm:npx"
+    ]
+  },
+  {
+    "kind": "exec",
+    "pod": "ai-workloads/mcp-client-agent-5f1a",
+    "class": "mcp",
+    "provider": "unknown",
+    "endpointKind": "mcp.stdio",
+    "transport": "stdio",
+    "confidence": 95,
+    "evidence": [
+      "argv:mcp-server-sqlite",
+      "comm:uvx"
+    ]
+  },
+  {
+    "kind": "http",
+    "pod": "ai-workloads/mcp-client-agent-5f1a",
+    "class": "mcp",
+    "provider": "unknown",
+    "endpointKind": "mcp.streamable-http",
+    "jsonrpcMethod": "tools/call",
+    "transport": "sse",
+    "confidence": 99,
+    "evidence": [
+      "header:accept",
+      "header:content-type",
+      "header:mcp-session-id",
+      "host:mcp.internal.corp",
+      "http-method:post",
+      "http-path:/mcp",
+      "jsonrpc-method:tools/call"
+    ],
+    "governed": false
+  },
+  {
+    "kind": "http",
+    "pod": "ai-workloads/a2a-broker-2c9e",
+    "class": "a2a",
+    "provider": "unknown",
+    "endpointKind": "a2a.agent-card",
+    "transport": "http",
+    "confidence": 95,
+    "evidence": [
+      "host:partner-agent.example.com",
+      "http-path:/.well-known/agent.json"
+    ],
+    "governed": false
+  },
+  {
+    "kind": "tls",
+    "pod": "ai-workloads/worker-77d9f-x2z8p",
+    "notAI": true
+  },
+  {
+    "kind": "http",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "openai",
+    "endpointKind": "chat.completions",
+    "model": "gpt-4o",
+    "transport": "http",
+    "confidence": 99,
+    "evidence": [
+      "body-shape:model+messages",
+      "header:openai-organization",
+      "host:api.openai.com",
+      "http-path:/v1/chat/completions",
+      "provider:openai"
+    ],
+    "governed": true
+  },
+  {
+    "kind": "net",
+    "pod": "ai-workloads/inference-gateway-9k3",
+    "governed": false,
+    "notAI": true
+  },
+  {
+    "kind": "http",
+    "pod": "ai-workloads/agent-frontend-abc12",
+    "class": "llm",
+    "provider": "self-hosted",
+    "endpointKind": "chat.completions",
+    "model": "gpt-4",
+    "transport": "http",
+    "confidence": 99,
+    "evidence": [
+      "body-shape:model+messages",
+      "host:internal-llm-gateway.svc.cluster.local",
+      "http-path:/v1/chat/completions"
+    ],
+    "governed": false
+  }
+]

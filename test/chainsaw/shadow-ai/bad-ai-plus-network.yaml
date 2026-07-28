@@ -1,0 +1,14 @@
+# A behavior item may carry exactly one kind. This one carries two, which
+# without the XValidation rule would compile ambiguously and silently drop one.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-ai-plus-network
+spec:
+  mode: monitor
+  behaviors:
+  - ai:
+      classes: [llm]
+    network:
+      deny:
+        values: ["1.2.3.4"]

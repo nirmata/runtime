@@ -17,8 +17,11 @@ import (
 var allowedPropertyKeys = map[string]struct{}{
 	propFingerprint: {}, propCount: {}, propFirstTimestamp: {}, propLastTimestamp: {},
 	propBehavior: {}, propEnforced: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
-	propDestIP: {}, propDestHost: {},
-	propComm: {},
+	propDestIP: {}, propDestPort: {}, propDestHost: {},
+	propComm: {}, propArgv: {},
+	propAIClass: {}, propAIProvider: {}, propAIEndpointKind: {}, propAIModel: {},
+	propAITransport: {}, propAIConfidence: {}, propAIEvidence: {},
+	propAISanctioned: {}, propAIGoverned: {},
 }
 
 func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {

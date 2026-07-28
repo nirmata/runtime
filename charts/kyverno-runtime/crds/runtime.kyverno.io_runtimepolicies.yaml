@@ -60,6 +60,77 @@ spec:
                   description: PolicyBehavior defines allow/deny rules for a specific
                     behavior type.
                   properties:
+                    ai:
+                      description: AI defines AI traffic detection rules (LLM, MCP,
+                        A2A).
+                      properties:
+                        allow:
+                          description: |-
+                            Allow and Deny use destination identities: hostname globs,
+                            IPv4/CIDR, "provider:<name>" tokens resolved from the provider
+                            catalog, or "mcp-server:<package>" for stdio servers. Values and
+                            expression are unioned, same semantics as other behaviors.
+                          properties:
+                            expression:
+                              description: Expression is a CEL expression that evaluates
+                                to a list of items.
+                              type: string
+                            values:
+                              description: Values is a list of allowed or denied items
+                                (IPs, commands, files, etc.).
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        classes:
+                          description: |-
+                            Classes restricts which traffic classes this rule considers.
+                            Empty means all classes.
+                          items:
+                            description: AITrafficClass identifies a class of AI traffic.
+                            enum:
+                            - llm
+                            - mcp
+                            - a2a
+                            type: string
+                          type: array
+                        deny:
+                          description: BehaviorRule defines allow/deny rules with
+                            values and/or expressions.
+                          properties:
+                            expression:
+                              description: Expression is a CEL expression that evaluates
+                                to a list of items.
+                              type: string
+                            values:
+                              description: Values is a list of allowed or denied items
+                                (IPs, commands, files, etc.).
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        match:
+                          description: |-
+                            Match is a CEL expression over the per-event `event` variable that
+                            must evaluate to bool. Evaluated per detected AI event.
+                          type: string
+                        minConfidence:
+                          description: MinConfidence gates findings by classifier
+                            confidence (0-100).
+                          format: int32
+                          maximum: 100
+                          minimum: 0
+                          type: integer
+                        severity:
+                          description: Severity for emitted findings.
+                          enum:
+                          - info
+                          - low
+                          - medium
+                          - high
+                          - critical
+                          type: string
+                      type: object
                     exec:
                       description: Exec defines command execution behavior rules.
                       properties:
@@ -158,9 +229,9 @@ spec:
                       type: object
                   type: object
                   x-kubernetes-validations:
-                  - message: exactly one of network, exec, or open must be specified
+                  - message: exactly one of network, exec, open, or ai must be specified
                     rule: '(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0)
-                      + (has(self.open) ? 1 : 0) == 1'
+                      + (has(self.open) ? 1 : 0) + (has(self.ai) ? 1 : 0) == 1'
                 type: array
               evaluationInterval:
                 description: EvaluationInterval specifies how frequently the policy
@@ -171,6 +242,7 @@ spec:
                 enum:
                 - monitor
                 - enforce
+                - discover
                 type: string
               podSelector:
                 description: PodSelector identifies the pods this policy applies to.

@@ -358,3 +358,180 @@ func TestEvaluate_PanickingCELBindingBecomesError(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluate_AIRulesCarryTargetsGatesAndPredicate pins the policy-time half
+// of AI detection: targets are the union of hardcoded values and the evaluated
+// expression (identical semantics to the other behaviors, because it is the same
+// code), the gates come through verbatim, and the per-event predicate rides
+// along compiled once.
+func TestEvaluate_AIRulesCarryTargetsGatesAndPredicate(t *testing.T) {
+	c := newTestCompiler(t)
+
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "ai-rules"},
+		Spec: v1alpha1.RuntimePolicySpec{
+			Mode: modePtr(v1alpha1.PolicyModeMonitor),
+			Variables: []admissionregistrationv1.Variable{
+				{Name: "approved", Expression: `["provider:vertex"]`},
+			},
+			Behaviors: []v1alpha1.PolicyBehavior{
+				aiBehavior(v1alpha1.AIBehavior{
+					Classes:       []v1alpha1.AITrafficClass{v1alpha1.AIClassLLM, v1alpha1.AIClassMCP},
+					Severity:      "high",
+					MinConfidence: int32Ptr(60),
+					Allow:         behaviorRule([]string{"provider:anthropic"}, "variables.approved"),
+					Deny:          behaviorRule([]string{StarTarget}, `["api.openai.com"]`),
+					Match:         `event.ai.confidence >= 60`,
+				}),
+				// A second AI behavior accumulates as its own rule, in spec
+				// order, rather than being merged into the first.
+				aiBehavior(v1alpha1.AIBehavior{
+					Classes:  []v1alpha1.AITrafficClass{v1alpha1.AIClassA2A},
+					Severity: "medium",
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	want := []*AIRule{
+		{
+			Classes:       []string{"llm", "mcp"},
+			Allow:         []string{"provider:vertex", "provider:anthropic"},
+			Deny:          []string{"api.openai.com", StarTarget},
+			MinConfidence: 60,
+			Severity:      "high",
+			// Non-nil placeholder: the comparer below only checks presence, and
+			// the compiled predicate's identity/source is asserted separately.
+			Match: &EventPredicate{},
+		},
+		{
+			Classes:  []string{"a2a"},
+			Allow:    []string{},
+			Deny:     []string{},
+			Severity: "medium",
+		},
+	}
+	if diff := cmp.Diff(want, res.AI, cmp.Comparer(func(a, b *EventPredicate) bool {
+		// Predicates are compared separately below; here only presence matters.
+		return (a == nil) == (b == nil)
+	})); diff != "" {
+		t.Errorf("Evaluate().AI (-want +got):\n%s", diff)
+	}
+
+	if res.AI[0].Match == nil {
+		t.Fatal("Evaluate().AI[0].Match = nil, want the compiled predicate")
+	}
+	if res.AI[1].Match != nil {
+		t.Error("Evaluate().AI[1].Match != nil, want nil for a behavior with no match")
+	}
+	if got := res.AI[0].Match.Source(); got != `event.ai.confidence >= 60` {
+		t.Errorf("Match.Source() = %q, want the authored expression", got)
+	}
+
+	// The other behavior kinds stay empty, and the policy is unaffected
+	// otherwise: an ai behavior programs nothing into the kernel.
+	for name, pair := range map[string]*AllowDenyPair{"IPs": res.IPs, "Open": res.Open, "Exec": res.Exec} {
+		if pair.HasEntries() {
+			t.Errorf("Evaluate().%s = %+v, want no entries for an ai-only policy", name, pair)
+		}
+	}
+	if res.Mode != ModeMonitor {
+		t.Errorf("Evaluate().Mode = %q, want %q", res.Mode, ModeMonitor)
+	}
+}
+
+// TestEvaluate_AIRuleClassesAreCopiedPerEvaluation pins that a consumer cannot
+// reach back into the compiled policy through the slices it is handed: the
+// engine keeps AIRules across many events, and a mutation there would silently
+// rewrite the policy for every pod on the node.
+func TestEvaluate_AIRuleClassesAreCopiedPerEvaluation(t *testing.T) {
+	c := newTestCompiler(t)
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "ai-classes"},
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				aiBehavior(v1alpha1.AIBehavior{
+					Classes: []v1alpha1.AITrafficClass{v1alpha1.AIClassLLM},
+					Allow:   behaviorRule([]string{"provider:anthropic"}, ""),
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	first.AI[0].Classes[0] = "mutated"
+	first.AI[0].Allow[0] = "mutated"
+
+	second, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"llm"}, second.AI[0].Classes); diff != "" {
+		t.Errorf("second Evaluate().AI[0].Classes (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"provider:anthropic"}, second.AI[0].Allow); diff != "" {
+		t.Errorf("second Evaluate().AI[0].Allow (-want +got):\n%s", diff)
+	}
+}
+
+// TestEvaluate_AIRuleExpressionErrorPropagates pins that a broken AI target
+// expression fails the whole evaluation loudly, exactly like the other
+// behaviors: silently dropping the allowlist would turn a default-deny AI policy
+// into "deny everything".
+func TestEvaluate_AIRuleExpressionErrorPropagates(t *testing.T) {
+	c := newTestCompiler(t)
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "ai-bad-expr"},
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				aiBehavior(v1alpha1.AIBehavior{
+					Allow: behaviorRule(nil, `[["a", "b"][5]]`),
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if res, err := compiled.Evaluate(t.Context()); err == nil {
+		t.Fatalf("Evaluate() error = nil (result %+v), want the runtime error propagated", res)
+	}
+}
+
+// TestEvaluate_NoAIBehaviorsYieldsNoAIRules pins that policies without an ai
+// behavior are untouched by this feature.
+func TestEvaluate_NoAIBehaviorsYieldsNoAIRules(t *testing.T) {
+	c := newTestCompiler(t)
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "net-only"},
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{Deny: behaviorRule([]string{"1.2.3.4"}, "")}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(res.AI) != 0 {
+		t.Errorf("Evaluate().AI = %+v, want empty", res.AI)
+	}
+}

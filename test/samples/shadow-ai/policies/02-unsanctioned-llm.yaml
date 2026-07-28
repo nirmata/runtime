@@ -1,0 +1,34 @@
+# Alert on any LLM egress not on the approved provider list.
+#
+# Deviation from proposal.md §2.4(2): the proposal's `variables` block sources
+# the allow-list from a ConfigMap via
+#   resource.get("v1","configmaps","kyverno-runtime","approved-ai-providers")
+# That introduces a live cluster dependency (a ConfigMap that must exist and
+# be shaped correctly) this sample cannot ship -- test/samples/shadow-ai owns
+# only policies/fixtures/expected/README, no ConfigMap manifest, and the B10
+# pipeline test builds its compiler/CEL env without a real API server for
+# `resource.get`. This policy keeps the proposal's `match` predicate and
+# `minConfidence`/`severity` fields but drops the `variables`/`expression`
+# half of the allow-list, using only static `allow.values`. A ConfigMap-backed
+# allow-list remains a valid future extension of the *same* `allow.expression`
+# field; nothing here forecloses it.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: unsanctioned-llm-egress
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: ai-agent
+  behaviors:
+  - ai:
+      classes: [llm]
+      severity: high
+      minConfidence: 60
+      allow:
+        values: ["provider:anthropic", "provider:bedrock"]
+      match: >-
+        event.ai.class == "llm" &&
+        !(event.ai.provider in ["anthropic", "bedrock"]) &&
+        event.ai.confidence >= 60

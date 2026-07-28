@@ -27,12 +27,17 @@ import (
 
 type RuntimeV1alpha1Interface interface {
 	RESTClient() rest.Interface
+	AIInventoriesGetter
 	RuntimePoliciesGetter
 }
 
 // RuntimeV1alpha1Client is used to interact with features provided by the runtime.kyverno.io group.
 type RuntimeV1alpha1Client struct {
 	restClient rest.Interface
+}
+
+func (c *RuntimeV1alpha1Client) AIInventories() AIInventoryInterface {
+	return newAIInventories(c)
 }
 
 func (c *RuntimeV1alpha1Client) RuntimePolicies() RuntimePolicyInterface {

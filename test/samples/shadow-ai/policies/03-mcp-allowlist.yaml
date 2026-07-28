@@ -1,0 +1,30 @@
+# Block MCP connections to non-allowlisted servers.
+#
+# mode: enforce is accepted by the CRD and compiles, but DESIGN.md decision
+# 0.6 (see DESIGN.md lines ~13, ~912, ~948) is explicit that AI enforcement
+# ("compelled routing", proposal Phase 2a) is NOT implemented in PR B: the
+# detect engine downgrades an enforce AI behavior to monitor semantics and
+# records the policy condition AIEnforcementImplemented=False. This policy is
+# included as written (mode: enforce) precisely to exercise that downgrade
+# path and that condition -- it is not evidence that MCP connections are
+# actually blocked on this branch. See README.md "What does NOT run".
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: mcp-allowlist
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: ai-agent
+  behaviors:
+  - ai:
+      classes: [mcp]
+      severity: critical
+      deny:
+        values: ["*"] # default-deny, same sentinel as network/exec/open behaviors
+      allow:
+        values:
+        - "mcp.internal.corp" # remote HTTP/SSE MCP
+        - "mcp-server:@modelcontextprotocol/server-git" # stdio, allowed
+        - "mcp-server:@modelcontextprotocol/server-filesystem"

@@ -12,7 +12,7 @@ metadata:
 spec:
   steps:
   - name: bad-mode-enum-is-rejected
-    # spec.mode is +kubebuilder:validation:Enum=monitor;enforce.
+    # spec.mode is +kubebuilder:validation:Enum=monitor;enforce;discover.
     # "audit" is a plausible typo and must not be accepted.
     try:
     - apply:
@@ -35,7 +35,7 @@ spec:
         expect:
         - check:
             "($error != null)": true
-            "(contains($error, 'exactly one of network, exec, or open must be specified'))": true
+            "(contains($error, 'exactly one of network, exec, open, or ai must be specified'))": true
 
   - name: zero-behavior-kinds-in-one-item-is-rejected
     # Same rule, other side: an empty behavior item is also invalid. Asserting
@@ -46,7 +46,7 @@ spec:
         expect:
         - check:
             "($error != null)": true
-            "(contains($error, 'exactly one of network, exec, or open must be specified'))": true
+            "(contains($error, 'exactly one of network, exec, open, or ai must be specified'))": true
 
   - name: unknown-spec-field-is-rejected
     # The CRD is structural with pruning; an unknown field submitted by a client

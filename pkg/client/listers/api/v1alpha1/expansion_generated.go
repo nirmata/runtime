@@ -17,6 +17,10 @@ limitations under the License.
 
 package v1alpha1
 
+// AIInventoryListerExpansion allows custom methods to be added to
+// AIInventoryLister.
+type AIInventoryListerExpansion interface{}
+
 // RuntimePolicyListerExpansion allows custom methods to be added to
 // RuntimePolicyLister.
 type RuntimePolicyListerExpansion interface{}

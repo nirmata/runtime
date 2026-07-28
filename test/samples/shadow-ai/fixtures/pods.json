@@ -1,0 +1,77 @@
+[
+  {
+    "uid": "11111111-0000-0000-0000-000000000001",
+    "namespace": "ai-workloads",
+    "name": "agent-frontend-abc12",
+    "labels": {
+      "app": "ai-agent",
+      "team": "ml-platform"
+    },
+    "serviceAccount": "ai-agent-sa",
+    "owner": { "kind": "ReplicaSet", "name": "agent-frontend-abc" },
+    "containers": [
+      { "name": "agent", "cgroupID": 1001 }
+    ]
+  },
+  {
+    "uid": "11111111-0000-0000-0000-000000000002",
+    "namespace": "ai-workloads",
+    "name": "worker-77d9f-x2z8p",
+    "labels": {},
+    "serviceAccount": "default",
+    "owner": { "kind": "ReplicaSet", "name": "worker-77d9f" },
+    "containers": [
+      { "name": "worker", "cgroupID": 1002 }
+    ]
+  },
+  {
+    "uid": "11111111-0000-0000-0000-000000000003",
+    "namespace": "ai-workloads",
+    "name": "inference-gateway-9k3",
+    "labels": {
+      "app": "inference-gateway"
+    },
+    "serviceAccount": "inference-sa",
+    "owner": { "kind": "Deployment", "name": "inference-gateway" },
+    "containers": [
+      { "name": "gateway", "cgroupID": 1003 }
+    ]
+  },
+  {
+    "uid": "11111111-0000-0000-0000-000000000004",
+    "namespace": "default",
+    "name": "debug-shell",
+    "labels": {},
+    "serviceAccount": "default",
+    "containers": [
+      { "name": "debug-shell", "cgroupID": 1004 }
+    ]
+  },
+  {
+    "uid": "11111111-0000-0000-0000-000000000005",
+    "namespace": "ai-workloads",
+    "name": "mcp-client-agent-5f1a",
+    "labels": {
+      "app": "ai-agent",
+      "mcp": "enabled"
+    },
+    "serviceAccount": "ai-agent-sa",
+    "owner": { "kind": "ReplicaSet", "name": "mcp-client-agent" },
+    "containers": [
+      { "name": "agent", "cgroupID": 1005 }
+    ]
+  },
+  {
+    "uid": "11111111-0000-0000-0000-000000000006",
+    "namespace": "ai-workloads",
+    "name": "a2a-broker-2c9e",
+    "labels": {
+      "app": "a2a-broker"
+    },
+    "serviceAccount": "a2a-sa",
+    "owner": { "kind": "ReplicaSet", "name": "a2a-broker" },
+    "containers": [
+      { "name": "broker", "cgroupID": 1006 }
+    ]
+  }
+]

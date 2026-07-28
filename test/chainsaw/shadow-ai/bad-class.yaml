@@ -1,0 +1,10 @@
+# classes is an enum: llm;mcp;a2a
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-ai-bad-class
+spec:
+  mode: monitor
+  behaviors:
+  - ai:
+      classes: [rag]

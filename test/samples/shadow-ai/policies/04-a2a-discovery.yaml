@@ -1,0 +1,21 @@
+# A2A: detect agent-card discovery leaving the cluster.
+#
+# cidr()/containsIP come from the already-registered library.CIDR() at
+# pkg/compiler/env.go; event.http/event.net are the event-time CEL fields
+# from DESIGN.md §3.4 (task B6). event.http.path exists whenever the
+# observation had HTTP visibility, which agent-card discovery over plaintext
+# HTTP always does (see fixtures/events.json's a2a-well-known-card scenario).
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: external-a2a-discovery
+spec:
+  mode: monitor
+  podSelector: {}
+  behaviors:
+  - ai:
+      classes: [a2a]
+      severity: medium
+      match: >-
+        event.http.path.startsWith("/.well-known/agent") &&
+        !cidr("10.0.0.0/8").containsIP(event.net.destIP)

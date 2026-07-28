@@ -32,12 +32,15 @@ type RuntimePolicySpec struct {
 }
 
 // RuntimePolicyMode represents the operational mode for policy enforcement.
-// +kubebuilder:validation:Enum=monitor;enforce
+// +kubebuilder:validation:Enum=monitor;enforce;discover
 type RuntimePolicyMode string
 
 const (
 	PolicyModeMonitor RuntimePolicyMode = "monitor"
 	PolicyModeEnforce RuntimePolicyMode = "enforce"
+	// PolicyModeDiscover observes and populates the AIInventory only: no
+	// findings, no enforcement.
+	PolicyModeDiscover RuntimePolicyMode = "discover"
 )
 
 // BehaviorRule defines allow/deny rules with values and/or expressions.
@@ -52,7 +55,7 @@ type BehaviorRule struct {
 }
 
 // PolicyBehavior defines allow/deny rules for a specific behavior type.
-// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1",message="exactly one of network, exec, or open must be specified"
+// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) + (has(self.ai) ? 1 : 0) == 1",message="exactly one of network, exec, open, or ai must be specified"
 type PolicyBehavior struct {
 	// Network defines network behavior rules.
 	// +optional
@@ -65,6 +68,59 @@ type PolicyBehavior struct {
 	// Open defines file open behavior rules.
 	// +optional
 	Open *Behavior `json:"open,omitempty"`
+
+	// AI defines AI traffic detection rules (LLM, MCP, A2A).
+	// +optional
+	AI *AIBehavior `json:"ai,omitempty"`
+}
+
+// AITrafficClass identifies a class of AI traffic.
+// +kubebuilder:validation:Enum=llm;mcp;a2a
+type AITrafficClass string
+
+const (
+	AIClassLLM AITrafficClass = "llm"
+	AIClassMCP AITrafficClass = "mcp"
+	AIClassA2A AITrafficClass = "a2a"
+)
+
+// AIBehavior defines detection rules for AI traffic classes.
+//
+// NOTE on modes: an AI behavior is honored in `discover` mode (inventory only)
+// and `monitor` mode (findings only). `enforce` is NOT implemented for AI
+// behaviors -- compelled routing is a later phase -- and the detection engine
+// treats an `enforce` policy carrying an AI behavior as `monitor`, setting the
+// policy condition `AIEnforcementImplemented=False`. Nothing is blocked.
+type AIBehavior struct {
+	// Classes restricts which traffic classes this rule considers.
+	// Empty means all classes.
+	// +optional
+	Classes []AITrafficClass `json:"classes,omitempty"`
+
+	// Allow and Deny use destination identities: hostname globs,
+	// IPv4/CIDR, "provider:<name>" tokens resolved from the provider
+	// catalog, or "mcp-server:<package>" for stdio servers. Values and
+	// expression are unioned, same semantics as other behaviors.
+	// +optional
+	Allow *BehaviorRule `json:"allow,omitempty"`
+	// +optional
+	Deny *BehaviorRule `json:"deny,omitempty"`
+
+	// Match is a CEL expression over the per-event `event` variable that
+	// must evaluate to bool. Evaluated per detected AI event.
+	// +optional
+	Match string `json:"match,omitempty"`
+
+	// MinConfidence gates findings by classifier confidence (0-100).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	MinConfidence *int32 `json:"minConfidence,omitempty"`
+
+	// Severity for emitted findings.
+	// +kubebuilder:validation:Enum=info;low;medium;high;critical
+	// +optional
+	Severity string `json:"severity,omitempty"`
 }
 
 // Behavoior defines the allowed and denied entries of a given type.

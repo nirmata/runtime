@@ -102,8 +102,13 @@ is the one-line-per-package index.
 ## Runtime event filtering policy
 
 There is one event pipeline: `pkg/collector`, fed by poll sources over the observation counters the
-two existing eBPF programs keep, annotated by `pkg/attribution`, consumed by `pkg/monitor`. There is
-no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency.
+two existing eBPF programs keep, annotated by `pkg/attribution`, consumed by `pkg/monitor` and
+`pkg/reporter`, with `pkg/detect/ai` and `pkg/inventory` layered on top for the `ai` behavior. There
+is no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency — that design was removed
+in `f806f25`; earlier revisions of this file described it, which was wrong (#45).
+
+See [DESIGN.md](docs/dev/DESIGN.md) for the `network`/`exec`/`open` monitor path and
+[docs/shadow-ai.md](docs/shadow-ai.md) for the `ai` behavior.
 
 The filtering rules that apply to that pipeline:
 
@@ -116,6 +121,17 @@ The filtering rules that apply to that pipeline:
 - Egress observation is destination-IPv4 only. It does see flows a default-deny drops: the BPF
   program computes its decision, records it, and only then returns, and the decision is part of the
   observation counter key. Never move an enforcement return ahead of the counting branch.
+
+Note that "filter out unattributed events" only holds if attribution actually works. Container
+attribution now covers containerd, CRI-O and Docker layouts (#38), but a node whose layout is not
+recognized still resolves no cgroup, and dropping those events silently would hide exactly that
+class of regression — hence the counter. The same caution applies to the inventory's
+`droppedEvents` field: see the "silence must never read as safety" note in
+[docs/shadow-ai.md](docs/shadow-ai.md).
+
+The five BPF sources the AI classifier is meant to observe (`pkg/bpf/{dnstrace,netflow,tlspeek,
+l7peek,exectrace}`) are not wired up yet — see the top of [docs/shadow-ai.md](docs/shadow-ai.md)
+for the current status before assuming any of them produce live events.
 
 ## Redaction (non-negotiable)
 

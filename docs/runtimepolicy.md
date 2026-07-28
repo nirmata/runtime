@@ -3,11 +3,12 @@
 ## Table of Contents
 
 - [Spec reference](#spec-reference)
-- [Modes: enforce and monitor](#modes-enforce-and-monitor)
+- [Modes](#modes)
 - [Status](#status)
 - [Findings and Reports](#findings-and-reports)
 - [Metrics](#metrics)
 - [Limits of monitor mode](#limits-of-monitor-mode)
+- [The `ai` behavior](#the-ai-behavior)
 - [Example: RuntimePolicy](#example-runtimepolicy)
 - [Example: deny using a CEL expression](#example-deny-using-a-cel-expression)
 - [Example: allow using values and expressions](#example-allow-using-values-and-expressions)
@@ -19,15 +20,17 @@
 
 ## Spec reference
 
-Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, or `open`.
-Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
-`values` list, a CEL `expression` that evaluates to `list(string)`, or both (the two
-are unioned):
+Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, `open`,
+or `ai` (`ai` is described separately below, since it has its own field shape).
+`network`/`exec`/`open` each take an `allow` and/or a `deny` rule, and each rule
+accepts a literal `values` list, a CEL `expression` that evaluates to
+`list(string)`, or both (the two are unioned):
 
 ```yaml
 spec:
+  mode: monitor         # monitor | enforce | discover; see "Mode" below
   behaviors:
-  - network:            # exactly one of network | exec | open per list item
+  - network:            # exactly one of network | exec | open | ai per list item
       allow:
         values: [...]        # literal list of allowed items
         expression: "..."    # CEL expression returning list(string), unioned with values
@@ -56,7 +59,7 @@ spec:
 - `spec.mode` selects `enforce` or `monitor` (see below). It is optional; a policy that omits
   it neither enforces nor reports.
 
-## Modes: enforce and monitor
+## Modes
 
 `spec.mode` selects what the daemon does with a matched pod:
 
@@ -64,7 +67,13 @@ spec:
 | --- | --- | --- | --- | --- |
 | `enforce` | yes | yes | yes | no |
 | `monitor` | yes | **no** (maps stay empty) | no | yes |
+| `discover` | yes | **no** (maps stay empty) | no | no — aggregates into `AIInventory` |
 | omitted | no | no | no | no |
+
+`discover` is only meaningful for an `ai` behavior. Per-event findings at discovery
+scale would be unusable, so it rolls observations into the cluster-scoped
+`AIInventory` singleton instead of writing Reports. An `ai` behavior under
+`enforce` is downgraded to `monitor` — see [The `ai` behavior](#the-ai-behavior).
 
 ```yaml
 apiVersion: runtime.kyverno.io/v1alpha1
@@ -211,6 +220,30 @@ current limits, not rounding errors:
 - **Observations that cannot be attributed to a pod are dropped** and counted in
   `kyverno_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.
+
+## The `ai` behavior
+
+`ai` classifies network/HTTP/process activity as LLM, MCP, or A2A traffic
+instead of matching on IPs/commands/paths directly:
+
+```yaml
+behaviors:
+- ai:
+    classes: [llm, mcp, a2a]        # optional; empty means all three
+    allow:
+      values: ["provider:anthropic"]
+    deny:
+      values: ["*"]
+    match: "event.ai.confidence >= 80"
+    minConfidence: 70
+    severity: high
+```
+
+See [`docs/shadow-ai.md`](shadow-ai.md) for the full reference: the `discover`/
+`monitor`/`enforce` semantics, worked YAML for each, the `AIInventory` CR, the
+provider catalog, the `event`/`ai.*` CEL surface, and — importantly — the
+current honest status of what is and is not wired up yet (the eBPF sources
+that would feed this behavior real traffic are not compiled/loaded today).
 
 ## Example: RuntimePolicy
 
