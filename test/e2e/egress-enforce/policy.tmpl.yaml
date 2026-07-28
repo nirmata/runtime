@@ -1,0 +1,25 @@
+# Template applied by chainsaw-test.yaml after substituting ALLOWED_IP with the
+# allow-listed target pod's IP (chainsaw does not do partial string
+# interpolation, so the substitution happens in a script step -- keeping the
+# policy shape reviewable as YAML rather than buried in a heredoc).
+#
+# DEFAULT_DENY egress ("*" in deny) with exactly one allowed destination IP.
+# Scoped by podSelector to the client pod only, so the target servers and the
+# daemon itself keep their networking.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-enforce
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: egress-client
+  behaviors:
+  - network:
+      allow:
+        values:
+        - ALLOWED_IP
+      deny:
+        values:
+        - "*"

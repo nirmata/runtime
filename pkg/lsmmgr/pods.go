@@ -2,6 +2,7 @@ package lsmmgr
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
@@ -20,10 +21,8 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	for rpUid, la := range l.lsmAttachments {
 		if la.selector.Matches(labels.Set(pod.Labels)) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
-			for _, prog := range la.progs {
-				if err := prog.enf.AddCgids(pr.cgids); err != nil {
-					l.logger.Error(err, "failed to add cgids to enforcer", "podUid", pod.UID, "rpUid", rpUid)
-				}
+			for progType, prog := range la.progs {
+				l.addPodCgids(rpUid, progType, prog, pr.cgids)
 			}
 
 			attach(rpUid, la, string(pod.UID), pr)
@@ -32,10 +31,16 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	l.pods[string(pod.UID)] = pr
 }
 
+// podUpdated reconciles both halves of a pod update:
+//
+//   - a cgroup-id change is applied to every attachment the pod is already
+//     attached to (containers restarting inside a live pod);
+//   - a label change refreshes the cached label set and re-evaluates every
+//     attachment's selector (#58). Without this, enforcement outlived its
+//     selector: a relabelled pod kept the deny maps of a policy that no longer
+//     selects it, and was invisible to policies that now do.
 func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
 	l.logger.V(2).Info("pod updated", "podUid", pod.UID)
-	// the only important update is a cgid change. if one such update happens
-	// delete the old cgids and add the new ones from la.enf
 	pr, ok := l.pods[string(pod.UID)]
 	if !ok {
 		return fmt.Errorf("got a pod event for a pod that doesn't exist")
@@ -44,49 +49,58 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	cgids := containers.ExtractCgids(cgInfos)
 	toAdd := utils.DiffSlice(pr.cgids, cgids)
 	toRemove := utils.DiffSlice(cgids, pr.cgids)
+	labelsChanged := !maps.Equal(pr.labels, pod.Labels)
 
-	// cgids didn't change, do nothing
-	if len(toAdd) == 0 && len(toRemove) == 0 {
-		l.logger.V(2).Info("pod update had no cgid changes, skipping", "podUid", pod.UID)
+	// nothing we track changed, do nothing
+	if len(toAdd) == 0 && len(toRemove) == 0 && !labelsChanged {
+		l.logger.V(2).Info("pod update had no cgid or label changes, skipping", "podUid", pod.UID)
 		return nil
 	}
 
-	l.logger.V(2).Info("pod cgids changed", "podUid", pod.UID, "toAdd", toAdd, "toRemove", toRemove)
+	if len(toAdd) != 0 || len(toRemove) != 0 {
+		l.logger.V(2).Info("pod cgids changed", "podUid", pod.UID, "toAdd", toAdd, "toRemove", toRemove)
+	}
 
-	// update the cgids in the pod representation pointer
+	// update the cgids and labels in the pod representation pointer. the labels
+	// have to land before syncPodAttachment below, which matches against them.
 	pr.cgids = cgids
+	pr.labels = pod.Labels
 
-	for _, la := range l.lsmAttachments {
+	// apply the cgid diff to the attachments this pod is currently attached to.
+	// this runs before the selector re-evaluation so that a pod that is about to
+	// be detached is detached with its new cgid set, and a pod that is about to be
+	// attached is attached with it too.
+	for rpUid, la := range l.lsmAttachments {
 		// that policy wasn't attached to that pod. move on
 		if _, ok := la.attachedPods[string(pod.UID)]; !ok {
 			continue
 		}
-		for _, prog := range la.progs {
-			if err := prog.enf.AddCgids(toAdd); err != nil {
-				l.logger.Error(err, "failed to add cgids to enforcer", "podUid", pod.UID)
-			}
-			if err := prog.enf.DeleteCgids(toRemove); err != nil {
-				l.logger.Error(err, "failed to remove cgids from enforcer", "podUid", pod.UID)
-			}
+		for progType, prog := range la.progs {
+			l.addPodCgids(rpUid, progType, prog, toAdd)
+			l.removePodCgids(rpUid, progType, prog, toRemove)
+		}
+	}
+
+	if labelsChanged {
+		l.logger.V(2).Info("pod labels changed, re-evaluating policy selectors", "podUid", pod.UID)
+		for rpUid, la := range l.lsmAttachments {
+			l.syncPodAttachment(rpUid, la)
 		}
 	}
 	return nil
-
 }
 
 func (l *LsmManager) podDeleted(podUid string) {
 	l.logger.V(2).Info("pod deleted", "podUid", podUid)
 	// delete those cgids
 	delete(l.pods, podUid)
-	for _, la := range l.lsmAttachments {
+	for rpUid, la := range l.lsmAttachments {
 		podAttachment, ok := la.attachedPods[podUid]
 		if !ok {
 			continue
 		}
-		for _, prog := range la.progs {
-			if err := prog.enf.DeleteCgids(podAttachment.cgids); err != nil {
-				l.logger.Error(err, "failed to remove cgids from enforcer", "podUid", podUid)
-			}
+		for progType, prog := range la.progs {
+			l.removePodCgids(rpUid, progType, prog, podAttachment.cgids)
 		}
 		delete(la.attachedPods, podUid)
 	}

@@ -1,0 +1,150 @@
+// Package e2e_test holds kernel-level smoke tests: assertions that only a real
+// Linux kernel can answer, and that therefore have no business in the unit
+// suites under pkg/.
+//
+// These are NOT unit tests and deliberately do not assert "returns an error on
+// darwin" -- that would be coverage theatre (see issue #60). On any host that
+// cannot run them they SKIP with an explicit reason, except where the caller
+// opts into a hard requirement via KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 (the
+// workflow_dispatch LSM lane sets it, so a misconfigured runner fails loudly
+// instead of reporting a green skip).
+//
+// Run locally on Linux:
+//
+//	sudo -E go test ./test/e2e/ -run TestBPF -v
+package e2e_test
+
+import (
+	"os"
+	"runtime"
+	"testing"
+
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
+
+	"github.com/go-logr/logr"
+)
+
+// requireBPFCapableHost skips unless we are root on Linux. Loading any BPF
+// program needs CAP_BPF (or root) plus a Linux kernel; there is nothing
+// meaningful to assert otherwise.
+func requireBPFCapableHost(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("BPF program load requires linux, running on %s", runtime.GOOS)
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("BPF program load requires root/CAP_BPF; re-run under sudo")
+	}
+}
+
+// TestBPFEgressProgramLoadsAndVerifies is the verifier smoke test issue #60 asks
+// for: it loads the committed egressblock object into the running kernel, which
+// exercises BTF relocation and the full verifier pass, and prints the verifier
+// log on failure. It does not need BPF-LSM, so it runs on ordinary Linux CI.
+func TestBPFEgressProgramLoadsAndVerifies(t *testing.T) {
+	requireBPFCapableHost(t)
+
+	logger := logr.Discard()
+	f, err := egressfilter.New(&logger)
+	if err != nil {
+		// %+v renders *ebpf.VerifierError's full log, which is the whole point
+		// of this test.
+		t.Fatalf("loading egressblock objects: %+v", err)
+	}
+
+	// Load alone does not prove the maps are usable. Program one allow and one
+	// deny target and read the flag back: this is the same path egressmgr takes.
+	rejected, err := f.AddIps(&compiler.AllowDenyPair{
+		Allow: []string{"10.0.0.1"},
+		Deny:  []string{"10.0.0.2", "10.0.1.0/24"},
+	})
+	if err != nil {
+		t.Fatalf("programming egress maps: %v", err)
+	}
+	if len(rejected) != 0 {
+		t.Errorf("unexpected rejected targets for IPv4/CIDR-24 input: %v", rejected)
+	}
+
+	f.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
+	on, err := f.FlagIdx(egressfilter.DEFAULT_DENY)
+	if err != nil {
+		t.Fatalf("reading DEFAULT_DENY flag: %v", err)
+	}
+	if !on {
+		t.Error("DEFAULT_DENY flag did not stick after SetFlagIdx(true)")
+	}
+
+	f.SetFlagIdx(egressfilter.OBSERVE, true)
+	if _, err := f.ReadIPEvents(); err != nil {
+		t.Errorf("reading ip_events with OBSERVE set: %v", err)
+	}
+
+	if _, err := f.DeleteIps(&compiler.AllowDenyPair{Allow: []string{"10.0.0.1"}}); err != nil {
+		t.Errorf("removing an allow target: %v", err)
+	}
+}
+
+// TestBPFLsmProgramsLoadAndVerify loads both LSM programs (file_open and
+// bprm_check_security). A BPF_PROG_TYPE_LSM program cannot be loaded at all
+// unless the kernel was booted with BPF-LSM active, so this skips by default and
+// only hard-fails when the caller declares the host is supposed to support it.
+// That boot-time requirement is the documented gap in issue #60.
+func TestBPFLsmProgramsLoadAndVerify(t *testing.T) {
+	required := os.Getenv("KYVERNO_RUNTIME_REQUIRE_BPF_LSM") == "1"
+
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		if required {
+			t.Fatalf("KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 but host is %s and euid %d (need linux + root)",
+				runtime.GOOS, os.Geteuid())
+		}
+		requireBPFCapableHost(t)
+	}
+
+	enabled, err := utils.BpfLSMEnabled()
+	switch {
+	case err != nil && required:
+		t.Fatalf("KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 but /sys/kernel/security/lsm is unreadable: %v", err)
+	case err != nil:
+		t.Skipf("cannot determine active LSMs: %v", err)
+	case !enabled && required:
+		t.Fatal("KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 but 'bpf' is not in /sys/kernel/security/lsm; " +
+			"the kernel must be booted with lsm=...,bpf -- see issue #60")
+	case !enabled:
+		t.Skip("kernel not booted with BPF-LSM ('bpf' absent from /sys/kernel/security/lsm); " +
+			"see issue #60 -- hosted GitHub runners cannot satisfy this")
+	}
+
+	for _, target := range []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC} {
+		t.Run(target, func(t *testing.T) {
+			logger := logr.Discard()
+			enf, err := lsm.NewForAttachTarget(&logger, target)
+			if err != nil {
+				t.Fatalf("loading lsm objects for %q: %+v", target, err)
+			}
+			defer func() {
+				if err := enf.Close(); err != nil {
+					t.Errorf("closing enforcer: %v", err)
+				}
+			}()
+
+			if err := enf.AddTargets(&compiler.AllowDenyPair{Deny: []string{"/etc/shadow"}}); err != nil {
+				t.Errorf("programming deny targets: %v", err)
+			}
+			if err := enf.SetDefaultDeny(false); err != nil {
+				t.Errorf("clearing default deny: %v", err)
+			}
+			// Attaching proves the kernel accepted the program for this hook,
+			// which is the assertion the map writes alone do not make.
+			link, err := enf.Attach()
+			if err != nil {
+				t.Fatalf("attaching %q: %+v", target, err)
+			}
+			if err := link.Close(); err != nil {
+				t.Errorf("detaching %q: %v", target, err)
+			}
+		})
+	}
+}

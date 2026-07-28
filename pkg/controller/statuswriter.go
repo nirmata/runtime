@@ -1,0 +1,493 @@
+package controller
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/kyverno-runtime/pkg/containers"
+	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/util/retry"
+)
+
+// Condition types and reasons written by the StatusWriter. TargetsValid and
+// ObservationAvailable are produced by the managers and merged verbatim.
+const (
+	// ConditionApplied reports that this node's daemon has the policy loaded,
+	// with the reason naming the mode it is running in.
+	ConditionApplied = "Applied"
+
+	ReasonEnforcing   = "Enforcing"
+	ReasonMonitoring  = "Monitoring"
+	ReasonDiscovering = "Discovering"
+)
+
+// DefaultStatusFlushInterval is the flush cadence used by the daemon.
+const DefaultStatusFlushInterval = 30 * time.Second
+
+// policyStatusState is this node's view of one policy's status.
+type policyStatusState struct {
+	// name is needed to address the object; it is only known once a
+	// RuntimePolicyEvent arrives. Conditions and violations can be recorded
+	// before that (the handler fan-out is concurrent), in which case the entry
+	// waits, unflushed, for the name.
+	name     string
+	mode     string
+	selector labels.Selector
+
+	// matched and violating hold pod UIDs on THIS node.
+	matched   map[string]struct{}
+	violating map[string]struct{}
+
+	// conditions is keyed by condition type; the last write wins.
+	conditions map[string]metav1.Condition
+
+	// gen increments on every mutation. A flush records the gen it observed
+	// and only clears dirty when nothing changed while the API call was in
+	// flight.
+	gen   uint64
+	dirty bool
+}
+
+func newPolicyStatusState() *policyStatusState {
+	return &policyStatusState{
+		matched:    make(map[string]struct{}),
+		violating:  make(map[string]struct{}),
+		conditions: make(map[string]metav1.Condition),
+	}
+}
+
+func (p *policyStatusState) touch() {
+	p.gen++
+	p.dirty = true
+}
+
+// StatusWriter turns the RuntimePolicy and pod event streams into this node's
+// shard of each policy's status (#44). It is both an events.EventIface handler
+// (so it sees which pods this node matched) and a
+// runtimeevent.PolicyStatusRecorder (so managers and sinks can attach
+// violations and conditions).
+//
+// Every daemon in the DaemonSet writes the same cluster-scoped object, so a
+// node only ever replaces its own entry in status.nodes and recomputes the
+// scalar sums from the full list.
+type StatusWriter struct {
+	client   v1alpha1client.Interface
+	nodeName string
+	interval time.Duration
+	log      logr.Logger
+	// clock is injectable for tests.
+	clock func() time.Time
+
+	mu sync.Mutex
+	// policies is keyed by policy UID.
+	policies map[string]*policyStatusState
+	// podLabels caches the labels of the pods on this node, keyed by pod UID,
+	// so a policy arriving after its pods can still compute its matched set.
+	podLabels map[string]map[string]string
+}
+
+var _ events.EventIface = (*StatusWriter)(nil)
+var _ runtimeevent.PolicyStatusRecorder = (*StatusWriter)(nil)
+
+// NewStatusWriter builds a StatusWriter for this node. A non-positive interval
+// falls back to DefaultStatusFlushInterval.
+func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval time.Duration, log logr.Logger) *StatusWriter {
+	if interval <= 0 {
+		interval = DefaultStatusFlushInterval
+	}
+	return &StatusWriter{
+		client:    client,
+		nodeName:  nodeName,
+		interval:  interval,
+		log:       log.WithName("statuswriter"),
+		clock:     time.Now,
+		policies:  make(map[string]*policyStatusState),
+		podLabels: make(map[string]map[string]string),
+	}
+}
+
+// getOrCreate returns the state for a policy UID, creating it if a recorder
+// call arrived before the policy's own event. Callers hold s.mu.
+func (s *StatusWriter) getOrCreate(uid string) *policyStatusState {
+	st, ok := s.policies[uid]
+	if !ok {
+		st = newPolicyStatusState()
+		s.policies[uid] = st
+	}
+	return st
+}
+
+// RuntimePolicyEvent caches the policy's identity, selector and mode, and
+// recomputes the set of pods on this node that it matches.
+func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventType string) error {
+	if res == nil || res.UID == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if eventType == events.EventTypeDelete {
+		// the object is gone, so there is no status left to write
+		delete(s.policies, res.UID)
+		return nil
+	}
+
+	st := s.getOrCreate(res.UID)
+	if res.Name != "" {
+		st.name = res.Name
+	}
+	st.mode = res.Mode
+	st.selector = res.Selector
+	st.conditions[ConditionApplied] = s.appliedCondition(res.Mode)
+	s.rematchLocked(st)
+	st.touch()
+	return nil
+}
+
+// PodEvent tracks the labels of the pods on this node and keeps every policy's
+// matched set in sync with them.
+func (s *StatusWriter) PodEvent(pod corev1.Pod, _ []*containers.ContainerCgroupInfo, t string) error {
+	uid := string(pod.UID)
+	if uid == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if t == events.EventTypeDelete {
+		delete(s.podLabels, uid)
+		for _, st := range s.policies {
+			_, matched := st.matched[uid]
+			_, violating := st.violating[uid]
+			if !matched && !violating {
+				continue
+			}
+			delete(st.matched, uid)
+			delete(st.violating, uid)
+			st.touch()
+		}
+		return nil
+	}
+
+	// copy: the index and the informer both hand out shared, read-only maps
+	podLabels := make(map[string]string, len(pod.Labels))
+	for k, v := range pod.Labels {
+		podLabels[k] = v
+	}
+	s.podLabels[uid] = podLabels
+
+	for _, st := range s.policies {
+		if s.applyMatchLocked(st, uid, podLabels) {
+			st.touch()
+		}
+	}
+	return nil
+}
+
+// applyMatchLocked reconciles one pod's membership in one policy's matched set
+// and reports whether anything changed. Callers hold s.mu.
+func (s *StatusWriter) applyMatchLocked(st *policyStatusState, podUID string, podLabels map[string]string) bool {
+	_, was := st.matched[podUID]
+	now := st.selector != nil && st.selector.Matches(labels.Set(podLabels))
+	switch {
+	case now && !was:
+		st.matched[podUID] = struct{}{}
+		return true
+	case !now && was:
+		delete(st.matched, podUID)
+		// a pod that no longer matches cannot be violating the policy either
+		delete(st.violating, podUID)
+		return true
+	}
+	return false
+}
+
+// rematchLocked re-evaluates a policy's selector against every pod this node
+// has cached, which is what a selector change means. Pods that were recorded by
+// RecordViolation but never seen on the pod stream have no cached labels and are
+// left alone: they are removed when their delete event arrives, not on a guess.
+// Callers hold s.mu.
+func (s *StatusWriter) rematchLocked(st *policyStatusState) {
+	for podUID, podLabels := range s.podLabels {
+		s.applyMatchLocked(st, podUID, podLabels)
+	}
+}
+
+// RecordViolation marks a pod on this node as violating a policy. It is
+// idempotent: the same (policy, pod) pair reported repeatedly counts once.
+func (s *StatusWriter) RecordViolation(policyUID, podUID string) {
+	if policyUID == "" || podUID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.getOrCreate(policyUID)
+	if _, ok := st.violating[podUID]; ok {
+		return
+	}
+	st.violating[podUID] = struct{}{}
+	// a violation is proof the pod is observed by this policy, even if the
+	// pod stream has not reached us yet
+	st.matched[podUID] = struct{}{}
+	st.touch()
+}
+
+// RecordCondition stores a condition to be merged into the policy's status on
+// the next flush. Re-recording an identical condition is a no-op so a manager
+// that reports the same condition on every event does not cause API churn.
+func (s *StatusWriter) RecordCondition(policyUID string, cond metav1.Condition) {
+	if policyUID == "" || cond.Type == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.getOrCreate(policyUID)
+	if prev, ok := st.conditions[cond.Type]; ok &&
+		prev.Status == cond.Status && prev.Reason == cond.Reason && prev.Message == cond.Message {
+		return
+	}
+	st.conditions[cond.Type] = cond
+	st.touch()
+}
+
+func (s *StatusWriter) appliedCondition(mode string) metav1.Condition {
+	reason := ReasonEnforcing
+	message := "the policy is being enforced on this node"
+	switch mode {
+	case compiler.ModeMonitor:
+		reason = ReasonMonitoring
+		message = "the policy is observed and reported but never blocks"
+	case compiler.ModeDiscover:
+		reason = ReasonDiscovering
+		message = "the policy only feeds discovery and never blocks"
+	}
+	return metav1.Condition{
+		Type:               ConditionApplied,
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: metav1.NewTime(s.clock()),
+	}
+}
+
+// Run flushes dirty policy statuses every interval, and once more when ctx is
+// cancelled so the last observation is not lost on shutdown.
+func (s *StatusWriter) Run(ctx context.Context) error {
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// the passed context is already cancelled, so the final write
+			// needs one that is not
+			final, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			if err := s.Flush(final); err != nil {
+				s.log.Error(err, "final status flush failed")
+			}
+			return nil
+		case <-ticker.C:
+			if err := s.Flush(ctx); err != nil {
+				s.log.Error(err, "status flush failed")
+			}
+		}
+	}
+}
+
+// flushItem is a snapshot of one policy's pending status, taken under the lock
+// so the API calls happen without holding it.
+type flushItem struct {
+	uid        string
+	name       string
+	observed   int32
+	violating  int32
+	conditions []metav1.Condition
+	gen        uint64
+}
+
+// Flush writes every dirty policy's shard. It is exported so the daemon (and
+// tests) can force a write without waiting for the interval.
+func (s *StatusWriter) Flush(ctx context.Context) error {
+	var errs []error
+	for _, item := range s.snapshot() {
+		if err := s.flushOne(ctx, item); err != nil {
+			errs = append(errs, fmt.Errorf("writing status of RuntimePolicy %s: %w", item.name, err))
+			continue
+		}
+		s.markClean(item)
+	}
+	return errors.Join(errs...)
+}
+
+func (s *StatusWriter) snapshot() []flushItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	items := make([]flushItem, 0, len(s.policies))
+	for uid, st := range s.policies {
+		if !st.dirty {
+			continue
+		}
+		if st.name == "" {
+			// a condition or violation arrived before the policy event; the
+			// object cannot be addressed yet, so keep it dirty and retry on
+			// the next tick
+			s.log.V(2).Info("policy status pending: no name known yet", "policyUid", uid)
+			continue
+		}
+		conds := make([]metav1.Condition, 0, len(st.conditions))
+		for _, c := range st.conditions {
+			conds = append(conds, c)
+		}
+		items = append(items, flushItem{
+			uid:        uid,
+			name:       st.name,
+			observed:   int32(len(st.matched)),
+			violating:  int32(len(st.violating)),
+			conditions: conds,
+			gen:        st.gen,
+		})
+	}
+	return items
+}
+
+// markClean clears the dirty flag only if nothing changed while the write was
+// in flight.
+func (s *StatusWriter) markClean(item flushItem) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.policies[item.uid]; ok && st.gen == item.gen {
+		st.dirty = false
+	}
+}
+
+// forget drops all local state for a policy that no longer exists.
+func (s *StatusWriter) forget(uid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.policies, uid)
+}
+
+func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
+	rpClient := s.client.RuntimeV1alpha1().RuntimePolicies()
+	now := metav1.NewTime(s.clock())
+
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cur, err := rpClient.Get(ctx, item.name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				s.log.V(2).Info("RuntimePolicy is gone, dropping its status shard", "policy", item.name)
+				s.forget(item.uid)
+				return nil
+			}
+			return err
+		}
+		if item.uid != "" && string(cur.UID) != "" && string(cur.UID) != item.uid {
+			// the name was reused by a different object; this shard is stale
+			s.log.V(2).Info("RuntimePolicy UID changed, dropping stale status shard",
+				"policy", item.name, "want", item.uid, "got", string(cur.UID))
+			s.forget(item.uid)
+			return nil
+		}
+
+		before := cur.Status
+		updated, ok := cur.DeepCopyObject().(*v1alpha1.RuntimePolicy)
+		if !ok {
+			return fmt.Errorf("deep copy of RuntimePolicy %s returned an unexpected type", item.name)
+		}
+
+		setNodeShard(&updated.Status, v1alpha1.NodePolicyStatus{
+			NodeName:          s.nodeName,
+			ObservedPods:      item.observed,
+			ViolatingPods:     item.violating,
+			LastEvaluatedTime: &now,
+		})
+		recomputeStatusSums(&updated.Status)
+		for _, cond := range item.conditions {
+			if cond.Reason == "" {
+				// Reason is required by the API; a condition without one would
+				// be rejected for the whole object
+				s.log.V(0).Info("dropping a status condition with no reason",
+					"policy", item.name, "condition", cond.Type)
+				continue
+			}
+			apimeta.SetStatusCondition(&updated.Status.Conditions, cond)
+		}
+
+		if apiequality.Semantic.DeepEqual(before, updated.Status) {
+			// nothing to say; skip the write entirely
+			return nil
+		}
+
+		_, err = rpClient.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
+		return err
+	})
+}
+
+// setNodeShard replaces this node's entry in status.nodes, leaving every other
+// node's entry untouched. Entries stay sorted by node name so the list does
+// not churn between writers.
+func setNodeShard(status *v1alpha1.RuntimePolicyStatus, shard v1alpha1.NodePolicyStatus) {
+	for i := range status.Nodes {
+		if status.Nodes[i].NodeName == shard.NodeName {
+			status.Nodes[i] = shard
+			return
+		}
+	}
+	// insert in sorted position
+	idx := len(status.Nodes)
+	for i := range status.Nodes {
+		if status.Nodes[i].NodeName > shard.NodeName {
+			idx = i
+			break
+		}
+	}
+	status.Nodes = append(status.Nodes, v1alpha1.NodePolicyStatus{})
+	copy(status.Nodes[idx+1:], status.Nodes[idx:])
+	status.Nodes[idx] = shard
+}
+
+// recomputeStatusSums derives the cluster-wide scalars from the per-node
+// shards. It is the only writer of the scalar fields, so a node never has to
+// guess what the other nodes contributed.
+func recomputeStatusSums(status *v1alpha1.RuntimePolicyStatus) {
+	var observed, violating int32
+	var latest *metav1.Time
+	for i := range status.Nodes {
+		n := &status.Nodes[i]
+		observed += n.ObservedPods
+		violating += n.ViolatingPods
+		if n.LastEvaluatedTime == nil {
+			continue
+		}
+		if latest == nil || n.LastEvaluatedTime.After(latest.Time) {
+			t := *n.LastEvaluatedTime
+			latest = &t
+		}
+	}
+	status.ObservedPods = observed
+	status.ViolatingPods = violating
+	if latest != nil {
+		status.LastEvaluatedTime = latest
+	}
+}

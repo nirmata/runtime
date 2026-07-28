@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -20,6 +21,7 @@ var (
 type CompiledRuntimePolicy struct {
 	ReevalInterval *time.Duration
 	UID            string
+	Name           string
 	mode           string
 
 	variables map[string]cel.Program
@@ -58,7 +60,24 @@ func NewCompiler(client dynamic.Interface) (Compiler, error) {
 	return &compiler{env: env}, nil
 }
 
+// Compile compiles a user-authored RuntimePolicy. Every panic raised while
+// compiling user input (a CEL library binding, a malformed expression tree) is
+// converted into an error by utils.Guard: a bad policy must never take the
+// privileged daemon down (#40).
 func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
+	var compiled *CompiledRuntimePolicy
+	err := utils.Guard(fmt.Sprintf("compiling RuntimePolicy %q", rp.Name), func() error {
+		var err error
+		compiled, err = c.compile(rp)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return compiled, nil
+}
+
+func (c *compiler) compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
 	variables, err := c.compileVariables(rp, c.env, c.env.CELTypeProvider())
 	if err != nil {
 		return nil, err
@@ -73,9 +92,15 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 	for i, b := range rp.Spec.Behaviors {
 		if b.Network != nil {
+			errPath := path.Index(i).Child("network")
+			// hardcoded network targets are validated at compile time so an
+			// unsupported literal is rejected loudly instead of being dropped
+			// silently when it reaches the BPF maps (#41).
+			if errs := validateNetworkBehavior(errPath, b.Network); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
 			compiledNet, err := c.compileBehavior(b.Network)
 			if err != nil {
-				errPath := path.Index(i).Child("network")
 				return nil, field.Invalid(errPath, b.Network, err.Error())
 			}
 
@@ -113,6 +138,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 	return &CompiledRuntimePolicy{
 		UID:            string(rp.UID),
+		Name:           rp.Name,
 		ReevalInterval: &evalIntval,
 		selector:       rp.Spec.PodSelector,
 		mode:           mode,

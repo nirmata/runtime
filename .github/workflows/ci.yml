@@ -1,3 +1,25 @@
+# CI for kyverno-runtime.
+#
+# HONESTY NOTE -- read before adding or renaming a job.
+#
+# Some lanes here are ASSERTIONS (they fail when the product misbehaves) and some
+# are GATES (they fail only when the build/install breaks). Every job name says
+# which it is. Do not rename a gate to sound like an assertion, and do not add
+# eBPF-derived assertions to a gate job: hosted GitHub runners cannot satisfy
+# them and the result is a red test that eventually gets muted.
+#
+# Coverage of the eBPF layer on hosted runners:
+#   * program load + verifier acceptance for the egress program: ASSERTED
+#     (bpf-verifier-smoke).
+#   * egress allow/deny packet behavior end to end: ASSERTED (e2e-egress).
+#   * BPF-LSM file_open / bprm_check_security behavior: NOT COVERED. Loading a
+#     BPF_PROG_TYPE_LSM program needs the kernel booted with `lsm=...,bpf`;
+#     that is a boot parameter and hosted runners are not booted with it, so it
+#     cannot be enabled from inside a job or a kind node. The lane exists
+#     (lsm-behavior) and is workflow_dispatch-gated for a host that qualifies.
+#     This gap is issue #60 and is stated, not hidden.
+#   * committed *_bpfel.o / *_bpfeb.o matching their _cprog sources: NOT COVERED
+#     (bpf2go needs clang + vmlinux.h; see the TODO in the Makefile).
 name: CI
 
 on:
@@ -5,6 +27,7 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,13 +35,23 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  KIND_CLUSTER_NAME: kyverno-runtime
+  CHAINSAW_VERSION: v0.2.15
 
 jobs:
-  build:
+  # ---------------------------------------------------------------- ASSERTION
+  unit:
+    # NAME IS LOAD-BEARING: "Build & Unit Test" is the required status check in
+    # the repository ruleset for main. A required check is matched by job NAME,
+    # so renaming this job leaves the requirement permanently "Expected —
+    # waiting for status to be reported" and the PR unmergeable, with no failure
+    # anywhere to explain why. If this job is ever renamed, update the ruleset in
+    # the same change. (This job asserts: it fails when the product misbehaves.)
     name: Build & Unit Test
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -52,8 +85,316 @@ jobs:
         run: npx -y markdownlint-cli2 "**/*.md" "#vendor" "#bin"
 
       - name: Build
-        run: go build ./cmd/kyverno-runtime
+        run: go build ./...
 
-      - name: Test
-        run: go test ./...
+      - name: Vet
+        run: go vet ./...
 
+      # -race is the point of running the unit suites on Linux: the managers,
+      # collector and status writer are all concurrent.
+      - name: Unit tests
+        run: make test-unit
+
+  # -------------------------------------------------------------------- GATE
+  helm:
+    name: "Gate: helm lint/template + CRD codegen drift"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      # Renders with defaults and with the toggles flipped, and asserts the
+      # metrics port actually reaches the daemon args.
+      - name: Lint and template the chart
+        run: make helm-verify
+
+      # A real assertion despite living in the gate job: the committed CRDs must
+      # match what the PINNED controller-gen produces from api/v1alpha1.
+      # Unpinned, the controller-gen.kubebuilder.io/version annotation flaps with
+      # whatever version each host happens to resolve.
+      - name: CRD codegen drift (pinned controller-gen)
+        run: make verify-crds
+
+  # ---------------------------------------------------------------- ASSERTION
+  chainsaw-crd:
+    name: "Assert: CRD schema/admission conformance (chainsaw on kind, no daemon)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+
+      # No image, no chart, no eBPF: everything asserted here is decided by the
+      # apiserver from the generated OpenAPI schema and its CEL rules.
+      - name: Set up kind
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: crd-conformance
+
+      # Installed by hand rather than via a marketplace action so the pin is a
+      # release tarball we control (matches the previous e2e workflow).
+      - name: Install Chainsaw
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) arch=amd64 ;;
+            arm64|aarch64) arch=arm64 ;;
+            *) echo "Unsupported architecture: $arch"; exit 1 ;;
+          esac
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          mkdir -p "$HOME/.local/bin"
+          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
+          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
+          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
+          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/chainsaw" version
+
+      - name: Chainsaw CRD conformance (valid accepted, invalid rejected)
+        run: make test-chainsaw
+
+  # ------------------------------------------------- ASSERTION (kernel-bound)
+  bpf-verifier-smoke:
+    name: "Assert: BPF egress program loads & passes the verifier (Linux, root)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Fail loudly on a runner that cannot host the test at all, rather than
+      # letting the Go test skip and report green (issue #60 asks for this).
+      - name: Kernel preconditions
+        run: |
+          set -euo pipefail
+          uname -a
+          echo "--- BTF ---"
+          test -r /sys/kernel/btf/vmlinux || { echo "no /sys/kernel/btf/vmlinux: CO-RE relocation impossible"; exit 1; }
+          echo "--- cgroup version ---"
+          stat -fc %T /sys/fs/cgroup
+          echo "--- active LSMs (informational; BPF-LSM is NOT required by this job) ---"
+          cat /sys/kernel/security/lsm || echo "unreadable"
+
+      # sudo -E keeps GOCACHE/GOPATH so this reuses the module cache. The Go test
+      # skips (not fails) if the environment turns out unsuitable; the step above
+      # is what makes an unsuitable runner loud.
+      - name: Load the egress BPF program and program its maps
+        run: sudo -E env "PATH=$PATH" make test-bpf-smoke
+
+  # ------------------------------------------------- ASSERTION (kernel-bound)
+  e2e-egress:
+    name: "Assert: egress allow/deny enforcement on kind (Linux)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [unit]
+    env:
+      DOCKER_CONFIG: /tmp/.docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Set up kind
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          config: test/e2e/kind-config.yaml
+
+      # Installed by hand rather than via a marketplace action so the pin is a
+      # release tarball we control (matches the previous e2e workflow).
+      - name: Install Chainsaw
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) arch=amd64 ;;
+            arm64|aarch64) arch=arm64 ;;
+            *) echo "Unsupported architecture: $arch"; exit 1 ;;
+          esac
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          mkdir -p "$HOME/.local/bin"
+          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
+          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
+          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
+          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/chainsaw" version
+
+      - name: Kernel preconditions
+        run: |
+          set -euo pipefail
+          uname -a
+          test -r /sys/kernel/btf/vmlinux || { echo "no BTF: the daemon cannot load its programs"; exit 1; }
+          fs=$(stat -fc %T /sys/fs/cgroup)
+          echo "cgroup fs: $fs"
+          [ "$fs" = "cgroup2fs" ] || { echo "cgroup v2 unified hierarchy required for egress attach"; exit 1; }
+
+      # Build, load into kind, install the chart, wait for rollout. This step is
+      # a GATE: it proves install works and nothing about enforcement.
+      - name: Build image and install the chart into kind (gate)
+        run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
+
+      - name: Install gate assertions (daemonset Ready, no crash loop)
+        run: make test-e2e-gate
+
+      # The real assertion: DEFAULT_DENY with a single allow-listed pod IP. The
+      # allowed target must stay reachable AND the denied one must not -- a
+      # one-sided test would also pass a program that drops everything.
+      - name: Egress enforcement behavior
+        run: make test-e2e-egress
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get runtimepolicies -o yaml || true
+          kubectl -n kyverno-runtime get all || true
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=400 || true
+
+  # ------------------------------------------------- NOT COVERED ON HOSTED CI
+  #
+  # LSM behavioral enforcement (file_open / bprm_check_security). This job is
+  # workflow_dispatch-gated ON PURPOSE and is therefore NOT part of the PR
+  # signal.
+  #
+  # Why it cannot run on `ubuntu-latest`: a BPF_PROG_TYPE_LSM program is refused
+  # at LOAD time unless the kernel was booted with BPF-LSM active, i.e. `bpf`
+  # appears in /sys/kernel/security/lsm. That list comes from the `lsm=` boot
+  # parameter; it cannot be changed from inside a workflow, a container, or a
+  # kind node, and GitHub's hosted images are not booted with it. Consequently
+  # pkg/bpf/lsm's load/attach paths and everything in pkg/lsmmgr below the
+  # manager seam are UNVERIFIED by this CI. That is the documented gap in issue
+  # #60; the fix is a self-hosted or VM-based runner booted with lsm=...,bpf,
+  # not a softer assertion here.
+  #
+  # Run it with: Actions -> CI -> Run workflow, on a runner that qualifies.
+  lsm-behavior:
+    name: "Not run on PRs: BPF-LSM open/exec enforcement (needs lsm=bpf -- issue #60)"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DOCKER_CONFIG: /tmp/.docker
+      # Turns the LSM smoke test's skip into a hard failure, so a runner that
+      # does not qualify says so instead of reporting green.
+      KYVERNO_RUNTIME_REQUIRE_BPF_LSM: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Require BPF-LSM (fails loudly on a non-qualifying runner)
+        run: |
+          set -euo pipefail
+          lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo "")
+          echo "active LSMs: ${lsm:-unreadable}"
+          case ",${lsm}," in
+            *,bpf,*) echo "BPF-LSM active" ;;
+            *)
+              echo "ERROR: this runner was not booted with BPF-LSM."
+              echo "       GitHub hosted runners never are -- see issue #60."
+              echo "       Point this job at a self-hosted runner or VM booted with lsm=...,bpf."
+              exit 1
+              ;;
+          esac
+
+      - name: LSM program load + attach smoke
+        run: sudo -E env "PATH=$PATH" KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 make test-bpf-smoke
+
+      - name: Set up kind
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          config: test/e2e/kind-config.yaml
+
+      # Installed by hand rather than via a marketplace action so the pin is a
+      # release tarball we control (matches the previous e2e workflow).
+      - name: Install Chainsaw
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) arch=amd64 ;;
+            arm64|aarch64) arch=arm64 ;;
+            *) echo "Unsupported architecture: $arch"; exit 1 ;;
+          esac
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          mkdir -p "$HOME/.local/bin"
+          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
+          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
+          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
+          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/chainsaw" version
+
+      - name: Build image and install the chart into kind (gate)
+        run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
+
+      - name: LSM enforcement behavior (open deny/allow, exec deny/allow)
+        run: make test-e2e-lsm
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get runtimepolicies -o yaml || true
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=400 || true

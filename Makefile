@@ -6,8 +6,41 @@ IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 HOST_PLATFORM ?= linux/$(shell go env GOARCH)
 
+# Pinned tool versions. controller-gen stamps its own version into the
+# controller-gen.kubebuilder.io/version annotation of every generated CRD, so an
+# unpinned `go run` makes that annotation flap with whatever each developer or
+# runner happens to resolve. Bump this deliberately and regenerate.
+CONTROLLER_GEN_VERSION ?= v0.20.0
+CHAINSAW_VERSION ?= v0.2.15
+
 generate-crds:
-	go run sigs.k8s.io/controller-tools/cmd/controller-gen crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
+	go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
+
+# verify-crds fails if the committed CRDs do not match what the pinned
+# controller-gen produces from api/v1alpha1. Run in CI so a types change that
+# forgets `make generate-crds` cannot merge.
+verify-crds:
+	$(MAKE) generate-crds
+	@git diff --exit-code -- ./charts/kyverno-runtime/crds || { \
+		echo ""; \
+		echo "ERROR: charts/kyverno-runtime/crds is out of date."; \
+		echo "Run 'make generate-crds' (controller-gen $(CONTROLLER_GEN_VERSION)) and commit the result."; \
+		exit 1; \
+	}
+
+# TODO(#60): a `go generate ./...` drift check belongs here -- it would catch the
+# case where pkg/bpf/*/_cprog/*.c changes but the committed *_bpfel.o / *_bpfeb.o
+# objects do not (issue #54 recompiled them by hand and nothing guards that).
+# It is NOT wired up because bpf2go requires clang/llvm-strip plus a generated
+# vmlinux.h, which neither the developer hosts (darwin, no clang BPF target) nor
+# the current CI image provide. Adding the target without those would produce a
+# job that regenerates nothing and passes vacuously, which is worse than the
+# acknowledged gap. Enabling it needs a container image with clang >= 14 + bpftool
+# and a `make generate-bpf` target; tracked as the object-drift bullet of #60.
+#
+# verify-generate:
+#	go generate ./...
+#	git diff --exit-code
 
 generate-client:
 	go run k8s.io/code-generator/cmd/client-gen \
@@ -40,8 +73,23 @@ generate-proto:
 		--go-grpc_out=. --go-grpc_opt=module=$(MODULE) \
 		proto/*.proto
 
-test:
-	go test ./...
+# test is the default local sweep: unit tests only. The chainsaw and e2e suites
+# need a cluster and are separate targets on purpose, so `make test` never
+# silently depends on kubectl context.
+test: test-unit
+
+# test-unit runs the Go unit suites with the race detector. Everything under
+# test/e2e skips itself off-Linux / without root (see test/e2e/bpfsmoke_test.go).
+test-unit:
+	go test -race ./...
+
+# test-chainsaw runs the CRD schema / admission conformance suite. It needs a
+# cluster with charts/kyverno-runtime/crds applied but NOT the daemon, no image
+# and no eBPF-capable kernel.
+test-chainsaw:
+	kubectl apply -f ./charts/kyverno-runtime/crds
+	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	chainsaw test --config test/chainsaw/.chainsaw.yaml --test-dir test/chainsaw/
 
 fmt:
 	gofmt -l -w .
@@ -125,14 +173,31 @@ kind-install-manifests:
 		echo "Skipping default policy verification: templates/default-policies.yaml not present"; \
 	fi
 
-# Run Chainsaw e2e tests against a kind cluster with kyverno-runtime installed
+# Run the Chainsaw e2e suite against a kind cluster with kyverno-runtime
+# installed. test/e2e/dispatch-only is excluded: it needs a kernel booted with
+# lsm=...,bpf, which hosted CI runners do not have (issue #60).
 test-e2e:
-	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/ --exclude-test-regex '^lsm-'
 
-test-e2e-quickstart:
-	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/quickstart/
+# Install gate only: image builds, chart installs, daemonset Ready, policies
+# accepted. Asserts nothing about eBPF -- see test/e2e/install-gate.
+test-e2e-gate:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/install-gate/
 
-smoke-quickstart: test-e2e-quickstart
+# Egress enforcement behavior. Needs cgroup v2 + CAP_BPF; no BPF-LSM required.
+test-e2e-egress:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-enforce/
+
+# BPF-LSM open/exec enforcement behavior. REQUIRES a host booted with BPF-LSM
+# ('bpf' in /sys/kernel/security/lsm). Not part of test-e2e; see issue #60.
+test-e2e-lsm:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/dispatch-only/
+
+# BPF program load / verifier smoke test. Needs Linux + root; skips elsewhere.
+test-bpf-smoke:
+	go test -count=1 -v ./test/e2e/ -run TestBPF
+
+smoke-quickstart: test-e2e-gate
 
 premerge-smoke: build kind-install smoke-quickstart
 
@@ -142,4 +207,16 @@ test-e2e-install: kind-install test-e2e
 # Full CI pipeline reusing a prebuilt image tag (no ko build)
 test-e2e-install-prebuilt: kind-install-prebuilt test-e2e
 
-.PHONY: generate-crds generate-client generate-listers generate-informers test fmt lint lint-docs run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-quickstart smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+# helm-verify renders the chart the way CI does: lint, then template with both
+# the defaults and the non-default toggles, and fail if anything does not parse.
+helm-verify:
+	helm lint charts/kyverno-runtime
+	helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime > /dev/null
+	helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime \
+		--set rbac.create=false --set serviceAccount.create=false > /dev/null
+	helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime \
+		--set daemon.metrics.port=19090 \
+		| grep -q -- '--metrics-addr=:19090'
+	@echo "helm chart renders"
+
+.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-chainsaw fmt lint lint-docs helm-verify run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

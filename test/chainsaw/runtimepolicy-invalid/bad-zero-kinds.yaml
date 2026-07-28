@@ -1,0 +1,9 @@
+# Invalid: a behavior item that declares no behavior kind at all.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-invalid-zero-kinds
+spec:
+  mode: enforce
+  behaviors:
+  - {}

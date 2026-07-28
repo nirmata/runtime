@@ -17,7 +17,10 @@ import (
 const varsKey = "variables"
 
 type EvaluationResult struct {
-	UID      string
+	UID string
+	// Name is the RuntimePolicy name, needed by consumers that report
+	// findings and conditions against the policy (monitor, reporter).
+	Name     string
 	IPs      *AllowDenyPair
 	Open     *AllowDenyPair
 	Exec     *AllowDenyPair
@@ -55,7 +58,24 @@ func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
 	return &AllowDenyPair{Allow: newAllowInTarget, Deny: newDenyInTarget}
 }
 
+// Evaluate runs the policy's compiled CEL programs. Evaluation executes
+// user-authored expressions (including third-party CEL library bindings), so
+// the whole body runs behind utils.Guard: a panicking binding becomes an
+// error instead of taking the daemon down (#40).
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
+	var result *EvaluationResult
+	err := utils.Guard(fmt.Sprintf("evaluating RuntimePolicy %q", c.Name), func() error {
+		var err error
+		result, err = c.evaluate(ctx)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *CompiledRuntimePolicy) evaluate(ctx context.Context) (*EvaluationResult, error) {
 	selector, err := metav1.LabelSelectorAsSelector(c.selector)
 	if err != nil {
 		return nil, err
@@ -107,6 +127,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 
 	return &EvaluationResult{
 		UID:      c.UID,
+		Name:     c.Name,
 		IPs:      net,
 		Open:     open,
 		Exec:     exec,

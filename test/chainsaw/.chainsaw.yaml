@@ -1,0 +1,19 @@
+# Chainsaw configuration for the CRD schema / admission conformance suite.
+#
+# These tests need ONLY the CRDs from charts/kyverno-runtime/crds applied to a
+# cluster. They deliberately do NOT need the daemon, an image, or an eBPF-capable
+# kernel: everything asserted here is decided by the apiserver from the generated
+# OpenAPI schema and CEL x-kubernetes-validations.
+#
+# Run with: make test-chainsaw
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: kyverno-runtime-crd-conformance
+spec:
+  timeouts:
+    apply: 30s
+    assert: 30s
+    delete: 30s
+    cleanup: 30s
+  failFast: false

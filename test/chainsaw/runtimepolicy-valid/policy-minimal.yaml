@@ -1,0 +1,5 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-valid-minimal
+spec: {}

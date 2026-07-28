@@ -5,14 +5,21 @@ import (
 	"time"
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/kyverno-runtime/pkg/attribution"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
+	"github.com/nirmata/kyverno-runtime/pkg/collector"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
+	"github.com/nirmata/kyverno-runtime/pkg/metrics"
+	"github.com/nirmata/kyverno-runtime/pkg/monitor"
+	"github.com/nirmata/kyverno-runtime/pkg/reporter"
+	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
@@ -24,10 +31,32 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-var logLevel int
+// Compile-time assertions for the seams daemon wiring depends on. They live
+// here (rather than in the producing packages) so that a signature change in
+// any of them breaks the build at the wiring site, where it has to be fixed.
+var (
+	_ collector.Stage                   = (*attribution.Index)(nil)
+	_ events.EventIface                 = (*attribution.Index)(nil)
+	_ runtimeevent.Sink                 = (*monitor.Monitor)(nil)
+	_ events.EventIface                 = (*monitor.Monitor)(nil)
+	_ monitor.FindingSink               = (*reporter.Reporter)(nil)
+	_ events.EventIface                 = (*controller.StatusWriter)(nil)
+	_ runtimeevent.PolicyStatusRecorder = (*controller.StatusWriter)(nil)
+)
+
+// observePollInterval is how often the managers' observation maps are drained.
+// Observation in PR A is poll-based over the existing BPF maps (no ring
+// buffer), so this interval bounds detection latency for monitor mode.
+const observePollInterval = 10 * time.Second
+
+var (
+	logLevel    int
+	metricsAddr string
+)
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -37,6 +66,8 @@ var daemonCmd = &cobra.Command{
 
 func init() {
 	daemonCmd.Flags().IntVar(&logLevel, "log-level", 0, "Verbosity level for debug logs (higher is more verbose).")
+	daemonCmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":9090",
+		"Address the Prometheus /metrics endpoint binds to. Set to an empty string to disable it.")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -72,14 +103,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("NODE_NAME must be provided")
 		os.Exit(1)
 	}
-	// initialize the bpf program wrappers
-	em := egressmgr.NewEgressManager(logger)
-	lsmm := lsmmgr.NewLsmManager(logger)
 
-	eventHandlers := []events.EventIface{em, lsmm}
 	c, err := v1alpha1client.NewForConfig(cfg)
 	if err != nil {
 		logger.Error(err, "failed to create v1alpha1 client")
+		os.Exit(1)
+	}
+
+	// crClient writes OpenReports Reports; the scheme above already has the
+	// openreports types installed.
+	crClient, err := crclient.New(cfg, crclient.Options{Scheme: scheme})
+	if err != nil {
+		logger.Error(err, "failed to create controller-runtime client")
 		os.Exit(1)
 	}
 
@@ -97,6 +132,50 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	sigCtx := ctrl.SetupSignalHandler()
 	g, ctx := errgroup.WithContext(sigCtx)
+
+	// metrics: one private registry so repeated wiring never panics on
+	// duplicate registration.
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	if metricsAddr != "" {
+		g.Go(func() error {
+			return metrics.Serve(ctx, metricsAddr, reg, logger.WithName("metrics"))
+		})
+	} else {
+		logger.Info("metrics endpoint disabled (--metrics-addr is empty)")
+	}
+
+	// attribution index: a pod-event handler (it builds the cgroup -> pod map)
+	// and a collector stage (it annotates events and drops unattributed ones).
+	attrIdx := attribution.NewIndex(logger.WithName("attribution"), attribution.WithMetrics(m))
+
+	// reporter: buffers findings and writes namespaced OpenReports Reports.
+	rep := reporter.New(crClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName})
+
+	// status writer: the single PolicyStatusRecorder; owns this node's shard of
+	// every RuntimePolicy status.
+	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"))
+
+	// bpf program wrappers; both report rejected targets and match counts
+	// through the status writer.
+	em := egressmgr.NewEgressManager(logger, sw)
+	lsmm := lsmmgr.NewLsmManager(logger, sw)
+
+	// monitor: evaluates observed events against monitor-mode policies and
+	// turns matches into findings + violation counts.
+	mon := monitor.New(logger.WithName("monitor"), rep, sw, m)
+
+	// Fan-out order matters: attribution must know a pod before monitor or the
+	// managers can act on its events.
+	eventHandlers := []events.EventIface{em, lsmm, attrIdx, sw, mon}
+
+	// collector: poll the managers' observation maps, attribute, then hand to
+	// the monitor sink.
+	col := collector.New(logger.WithName("collector"), collector.WithMetrics(m))
+	col.AddSource(collector.NewPollSource("egress-observe", observePollInterval, em.CollectObservations))
+	col.AddSource(collector.NewPollSource("lsm-observe", observePollInterval, lsmm.CollectObservations))
+	col.AddStage(attrIdx)
+	col.AddSink(mon)
 
 	// runtime policy informer
 	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, c, rpCompiler)
@@ -131,6 +210,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			}
 		}
 	})
+
+	g.Go(func() error { return col.Run(ctx) })
+	g.Go(func() error { return sw.Run(ctx) })
+	g.Go(func() error { return rep.Run(ctx) })
 
 	if err := g.Wait(); err != nil {
 		logger.Error(err, "failed to wait for informer threads")

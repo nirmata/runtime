@@ -1,0 +1,95 @@
+# E2E INSTALL GATE -- deliberately NOT a behavioral eBPF test.
+#
+# What this asserts:
+#   * the chart installs and the DaemonSet reaches Ready on every node;
+#   * the daemon container does not crash-loop (restartCount stays 0);
+#   * a RuntimePolicy in enforce mode and one in monitor mode are accepted by the
+#     apiserver while the daemon is watching, and the daemon survives both.
+#
+# What this does NOT assert:
+#   * that any eBPF program was loaded, attached, or enforced anything;
+#   * that any Report/finding was produced.
+# Those live in ../egress-enforce (real assertion) and ../dispatch-only (needs
+# lsm=bpf; see issue #60). Do not add Report assertions here -- a gate that
+# silently depends on the kernel is worse than no gate.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: install-gate
+spec:
+  steps:
+  - name: daemonset-is-fully-rolled-out
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: kyverno-runtime-kyverno-runtime
+            namespace: kyverno-runtime
+          status:
+            (numberReady == desiredNumberScheduled): true
+            (numberReady > `0`): true
+
+  - name: daemon-pods-are-ready-and-not-restarting
+    try:
+    - script:
+        content: |
+          set -eu
+          # Fail loudly with the daemon log if any container has restarted:
+          # a crash-looping daemon can still report numberReady briefly.
+          for c in $(kubectl -n kyverno-runtime get pods \
+            -l app.kubernetes.io/name=kyverno-runtime \
+            -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.restartCount}{"\n"}{end}{end}'); do
+            if [ "$c" -ne 0 ]; then
+              echo "daemon container restarted ${c} time(s) -- dumping logs"
+              kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=200 --previous || true
+              kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=200 || true
+              exit 1
+            fi
+          done
+
+  - name: policies-are-accepted-while-the-daemon-watches
+    try:
+    - apply:
+        file: policies.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-gate-enforce
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-gate-monitor
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-gate-enforce
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-gate-monitor
+
+  - name: daemon-still-healthy-after-policy-churn
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: kyverno-runtime-kyverno-runtime
+            namespace: kyverno-runtime
+          status:
+            (numberReady == desiredNumberScheduled): true
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=100 || true

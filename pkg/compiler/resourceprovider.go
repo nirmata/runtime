@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -53,9 +54,15 @@ func (rp *resourceProvider) PostResource(apiVersion, resource, namespace string,
 	return resourceInteface.Create(context.TODO(), &unstructured.Unstructured{Object: data}, metav1.CreateOptions{})
 }
 
+// ToGVR is reachable from a user-authored policy expression via the CEL
+// `resource.toGVR()` function. Kind-to-resource mapping needs a RESTMapper
+// that this provider does not have, so it returns an error: it must never
+// panic, since that would crash the privileged daemon on every node the
+// policy lands on (#40).
+//
+// TODO: implement via a discovery-backed RESTMapper.
 func (rp *resourceProvider) ToGVR(apiVersion, kind string) (*schema.GroupVersionResource, error) {
-	// TODO
-	panic("not implemented")
+	return nil, fmt.Errorf("resource.toGVR is not implemented: cannot map apiVersion %q kind %q to a resource", apiVersion, kind)
 }
 
 func (rp *resourceProvider) getResourceClient(groupVersion schema.GroupVersion, resource string, namespace string) dynamic.ResourceInterface {
