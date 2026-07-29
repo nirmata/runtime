@@ -64,11 +64,11 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 				// counts may still hold what was read before the failure
 			}
 			for cgid, paths := range counts {
-				for path, count := range paths {
-					if path == "" || count == 0 {
+				for key, count := range paths {
+					if key.Path == "" || count == 0 {
 						continue
 					}
-					out = append(out, newObservation(progType, now, cgid, cgidPods[cgid], path, count))
+					out = append(out, newObservation(progType, now, cgid, cgidPods[cgid], key, count))
 				}
 			}
 		}
@@ -77,22 +77,25 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 	return sortEvents(out), errors.Join(errs...)
 }
 
-// newObservation builds the event for one observed path count. The cgroup id is
-// what attribution resolves; the pod uid is a hint the manager happens to know.
-func newObservation(progType string, now time.Time, cgid uint64, podUID, path string, count uint32) runtimeevent.Event {
+// newObservation builds the event for one observed (path, verdict) count. The
+// cgroup id is what attribution resolves; the pod uid is a hint the manager
+// happens to know. KernelDenied carries the kernel's actual enforcement
+// verdict; monitor attributes it to a policy in userspace.
+func newObservation(progType string, now time.Time, cgid uint64, podUID string, key lsm.PathEventKey, count uint32) runtimeevent.Event {
 	ev := runtimeevent.Event{
-		Time:     now,
-		CgroupID: cgid,
-		Count:    count,
-		Pod:      runtimeevent.PodIdentity{UID: podUID},
+		Time:         now,
+		CgroupID:     cgid,
+		Count:        count,
+		KernelDenied: key.Verdict == runtimeevent.VerdictDeny,
+		Pod:          runtimeevent.PodIdentity{UID: podUID},
 	}
 	switch progType {
 	case lsm.PROG_TYPE_LSM_EXEC:
 		ev.Kind = runtimeevent.KindExec
-		ev.Exec = &runtimeevent.ExecFacts{Filename: path}
+		ev.Exec = &runtimeevent.ExecFacts{Filename: key.Path}
 	default:
 		ev.Kind = runtimeevent.KindOpen
-		ev.Open = &runtimeevent.OpenFacts{Path: path}
+		ev.Open = &runtimeevent.OpenFacts{Path: key.Path}
 	}
 	return ev
 }
@@ -125,9 +128,20 @@ func sortEvents(evs []runtimeevent.Event) []runtimeevent.Event {
 		if c := cmp.Compare(string(a.Kind), string(b.Kind)); c != 0 {
 			return c
 		}
-		return cmp.Compare(eventPath(a), eventPath(b))
+		if c := cmp.Compare(eventPath(a), eventPath(b)); c != 0 {
+			return c
+		}
+		// verdict tiebreaker: the same path can now appear once per verdict
+		return cmp.Compare(boolToInt(a.KernelDenied), boolToInt(b.KernelDenied))
 	})
 	return evs
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func eventPath(ev runtimeevent.Event) string {

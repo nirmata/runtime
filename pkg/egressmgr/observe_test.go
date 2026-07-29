@@ -27,6 +27,17 @@ func addr(t *testing.T, s string) netip.Addr {
 	return a
 }
 
+// ipKey builds an allow-verdict observation key; ipKeyDeny a deny-verdict one.
+func ipKey(t *testing.T, s string) egressfilter.IPEventKey {
+	t.Helper()
+	return egressfilter.IPEventKey{Addr: addr(t, s), Verdict: runtimeevent.VerdictAllow}
+}
+
+func ipKeyDeny(t *testing.T, s string) egressfilter.IPEventKey {
+	t.Helper()
+	return egressfilter.IPEventKey{Addr: addr(t, s), Verdict: runtimeevent.VerdictDeny}
+}
+
 // #42: a monitor policy must observe, not enforce. Nothing may be
 // programmed into the allow/deny maps and the default-deny bit must stay clear,
 // otherwise the BPF program can return -EPERM for a policy the user believes is
@@ -126,12 +137,13 @@ func TestCollectObservationsEmitsNetEventsWithPodUidAndCounts(t *testing.T) {
 	f3 := addPod(t, e, "pod-3", apiLabels, "/cg/pod-3")
 	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
 
-	f1.ipEvents = map[netip.Addr]uint32{
-		addr(t, "10.0.0.2"): 3,
-		addr(t, "10.0.0.1"): 1,
-		addr(t, "10.0.0.3"): 0, // never counted, must not be emitted
+	f1.ipEvents = map[egressfilter.IPEventKey]uint32{
+		ipKey(t, "10.0.0.2"):     3,
+		ipKeyDeny(t, "10.0.0.2"): 2, // same destination, denied by the kernel
+		ipKey(t, "10.0.0.1"):     1,
+		ipKey(t, "10.0.0.3"):     0, // never counted, must not be emitted
 	}
-	f2.ipEvents = map[netip.Addr]uint32{addr(t, "8.8.8.8"): 7}
+	f2.ipEvents = map[egressfilter.IPEventKey]uint32{ipKey(t, "8.8.8.8"): 7}
 
 	got, err := e.CollectObservations(context.Background())
 	if err != nil {
@@ -146,6 +158,13 @@ func TestCollectObservationsEmitsNetEventsWithPodUidAndCounts(t *testing.T) {
 		},
 		{
 			Kind: runtimeevent.KindNet, Time: testTime, Count: 3,
+			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.2")},
+			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
+		},
+		{
+			// the deny counter for the same destination is its own event,
+			// sorted after the allow one, with the kernel verdict carried over
+			Kind: runtimeevent.KindNet, Time: testTime, Count: 2, KernelDenied: true,
 			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.2")},
 			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
 		},
@@ -176,7 +195,7 @@ func TestCollectObservationsWithoutObservePoliciesIsEmpty(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil), events.EventTypeCreate)
-	f.ipEvents = map[netip.Addr]uint32{addr(t, "10.0.0.1"): 5}
+	f.ipEvents = map[egressfilter.IPEventKey]uint32{ipKey(t, "10.0.0.1"): 5}
 
 	got, err := e.CollectObservations(context.Background())
 	if err != nil {
@@ -198,7 +217,7 @@ func TestCollectObservationsKeepsGoingAfterAReadError(t *testing.T) {
 	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
 
 	bad.readErr = errors.New("map read boom")
-	good.ipEvents = map[netip.Addr]uint32{addr(t, "8.8.8.8"): 2}
+	good.ipEvents = map[egressfilter.IPEventKey]uint32{ipKey(t, "8.8.8.8"): 2}
 
 	got, err := e.CollectObservations(context.Background())
 	if err == nil {
@@ -213,7 +232,7 @@ func TestCollectObservationsRespectsCancelledContext(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
-	f.ipEvents = map[netip.Addr]uint32{addr(t, "8.8.8.8"): 2}
+	f.ipEvents = map[egressfilter.IPEventKey]uint32{ipKey(t, "8.8.8.8"): 2}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

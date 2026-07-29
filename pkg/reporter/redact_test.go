@@ -228,7 +228,7 @@ func TestRedactionChokepoint(t *testing.T) {
 // TestRedactionChokepoint. It is a structural reminder, not a value check.
 func TestRedactionChokepointCoversEveryFindingStringField(t *testing.T) {
 	wantFindingFields := []string{
-		"PolicyName", "PolicyUID", "Behavior", "Severity", "Result", "Message",
+		"PolicyName", "PolicyUID", "Behavior", "Severity", "Result", "Enforced", "Message",
 		"Pod", "Net", "Process", "Timestamp",
 	}
 	if diff := cmp.Diff(wantFindingFields, structFieldNames(Finding{})); diff != "" {

@@ -2,7 +2,6 @@ package egressmgr
 
 import (
 	"fmt"
-	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -43,7 +42,7 @@ type egressFilter interface {
 	DeleteIps(pair *compiler.AllowDenyPair) ([]egressfilter.RejectedTarget, error)
 	SetFlagIdx(idx uint8, val bool)
 	Attach(cgPath string) (link.Link, error)
-	ReadIPEvents() (map[netip.Addr]uint32, error)
+	ReadIPEvents() (map[egressfilter.IPEventKey]uint32, error)
 }
 
 // filterFactory builds the per-pod egress filter. It defaults to the real

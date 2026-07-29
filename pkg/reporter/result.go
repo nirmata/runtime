@@ -41,6 +41,7 @@ const (
 	propFirstTimestamp = "firstTimestamp"
 	propLastTimestamp  = "lastTimestamp"
 	propBehavior       = "behavior"
+	propEnforced       = "enforced"
 	propNode           = "node"
 	propContainer      = "container"
 	propOwner          = "owner"
@@ -85,6 +86,9 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 		propCount:          strconv.Itoa(p.count),
 		propFirstTimestamp: formatTime(p.first),
 		propLastTimestamp:  formatTime(p.last),
+		// always emitted: "was denied" (true) vs "would have been denied"
+		// (false) is the difference a report consumer acts on
+		propEnforced: strconv.FormatBool(f.Enforced),
 	}
 	put := func(key, value string) {
 		if v := sanitize(value); v != "" {

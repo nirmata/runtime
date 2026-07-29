@@ -284,7 +284,10 @@ already keep — no new kernel programs, no ring buffers, no new `.o` files.
 
 `runtimeevent.Event` is the single currency of the plane: a `Kind`
 (`net|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
-(observations are deltas, not individual occurrences), a `Denied` flag, one non-nil facts struct
+(observations are deltas, not individual occurrences), two deliberately distinct deny flags —
+`KernelDenied`, the kernel's actual enforcement verdict, set only by the BPF poll sources from
+the verdict dimension of the observation maps, and `WouldDeny`, monitor mode's counterfactual,
+set only by `pkg/monitor` on its per-policy copy — one non-nil facts struct
 per kind, and a `PodIdentity`.
 
 Three interfaces define the plumbing, all in `pkg/runtimeevent/iface.go`:
@@ -365,17 +368,28 @@ read-only so the plane does not copy a label map per event. Sinks must not mutat
 
 ### Monitor (`pkg/monitor`)
 
-`Monitor` is the `Sink` that turns observations into findings. It tracks monitor-mode policies in
-a per-event-ready form (`trackedPolicy`: compiled selector plus `netBehavior`/`pathBehavior`
-matchers), replacing the whole value on every `RuntimePolicyEvent` rather than mutating it — both
-so `HandleEvent` can read one outside the lock and so it is immune to `egressmgr` mutating the
-`EvaluationResult` it shares (#53).
+`Monitor` is the `Sink` that turns observations into findings. It tracks monitor- AND
+enforce-mode policies in a per-event-ready form (`trackedPolicy`: mode, compiled selector plus
+`netBehavior`/`pathBehavior` matchers), replacing the whole value on every `RuntimePolicyEvent`
+rather than mutating it — both so `HandleEvent` can read one outside the lock and so it is immune
+to `egressmgr` mutating the `EvaluationResult` it shares (#53).
 
 Per event it gates on `Kind`, then on the policy's selector against `ev.Pod.Labels`, then
 evaluates the matching behavior with the same semantics the kernel would apply: an explicit deny
 entry matches; under default-deny anything absent from `allow` matches. A match records a
 violation through the `PolicyStatusRecorder` **first and unconditionally** (the violation
 happened whether or not it can be reported) and then emits a `reporter.Finding`.
+
+What a match means depends on the policy's mode. For a monitor-mode policy it is the
+counterfactual: the finding says the operation *would have been* denied (`Finding.Enforced` is
+false, the event copy carries `WouldDeny`), independent of `KernelDenied`. For an enforce-mode
+policy a match only matters when `ev.KernelDenied` is set: the kernel already denied, and the
+userspace re-evaluation is what attributes that deny to the policy whose lists produced it — the
+kernel maps are per-pod flat sets with no policy dimension, so policy identity cannot come from
+the kernel. Those findings say the operation *was* denied (`Finding.Enforced` is true). A kernel
+deny that no tracked enforce-mode policy explains bumps
+`kyverno_runtime_events_dropped_total{source="monitor",reason="unattributed_kernel_deny"}` and is
+logged at V(2): a kernel deny must never vanish silently.
 
 ### Reporter (`pkg/reporter`)
 
@@ -488,10 +502,9 @@ future `PLAN.md`.
   programs:
   - Counters are drained every 10 seconds, so findings lag behavior by up to that interval and
     only counts survive — not per-occurrence ordering or timing.
-  - `probe.c` returns before the counting branch while `DEFAULT_DENY` is set, so a monitor-mode
-    policy does not observe egress that another policy's default-deny is already dropping.
-  - The per-cgroup `open_events` inner map holds 1024 paths; a workload touching more than that
-    within one interval loses the excess (read-and-reset mitigates, does not eliminate).
+  - The per-cgroup `open_events` inner map holds 2048 `(path, verdict)` keys; a workload touching
+    more than that within one interval loses the excess (read-and-reset mitigates, does not
+    eliminate).
   - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
   - No DNS, TLS SNI, or HTTP visibility exists, and no new kernel programs are loaded by this
     code.
@@ -525,10 +538,10 @@ future `PLAN.md`.
   `RejectedTarget` values that reach a `V(0)` log and a `TargetsValid=False` condition. They are no
   longer dropped silently, but they are still not enforceable. An LPM-trie/IPv6 map redesign is the
   follow-up (#41).
-- **Enforcement produces no findings.** Only observe modes feed the event plane; an `enforce`-mode
-  policy's `-EPERM`/packet drops are invisible to `pkg/monitor` and therefore absent from Reports.
-  Reporting on a block requires the kernel programs to emit an event on the deny path, which again
-  means recompiling the BPF objects.
+- **Enforcement findings are counter-grained.** The observation maps count `(target, verdict)`
+  pairs, so an enforce-mode deny surfaces as a finding with `enforced=true` — but only counts
+  survive, not per-occurrence ordering, PIDs, or timing, and only for pods some policy has in
+  observe scope (egress counting still requires the pod's `OBSERVE` flag).
 - **eBPF behavior is only partly exercised in CI.** Unit tests cover the pure logic (parsing,
   matching, attribution, status sharding, reporting) and the manager bookkeeping through seam
   interfaces, and a kind-based lane covers egress enforcement and program load. LSM-behavioral

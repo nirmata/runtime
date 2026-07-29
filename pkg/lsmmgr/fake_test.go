@@ -11,6 +11,7 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
+	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
@@ -58,7 +59,7 @@ type fakeEnforcer struct {
 	usedClosed []string // methods called after Close, must always be empty
 
 	// pending are the kernel-side counts ReadEvents will hand back (and reset).
-	pending map[uint64]map[string]uint32
+	pending map[uint64]map[lsm.PathEventKey]uint32
 
 	errs map[string]error
 }
@@ -73,7 +74,7 @@ func newFakeEnforcer(target string, errs map[string]error) *fakeEnforcer {
 		deny:      map[string]struct{}{},
 		cgids:     map[uint64]struct{}{},
 		observing: map[uint64]struct{}{},
-		pending:   map[uint64]map[string]uint32{},
+		pending:   map[uint64]map[lsm.PathEventKey]uint32{},
 		errs:      errs,
 	}
 }
@@ -178,11 +179,11 @@ func (f *fakeEnforcer) DisableObservation(cgids []uint64) error {
 
 // ReadEvents drains the seeded counts for the cgids it is asked about, mirroring
 // the real read-and-reset semantics.
-func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[string]uint32, error) {
+func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventKey]uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.readCalls = append(f.readCalls, slices.Clone(cgids))
-	out := map[uint64]map[string]uint32{}
+	out := map[uint64]map[lsm.PathEventKey]uint32{}
 	for _, c := range cgids {
 		counts, ok := f.pending[c]
 		if !ok || len(counts) == 0 {
@@ -194,16 +195,23 @@ func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[string]uint32,
 	return out, f.note("ReadEvents")
 }
 
-// seed puts kernel-side counts in place for the next ReadEvents call.
+// seed puts kernel-side allow-verdict counts in place for the next ReadEvents
+// call. seedVerdict is the general form.
 func (f *fakeEnforcer) seed(cgid uint64, counts map[string]uint32) {
+	for p, c := range counts {
+		f.seedVerdict(cgid, lsm.PathEventKey{Path: p, Verdict: runtimeevent.VerdictAllow}, c)
+	}
+}
+
+// seedVerdict puts one kernel-side (path, verdict) count in place for the next
+// ReadEvents call.
+func (f *fakeEnforcer) seedVerdict(cgid uint64, key lsm.PathEventKey, count uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.pending[cgid] == nil {
-		f.pending[cgid] = map[string]uint32{}
+		f.pending[cgid] = map[lsm.PathEventKey]uint32{}
 	}
-	for p, c := range counts {
-		f.pending[cgid][p] = c
-	}
+	f.pending[cgid][key] = count
 }
 
 // reset clears the recorded call log but keeps the effective state, so a test can

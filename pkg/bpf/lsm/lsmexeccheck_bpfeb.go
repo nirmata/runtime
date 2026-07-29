@@ -8,9 +8,16 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type lsmExecCheckPathEventKey struct {
+	_       structs.HostLayout
+	Path    [128]int8
+	Verdict uint32
+}
 
 // loadLsmExecCheck returns the embedded CollectionSpec for lsmExecCheck.
 func loadLsmExecCheck() (*ebpf.CollectionSpec, error) {

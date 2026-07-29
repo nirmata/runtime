@@ -59,6 +59,48 @@ func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
 	}
 }
 
+// One path counted under both verdicts yields two events — the kernel counter
+// key carries the verdict, so a Count is always homogeneous with respect to
+// KernelDenied — and the deny event sorts after the allow one for the same
+// path, deterministically.
+func TestCollectObservations_SplitsEventsByKernelVerdict(t *testing.T) {
+	h := newHarness(t)
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}),
+		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	enf := h.enf("rp1", open)
+	enf.seedVerdict(11, lsm.PathEventKey{Path: "/etc/shadow", Verdict: runtimeevent.VerdictDeny}, 2)
+	enf.seedVerdict(11, lsm.PathEventKey{Path: "/etc/shadow", Verdict: runtimeevent.VerdictAllow}, 5)
+
+	got, err := h.l.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations returned %v", err)
+	}
+	want := []runtimeevent.Event{{
+		Kind:     runtimeevent.KindOpen,
+		Time:     fixedTime,
+		CgroupID: 11,
+		Count:    5,
+		Open:     &runtimeevent.OpenFacts{Path: "/etc/shadow"},
+		Pod:      runtimeevent.PodIdentity{UID: "podA"},
+	}, {
+		Kind:         runtimeevent.KindOpen,
+		Time:         fixedTime,
+		CgroupID:     11,
+		Count:        2,
+		KernelDenied: true,
+		Open:         &runtimeevent.OpenFacts{Path: "/etc/shadow"},
+		Pod:          runtimeevent.PodIdentity{UID: "podA"},
+	}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("events (-want +got):\n%s", diff)
+	}
+}
+
 // TestCollectObservationsReadsAllEnforcers closes #52 structurally. The bug was an
 // early `break` in the read loop: for a pod with both an open and an exec
 // enforcer, everything after the first enforcer was silently dropped. This test

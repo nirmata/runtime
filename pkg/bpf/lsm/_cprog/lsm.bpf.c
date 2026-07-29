@@ -17,6 +17,56 @@
 #error "must build lsm.bpf.c with exactly one of -DLSM_FILE_OPEN or -DLSM_EXEC_CHECK defined"
 #endif
 
+// path_verdict computes the enforcement verdict for one path: under default
+// deny only paths in `allowed` pass, otherwise only paths in `banned` are
+// denied. The policy maps keep their char[MAX_PATH_LEN] keys, so they are
+// looked up with key->path, not the whole event key.
+static __always_inline __u32 path_verdict(struct path_event_key *key) {
+    __u32 dd_key = 0;
+    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
+
+    if (dd) {
+        if (bpf_map_lookup_elem(&allowed, key->path) == NULL) {
+            return VERDICT_DENY;
+        }
+        return VERDICT_ALLOW;
+    }
+
+    if (bpf_map_lookup_elem(&banned, key->path) != NULL) {
+        return VERDICT_DENY;
+    }
+    return VERDICT_ALLOW;
+}
+
+// record_path_event bumps this cgroup's (path, verdict) counter. The add is
+// atomic because LSM hooks run concurrently across CPUs and a plain
+// (*count)++ is a lossy read-modify-write.
+static __always_inline void record_path_event(__u64 *cgid, struct path_event_key *key) {
+    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
+    if (!count_map) {
+        return;
+    }
+
+    __u32 *count = bpf_map_lookup_elem(count_map, key);
+    if (count) {
+        __sync_fetch_and_add(count, 1);
+        return;
+    }
+
+    __u32 init_count = 1;
+    if (bpf_map_update_elem(count_map, key, &init_count, BPF_NOEXIST) != 0) {
+        // lost the create race with another CPU: the entry exists now, add to it
+        count = bpf_map_lookup_elem(count_map, key);
+        if (count) {
+            __sync_fetch_and_add(count, 1);
+        }
+    }
+}
+
+// Both handlers are structured verdict -> record -> return: the verdict is
+// fully computed first, then observed with the verdict it carries, then
+// returned. No enforcement path may return before the observation branch.
+
 #if defined(LSM_FILE_OPEN)
 static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
@@ -24,34 +74,16 @@ static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     char buf[MAX_PATH_LEN] = {};
     bpf_d_path(&f->f_path, buf, sizeof(buf));
 
-    char key[MAX_PATH_LEN] = {};
-    bpf_probe_read_kernel_str(key, sizeof(key), buf);
+    // zero-init the whole key, THEN copy the path: every byte of the struct
+    // (path tail included) must be defined before it is used as a map key
+    struct path_event_key key = {};
+    bpf_probe_read_kernel_str(key.path, sizeof(key.path), buf);
 
-    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
-    if (count_map) {
-        __u32 *open_count = bpf_map_lookup_elem(count_map, &key);
-        if (open_count) {
-            (*open_count)++;
-        } else {
-            __u32 init_count = 1;
-            bpf_map_update_elem(count_map, &key, &init_count, BPF_ANY);
-        };
-    }
+    key.verdict = path_verdict(&key);
 
-    __u32 dd_key = 0;
-    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
+    record_path_event(cgid, &key);
 
-    // there's a default deny. consult the allow list
-    if (dd) {
-        __u8 *val = bpf_map_lookup_elem(&allowed, &key);
-        if (val) {
-            return 0;
-        }
-        return -EPERM;
-    }
-
-    __u8 *val = bpf_map_lookup_elem(&banned, &key);
-    if (val) {
+    if (key.verdict == VERDICT_DENY) {
         return -EPERM;
     }
     return 0;
@@ -65,35 +97,16 @@ static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     char buf[MAX_PATH_LEN] = {};
     bpf_d_path(&bprm->file->f_path, buf, sizeof(buf));
 
-    char key[MAX_PATH_LEN] = {};
-    bpf_probe_read_kernel_str(key, sizeof(key), buf);
+    // zero-init the whole key, THEN copy the path: every byte of the struct
+    // (path tail included) must be defined before it is used as a map key
+    struct path_event_key key = {};
+    bpf_probe_read_kernel_str(key.path, sizeof(key.path), buf);
 
-    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
-    if (count_map) {
-        __u32 *open_count = bpf_map_lookup_elem(count_map, &key);
-        if (open_count) {
-            (*open_count)++;
-        } else {
-            __u32 init_count = 1;
-            bpf_map_update_elem(count_map, &key, &init_count, BPF_ANY);
-        };
-    }
+    key.verdict = path_verdict(&key);
 
-    // should be if there was a value in the open events map
-    __u32 dd_key = 0;
-    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
+    record_path_event(cgid, &key);
 
-    // there's a default deny. consult the allow list
-    if (dd) {
-        __u8 *val = bpf_map_lookup_elem(&allowed, &key);
-        if (val) {
-            return 0;
-        }
-        return -EPERM;
-    }
-
-    __u8 *val = bpf_map_lookup_elem(&banned, &key);
-    if (val) {
+    if (key.verdict == VERDICT_DENY) {
         return -EPERM;
     }
     return 0;

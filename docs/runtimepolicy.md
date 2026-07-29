@@ -187,7 +187,7 @@ The daemon serves Prometheus metrics on `--metrics-addr` (default `:9090`, the c
 | Metric | Labels | Meaning |
 | --- | --- | --- |
 | `kyverno_runtime_events_ingested_total` | `source`, `kind` | Observations ingested by the collector. |
-| `kyverno_runtime_events_dropped_total` | `source`, `reason` | Dropped observations (`buffer_full`, `unattributed`). |
+| `kyverno_runtime_events_dropped_total` | `source`, `reason` | Dropped observations (`buffer_full`, `unattributed`, `unattributed_kernel_deny`). |
 | `kyverno_runtime_attribution_misses_total` | — | Observations that could not be tied to a pod. |
 | `kyverno_runtime_findings_emitted_total` | `policy`, `behavior`, `severity` | Findings handed to the reporter. |
 | `kyverno_runtime_report_writes_total` | `result` | Report write attempts (`ok`, `error`, `skipped`). |
@@ -203,13 +203,9 @@ current limits, not rounding errors:
 - **Observation is poll-based, not streamed.** There is no ring buffer; counters are drained
   every 10 seconds, so a finding can lag the behavior by up to that interval, and only counts
   are preserved — not the ordering or timing of individual occurrences within a window.
-- **Egress observation does not see flows already blocked by a default deny.** The egress
-  program returns before the counting branch while `DEFAULT_DENY` is set for a pod. So if one
-  policy enforces a default-deny egress on a pod, a second, monitor-mode policy will not
-  observe the traffic that default-deny is dropping.
-- **Open/exec path counters cap per cgroup.** The per-cgroup path map holds 1024 distinct
-  paths; a workload touching more than that within one poll interval loses the excess. The
-  read-and-reset drain mitigates this but does not eliminate it.
+- **Open/exec path counters cap per cgroup.** The per-cgroup path map holds 2048 distinct
+  `(path, verdict)` keys; a workload touching more than that within one poll interval loses
+  the excess. The read-and-reset drain mitigates this but does not eliminate it.
 - **Network observation is IPv4 only** — destination address only, with no port or protocol —
   because the egress maps are keyed on a `u32` IPv4 address.
 - **Unsupported `network` targets are rejected, not skipped.** IPv6 literals, CIDRs wider than

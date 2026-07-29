@@ -8,64 +8,83 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
+
+	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
 	"github.com/google/go-cmp/cmp"
 )
 
+// pk builds an allow-verdict key; pkDeny a deny-verdict one. Counts for the
+// same path under different verdicts must never merge.
+func pk(path string) PathEventKey {
+	return PathEventKey{Path: path, Verdict: runtimeevent.VerdictAllow}
+}
+
+func pkDeny(path string) PathEventKey {
+	return PathEventKey{Path: path, Verdict: runtimeevent.VerdictDeny}
+}
+
 func TestMergeCounts(t *testing.T) {
 	tests := []struct {
 		name string
-		dst  map[string]uint32
-		src  map[string]uint32
-		want map[string]uint32
+		dst  map[PathEventKey]uint32
+		src  map[PathEventKey]uint32
+		want map[PathEventKey]uint32
 	}{
 		{
 			name: "empty destination takes everything",
-			dst:  map[string]uint32{},
-			src:  map[string]uint32{"/usr/bin/curl": 3},
-			want: map[string]uint32{"/usr/bin/curl": 3},
+			dst:  map[PathEventKey]uint32{},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 		},
 		{
 			name: "disjoint keys are unioned",
-			dst:  map[string]uint32{"/usr/bin/curl": 3},
-			src:  map[string]uint32{"/usr/bin/wget": 1},
-			want: map[string]uint32{"/usr/bin/curl": 3, "/usr/bin/wget": 1},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/wget"): 1},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3, pk("/usr/bin/wget"): 1},
 		},
 		{
 			name: "shared keys are summed",
-			dst:  map[string]uint32{"/usr/bin/curl": 3, "/etc/passwd": 2},
-			src:  map[string]uint32{"/usr/bin/curl": 4},
-			want: map[string]uint32{"/usr/bin/curl": 7, "/etc/passwd": 2},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3, pk("/etc/passwd"): 2},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 4},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 7, pk("/etc/passwd"): 2},
+		},
+		{
+			name: "same path under different verdicts stays distinct",
+			dst:  map[PathEventKey]uint32{pk("/etc/shadow"): 3},
+			src:  map[PathEventKey]uint32{pkDeny("/etc/shadow"): 4},
+			want: map[PathEventKey]uint32{pk("/etc/shadow"): 3, pkDeny("/etc/shadow"): 4},
 		},
 		{
 			name: "nil source leaves the destination untouched",
-			dst:  map[string]uint32{"/usr/bin/curl": 3},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 			src:  nil,
-			want: map[string]uint32{"/usr/bin/curl": 3},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 		},
 		{
 			name: "empty source leaves the destination untouched",
-			dst:  map[string]uint32{"/usr/bin/curl": 3},
-			src:  map[string]uint32{},
-			want: map[string]uint32{"/usr/bin/curl": 3},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
+			src:  map[PathEventKey]uint32{},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 		},
 		{
 			name: "zero counts are still recorded as keys",
-			dst:  map[string]uint32{},
-			src:  map[string]uint32{"/usr/bin/curl": 0},
-			want: map[string]uint32{"/usr/bin/curl": 0},
+			dst:  map[PathEventKey]uint32{},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 0},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 0},
 		},
 		{
 			name: "addition saturates instead of wrapping",
-			dst:  map[string]uint32{"/usr/bin/curl": math.MaxUint32 - 1},
-			src:  map[string]uint32{"/usr/bin/curl": 5},
-			want: map[string]uint32{"/usr/bin/curl": math.MaxUint32},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32 - 1},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 5},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32},
 		},
 		{
 			name: "saturated destination stays saturated",
-			dst:  map[string]uint32{"/usr/bin/curl": math.MaxUint32},
-			src:  map[string]uint32{"/usr/bin/curl": 1},
-			want: map[string]uint32{"/usr/bin/curl": math.MaxUint32},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 1},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32},
 		},
 	}
 
@@ -80,7 +99,7 @@ func TestMergeCounts(t *testing.T) {
 }
 
 func TestMergeCounts_NilDestinationDoesNotPanic(t *testing.T) {
-	mergeCounts(nil, map[string]uint32{"/usr/bin/curl": 1})
+	mergeCounts(nil, map[PathEventKey]uint32{pk("/usr/bin/curl"): 1})
 }
 
 // TestMergeCounts_FoldsEveryEnforcer_Issue52 pins the bug class from #52: the
@@ -88,25 +107,25 @@ func TestMergeCounts_NilDestinationDoesNotPanic(t *testing.T) {
 // every later enforcer's observations were invisible. The fold must accumulate
 // all of them regardless of order or overlap.
 func TestMergeCounts_FoldsEveryEnforcer_Issue52(t *testing.T) {
-	perEnforcer := []map[string]uint32{
-		{"/usr/bin/curl": 1},                        // file_open enforcer
-		{"/usr/bin/curl": 2, "/usr/bin/python3": 5}, // exec enforcer
-		{"/etc/shadow": 7},                          // a third enforcer
-		{},                                          // an enforcer that saw nothing
-		nil,                                         // an enforcer with no map at all
-		{"/usr/bin/python3": 1, "/usr/bin/nc": 9}, // a late enforcer
+	perEnforcer := []map[PathEventKey]uint32{
+		{pk("/usr/bin/curl"): 1},                            // file_open enforcer
+		{pk("/usr/bin/curl"): 2, pk("/usr/bin/python3"): 5}, // exec enforcer
+		{pkDeny("/etc/shadow"): 7},                          // a third enforcer (denies)
+		{},                                                  // an enforcer that saw nothing
+		nil,                                                 // an enforcer with no map at all
+		{pk("/usr/bin/python3"): 1, pk("/usr/bin/nc"): 9}, // a late enforcer
 	}
 
-	got := map[string]uint32{}
+	got := map[PathEventKey]uint32{}
 	for _, counts := range perEnforcer {
 		mergeCounts(got, counts)
 	}
 
-	want := map[string]uint32{
-		"/usr/bin/curl":    3,
-		"/usr/bin/python3": 6,
-		"/etc/shadow":      7,
-		"/usr/bin/nc":      9,
+	want := map[PathEventKey]uint32{
+		pk("/usr/bin/curl"):    3,
+		pk("/usr/bin/python3"): 6,
+		pkDeny("/etc/shadow"):  7,
+		pk("/usr/bin/nc"):      9,
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("folded counts mismatch (-want +got):\n%s", diff)
@@ -163,7 +182,7 @@ func TestObservationWithoutMapsReportsUnavailable(t *testing.T) {
 	if !errors.Is(err, ErrObservationUnavailable) {
 		t.Errorf("ReadEvents err = %v, want ErrObservationUnavailable", err)
 	}
-	if diff := cmp.Diff(map[uint64]map[string]uint32{}, got); diff != "" {
+	if diff := cmp.Diff(map[uint64]map[PathEventKey]uint32{}, got); diff != "" {
 		t.Errorf("ReadEvents result mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -190,6 +209,27 @@ func TestClose_ZeroValueEnforcerIsSafe(t *testing.T) {
 	l := &LsmEnforcer{}
 	if err := l.Close(); err != nil {
 		t.Errorf("Close() err = %v, want nil", err)
+	}
+}
+
+// TestPathEventKernelKeyLayout pins the hand-written iterator key against the
+// bpf2go-generated struct for the C's `struct path_event_key` and against the
+// documented 132-byte no-padding layout. A drift here is exactly the kind of
+// BTF key-size mismatch cilium/ebpf rejects at runtime on Linux; this makes it
+// fail in the unit suite on any host.
+func TestPathEventKernelKeyLayout(t *testing.T) {
+	const want = maxPathLen + 4 // char[128] + __u32, no padding
+	if got := int(unsafe.Sizeof(pathEventKernelKey{})); got != want {
+		t.Errorf("sizeof(pathEventKernelKey) = %d, want %d", got, want)
+	}
+	if got := int(unsafe.Sizeof(lsmFileOpenPathEventKey{})); got != want {
+		t.Errorf("sizeof(lsmFileOpenPathEventKey) = %d, want %d (generated from the C)", got, want)
+	}
+	if got := int(unsafe.Sizeof(lsmExecCheckPathEventKey{})); got != want {
+		t.Errorf("sizeof(lsmExecCheckPathEventKey) = %d, want %d (generated from the C)", got, want)
+	}
+	if got, want := unsafe.Offsetof(pathEventKernelKey{}.Verdict), unsafe.Offsetof(lsmFileOpenPathEventKey{}.Verdict); got != want {
+		t.Errorf("offsetof(Verdict) = %d, want %d (generated from the C)", got, want)
 	}
 }
 

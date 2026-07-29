@@ -39,7 +39,7 @@ type lsmEnforcer interface {
 	SetDefaultDeny(val bool) error
 	EnableObservation(cgids []uint64) error
 	DisableObservation(cgids []uint64) error
-	ReadEvents(cgids []uint64) (map[uint64]map[string]uint32, error)
+	ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventKey]uint32, error)
 }
 
 // the production enforcer must keep satisfying the seam.

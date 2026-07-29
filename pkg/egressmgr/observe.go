@@ -4,25 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"slices"
 	"sort"
 
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 )
 
 // CollectObservations drains the per-pod egress observation counters and turns
-// them into normalized events.
+// them into normalized events, one per (destination, verdict): the kernel
+// counters carry the program's enforcement verdict, so a flow dropped by a
+// default-deny is emitted with KernelDenied set rather than lost.
 //
 // Only pods with at least one observe-mode policy attached are polled: the
 // OBSERVE flag is refcounted, so a pod with an empty observe set is not
 // counting. Reads are destructive (the map is reset), hence Count is the delta
 // since the previous call.
 //
-// Honest limits (DESIGN 0.2): the BPF program returns before the observe branch
-// while DEFAULT_DENY is set, so flows dropped by a default-deny are not
-// observed, and the counters are IPv4-only. A read failure for one pod does not
-// abort the sweep: every pod is visited and the errors are joined.
+// Honest limits (DESIGN 0.2): the counters are IPv4-only. A read failure for
+// one pod does not abort the sweep: every pod is visited and the errors are
+// joined.
 func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -58,8 +59,8 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 			errs = append(errs, fmt.Errorf("reading egress observations for pod %s: %w", podUid, err))
 			// a partial map read still carries real observations, keep going
 		}
-		for _, addr := range sortedAddrs(counts) {
-			count := counts[addr]
+		for _, key := range sortedIPEventKeys(counts) {
+			count := counts[key]
 			if count == 0 {
 				continue
 			}
@@ -67,7 +68,10 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 				Kind:  runtimeevent.KindNet,
 				Time:  now,
 				Count: count,
-				Net:   &runtimeevent.NetFacts{DestIP: addr},
+				// the kernel's actual verdict for these occurrences; monitor
+				// attributes it to a policy in userspace
+				KernelDenied: key.Verdict == runtimeevent.VerdictDeny,
+				Net:          &runtimeevent.NetFacts{DestIP: key.Addr},
 				// the poll source knows the pod but not the cgroup: pre-fill
 				// the identity hint so attribution can skip the pid lookup
 				Pod: runtimeevent.PodIdentity{UID: podUid, Labels: pa.labels},
@@ -78,11 +82,18 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 	return out, errors.Join(errs...)
 }
 
-func sortedAddrs(counts map[netip.Addr]uint32) []netip.Addr {
-	addrs := make([]netip.Addr, 0, len(counts))
-	for addr := range counts {
-		addrs = append(addrs, addr)
+// sortedIPEventKeys orders keys by address, with the verdict as a tiebreaker
+// (allow before deny), so the emitted event slice is deterministic.
+func sortedIPEventKeys(counts map[egressfilter.IPEventKey]uint32) []egressfilter.IPEventKey {
+	keys := make([]egressfilter.IPEventKey, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
 	}
-	sort.Slice(addrs, func(i, j int) bool { return addrs[i].Compare(addrs[j]) < 0 })
-	return addrs
+	sort.Slice(keys, func(i, j int) bool {
+		if c := keys[i].Addr.Compare(keys[j].Addr); c != 0 {
+			return c < 0
+		}
+		return keys[i].Verdict < keys[j].Verdict
+	})
+	return keys
 }

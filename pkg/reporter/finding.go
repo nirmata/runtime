@@ -34,11 +34,15 @@ type Finding struct {
 	Behavior   string // "network"|"open"|"exec"
 	Severity   string // info|low|medium|high|critical (default medium)
 	Result     string // "fail"|"warn" (monitor findings are "fail")
-	Message    string
-	Pod        runtimeevent.PodIdentity
-	Net        *NetSummary
-	Process    *ProcessSummary
-	Timestamp  time.Time
+	// Enforced is true when the kernel actually denied the operation (an
+	// enforce-mode policy's maps blocked it); false for monitor mode's
+	// "would have been denied" counterfactual findings.
+	Enforced  bool
+	Message   string
+	Pod       runtimeevent.PodIdentity
+	Net       *NetSummary
+	Process   *ProcessSummary
+	Timestamp time.Time
 }
 
 // NetSummary summarizes the destination of a network finding.

@@ -20,6 +20,17 @@ const (
 	KindOpen Kind = "open"
 )
 
+// KernelVerdict is the enforcement verdict a BPF program recorded for an
+// observation. The values mirror the VERDICT_ALLOW / VERDICT_DENY defines in
+// the C programs (pkg/bpf/egressfilter/_cprog/maps.h and
+// pkg/bpf/lsm/_cprog/maps.h); keep them in sync.
+type KernelVerdict uint32
+
+const (
+	VerdictAllow KernelVerdict = 0
+	VerdictDeny  KernelVerdict = 1
+)
+
 // Event is one normalized, attributed runtime observation.
 // Exactly one facts pointer matching Kind is non-nil.
 type Event struct {
@@ -29,11 +40,25 @@ type Event struct {
 	PID      uint32    `json:"pid,omitempty"`
 	Comm     string    `json:"comm,omitempty"`
 	// Count > 1 for poll-sourced events that aggregate N kernel occurrences.
+	//
+	// Invariant: the kernel verdict is part of the observation counter key,
+	// so every occurrence a Count aggregates shares the same KernelDenied
+	// value. One address or path can therefore yield two events per poll —
+	// one per verdict — but never a mixed count.
 	Count uint32 `json:"count,omitempty"`
-	// Denied is true when the enforcement layer blocked (or, in monitor
-	// mode, would have blocked) this occurrence. Set by pkg/monitor, not
-	// by sources.
-	Denied bool `json:"denied,omitempty"`
+
+	// KernelDenied is the kernel's ACTUAL enforcement verdict for the
+	// occurrences this event aggregates. Written only by the BPF poll
+	// sources, from the verdict dimension of the observation maps. In pure
+	// monitor mode nothing is programmed to block, so it is false there; it
+	// becomes true when an enforce-mode policy's maps denied the operation.
+	KernelDenied bool `json:"kernelDenied,omitempty"`
+
+	// WouldDeny is monitor mode's counterfactual: an enforcing form of a
+	// matched monitor-mode policy would have blocked this. Written only by
+	// pkg/monitor, on its per-policy copy of the event. Independent of
+	// KernelDenied.
+	WouldDeny bool `json:"wouldDeny,omitempty"`
 
 	Net  *NetFacts  `json:"net,omitempty"`
 	Exec *ExecFacts `json:"exec,omitempty"`

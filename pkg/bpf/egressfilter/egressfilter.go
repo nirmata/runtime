@@ -19,10 +19,10 @@ import (
 const (
 	// DEFAULT_DENY makes the program drop everything not in allowed_ips.
 	DEFAULT_DENY = 1
-	// OBSERVE (LEARNING_MODE in the C) makes the program count destination
-	// addresses into ip_events. Note the honest limit: the C returns before the
-	// observe branch while DEFAULT_DENY is set, so flows dropped by a
-	// default-deny are not observed.
+	// OBSERVE (LEARNING_MODE in the C) makes the program count every flow
+	// into ip_events, keyed by (destination, verdict). The program computes
+	// its verdict first and records before returning, so flows dropped by a
+	// default-deny are observed too, with VERDICT_DENY.
 	OBSERVE = 2
 
 	// maxFlagIdx is the highest usable bit index: the map value is a __u8.

@@ -16,7 +16,7 @@ import (
 // Finding struct is that this set never grows by accident (DESIGN §4).
 var allowedPropertyKeys = map[string]struct{}{
 	propFingerprint: {}, propCount: {}, propFirstTimestamp: {}, propLastTimestamp: {},
-	propBehavior: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
+	propBehavior: {}, propEnforced: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
 	propDestIP: {}, propDestHost: {},
 	propComm: {},
 }
@@ -54,6 +54,7 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 		propFirstTimestamp: "2026-07-27T09:00:00Z",
 		propLastTimestamp:  "2026-07-27T09:05:00Z",
 		propBehavior:       "network",
+		propEnforced:       "false",
 		propNode:           "node-a",
 		propContainer:      "app",
 		propOwner:          "Deployment/app",
@@ -97,6 +98,21 @@ func TestBuildResultOmitsAbsentSummaries(t *testing.T) {
 		propNode, propContainer, propOwner} {
 		if _, ok := res.Properties[key]; ok {
 			t.Errorf("property %q emitted for an absent field", key)
+		}
+	}
+}
+
+// The enforced property distinguishes a kernel deny ("was denied") from
+// monitor mode's counterfactual ("would have been denied") and is emitted for
+// every result, never omitted.
+func TestBuildResultEmitsEnforced(t *testing.T) {
+	at := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
+	for _, enforced := range []bool{false, true} {
+		f := baseFinding()
+		f.Enforced = enforced
+		res := buildResult(&pending{finding: f, count: 1, first: at, last: at})
+		if got, want := res.Properties[propEnforced], strconv.FormatBool(enforced); got != want {
+			t.Errorf("enforced property = %q, want %q", got, want)
 		}
 	}
 }

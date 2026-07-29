@@ -8,9 +8,16 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type egressBlockIpEventKey struct {
+	_       structs.HostLayout
+	Daddr   uint32
+	Verdict uint32
+}
 
 // loadEgressBlock returns the embedded CollectionSpec for egressBlock.
 func loadEgressBlock() (*ebpf.CollectionSpec, error) {

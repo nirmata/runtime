@@ -1,7 +1,6 @@
 package egressmgr
 
 import (
-	"net/netip"
 	"slices"
 	"sync"
 	"testing"
@@ -68,7 +67,7 @@ type fakeFilter struct {
 	attachErr error
 	addErr    error
 	readErr   error
-	ipEvents  map[netip.Addr]uint32
+	ipEvents  map[egressfilter.IPEventKey]uint32
 }
 
 func newFakeFilter() *fakeFilter {
@@ -133,7 +132,7 @@ func (f *fakeFilter) Attach(cgPath string) (link.Link, error) {
 
 // ReadIPEvents models the destructive read of the real counter map: the events
 // are handed over once and the map is reset, so the next call reports a delta.
-func (f *fakeFilter) ReadIPEvents() (map[netip.Addr]uint32, error) {
+func (f *fakeFilter) ReadIPEvents() (map[egressfilter.IPEventKey]uint32, error) {
 	f.reads++
 	out := f.ipEvents
 	f.ipEvents = nil

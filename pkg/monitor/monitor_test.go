@@ -471,18 +471,18 @@ func TestHandleEvent_SecondPodOfSamePolicyRecordsItsOwnViolation(t *testing.T) {
 	}
 }
 
-// --- non-monitor policies are ignored entirely -----------------------------
+// --- policies with no decidable mode are ignored entirely -------------------
 
-func TestRuntimePolicyEvent_IgnoresNonMonitorPolicies(t *testing.T) {
+func TestRuntimePolicyEvent_IgnoresUndecidableModes(t *testing.T) {
 	tests := []struct {
 		name      string
 		mode      string
 		eventType string
 	}{
-		{name: "enforce mode", mode: compiler.ModeEnforce, eventType: events.EventTypeCreate},
 		{name: "empty mode", mode: "", eventType: events.EventTypeCreate},
 		{name: "unknown mode", mode: "audit", eventType: events.EventTypeCreate},
 		{name: "monitor mode but delete event", mode: compiler.ModeMonitor, eventType: events.EventTypeDelete},
+		{name: "enforce mode but delete event", mode: compiler.ModeEnforce, eventType: events.EventTypeDelete},
 	}
 
 	for _, tc := range tests {
@@ -500,13 +500,13 @@ func TestRuntimePolicyEvent_IgnoresNonMonitorPolicies(t *testing.T) {
 			m.HandleEvent(netEvent("10.0.0.5"))
 
 			if len(sink.all()) != 0 || len(status.all()) != 0 {
-				t.Errorf("non-monitor policy produced output: findings=%+v violations=%+v", sink.all(), status.all())
+				t.Errorf("undecidable policy produced output: findings=%+v violations=%+v", sink.all(), status.all())
 			}
 		})
 	}
 }
 
-func TestRuntimePolicyEvent_UntracksWhenPolicyLeavesMonitorMode(t *testing.T) {
+func TestRuntimePolicyEvent_PolicySwitchingToEnforceStopsCounterfactuals(t *testing.T) {
 	m, sink, _, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
@@ -517,20 +517,171 @@ func TestRuntimePolicyEvent_UntracksWhenPolicyLeavesMonitorMode(t *testing.T) {
 		t.Fatalf("findings after create = %d, want 1", got)
 	}
 
-	// the same policy switched to enforce: the kernel blocks now, monitor must
-	// stop deciding for it
+	// the same policy switched to enforce: the kernel blocks now, so monitor
+	// stops issuing counterfactuals for it but keeps tracking it to attribute
+	// the kernel's actual denies
 	enforcing := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	enforcing.Mode = compiler.ModeEnforce
 	if err := m.RuntimePolicyEvent(enforcing, events.EventTypeUpdate); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if m.Len() != 0 {
-		t.Fatalf("tracked %d policies after leaving monitor mode, want 0", m.Len())
+	if m.Len() != 1 {
+		t.Fatalf("tracked %d policies after switching to enforce, want 1 (needed for deny attribution)", m.Len())
 	}
 
+	// an event the kernel allowed produces nothing for an enforce policy
 	m.HandleEvent(netEvent("10.0.0.5"))
 	if got := len(sink.all()); got != 1 {
 		t.Errorf("findings after switching to enforce = %d, want 1", got)
+	}
+
+	// an event the kernel denied is attributed to it
+	denied := netEvent("10.0.0.5")
+	denied.KernelDenied = true
+	m.HandleEvent(denied)
+	got := sink.all()
+	if len(got) != 2 {
+		t.Fatalf("findings after a kernel deny = %d, want 2", len(got))
+	}
+	if !got[1].Enforced {
+		t.Error("kernel-deny finding does not carry Enforced=true")
+	}
+}
+
+// --- kernel deny attribution (enforce mode) ---------------------------------
+
+func TestHandleEvent_KernelDenyIsAttributedToEnforcePolicy(t *testing.T) {
+	m, sink, status, mtx := testMonitor(t)
+	rp := monitorPolicy(t, "uid-e", "block-egress", pair(nil, []string{"10.0.0.5"}), nil, nil)
+	rp.Mode = compiler.ModeEnforce
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	ev := netEvent("10.0.0.5")
+	ev.Count = 3
+	ev.KernelDenied = true
+	m.HandleEvent(ev)
+
+	want := []reporter.Finding{{
+		PolicyName: "block-egress",
+		PolicyUID:  "uid-e",
+		Behavior:   BehaviorNetwork,
+		Severity:   reporter.SeverityMedium,
+		Result:     reporter.ResultFail,
+		Enforced:   true,
+		Message:    "enforced: egress to 10.0.0.5 (3 occurrences) was denied by policy block-egress",
+		Pod:        testPod(),
+		Net:        &reporter.NetSummary{DestIP: "10.0.0.5"},
+		Timestamp:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+	}}
+	if diff := cmp.Diff(want, sink.all()); diff != "" {
+		t.Errorf("findings (-want +got):\n%s", diff)
+	}
+	// the violation lands on the enforcing policy's status
+	if diff := cmp.Diff([]violation{{PolicyUID: "uid-e", PodUID: "pod-uid-1"}}, status.all()); diff != "" {
+		t.Errorf("violations (-want +got):\n%s", diff)
+	}
+	// an attributed deny is not dropped
+	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 0 {
+		t.Errorf("unattributed kernel deny counter = %v, want 0", got)
+	}
+}
+
+func TestHandleEvent_EnforcePolicyIgnoresEventsTheKernelAllowed(t *testing.T) {
+	m, sink, status, _ := testMonitor(t)
+	rp := monitorPolicy(t, "uid-e", "e", pair(nil, []string{"10.0.0.5"}), nil, nil)
+	rp.Mode = compiler.ModeEnforce
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	// the deny list covers the destination but the kernel did NOT deny (e.g.
+	// the policy was programmed between the flow and this poll): monitor must
+	// not claim an enforcement that never happened
+	m.HandleEvent(netEvent("10.0.0.5"))
+
+	if len(sink.all()) != 0 || len(status.all()) != 0 {
+		t.Errorf("enforce policy produced output for an allowed event: findings=%+v violations=%+v", sink.all(), status.all())
+	}
+}
+
+// A kernel deny that no tracked enforce-mode policy explains must be counted
+// and logged, never silently dropped.
+func TestHandleEvent_UnattributedKernelDenyIsCounted(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, m *Monitor)
+	}{
+		{name: "no tracked policies at all", setup: func(t *testing.T, m *Monitor) {}},
+		{
+			name: "only a monitor-mode policy matches",
+			setup: func(t *testing.T, m *Monitor) {
+				if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-m", "m", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
+					t.Fatalf("RuntimePolicyEvent: %v", err)
+				}
+			},
+		},
+		{
+			name: "enforce policy whose lists do not produce the deny",
+			setup: func(t *testing.T, m *Monitor) {
+				rp := monitorPolicy(t, "uid-e", "e", pair(nil, []string{"10.9.9.9"}), nil, nil)
+				rp.Mode = compiler.ModeEnforce
+				if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+					t.Fatalf("RuntimePolicyEvent: %v", err)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _, _, mtx := testMonitor(t)
+			tc.setup(t, m)
+
+			ev := netEvent("10.0.0.5")
+			ev.KernelDenied = true
+			m.HandleEvent(ev)
+
+			if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 1 {
+				t.Errorf("events_dropped_total{source=monitor,reason=%s} = %v, want 1", reasonUnattributedKernelDeny, got)
+			}
+		})
+	}
+}
+
+// A kernel deny attributed to an enforce policy does not stop monitor-mode
+// policies from issuing their independent counterfactual for the same event.
+func TestHandleEvent_MonitorCounterfactualIsIndependentOfKernelDeny(t *testing.T) {
+	m, sink, _, mtx := testMonitor(t)
+	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-m", "m", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+	enforce := monitorPolicy(t, "uid-e", "e", pair(nil, []string{"10.0.0.5"}), nil, nil)
+	enforce.Mode = compiler.ModeEnforce
+	if err := m.RuntimePolicyEvent(enforce, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	ev := netEvent("10.0.0.5")
+	ev.KernelDenied = true
+	m.HandleEvent(ev)
+
+	got := sink.all()
+	if len(got) != 2 {
+		t.Fatalf("findings = %d, want 2 (one counterfactual + one enforced): %+v", len(got), got)
+	}
+	perPolicy := map[string]bool{}
+	for _, f := range got {
+		perPolicy[f.PolicyUID] = f.Enforced
+	}
+	if enforced, ok := perPolicy["uid-e"]; !ok || !enforced {
+		t.Errorf("enforce policy finding: present=%v enforced=%v, want an Enforced=true finding", ok, enforced)
+	}
+	if enforced, ok := perPolicy["uid-m"]; !ok || enforced {
+		t.Errorf("monitor policy finding: present=%v enforced=%v, want an Enforced=false finding", ok, enforced)
+	}
+	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 0 {
+		t.Errorf("unattributed kernel deny counter = %v, want 0 (the deny was attributed)", got)
 	}
 }
 

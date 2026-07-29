@@ -58,7 +58,7 @@ func TestEvent_JSONRoundTripForEveryKind(t *testing.T) {
 		{
 			name: string(KindOpen),
 			ev: Event{
-				Kind: KindOpen, Time: fixedTime, Count: 3, Denied: true,
+				Kind: KindOpen, Time: fixedTime, Count: 3, KernelDenied: true, WouldDeny: true,
 				Open: &OpenFacts{Path: "/etc/shadow"},
 				Pod:  testPod(),
 			},

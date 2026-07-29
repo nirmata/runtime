@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+
 	"github.com/cilium/ebpf"
 )
 
@@ -12,6 +14,23 @@ import (
 // open_events hash-of-maps (or it could not be prepared), so per-cgid path
 // counting cannot be turned on.
 var ErrObservationUnavailable = errors.New("lsm: observation maps unavailable")
+
+// PathEventKey identifies one observation counter: a path (or exec filename)
+// plus the enforcement verdict the kernel program applied to the operation.
+type PathEventKey struct {
+	Path    string
+	Verdict runtimeevent.KernelVerdict
+}
+
+// pathEventKernelKey is the kernel layout of `struct path_event_key` in
+// _cprog/maps.h: a NUL-padded 128-byte path followed by a naturally-aligned
+// __u32 verdict, 132 bytes, no padding. It is kept separate from the exported
+// PathEventKey so the iterator key's size and layout match the loaded map's
+// BTF key exactly (cilium/ebpf rejects a mismatch).
+type pathEventKernelKey struct {
+	Path    [maxPathLen]byte
+	Verdict uint32
+}
 
 // EnableObservation creates (or reuses) an inner hash map in open_events for
 // each cgid so the kernel program starts recording path counts for it.
@@ -94,8 +113,8 @@ func (l *LsmEnforcer) DisableObservation(cgids []uint64) error {
 // rather than returned immediately. That structure is deliberate — the #52 bug
 // class was an early `break` that made the counts of every enforcer after the
 // first invisible.
-func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[string]uint32, error) {
-	out := make(map[uint64]map[string]uint32, len(cgids))
+func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]uint32, error) {
+	out := make(map[uint64]map[PathEventKey]uint32, len(cgids))
 	if len(cgids) == 0 {
 		return out, nil
 	}
@@ -124,7 +143,7 @@ func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[string]uint32, 
 			continue
 		}
 		if out[cgid] == nil {
-			out[cgid] = make(map[string]uint32, len(counts))
+			out[cgid] = make(map[PathEventKey]uint32, len(counts))
 		}
 		mergeCounts(out[cgid], counts)
 	}
@@ -166,12 +185,12 @@ func (l *LsmEnforcer) lookupInner(cgid uint64) (*ebpf.Map, error) {
 // readAndResetCounts drains one inner path->count map. Keys are collected
 // before deletion because deleting during iteration can make the kernel restart
 // the walk. Whatever was read is returned even when the sweep errors.
-func readAndResetCounts(m *ebpf.Map) (map[string]uint32, error) {
-	counts := make(map[string]uint32)
-	keys := make([][maxPathLen]byte, 0, 16)
+func readAndResetCounts(m *ebpf.Map) (map[PathEventKey]uint32, error) {
+	counts := make(map[PathEventKey]uint32)
+	keys := make([]pathEventKernelKey, 0, 16)
 
 	var (
-		key   [maxPathLen]byte
+		key   pathEventKernelKey
 		count uint32
 	)
 	it := m.Iterate()
@@ -180,11 +199,12 @@ func readAndResetCounts(m *ebpf.Map) (map[string]uint32, error) {
 		if count == 0 {
 			continue
 		}
-		path := trimPathKey(key)
+		path := trimPathKey(key.Path)
 		if path == "" {
 			continue
 		}
-		mergeCounts(counts, map[string]uint32{path: count})
+		ek := PathEventKey{Path: path, Verdict: runtimeevent.KernelVerdict(key.Verdict)}
+		mergeCounts(counts, map[PathEventKey]uint32{ek: count})
 	}
 
 	var errs []error
@@ -193,7 +213,7 @@ func readAndResetCounts(m *ebpf.Map) (map[string]uint32, error) {
 	}
 	for i := range keys {
 		if err := m.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			errs = append(errs, fmt.Errorf("resetting count for %q: %w", trimPathKey(keys[i]), err))
+			errs = append(errs, fmt.Errorf("resetting count for %q: %w", trimPathKey(keys[i].Path), err))
 		}
 	}
 	return counts, errors.Join(errs...)
@@ -209,19 +229,20 @@ func trimPathKey(key [maxPathLen]byte) string {
 	return string(key[:])
 }
 
-// mergeCounts folds src into dst, adding counts for paths present in both. The
-// addition saturates instead of wrapping: a wrapped counter would report a busy
-// path as quiet, which is the wrong direction for a security signal.
-func mergeCounts(dst, src map[string]uint32) {
+// mergeCounts folds src into dst, adding counts for (path, verdict) keys
+// present in both. The addition saturates instead of wrapping: a wrapped
+// counter would report a busy path as quiet, which is the wrong direction for
+// a security signal.
+func mergeCounts(dst, src map[PathEventKey]uint32) {
 	if dst == nil {
 		return
 	}
-	for path, count := range src {
-		existing := dst[path]
+	for key, count := range src {
+		existing := dst[key]
 		if count > math.MaxUint32-existing {
-			dst[path] = math.MaxUint32
+			dst[key] = math.MaxUint32
 			continue
 		}
-		dst[path] = existing + count
+		dst[key] = existing + count
 	}
 }
