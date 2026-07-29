@@ -157,6 +157,21 @@ func TestParseTargets(t *testing.T) {
 			wantAddrs: []string{"10.0.0.1"},
 		},
 		{
+			name:      "carriage return and newline are trimmed",
+			values:    []string{"10.0.0.1\r\n"},
+			wantAddrs: []string{"10.0.0.1"},
+		},
+		{
+			name:      "quoted CIDR is trimmed before expansion",
+			values:    []string{"\"10.0.0.0/31\""},
+			wantAddrs: []string{"10.0.0.0", "10.0.0.1"},
+		},
+		{
+			name:         "IPv4-mapped IPv6 CIDR wider than the mapped range stays IPv6",
+			values:       []string{"::ffff:10.0.0.0/64"},
+			wantRejected: []RejectedTarget{{Value: "::ffff:10.0.0.0/64", Reason: ReasonIPv6}},
+		},
+		{
 			name:     "star is the default deny sentinel and yields no address",
 			values:   []string{"*"},
 			wantStar: true,

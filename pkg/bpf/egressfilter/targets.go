@@ -2,15 +2,12 @@ package egressfilter
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
-	"strings"
-)
 
-// StarTarget is the sentinel a policy uses to mean "every address", i.e. a
-// default-deny (for a deny list) or an allow-all (for an allow list). It is
-// not programmed into a map: callers translate it into the DEFAULT_DENY flag.
-const StarTarget = "*"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+)
 
 // MinCIDRPrefixBits is the narrowest (numerically smallest) IPv4 prefix length
 // ParseTargets will expand. /24 expands to MaxExpandedTargets addresses;
@@ -46,16 +43,24 @@ func (r RejectedTarget) String() string {
 // ParseTargets converts policy-authored network target strings into the IPv4
 // addresses the egress maps can hold.
 //
+// The value grammar (trimming, star sentinel, IPv4/CIDR forms, IPv6
+// rejection) is defined once, in compiler.ParseNetworkValue; ParseTargets is
+// the SINGLE narrowing point where the program-time restriction is applied on
+// top of it: a CIDR wider than /MinCIDRPrefixBits is rejected as
+// ReasonCIDRTooWide instead of expanded, because the deny/allow maps are
+// plain hashes of individual /32 keys (see #41 for the LPM-trie follow-up).
+// Admission validation deliberately does NOT apply this restriction, so it
+// never rejects a value the runtime would accept.
+//
 //   - an IPv4 literal yields one address
 //   - an IPv4 CIDR with prefix >= /24 yields every address in the prefix
 //     (network and broadcast included), at most MaxExpandedTargets
-//   - StarTarget ("*") sets star, the default-deny sentinel, and yields no address
+//   - compiler.StarTarget ("*") sets star, the default-deny sentinel, and
+//     yields no address
 //   - IPv6 literals/CIDRs, wider CIDRs, hostnames and empty values are
 //     returned in rejected
 //
-// Values are trimmed of surrounding whitespace, quotes and brackets first (CEL
-// list rendering and hand-written YAML both leak those). Addresses are
-// de-duplicated, preserving first-seen order.
+// Addresses are de-duplicated, preserving first-seen order.
 func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []RejectedTarget) {
 	seen := make(map[netip.Addr]struct{}, len(values))
 	add := func(a netip.Addr) {
@@ -70,70 +75,35 @@ func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []Re
 	}
 
 	for _, raw := range values {
-		cleaned := trimTarget(raw)
-
+		v, err := compiler.ParseNetworkValue(raw)
 		switch {
-		case cleaned == "":
+		case errors.Is(err, compiler.ErrEmptyNetworkValue):
 			reject(raw, ReasonEmpty)
 
-		case cleaned == StarTarget:
+		case errors.Is(err, compiler.ErrIPv6NetworkValue):
+			reject(raw, ReasonIPv6)
+
+		case err != nil:
+			reject(raw, ReasonNotAnIP)
+
+		case v.Star:
 			star = true
 
-		case strings.Contains(cleaned, "/"):
-			prefix, err := netip.ParsePrefix(cleaned)
-			if err != nil {
-				reject(raw, ReasonNotAnIP)
-				continue
-			}
-			// Unmap first so ::ffff:10.0.0.0/120 is not mistaken for IPv6.
-			prefix = unmapPrefix(prefix)
-			if !prefix.Addr().Is4() {
-				reject(raw, ReasonIPv6)
-				continue
-			}
-			if prefix.Bits() < MinCIDRPrefixBits {
+		case v.Prefix.IsValid():
+			if v.Prefix.Bits() < MinCIDRPrefixBits {
 				reject(raw, ReasonCIDRTooWide)
 				continue
 			}
-			for _, a := range expandPrefix(prefix) {
+			for _, a := range expandPrefix(v.Prefix) {
 				add(a)
 			}
 
 		default:
-			addr, err := netip.ParseAddr(cleaned)
-			if err != nil {
-				reject(raw, ReasonNotAnIP)
-				continue
-			}
-			addr = addr.Unmap()
-			if !addr.Is4() {
-				reject(raw, ReasonIPv6)
-				continue
-			}
-			add(addr)
+			add(v.Addr)
 		}
 	}
 
 	return addrs, star, rejected
-}
-
-// trimTarget strips the decorations that reach us from YAML and CEL list
-// rendering: whitespace, quotes, and the brackets of a bracketed literal.
-func trimTarget(raw string) string {
-	return strings.Trim(raw, " \t\r\n\"'[]")
-}
-
-func unmapPrefix(p netip.Prefix) netip.Prefix {
-	addr := p.Addr()
-	if !addr.Is4In6() {
-		return p
-	}
-	bits := p.Bits() - 96
-	if bits < 0 {
-		// Wider than the v4-mapped range; keep it as v6 so it is rejected.
-		return p
-	}
-	return netip.PrefixFrom(addr.Unmap(), bits)
 }
 
 // expandPrefix returns every address in an IPv4 prefix, capped at

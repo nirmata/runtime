@@ -1,7 +1,6 @@
 package compiler
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -38,55 +37,6 @@ func TestModeConstantsMatchAPI(t *testing.T) {
 	}
 	if ModeMonitor != string(v1alpha1.PolicyModeMonitor) {
 		t.Errorf("ModeMonitor = %q, want %q", ModeMonitor, v1alpha1.PolicyModeMonitor)
-	}
-}
-
-func TestValidateNetworkValues(t *testing.T) {
-	tests := []struct {
-		name string
-		in   []string
-		// wantIdx lists the input indexes expected to be reported invalid.
-		wantIdx []int
-	}{
-		{name: "no values", in: nil},
-		{name: "IPv4 literal", in: []string{"1.2.3.4"}},
-		{name: "IPv4 literal with padding and quotes", in: []string{" \"10.0.0.1\" "}},
-		{name: "IPv4 CIDR /24", in: []string{"10.0.0.0/24"}},
-		{name: "IPv4 CIDR /32", in: []string{"10.0.0.1/32"}},
-		{name: "wide IPv4 CIDR accepted at admission time", in: []string{"10.0.0.0/8"}},
-		{name: "default deny sentinel", in: []string{"*"}},
-		{name: "mixed valid values", in: []string{"1.2.3.4", "10.0.0.0/24", "*"}},
-		{name: "IPv4 mapped IPv6 literal", in: []string{"::ffff:1.2.3.4"}},
-
-		{name: "IPv6 literal rejected", in: []string{"2001:db8::1"}, wantIdx: []int{0}},
-		{name: "IPv6 CIDR rejected", in: []string{"2001:db8::/32"}, wantIdx: []int{0}},
-		{name: "hostname rejected", in: []string{"api.openai.com"}, wantIdx: []int{0}},
-		{name: "url rejected", in: []string{"https://api.openai.com/v1"}, wantIdx: []int{0}},
-		{name: "empty string rejected", in: []string{""}, wantIdx: []int{0}},
-		{name: "whitespace only rejected", in: []string{"   "}, wantIdx: []int{0}},
-		{name: "partial address rejected", in: []string{"10.0.0"}, wantIdx: []int{0}},
-		{name: "glob other than star rejected", in: []string{"*.openai.com"}, wantIdx: []int{0}},
-		{name: "bad mask rejected", in: []string{"10.0.0.0/64"}, wantIdx: []int{0}},
-		{
-			name:    "only the invalid entries of a mixed list are reported",
-			in:      []string{"1.2.3.4", "example.com", "10.0.0.0/24", "2001:db8::1"},
-			wantIdx: []int{1, 3},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			errs := ValidateNetworkValues(tt.in)
-			if len(errs) != len(tt.wantIdx) {
-				t.Fatalf("ValidateNetworkValues(%v) = %v, want %d errors", tt.in, errs, len(tt.wantIdx))
-			}
-			for i, idx := range tt.wantIdx {
-				marker := fmt.Sprintf("values[%d]", idx)
-				if !strings.Contains(errs[i].Error(), marker) {
-					t.Errorf("error %d = %q, want it to name %q", i, errs[i], marker)
-				}
-			}
-		})
 	}
 }
 

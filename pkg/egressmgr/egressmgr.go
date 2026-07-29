@@ -323,5 +323,5 @@ func clonePair(pair *compiler.AllowDenyPair) *compiler.AllowDenyPair {
 }
 
 func denyHasStar(pair *compiler.AllowDenyPair) bool {
-	return pair != nil && slices.Contains(pair.Deny, egressfilter.StarTarget)
+	return pair != nil && slices.Contains(pair.Deny, compiler.StarTarget)
 }

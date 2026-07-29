@@ -2,7 +2,6 @@ package monitor
 
 import (
 	"net/netip"
-	"strings"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
@@ -34,24 +33,22 @@ type netMatcher struct {
 func newNetMatcher(values []string) netMatcher {
 	m := netMatcher{}
 	for _, raw := range values {
-		v := normalizeNetworkValue(raw)
-		switch {
-		case v == compiler.StarTarget:
-			m.star = true
-		case v == "":
+		v, err := compiler.ParseNetworkValue(raw)
+		if err != nil {
 			// nothing to match on; admission rejects these, but a value
 			// reaching here must never panic or match everything
-		case strings.Contains(v, "/"):
-			if p, err := netip.ParsePrefix(v); err == nil {
-				m.prefixes = append(m.prefixes, p.Masked())
-			}
+			continue
+		}
+		switch {
+		case v.Star:
+			m.star = true
+		case v.Prefix.IsValid():
+			m.prefixes = append(m.prefixes, v.Prefix)
 		default:
-			if a, err := netip.ParseAddr(v); err == nil {
-				if m.addrs == nil {
-					m.addrs = make(map[netip.Addr]struct{}, len(values))
-				}
-				m.addrs[a.Unmap()] = struct{}{}
+			if m.addrs == nil {
+				m.addrs = make(map[netip.Addr]struct{}, len(values))
 			}
+			m.addrs[v.Addr] = struct{}{}
 		}
 	}
 	return m
@@ -74,12 +71,6 @@ func (m netMatcher) matches(addr netip.Addr) bool {
 		}
 	}
 	return false
-}
-
-// normalizeNetworkValue mirrors the trimming egressfilter and the compiler's
-// admission validation apply, so all three agree on what a value is.
-func normalizeNetworkValue(raw string) string {
-	return strings.Trim(raw, " \t\"'[]")
 }
 
 // pathMatcher is the compiled form of one side of an open or exec behavior.

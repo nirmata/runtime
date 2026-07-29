@@ -76,15 +76,15 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	// policy no longer matches, regardless of whether the ips themselves changed
 	oldIps := clonePair(currentRp.IPs)
 	// there was a "*" in oldIps
-	hadDefaultDeny := slices.Contains(oldIps.Deny, egressfilter.StarTarget)
+	hadDefaultDeny := slices.Contains(oldIps.Deny, compiler.StarTarget)
 
 	toAddPair := currentRp.IPs.DiffPair(compiledRp.IPs)
 	toRemovePair := compiledRp.IPs.DiffPair(currentRp.IPs)
 
 	// the incoming policy update contains a deny "*"
-	hasDefaultDeny := slices.Contains(toAddPair.Deny, egressfilter.StarTarget)
+	hasDefaultDeny := slices.Contains(toAddPair.Deny, compiler.StarTarget)
 	// had default deny before, but doesn't anymore
-	defaultDenyRemoved := slices.Contains(toRemovePair.Deny, egressfilter.StarTarget)
+	defaultDenyRemoved := slices.Contains(toRemovePair.Deny, compiler.StarTarget)
 
 	// update the current runtime behavior's information to point to the new compiled behavior data.
 	// the shared pointer itself is never replaced: the pods hold it (#53).

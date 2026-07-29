@@ -25,8 +25,11 @@ func TestNetMatcher(t *testing.T) {
 		{name: "star plus explicit value", values: []string{compiler.StarTarget, "10.0.0.5"}, addr: "10.0.0.5", want: true, wantStar: true},
 		{name: "quoted and bracketed value", values: []string{" \"[10.0.0.5]\" "}, addr: "10.0.0.5", want: true},
 		{name: "ipv4-in-ipv6 value matches ipv4 addr", values: []string{"::ffff:10.0.0.5"}, addr: "10.0.0.5", want: true},
+		{name: "ipv4-in-ipv6 cidr is unmapped and matches ipv4 addr", values: []string{"::ffff:10.0.0.0/120"}, addr: "10.0.0.5", want: true},
+		{name: "crlf from a CEL rendered list is trimmed", values: []string{"10.0.0.5\r\n"}, addr: "10.0.0.5", want: true},
 		{name: "empty value never matches", values: []string{"", "  "}, addr: "10.0.0.5"},
 		{name: "unparseable value is skipped", values: []string{"example.com", "10.0.0.0/notacidr"}, addr: "10.0.0.5"},
+		{name: "ipv6 value is skipped", values: []string{"2001:db8::/32", "10.0.0.5"}, addr: "10.0.0.5", want: true},
 		{name: "no values", values: nil, addr: "10.0.0.5"},
 	}
 
