@@ -31,9 +31,8 @@ const (
 	// with the reason naming the mode it is running in.
 	ConditionApplied = "Applied"
 
-	ReasonEnforcing   = "Enforcing"
-	ReasonMonitoring  = "Monitoring"
-	ReasonDiscovering = "Discovering"
+	ReasonEnforcing  = "Enforcing"
+	ReasonMonitoring = "Monitoring"
 )
 
 // DefaultStatusFlushInterval is the flush cadence used by the daemon.
@@ -276,9 +275,6 @@ func (s *StatusWriter) appliedCondition(mode string) metav1.Condition {
 	case compiler.ModeMonitor:
 		reason = ReasonMonitoring
 		message = "the policy is observed and reported but never blocks"
-	case compiler.ModeDiscover:
-		reason = ReasonDiscovering
-		message = "the policy only feeds discovery and never blocks"
 	}
 	return metav1.Condition{
 		Type:               ConditionApplied,

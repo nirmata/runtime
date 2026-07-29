@@ -1,7 +1,6 @@
 // Package metrics defines the Prometheus collectors shared across
-// kyverno-runtime's collector, attribution, reporter, compiler, and (in a
-// later PR) AI-detection packages, plus a small HTTP server helper to
-// expose them.
+// kyverno-runtime's collector, attribution, monitor, and reporter packages,
+// plus a small HTTP server helper to expose them.
 package metrics
 
 import (
@@ -12,8 +11,6 @@ import (
 const namespace = "kyverno_runtime"
 
 // Metrics holds every Prometheus collector registered by kyverno-runtime.
-// Fields registered here but only populated by a later PR (AIClassified,
-// InventorySyncs) exist now so that PR adds no new metrics files.
 type Metrics struct {
 	// EventsIngested counts runtime events ingested by the collector,
 	// labeled by source and kind.
@@ -30,15 +27,6 @@ type Metrics struct {
 	// ReportWrites counts OpenReports write attempts, labeled by result
 	// (ok|error|skipped).
 	ReportWrites *prometheus.CounterVec
-	// PolicyEvalErrors counts CEL compile/evaluate/predicate failures,
-	// labeled by policy and stage (compile|evaluate|predicate).
-	PolicyEvalErrors *prometheus.CounterVec
-	// AIClassified counts events classified as AI traffic, labeled by
-	// class and provider. Populated starting in PR B.
-	AIClassified *prometheus.CounterVec
-	// InventorySyncs counts AIInventory sync attempts, labeled by result.
-	// Populated starting in PR B.
-	InventorySyncs *prometheus.CounterVec
 }
 
 // New creates and registers all collectors against reg. Passing a fresh
@@ -77,24 +65,6 @@ func New(reg prometheus.Registerer) *Metrics {
 			Namespace: namespace,
 			Name:      "report_writes_total",
 			Help:      "Total number of OpenReports write attempts, by result (ok|error|skipped).",
-		}, []string{"result"}),
-
-		PolicyEvalErrors: f.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "policy_eval_errors_total",
-			Help:      "Total number of policy evaluation errors, by policy and stage (compile|evaluate|predicate).",
-		}, []string{"policy", "stage"}),
-
-		AIClassified: f.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "ai_classified_total",
-			Help:      "Total number of events classified as AI traffic, by class and provider.",
-		}, []string{"class", "provider"}),
-
-		InventorySyncs: f.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Name:      "inventory_syncs_total",
-			Help:      "Total number of AIInventory sync attempts, by result.",
 		}, []string{"result"}),
 	}
 }

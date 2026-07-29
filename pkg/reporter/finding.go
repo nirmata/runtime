@@ -1,9 +1,8 @@
 // Package reporter writes kyverno-runtime findings to namespaced OpenReports
 // Report resources.
 //
-// It is the second (egress) redaction chokepoint of the event plane. The first
-// is runtimeevent.NewHTTPFacts, which kills secret header values at decode
-// time; this package makes leaks structurally impossible on the way out:
+// It is the redaction chokepoint of the event plane: this package makes
+// leaks structurally impossible on the way out:
 //
 //  1. Finding is a CLOSED struct — typed scalar fields only. There is no
 //     header map, no body field, and no free-form properties passthrough, so
@@ -32,40 +31,25 @@ import (
 type Finding struct {
 	PolicyName string
 	PolicyUID  string
-	Behavior   string // "network"|"open"|"exec"|"ai"
+	Behavior   string // "network"|"open"|"exec"
 	Severity   string // info|low|medium|high|critical (default medium)
 	Result     string // "fail"|"warn" (monitor findings are "fail")
 	Message    string
 	Pod        runtimeevent.PodIdentity
 	Net        *NetSummary
 	Process    *ProcessSummary
-	AI         *AISummary // populated only by the AI detection engine
 	Timestamp  time.Time
 }
 
 // NetSummary summarizes the destination of a network finding.
 type NetSummary struct {
 	DestIP   string
-	DestPort uint16
 	DestHost string
 }
 
-// ProcessSummary summarizes the process of an exec/open finding. Argv is
-// pre-joined by the producer; sanitize bounds and scrubs it.
+// ProcessSummary summarizes the process of an exec/open finding.
 type ProcessSummary struct {
 	Comm string
-	Argv string
-}
-
-// AISummary summarizes classifier output. Evidence holds tokens only
-// ("sni:api.openai.com", "header:anthropic-version") — names, never values;
-// sanitizeEvidence enforces that shape.
-type AISummary struct {
-	Class, Provider, EndpointKind, Model, Transport string
-	Confidence                                      int
-	Evidence                                        []string
-	Sanctioned                                      *bool
-	Governed                                        *bool
 }
 
 // Severity values accepted by OpenReports.
@@ -121,10 +105,6 @@ func normalizeResult(res string) string {
 // two occurrences of the same policy hitting the same destination from the
 // same pod are the same finding.
 func (f Finding) Fingerprint() string {
-	var aiClass, aiProvider, aiEndpointKind string
-	if f.AI != nil {
-		aiClass, aiProvider, aiEndpointKind = f.AI.Class, f.AI.Provider, f.AI.EndpointKind
-	}
 	var destHost, destIP string
 	if f.Net != nil {
 		destHost, destIP = f.Net.DestHost, f.Net.DestIP
@@ -138,9 +118,6 @@ func (f Finding) Fingerprint() string {
 		f.PolicyUID,
 		f.Pod.UID,
 		f.Behavior,
-		aiClass,
-		aiProvider,
-		aiEndpointKind,
 		destHost,
 		destIP,
 		comm,

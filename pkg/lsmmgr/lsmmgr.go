@@ -110,7 +110,7 @@ type lsmAttachment struct {
 	selector     labels.Selector
 	attachedPods map[string]*podRepresentation
 
-	// observe is true for monitor/discover policies: their enforcers are
+	// observe is true for monitor policies: their enforcers are
 	// attached with EMPTY banned/allowed maps and default-deny unset, so the
 	// kernel program can never return -EPERM for them. They exist purely to
 	// count open/exec paths per cgroup.

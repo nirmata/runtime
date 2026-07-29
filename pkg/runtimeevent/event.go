@@ -1,10 +1,9 @@
 // Package runtimeevent defines the normalized, attributed runtime event
-// plane shared by every producer (BPF sources, poll sources, fixtures) and
-// every consumer (attribution, detection, monitor sinks, reporters).
+// plane shared by every producer (the managers' poll sources) and every
+// consumer (attribution, monitor sinks, reporters).
 //
 // The package is deliberately dependency-light and side-effect free: it holds
-// the event schema, the source/sink seam interfaces, and the first redaction
-// chokepoint (HTTPFacts). Redaction is not configurable; see redact.go.
+// the event schema and the source/sink seam interfaces.
 package runtimeevent
 
 import (
@@ -17,9 +16,6 @@ type Kind string
 
 const (
 	KindNet  Kind = "net"
-	KindDNS  Kind = "dns"
-	KindTLS  Kind = "tls"
-	KindHTTP Kind = "http"
 	KindExec Kind = "exec"
 	KindOpen Kind = "open"
 )
@@ -40,18 +36,12 @@ type Event struct {
 	Denied bool `json:"denied,omitempty"`
 
 	Net  *NetFacts  `json:"net,omitempty"`
-	DNS  *DNSFacts  `json:"dns,omitempty"`
-	TLS  *TLSFacts  `json:"tls,omitempty"`
-	HTTP *HTTPFacts `json:"http,omitempty"`
 	Exec *ExecFacts `json:"exec,omitempty"`
 	Open *OpenFacts `json:"open,omitempty"`
 
 	// Pod is filled by pkg/attribution. Sources may pre-fill Pod.UID as a
 	// hint when they know the pod but not the cgroup (egress poll source).
 	Pod PodIdentity `json:"pod,omitempty"`
-
-	// AI is filled by the classifier; the type lives in ai.go, added by PR B.
-	// AI *AIFacts `json:"ai,omitempty"`
 }
 
 // PodIdentity is the workload attribution attached to an Event.
@@ -70,32 +60,12 @@ type PodIdentity struct {
 
 // NetFacts describes an egress connection attempt.
 type NetFacts struct {
-	DestIP   netip.Addr `json:"destIP"`
-	DestPort uint16     `json:"destPort,omitempty"`
-	Protocol string     `json:"protocol,omitempty"` // "tcp"|"udp"|""
-
-	// Governed: nil = unknown; set by pkg/aicontrols (PR B).
-	Governed *bool `json:"governed,omitempty"`
-}
-
-// DNSFacts describes an observed DNS question.
-type DNSFacts struct {
-	QName string `json:"qname"`
-	QType uint16 `json:"qtype,omitempty"`
-}
-
-// TLSFacts describes a TLS ClientHello.
-type TLSFacts struct {
-	SNI  string   `json:"sni,omitempty"`
-	ALPN []string `json:"alpn,omitempty"`
-	JA4  string   `json:"ja4,omitempty"`
+	DestIP netip.Addr `json:"destIP"`
 }
 
 // ExecFacts describes a process execution.
 type ExecFacts struct {
-	Filename string   `json:"filename"`
-	Argv     []string `json:"argv,omitempty"` // bounded: max 8 args, 128B each (decoder-enforced)
-	PPID     uint32   `json:"ppid,omitempty"`
+	Filename string `json:"filename"`
 }
 
 // OpenFacts describes a file open.

@@ -283,7 +283,6 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 	}{
 		{mode: compiler.ModeEnforce, want: ReasonEnforcing},
 		{mode: compiler.ModeMonitor, want: ReasonMonitoring},
-		{mode: compiler.ModeDiscover, want: ReasonDiscovering},
 		{mode: "", want: ReasonEnforcing},
 		{mode: "something-new", want: ReasonEnforcing},
 	}

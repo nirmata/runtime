@@ -27,45 +27,42 @@ func addr(t *testing.T, s string) netip.Addr {
 	return a
 }
 
-// #42: a monitor (or discover) policy must observe, not enforce. Nothing may be
+// #42: a monitor policy must observe, not enforce. Nothing may be
 // programmed into the allow/deny maps and the default-deny bit must stay clear,
 // otherwise the BPF program can return -EPERM for a policy the user believes is
 // only watching.
 func TestObservePolicyProgramsNoIpsButSetsObserveFlag(t *testing.T) {
-	for _, mode := range []string{compiler.ModeMonitor, compiler.ModeDiscover} {
-		t.Run(mode, func(t *testing.T) {
-			e, _, _ := newTestManager()
-			f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mode := compiler.ModeMonitor
+	e, _, _ := newTestManager()
+	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 
-			mustRpEvent(t, e, rp("rp-1", mode, webLabels, []string{"1.1.1.1"}, []string{"9.9.9.9", "*"}), events.EventTypeCreate)
+	mustRpEvent(t, e, rp("rp-1", mode, webLabels, []string{"1.1.1.1"}, []string{"9.9.9.9", "*"}), events.EventTypeCreate)
 
-			wantPairs(t, "AddIps", f.adds, nil)
-			wantPairs(t, "DeleteIps", f.deletes, nil)
-			wantLiveIps(t, f, []string{}, []string{})
-			wantDefaultDeny(t, f, false)
-			wantDefaultDenyOwners(t, e, "pod-1")
-			wantObserveFlag(t, f, true)
-			wantObserveOwners(t, e, "pod-1", "rp-1")
-			wantAttachedRps(t, e, "pod-1", "rp-1")
-			// the only flag write is the observe bit
-			want := []flagToggle{{idx: egressfilter.OBSERVE, val: true}}
-			if diff := cmp.Diff(want, f.toggles, cmp.AllowUnexported(flagToggle{})); diff != "" {
-				t.Errorf("flag toggles (-want +got):\n%s", diff)
-			}
-
-			// and a pod that does not match is not observed either
-			other := addPod(t, e, "pod-2", apiLabels, "/cg/pod-2")
-			wantObserveFlag(t, other, false)
-			wantObserveOwners(t, e, "pod-2")
-		})
+	wantPairs(t, "AddIps", f.adds, nil)
+	wantPairs(t, "DeleteIps", f.deletes, nil)
+	wantLiveIps(t, f, []string{}, []string{})
+	wantDefaultDeny(t, f, false)
+	wantDefaultDenyOwners(t, e, "pod-1")
+	wantObserveFlag(t, f, true)
+	wantObserveOwners(t, e, "pod-1", "rp-1")
+	wantAttachedRps(t, e, "pod-1", "rp-1")
+	// the only flag write is the observe bit
+	want := []flagToggle{{idx: egressfilter.OBSERVE, val: true}}
+	if diff := cmp.Diff(want, f.toggles, cmp.AllowUnexported(flagToggle{})); diff != "" {
+		t.Errorf("flag toggles (-want +got):\n%s", diff)
 	}
+
+	// and a pod that does not match is not observed either
+	other := addPod(t, e, "pod-2", apiLabels, "/cg/pod-2")
+	wantObserveFlag(t, other, false)
+	wantObserveOwners(t, e, "pod-2")
 }
 
 func TestObserveFlagIsRefcountedAcrossPolicies(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
-	mustRpEvent(t, e, rp("rp-2", compiler.ModeDiscover, webLabels, nil, nil), events.EventTypeCreate)
+	mustRpEvent(t, e, rp("rp-2", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
 	wantObserveOwners(t, e, "pod-1", "rp-1", "rp-2")
 
 	// the first one leaving must NOT stop observation
@@ -74,7 +71,7 @@ func TestObserveFlagIsRefcountedAcrossPolicies(t *testing.T) {
 	wantObserveOwners(t, e, "pod-1", "rp-2")
 
 	// the selector of the last one moving away stops it
-	mustRpEvent(t, e, rp("rp-2", compiler.ModeDiscover, apiLabels, nil, nil), events.EventTypeUpdate)
+	mustRpEvent(t, e, rp("rp-2", compiler.ModeMonitor, apiLabels, nil, nil), events.EventTypeUpdate)
 	wantObserveFlag(t, f, false)
 	wantObserveOwners(t, e, "pod-1")
 	wantAttachedRps(t, e, "pod-1")

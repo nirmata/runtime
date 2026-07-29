@@ -18,7 +18,6 @@ func TestIsObserveMode(t *testing.T) {
 	}{
 		{name: "enforce", mode: ModeEnforce, want: false},
 		{name: "monitor", mode: ModeMonitor, want: true},
-		{name: "discover", mode: ModeDiscover, want: true},
 		{name: "empty", mode: "", want: false},
 		{name: "unknown", mode: "audit", want: false},
 		{name: "case sensitive", mode: "Monitor", want: false},

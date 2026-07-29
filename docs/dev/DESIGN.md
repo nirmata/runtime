@@ -30,7 +30,7 @@ rather than glossed over.
 - [CEL extension libraries](#cel-extension-libraries)
 - [Enforcement: eBPF LSM hooks and egress filtering](#enforcement-ebpf-lsm-hooks-and-egress-filtering)
 - [The event plane](#the-event-plane)
-- [Redaction chokepoints](#redaction-chokepoints)
+- [Redaction chokepoint](#redaction-chokepoint)
 - [Status reporting](#status-reporting)
 - [Metrics](#metrics)
 - [Helm chart / deployment shape](#helm-chart--deployment-shape)
@@ -283,16 +283,15 @@ already keep — no new kernel programs, no ring buffers, no new `.o` files.
 ### Normalized events (`pkg/runtimeevent`)
 
 `runtimeevent.Event` is the single currency of the plane: a `Kind`
-(`net|dns|tls|http|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
+(`net|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
 (observations are deltas, not individual occurrences), a `Denied` flag, one non-nil facts struct
-per kind, and a `PodIdentity`. Only `net`, `open`, and `exec` are produced today; the `dns`,
-`tls`, and `http` kinds and their facts types exist for the detection work that will feed them.
+per kind, and a `PodIdentity`.
 
 Three interfaces define the plumbing, all in `pkg/runtimeevent/iface.go`:
 
 | Interface | Implemented by | Role |
 | --- | --- | --- |
-| `Source` | `collector.NewPollSource`, `collector.SyntheticSource` | Produces events until its context ends. |
+| `Source` | `collector.NewPollSource` | Produces events until its context ends. |
 | `Sink` | `monitor.Monitor` | Consumes fully-annotated events; must be fast and must not panic outward. |
 | `PolicyStatusRecorder` | `controller.StatusWriter` | Receives violation counts and status conditions from anywhere in the plane. |
 
@@ -390,26 +389,19 @@ cancellation, on a fresh bounded context, so the last window is not lost on shut
 through a `sigs.k8s.io/controller-runtime/pkg/client.Client` built from the daemon's `rest.Config`
 with the OpenReports types installed in the scheme.
 
-## Redaction chokepoints
+## Redaction chokepoint
 
 Secret material must be structurally incapable of reaching a `Report` or a log line, not merely
-filtered out by policy. Two chokepoints, neither configurable:
+filtered out by policy. One chokepoint, not configurable:
 
-1. **Ingress — `runtimeevent.NewHTTPFacts`.** `HTTPFacts` has unexported fields and exactly one
-   constructor, so headers cannot enter the plane without passing through `redactHeaders`, which
-   replaces the value of every known secret header (`authorization`, `proxy-authorization`,
-   `x-api-key`, `api-key`, `x-goog-api-key`, `cookie`, `set-cookie`, `x-amz-security-token`) with
-   `REDACTED`. The header-name list is package-private: there is no exported way to add, remove,
-   or disable an entry. Bodies are capped and exist only in memory.
-2. **Egress — `reporter.Finding`.** `Finding` is a *closed* struct of typed scalars: no header
-   map, no body field, no free-form properties passthrough. An unredacted payload is not
-   representable at the boundary. `buildResult` emits a fixed property key set and every value
-   passes `sanitize`; evidence tokens are additionally constrained to a token grammar and cut at
-   header names. Pod labels — arbitrary user-controlled key/values — are deliberately never
-   emitted.
+**`reporter.Finding`.** `Finding` is a *closed* struct of typed scalars: no header
+map, no body field, no free-form properties passthrough. An unredacted payload is not
+representable at the boundary. `buildResult` emits a fixed property key set and every value
+passes `sanitize`. Pod labels — arbitrary user-controlled key/values — are deliberately never
+emitted.
 
 The argument is structural rather than procedural: there is no option, flag, or field that
-weakens either mechanism, and adding one is a reason to reject a PR
+weakens the mechanism, and adding one is a reason to reject a PR
 ([Agents.md](../../Agents.md)). It is also tested: `reporter.TestRedactionChokepoint` fails if a
 new `Finding` field or property key escapes sanitization. The logging rule that completes it: only
 redacted accessor output may be logged — never a raw header map, body, or CEL variable value.
@@ -428,7 +420,7 @@ then recomputes the top-level `observedPods`/`violatingPods` sums and the newest
 instead of clobbering each other.
 
 Conditions are merged by type: `Applied` is written by the `StatusWriter` itself with the reason
-naming the mode (`Enforcing`/`Monitoring`/`Discovering`); `TargetsValid` comes from `egressmgr`
+naming the mode (`Enforcing`/`Monitoring`); `TargetsValid` comes from `egressmgr`
 and `ObservationAvailable` from `lsmmgr`, and are merged verbatim. This is the mechanism behind
 the "fail loud, not silent" rule: a network target the runtime cannot program (IPv6, a CIDR wider
 than `/24`, a hostname) is reported as a typed `egressfilter.RejectedTarget`, logged at `V(0)`,
@@ -493,7 +485,7 @@ future `PLAN.md`.
   obvious fix and is a breaking change either way.
 - **Monitor-mode observation is poll-based and lossy at the edges.** This is a deliberate
   consequence of shipping monitor mode on the already-compiled `.o` files rather than new kernel
-  programs (see decision 2 of the shadow-AI design):
+  programs:
   - Counters are drained every 10 seconds, so findings lag behavior by up to that interval and
     only counts survive — not per-occurrence ordering or timing.
   - `probe.c` returns before the counting branch while `DEFAULT_DENY` is set, so a monitor-mode
@@ -501,8 +493,8 @@ future `PLAN.md`.
   - The per-cgroup `open_events` inner map holds 1024 paths; a workload touching more than that
     within one interval loses the excess (read-and-reset mitigates, does not eliminate).
   - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
-  - No DNS, TLS SNI, or HTTP visibility exists. The `dns`/`tls`/`http` event kinds are declared
-    but nothing produces them, and no new kernel programs are loaded by this code.
+  - No DNS, TLS SNI, or HTTP visibility exists, and no new kernel programs are loaded by this
+    code.
 - **`open`/`exec` rules from separate policies intersect instead of unioning.**
   `docs/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
   policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each

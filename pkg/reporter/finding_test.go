@@ -23,7 +23,7 @@ func baseFinding() Finding {
 			Container: "app",
 			NodeName:  "node-a",
 		},
-		Net:       &NetSummary{DestIP: "1.2.3.4", DestPort: 443, DestHost: "api.example.com"},
+		Net:       &NetSummary{DestIP: "1.2.3.4", DestHost: "api.example.com"},
 		Timestamp: time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
 	}
 }
@@ -51,8 +51,6 @@ func TestFingerprintIsStable(t *testing.T) {
 		{"result", func(f *Finding) { f.Result = ResultWarn }},
 		{"policyName", func(f *Finding) { f.PolicyName = "renamed" }},
 		{"podName", func(f *Finding) { f.Pod.Name = "app-2" }},
-		{"destPort", func(f *Finding) { f.Net.DestPort = 8443 }},
-		{"argv", func(f *Finding) { f.Process = &ProcessSummary{Argv: "--flag"} }},
 	} {
 		t.Run("ignores_"+tc.name, func(t *testing.T) {
 			mutated := baseFinding()
@@ -76,9 +74,6 @@ func TestFingerprintIsUniquePerIdentity(t *testing.T) {
 		{"netDestHost", func(f *Finding) { f.Net.DestHost = "api.other.com" }},
 		{"netAbsent", func(f *Finding) { f.Net = nil }},
 		{"processComm", func(f *Finding) { f.Process = &ProcessSummary{Comm: "curl"} }},
-		{"aiClass", func(f *Finding) { f.AI = &AISummary{Class: "llm"} }},
-		{"aiProvider", func(f *Finding) { f.AI = &AISummary{Provider: "anthropic"} }},
-		{"aiEndpointKind", func(f *Finding) { f.AI = &AISummary{EndpointKind: "messages"} }},
 	}
 
 	base := baseFinding().Fingerprint()

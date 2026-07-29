@@ -17,27 +17,17 @@ import (
 var allowedPropertyKeys = map[string]struct{}{
 	propFingerprint: {}, propCount: {}, propFirstTimestamp: {}, propLastTimestamp: {},
 	propBehavior: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
-	propDestIP: {}, propDestPort: {}, propDestHost: {},
-	propComm: {}, propArgv: {},
-	propAIClass: {}, propAIProvider: {}, propAIEndpointKind: {}, propAIModel: {},
-	propAITransport: {}, propAIConfidence: {}, propAIEvidence: {},
-	propAISanctioned: {}, propAIGoverned: {},
+	propDestIP: {}, propDestHost: {},
+	propComm: {},
 }
 
 func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
-	yes := true
 	f := baseFinding()
 	f.Pod.OwnerKind = "Deployment"
 	f.Pod.OwnerName = "app"
 	f.Pod.ServiceAccount = "app-sa"
 	f.Pod.Labels = map[string]string{"team": "platform", "secret-label": "do-not-emit"}
-	f.Process = &ProcessSummary{Comm: "curl", Argv: "curl -s https://api.example.com"}
-	f.AI = &AISummary{
-		Class: "llm", Provider: "openai", EndpointKind: "chat.completions",
-		Model: "gpt-4o", Transport: "https", Confidence: 90,
-		Evidence:   []string{"sni:api.openai.com", "header:authorization"},
-		Sanctioned: &yes, Governed: &yes,
-	}
+	f.Process = &ProcessSummary{Comm: "curl"}
 
 	first := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 	last := time.Date(2026, 7, 27, 9, 5, 0, 0, time.UTC)
@@ -69,19 +59,8 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 		propOwner:          "Deployment/app",
 		propServiceAccount: "app-sa",
 		propDestIP:         "1.2.3.4",
-		propDestPort:       "443",
 		propDestHost:       "api.example.com",
 		propComm:           "curl",
-		propArgv:           "curl -s https://api.example.com",
-		propAIClass:        "llm",
-		propAIProvider:     "openai",
-		propAIEndpointKind: "chat.completions",
-		propAIModel:        "gpt-4o",
-		propAITransport:    "https",
-		propAIConfidence:   "90",
-		propAIEvidence:     "sni:api.openai.com,header:authorization",
-		propAISanctioned:   "true",
-		propAIGoverned:     "true",
 	}
 	if diff := cmp.Diff(want, res.Properties); diff != "" {
 		t.Errorf("buildResult properties (-want +got):\n%s", diff)
@@ -114,8 +93,8 @@ func TestBuildResultOmitsAbsentSummaries(t *testing.T) {
 
 	res := buildResult(&pending{finding: f, count: 1, first: at, last: at})
 
-	for _, key := range []string{propDestIP, propDestPort, propDestHost, propComm, propArgv,
-		propAIClass, propAIProvider, propNode, propContainer, propOwner} {
+	for _, key := range []string{propDestIP, propDestHost, propComm,
+		propNode, propContainer, propOwner} {
 		if _, ok := res.Properties[key]; ok {
 			t.Errorf("property %q emitted for an absent field", key)
 		}

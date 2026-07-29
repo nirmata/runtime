@@ -245,7 +245,7 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors_Issue58(t *testing.T) 
 			name: "observe flag survives while an overlapping observe policy still requires it",
 			policies: []*compiler.EvaluationResult{
 				rp("rp-1", compiler.ModeMonitor, webLabels, nil, []string{"*"}),
-				rp("rp-2", compiler.ModeDiscover, nil, nil, nil),
+				rp("rp-2", compiler.ModeMonitor, nil, nil, nil),
 			},
 			from:            webLabels,
 			to:              apiLabels,

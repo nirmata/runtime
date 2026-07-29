@@ -84,11 +84,11 @@ is the one-line-per-package index.
 | `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
 | `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The two eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
 | `pkg/lsmmgr`, `pkg/egressmgr` | The managers that attach those programs per matched pod and drain their observation counters (`CollectObservations`). |
-| `pkg/runtimeevent` | The normalized `Event` type and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. Also the ingress redaction chokepoint (`NewHTTPFacts`). |
+| `pkg/runtimeevent` | The normalized `Event` type and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. |
 | `pkg/collector` | Sources → stages → sinks pipeline, with drop accounting and source restart. |
 | `pkg/attribution` | cgroup/pod-UID/PID → pod identity index. Both an `events.EventIface` and a `collector.Stage`. |
 | `pkg/monitor` | The sink that evaluates observations against monitor-mode policies and emits findings. |
-| `pkg/reporter` | Writes findings into namespaced OpenReports `Report`s. The egress redaction chokepoint. |
+| `pkg/reporter` | Writes findings into namespaced OpenReports `Report`s. The redaction chokepoint. |
 | `pkg/metrics` | Prometheus collectors and the `/metrics` server (`--metrics-addr`). |
 | `cmd/kyverno-runtime` | The `daemon` subcommand; `daemon.go` is the single wiring site. |
 
@@ -113,10 +113,10 @@ The filtering rules that apply to that pipeline:
 
 ## Redaction (non-negotiable)
 
-`docs/dev/DESIGN.md` describes two chokepoints: `runtimeevent.NewHTTPFacts` on the way in and the
-closed `reporter.Finding` struct on the way out. Neither is configurable, and that is the point.
+`docs/dev/DESIGN.md` describes one chokepoint: the closed `reporter.Finding` struct on the way
+out. It is not configurable, and that is the point.
 
-- Never add an option, flag, values key, or field that disables, bypasses, or narrows either one.
+- Never add an option, flag, values key, or field that disables, bypasses, or narrows it.
   A PR that does is to be rejected, not merged with a warning.
 - Never add a free-form map to `reporter.Finding` or a new key to the fixed property set without
   routing it through `sanitize`.
@@ -125,9 +125,8 @@ closed `reporter.Finding` struct on the way out. Neither is configurable, and th
 
 ## Modes
 
-`spec.mode` is `enforce` or `monitor` (`discover` exists in `pkg/compiler` for the AI detection work
-but no CRD value accepts it yet). `enforce` programs the deny/allow maps; monitor/discover attach the
-same programs with **empty** maps and match in userspace over polled observations. Use
+`spec.mode` is `enforce` or `monitor`. `enforce` programs the deny/allow maps; `monitor` attaches
+the same programs with **empty** maps and matches in userspace over polled observations. Use
 `compiler.IsObserveMode(mode)` rather than comparing strings, and never let an observe-mode policy
 program a deny entry.
 

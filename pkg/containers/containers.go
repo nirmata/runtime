@@ -46,8 +46,6 @@ type ContainerCgroupInfo struct {
 	Name string // container name, needed by attribution
 }
 
-type ContainerCgstore struct{}
-
 // detectedCgroup returns the host cgroup mount, detecting it at most once.
 // Detection is lazy on purpose: doing it in init() turned an unreadable or
 // cgroup-less mount table into a start-up panic (#37).

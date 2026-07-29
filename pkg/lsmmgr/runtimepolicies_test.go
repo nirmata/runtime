@@ -192,62 +192,59 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 // observe-mode policy attaches and observes, but its banned/allowed maps stay
 // empty and default-deny is never set, so the loaded program cannot return -EPERM.
 func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
-	for _, mode := range []string{compiler.ModeMonitor, compiler.ModeDiscover} {
-		t.Run(mode, func(t *testing.T) {
-			h := newHarness(t)
-			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "db"}), cgs(21), events.EventTypeCreate); err != nil {
-				t.Fatal(err)
-			}
-			rp := result("rp1", mode, selFor(map[string]string{"app": "web"}),
-				pair(nil, []string{"/etc/shadow", "*"}), pair([]string{"/bin/ls"}, []string{"*"}))
-			if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
-				t.Fatal(err)
-			}
-
-			la, ok := h.l.lsmAttachments["rp1"]
-			if !ok {
-				t.Fatal("observe-mode policy produced no attachment: monitor mode must observe, not disable the policy")
-			}
-			if !la.observe {
-				t.Error("attachment observe flag = false, want true")
-			}
-			if got := progTypes(la); !slices.Equal(got, []string{exec, open}) {
-				t.Errorf("prog types = %v, want both", got)
-			}
-			for _, pt := range []string{open, exec} {
-				f := h.enf("rp1", pt)
-				if len(f.addTargets) != 0 {
-					t.Errorf("%s: AddTargets called %v, want none in %s mode", pt, f.addTargets, mode)
-				}
-				if len(f.defaultDeny) != 0 {
-					t.Errorf("%s: SetDefaultDeny called %v, want never in %s mode", pt, f.defaultDeny, mode)
-				}
-				if len(f.allowSet()) != 0 || len(f.denySet()) != 0 {
-					t.Errorf("%s: allow=%v deny=%v, want both empty", pt, f.allowSet(), f.denySet())
-				}
-				if f.denyAll {
-					t.Errorf("%s: default deny is on in %s mode", pt, mode)
-				}
-				if f.attachCount != 1 {
-					t.Errorf("%s: Attach called %d times, want 1", pt, f.attachCount)
-				}
-				// but the matched pod is tracked and observed
-				if got := f.cgidSet(); !slices.Equal(got, []uint64{11, 12}) {
-					t.Errorf("%s: cgid set = %v, want [11 12]", pt, got)
-				}
-				if got := f.observedSet(); !slices.Equal(got, []uint64{11, 12}) {
-					t.Errorf("%s: observed cgids = %v, want [11 12]", pt, got)
-				}
-			}
-			if got := attachedPodUIDs(la); !slices.Equal(got, []string{"podA"}) {
-				t.Errorf("attached pods = %v, want [podA]", got)
-			}
-			assertInvariant(t, h.l)
-		})
+	mode := compiler.ModeMonitor
+	h := newHarness(t)
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
 	}
+	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "db"}), cgs(21), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	rp := result("rp1", mode, selFor(map[string]string{"app": "web"}),
+		pair(nil, []string{"/etc/shadow", "*"}), pair([]string{"/bin/ls"}, []string{"*"}))
+	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+
+	la, ok := h.l.lsmAttachments["rp1"]
+	if !ok {
+		t.Fatal("observe-mode policy produced no attachment: monitor mode must observe, not disable the policy")
+	}
+	if !la.observe {
+		t.Error("attachment observe flag = false, want true")
+	}
+	if got := progTypes(la); !slices.Equal(got, []string{exec, open}) {
+		t.Errorf("prog types = %v, want both", got)
+	}
+	for _, pt := range []string{open, exec} {
+		f := h.enf("rp1", pt)
+		if len(f.addTargets) != 0 {
+			t.Errorf("%s: AddTargets called %v, want none in %s mode", pt, f.addTargets, mode)
+		}
+		if len(f.defaultDeny) != 0 {
+			t.Errorf("%s: SetDefaultDeny called %v, want never in %s mode", pt, f.defaultDeny, mode)
+		}
+		if len(f.allowSet()) != 0 || len(f.denySet()) != 0 {
+			t.Errorf("%s: allow=%v deny=%v, want both empty", pt, f.allowSet(), f.denySet())
+		}
+		if f.denyAll {
+			t.Errorf("%s: default deny is on in %s mode", pt, mode)
+		}
+		if f.attachCount != 1 {
+			t.Errorf("%s: Attach called %d times, want 1", pt, f.attachCount)
+		}
+		// but the matched pod is tracked and observed
+		if got := f.cgidSet(); !slices.Equal(got, []uint64{11, 12}) {
+			t.Errorf("%s: cgid set = %v, want [11 12]", pt, got)
+		}
+		if got := f.observedSet(); !slices.Equal(got, []uint64{11, 12}) {
+			t.Errorf("%s: observed cgids = %v, want [11 12]", pt, got)
+		}
+	}
+	if got := attachedPodUIDs(la); !slices.Equal(got, []string{"podA"}) {
+		t.Errorf("attached pods = %v, want [podA]", got)
+	}
+	assertInvariant(t, h.l)
 }
 
 // enforce mode observes as well: the counts are what feeds userspace deny
@@ -285,7 +282,7 @@ func TestRpUpdated_ObserveEnforceFlipRebuildsAttachment(t *testing.T) {
 	}{
 		{name: "monitor to enforce", from: compiler.ModeMonitor, to: compiler.ModeEnforce, wantDenyTo: []string{"/etc/shadow"}},
 		{name: "enforce to monitor", from: compiler.ModeEnforce, to: compiler.ModeMonitor},
-		{name: "monitor to discover keeps the attachment", from: compiler.ModeMonitor, to: compiler.ModeDiscover},
+		{name: "monitor to monitor keeps the attachment", from: compiler.ModeMonitor, to: compiler.ModeMonitor},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

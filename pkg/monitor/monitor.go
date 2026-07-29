@@ -20,7 +20,6 @@ package monitor
 
 import (
 	"fmt"
-	"net/netip"
 	"strings"
 	"sync"
 
@@ -113,8 +112,8 @@ func (m *Monitor) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroup
 
 // RuntimePolicyEvent tracks monitor-mode policies and forgets everything else.
 //
-// A policy that leaves monitor mode (to enforce, to discover, or by being
-// deleted) is untracked, as is one whose behaviors no longer hold any value:
+// A policy that leaves monitor mode (to enforce, or by being deleted) is
+// untracked, as is one whose behaviors no longer hold any value:
 // neither can ever produce a finding, and keeping it would only slow the event
 // path down.
 func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error {
@@ -128,9 +127,7 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 	}
 
 	if rp.Mode != compiler.ModeMonitor {
-		// discover mode observes for the inventory (PR B) and emits no
-		// findings; enforce mode blocks in the kernel and needs no userspace
-		// decision.
+		// enforce mode blocks in the kernel and needs no userspace decision.
 		m.untrack(rp.UID, "mode is not monitor")
 		return nil
 	}
@@ -214,8 +211,8 @@ func (m *Monitor) HandleEvent(ev runtimeevent.Event) {
 func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 	behavior, target := targetOf(ev)
 	if behavior == "" {
-		// not a kind monitor mode can decide on (dns/tls/http are inputs to
-		// the AI engine in PR B, not to allow/deny lists)
+		// not an event monitor mode can decide on: unknown kind, or the facts
+		// pointer for the kind is missing or empty
 		return
 	}
 
@@ -296,17 +293,9 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 	}
 	switch behavior {
 	case BehaviorNetwork:
-		f.Net = &reporter.NetSummary{
-			DestIP:   ev.Net.DestIP.String(),
-			DestPort: ev.Net.DestPort,
-		}
-	case BehaviorOpen:
+		f.Net = &reporter.NetSummary{DestIP: ev.Net.DestIP.String()}
+	case BehaviorOpen, BehaviorExec:
 		f.Process = &reporter.ProcessSummary{Comm: ev.Comm}
-	case BehaviorExec:
-		f.Process = &reporter.ProcessSummary{
-			Comm: ev.Comm,
-			Argv: strings.Join(ev.Exec.Argv, " "),
-		}
 	}
 
 	if err := utils.Guard("monitor: reporting finding", func() error {
@@ -326,7 +315,7 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 		if ev.Net == nil || !ev.Net.DestIP.IsValid() {
 			return "", ""
 		}
-		return BehaviorNetwork, destination(ev.Net.DestIP, ev.Net.DestPort)
+		return BehaviorNetwork, ev.Net.DestIP.String()
 	case runtimeevent.KindOpen:
 		if ev.Open == nil || ev.Open.Path == "" {
 			return "", ""
@@ -339,13 +328,6 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 		return BehaviorExec, ev.Exec.Filename
 	}
 	return "", ""
-}
-
-func destination(addr netip.Addr, port uint16) string {
-	if port == 0 {
-		return addr.String()
-	}
-	return netip.AddrPortFrom(addr, port).String()
 }
 
 // message renders the finding message. It names only the policy and the target

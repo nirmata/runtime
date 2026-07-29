@@ -92,7 +92,7 @@ type EgressManager struct {
 
 type podAttachment struct {
 	defaultDeny map[string]struct{} // the group of runtime policy uids that contained a default deny
-	// observe is the group of observe-mode (monitor/discover) policy uids that
+	// observe is the group of observe-mode (monitor) policy uids that
 	// asked for observation on this pod. Like defaultDeny it is a refcount: the
 	// OBSERVE flag may only clear when the last of them is gone.
 	observe map[string]struct{}

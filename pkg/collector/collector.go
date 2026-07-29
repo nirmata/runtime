@@ -1,6 +1,6 @@
 // Package collector fans events in from every runtimeevent.Source, runs them
-// through an ordered list of stages (attribution, governed-bit, classifier),
-// and fans them out to every runtimeevent.Sink.
+// through an ordered list of stages (attribution), and fans them out to every
+// runtimeevent.Sink.
 //
 // The collector is the only place in kyverno-runtime where an event can be
 // dropped without a policy decision, so every drop is counted:
@@ -32,8 +32,8 @@ const (
 // reasonBufferFull is the metrics label used when the fan-in buffer is full.
 const reasonBufferFull = "buffer_full"
 
-// Stage mutates/filters an event before sinks see it (attribution,
-// governed-bit, classifier). Return false to drop.
+// Stage mutates/filters an event before sinks see it (attribution).
+// Return false to drop.
 type Stage interface {
 	Name() string
 	Process(ev *runtimeevent.Event) bool

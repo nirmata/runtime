@@ -64,7 +64,7 @@ var (
 )
 
 func TestSourceSinkSeamsAreImplementable(t *testing.T) {
-	src := &fakeSource{name: "fake", sent: []Event{{Kind: KindDNS, DNS: &DNSFacts{QName: "a.example"}}}}
+	src := &fakeSource{name: "fake", sent: []Event{{Kind: KindOpen, Open: &OpenFacts{Path: "/etc/hosts"}}}}
 	sink := &fakeSink{name: "sink"}
 
 	out := make(chan Event, 1)
@@ -75,8 +75,8 @@ func TestSourceSinkSeamsAreImplementable(t *testing.T) {
 	for ev := range out {
 		sink.HandleEvent(ev)
 	}
-	if len(sink.got) != 1 || sink.got[0].DNS.QName != "a.example" {
-		t.Errorf("sink got %+v, want one dns event for a.example", sink.got)
+	if len(sink.got) != 1 || sink.got[0].Open.Path != "/etc/hosts" {
+		t.Errorf("sink got %+v, want one open event for /etc/hosts", sink.got)
 	}
 	if src.runs != 1 {
 		t.Errorf("runs = %d, want 1", src.runs)

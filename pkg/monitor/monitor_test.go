@@ -111,12 +111,12 @@ func monitorPolicy(t *testing.T, uid, name string, ips, open, exec *compiler.All
 	}
 }
 
-func netEvent(ip string, port uint16) runtimeevent.Event {
+func netEvent(ip string) runtimeevent.Event {
 	return runtimeevent.Event{
 		Kind:  runtimeevent.KindNet,
 		Time:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
 		Count: 1,
-		Net:   &runtimeevent.NetFacts{DestIP: netip.MustParseAddr(ip), DestPort: port, Protocol: "tcp"},
+		Net:   &runtimeevent.NetFacts{DestIP: netip.MustParseAddr(ip)},
 		Pod:   testPod(),
 	}
 }
@@ -131,12 +131,12 @@ func openEvent(path string) runtimeevent.Event {
 	}
 }
 
-func execEvent(filename string, argv ...string) runtimeevent.Event {
+func execEvent(filename string) runtimeevent.Event {
 	return runtimeevent.Event{
 		Kind: runtimeevent.KindExec,
 		Time: time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
 		Comm: "sh",
-		Exec: &runtimeevent.ExecFacts{Filename: filename, Argv: argv},
+		Exec: &runtimeevent.ExecFacts{Filename: filename},
 		Pod:  testPod(),
 	}
 }
@@ -167,46 +167,46 @@ func TestHandleEvent_ViolationDecisionTable(t *testing.T) {
 		{
 			name:          "net explicit deny matches destination",
 			ips:           pair(nil, []string{"10.0.0.5"}),
-			ev:            netEvent("10.0.0.5", 443),
+			ev:            netEvent("10.0.0.5"),
 			wantViolation: true,
 			wantBehavior:  BehaviorNetwork,
-			wantMessage:   "monitor mode: egress to 10.0.0.5:443 would have been denied by policy p",
+			wantMessage:   "monitor mode: egress to 10.0.0.5 would have been denied by policy p",
 		},
 		{
 			name:          "net explicit deny cidr contains destination",
 			ips:           pair(nil, []string{"10.0.0.0/24"}),
-			ev:            netEvent("10.0.0.77", 80),
+			ev:            netEvent("10.0.0.77"),
 			wantViolation: true,
 			wantBehavior:  BehaviorNetwork,
-			wantMessage:   "monitor mode: egress to 10.0.0.77:80 would have been denied by policy p",
+			wantMessage:   "monitor mode: egress to 10.0.0.77 would have been denied by policy p",
 		},
 		{
 			name:          "net default deny with destination not allowed",
 			ips:           pair([]string{"10.0.0.1"}, []string{compiler.StarTarget}),
-			ev:            netEvent("93.184.216.34", 443),
+			ev:            netEvent("93.184.216.34"),
 			wantViolation: true,
 			wantBehavior:  BehaviorNetwork,
-			wantMessage:   "monitor mode: egress to 93.184.216.34:443 would have been denied by policy p (default deny)",
+			wantMessage:   "monitor mode: egress to 93.184.216.34 would have been denied by policy p (default deny)",
 		},
 		{
 			name: "net default deny with destination allowed",
 			ips:  pair([]string{"93.184.216.34"}, []string{compiler.StarTarget}),
-			ev:   netEvent("93.184.216.34", 443),
+			ev:   netEvent("93.184.216.34"),
 		},
 		{
 			name: "net default deny with destination allowed by cidr",
 			ips:  pair([]string{"93.184.216.0/24"}, []string{compiler.StarTarget}),
-			ev:   netEvent("93.184.216.34", 443),
+			ev:   netEvent("93.184.216.34"),
 		},
 		{
 			name: "net no match: destination absent from deny list",
 			ips:  pair(nil, []string{"10.0.0.5"}),
-			ev:   netEvent("10.0.0.6", 443),
+			ev:   netEvent("10.0.0.6"),
 		},
 		{
 			name: "net event but policy only has open entries",
 			open: pair(nil, []string{"/etc/shadow"}),
-			ev:   netEvent("10.0.0.5", 443),
+			ev:   netEvent("10.0.0.5"),
 		},
 		// open
 		{
@@ -239,7 +239,7 @@ func TestHandleEvent_ViolationDecisionTable(t *testing.T) {
 		{
 			name:          "exec explicit deny matches filename",
 			exec:          pair(nil, []string{"/usr/bin/curl"}),
-			ev:            execEvent("/usr/bin/curl", "curl", "https://example.com"),
+			ev:            execEvent("/usr/bin/curl"),
 			wantViolation: true,
 			wantBehavior:  BehaviorExec,
 			wantMessage:   "monitor mode: exec of /usr/bin/curl would have been denied by policy p",
@@ -329,7 +329,7 @@ func TestHandleEvent_SelectorGatesOnPodLabels(t *testing.T) {
 			if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 				t.Fatalf("RuntimePolicyEvent: %v", err)
 			}
-			ev := netEvent("10.0.0.5", 443)
+			ev := netEvent("10.0.0.5")
 			ev.Pod.Labels = tc.podLabels
 
 			m.HandleEvent(ev)
@@ -352,7 +352,7 @@ func TestHandleEvent_DoesNotMutatePodLabels(t *testing.T) {
 	}
 	shared := map[string]string{"app": "ai", "pod-template-hash": "abc"}
 	want := map[string]string{"app": "ai", "pod-template-hash": "abc"}
-	ev := netEvent("10.0.0.5", 443)
+	ev := netEvent("10.0.0.5")
 	ev.Pod.Labels = shared
 
 	m.HandleEvent(ev)
@@ -369,7 +369,7 @@ func TestHandleEvent_FindingContents(t *testing.T) {
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-net", "block-egress", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	ev := netEvent("10.0.0.5", 8443)
+	ev := netEvent("10.0.0.5")
 	ev.Count = 7
 
 	m.HandleEvent(ev)
@@ -380,9 +380,9 @@ func TestHandleEvent_FindingContents(t *testing.T) {
 		Behavior:   BehaviorNetwork,
 		Severity:   reporter.SeverityMedium,
 		Result:     reporter.ResultFail,
-		Message:    "monitor mode: egress to 10.0.0.5:8443 (7 occurrences) would have been denied by policy block-egress",
+		Message:    "monitor mode: egress to 10.0.0.5 (7 occurrences) would have been denied by policy block-egress",
 		Pod:        testPod(),
-		Net:        &reporter.NetSummary{DestIP: "10.0.0.5", DestPort: 8443},
+		Net:        &reporter.NetSummary{DestIP: "10.0.0.5"},
 		Timestamp:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
 	}}
 	if diff := cmp.Diff(want, sink.all()); diff != "" {
@@ -396,13 +396,13 @@ func TestHandleEvent_ExecFindingCarriesProcessSummary(t *testing.T) {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
 
-	m.HandleEvent(execEvent("/usr/bin/curl", "curl", "-s", "https://example.com"))
+	m.HandleEvent(execEvent("/usr/bin/curl"))
 
 	got := sink.all()
 	if len(got) != 1 {
 		t.Fatalf("expected one finding, got %d", len(got))
 	}
-	want := &reporter.ProcessSummary{Comm: "sh", Argv: "curl -s https://example.com"}
+	want := &reporter.ProcessSummary{Comm: "sh"}
 	if diff := cmp.Diff(want, got[0].Process); diff != "" {
 		t.Errorf("process summary (-want +got):\n%s", diff)
 	}
@@ -424,7 +424,7 @@ func TestRecordViolationOncePerPolicyPodPerEvent(t *testing.T) {
 		}
 	}
 
-	m.HandleEvent(netEvent("10.0.0.5", 443))
+	m.HandleEvent(netEvent("10.0.0.5"))
 
 	if got := len(sink.all()); got != 2 {
 		t.Errorf("findings = %d, want 2 (one per policy)", got)
@@ -445,8 +445,8 @@ func TestRecordViolationOncePerEvent_RepeatEventRecordsAgain(t *testing.T) {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
 
-	m.HandleEvent(netEvent("10.0.0.5", 443))
-	m.HandleEvent(netEvent("10.0.0.5", 443))
+	m.HandleEvent(netEvent("10.0.0.5"))
+	m.HandleEvent(netEvent("10.0.0.5"))
 
 	if got := len(status.all()); got != 2 {
 		t.Errorf("violations = %d, want 2 (one per event)", got)
@@ -458,8 +458,8 @@ func TestHandleEvent_SecondPodOfSamePolicyRecordsItsOwnViolation(t *testing.T) {
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	first := netEvent("10.0.0.5", 443)
-	second := netEvent("10.0.0.5", 443)
+	first := netEvent("10.0.0.5")
+	second := netEvent("10.0.0.5")
 	second.Pod.UID = "pod-uid-2"
 
 	m.HandleEvent(first)
@@ -480,7 +480,6 @@ func TestRuntimePolicyEvent_IgnoresNonMonitorPolicies(t *testing.T) {
 		eventType string
 	}{
 		{name: "enforce mode", mode: compiler.ModeEnforce, eventType: events.EventTypeCreate},
-		{name: "discover mode", mode: compiler.ModeDiscover, eventType: events.EventTypeCreate},
 		{name: "empty mode", mode: "", eventType: events.EventTypeCreate},
 		{name: "unknown mode", mode: "audit", eventType: events.EventTypeCreate},
 		{name: "monitor mode but delete event", mode: compiler.ModeMonitor, eventType: events.EventTypeDelete},
@@ -498,7 +497,7 @@ func TestRuntimePolicyEvent_IgnoresNonMonitorPolicies(t *testing.T) {
 				t.Fatalf("tracked %d policies, want 0", m.Len())
 			}
 
-			m.HandleEvent(netEvent("10.0.0.5", 443))
+			m.HandleEvent(netEvent("10.0.0.5"))
 
 			if len(sink.all()) != 0 || len(status.all()) != 0 {
 				t.Errorf("non-monitor policy produced output: findings=%+v violations=%+v", sink.all(), status.all())
@@ -513,7 +512,7 @@ func TestRuntimePolicyEvent_UntracksWhenPolicyLeavesMonitorMode(t *testing.T) {
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	m.HandleEvent(netEvent("10.0.0.5", 443))
+	m.HandleEvent(netEvent("10.0.0.5"))
 	if got := len(sink.all()); got != 1 {
 		t.Fatalf("findings after create = %d, want 1", got)
 	}
@@ -529,7 +528,7 @@ func TestRuntimePolicyEvent_UntracksWhenPolicyLeavesMonitorMode(t *testing.T) {
 		t.Fatalf("tracked %d policies after leaving monitor mode, want 0", m.Len())
 	}
 
-	m.HandleEvent(netEvent("10.0.0.5", 443))
+	m.HandleEvent(netEvent("10.0.0.5"))
 	if got := len(sink.all()); got != 1 {
 		t.Errorf("findings after switching to enforce = %d, want 1", got)
 	}
@@ -549,8 +548,8 @@ func TestRuntimePolicyEvent_UpdateReplacesValues(t *testing.T) {
 		t.Fatalf("tracked %d policies, want 1", m.Len())
 	}
 
-	m.HandleEvent(netEvent("10.0.0.5", 443)) // old value: no longer denied
-	m.HandleEvent(netEvent("10.0.0.6", 443)) // new value: denied
+	m.HandleEvent(netEvent("10.0.0.5")) // old value: no longer denied
+	m.HandleEvent(netEvent("10.0.0.6")) // new value: denied
 
 	got := sink.all()
 	if len(got) != 1 {
@@ -575,7 +574,7 @@ func TestRuntimePolicyEvent_SnapshotsBehaviorValues(t *testing.T) {
 	rp.IPs.Allow = []string{"10.0.0.5"}
 	rp.Name = "renamed-by-someone-else"
 
-	m.HandleEvent(netEvent("10.0.0.5", 443))
+	m.HandleEvent(netEvent("10.0.0.5"))
 
 	got := sink.all()
 	if len(got) != 1 {
@@ -607,7 +606,7 @@ func TestRuntimePolicyEvent_IgnoresPoliciesThatCanNeverViolate(t *testing.T) {
 			if m.Len() != 0 {
 				t.Fatalf("tracked %d policies, want 0", m.Len())
 			}
-			m.HandleEvent(netEvent("10.0.0.5", 443))
+			m.HandleEvent(netEvent("10.0.0.5"))
 			if len(sink.all()) != 0 || len(status.all()) != 0 {
 				t.Errorf("unexpected output: findings=%+v violations=%+v", sink.all(), status.all())
 			}
@@ -632,16 +631,14 @@ func TestPodEventIsANoOp(t *testing.T) {
 	}
 }
 
-// --- kinds monitor mode does not decide on --------------------------------
+// --- events monitor mode does not decide on --------------------------------
 
 func TestHandleEvent_IgnoresUndecidableEvents(t *testing.T) {
 	tests := []struct {
 		name string
 		ev   runtimeevent.Event
 	}{
-		{name: "dns kind", ev: runtimeevent.Event{Kind: runtimeevent.KindDNS, Pod: testPod(),
-			DNS: &runtimeevent.DNSFacts{QName: "api.openai.com"}}},
-		{name: "http kind", ev: runtimeevent.Event{Kind: runtimeevent.KindHTTP, Pod: testPod()}},
+		{name: "unknown kind", ev: runtimeevent.Event{Kind: "unknown", Pod: testPod()}},
 		{name: "net kind with nil facts", ev: runtimeevent.Event{Kind: runtimeevent.KindNet, Pod: testPod()}},
 		{name: "net kind with zero destination", ev: runtimeevent.Event{Kind: runtimeevent.KindNet, Pod: testPod(),
 			Net: &runtimeevent.NetFacts{}}},
@@ -679,8 +676,8 @@ func TestHandleEvent_ToleratesNilSinkStatusAndMetrics(t *testing.T) {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
 	// must not panic and must not need any collaborator
-	m.HandleEvent(netEvent("10.0.0.5", 443))
-	ev := netEvent("10.0.0.5", 443)
+	m.HandleEvent(netEvent("10.0.0.5"))
+	ev := netEvent("10.0.0.5")
 	ev.Pod.Namespace = ""
 	m.HandleEvent(ev)
 }
@@ -704,7 +701,7 @@ func TestHandleEvent_NeverPanicsOutward(t *testing.T) {
 				t.Fatalf("RuntimePolicyEvent: %v", err)
 			}
 
-			m.HandleEvent(netEvent("10.0.0.5", 443)) // must return normally
+			m.HandleEvent(netEvent("10.0.0.5")) // must return normally
 		})
 	}
 }
@@ -720,7 +717,7 @@ func TestHandleEvent_PanickingStatusDoesNotSkipRemainingPolicies(t *testing.T) {
 		}
 	}
 
-	m.HandleEvent(netEvent("10.0.0.5", 443))
+	m.HandleEvent(netEvent("10.0.0.5"))
 
 	if got := len(sink.all()); got != 2 {
 		t.Errorf("findings = %d, want 2 despite the panicking status recorder", got)
@@ -744,7 +741,7 @@ func TestHandleEvent_DropsFindingWithoutUsableNamespaceButRecordsViolation(t *te
 			if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 				t.Fatalf("RuntimePolicyEvent: %v", err)
 			}
-			ev := netEvent("10.0.0.5", 443)
+			ev := netEvent("10.0.0.5")
 			ev.Pod.Namespace = tc.namespace
 
 			m.HandleEvent(ev)
@@ -787,7 +784,7 @@ func TestHandleEvent_ConcurrentWithPolicyUpdates(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			m.HandleEvent(netEvent("10.0.0.5", 443))
+			m.HandleEvent(netEvent("10.0.0.5"))
 		}
 	}()
 	wg.Wait()

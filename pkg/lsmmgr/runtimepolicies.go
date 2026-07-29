@@ -160,9 +160,9 @@ func (l *LsmManager) closeProgs(rpUID string, progs map[string]*progState) {
 // createForProgType loads, programs and attaches one enforcer.
 //
 // In observe mode the banned and allowed maps are left EMPTY and default-deny is
-// never set, so the loaded program cannot return -EPERM for any path: monitor and
-// discover policies observe, they never block. Matching happens in userspace over
-// the counts read back by CollectObservations.
+// never set, so the loaded program cannot return -EPERM for any path: monitor
+// policies observe, they never block. Matching happens in userspace over the
+// counts read back by CollectObservations.
 func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType string, observe bool) (lsmEnforcer, error) {
 	// create the lsm enforcer
 	cleanup := false

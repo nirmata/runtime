@@ -36,21 +36,6 @@ func TestNew_CountersIncrement(t *testing.T) {
 			inc:  func() { m.ReportWrites.WithLabelValues("ok").Inc() },
 			coll: m.ReportWrites,
 		},
-		{
-			name: "PolicyEvalErrors",
-			inc:  func() { m.PolicyEvalErrors.WithLabelValues("deny-egress", "evaluate").Inc() },
-			coll: m.PolicyEvalErrors,
-		},
-		{
-			name: "AIClassified",
-			inc:  func() { m.AIClassified.WithLabelValues("llm", "openai").Inc() },
-			coll: m.AIClassified,
-		},
-		{
-			name: "InventorySyncs",
-			inc:  func() { m.InventorySyncs.WithLabelValues("ok").Inc() },
-			coll: m.InventorySyncs,
-		},
 	}
 
 	for _, tc := range cases {
@@ -87,15 +72,12 @@ func TestNew_MetricsAreRegisteredAgainstProvidedRegisterer(t *testing.T) {
 
 	// Nothing registered yet reports zero families with data until a
 	// label combination is observed; force one on every vec plus the
-	// plain counter, then confirm the registry gathers all eight.
+	// plain counter, then confirm the registry gathers all five.
 	m.EventsIngested.WithLabelValues("s", "k").Inc()
 	m.EventsDropped.WithLabelValues("s", "buffer_full").Inc()
 	m.AttributionMisses.Inc()
 	m.FindingsEmitted.WithLabelValues("p", "network", "low").Inc()
 	m.ReportWrites.WithLabelValues("ok").Inc()
-	m.PolicyEvalErrors.WithLabelValues("p", "compile").Inc()
-	m.AIClassified.WithLabelValues("mcp", "unknown").Inc()
-	m.InventorySyncs.WithLabelValues("error").Inc()
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -108,9 +90,6 @@ func TestNew_MetricsAreRegisteredAgainstProvidedRegisterer(t *testing.T) {
 		namespace + "_attribution_misses_total": false,
 		namespace + "_findings_emitted_total":   false,
 		namespace + "_report_writes_total":      false,
-		namespace + "_policy_eval_errors_total": false,
-		namespace + "_ai_classified_total":      false,
-		namespace + "_inventory_syncs_total":    false,
 	}
 	for _, mf := range mfs {
 		if _, ok := want[mf.GetName()]; ok {

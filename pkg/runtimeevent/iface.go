@@ -25,8 +25,8 @@ type Sink interface {
 	HandleEvent(ev Event) // must be fast + non-blocking; never panics outward
 }
 
-// PolicyStatusRecorder is implemented by controller.StatusWriter (PR A)
-// and consumed by pkg/monitor, pkg/egressmgr, pkg/detect (PR B).
+// PolicyStatusRecorder is implemented by controller.StatusWriter and
+// consumed by pkg/monitor and the managers.
 type PolicyStatusRecorder interface {
 	RecordViolation(policyUID string, podUID string)
 	RecordCondition(policyUID string, cond metav1.Condition)

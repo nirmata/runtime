@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -165,7 +166,22 @@ func runCollector(t *testing.T, c *Collector) (context.Context, func()) {
 }
 
 func netEvent(comm string) runtimeevent.Event {
-	return runtimeevent.Event{Kind: runtimeevent.KindNet, Comm: comm, Net: &runtimeevent.NetFacts{DestPort: 443}}
+	return runtimeevent.Event{Kind: runtimeevent.KindNet, Comm: comm, Net: &runtimeevent.NetFacts{DestIP: netip.MustParseAddr("10.1.2.3")}}
+}
+
+// sliceSource emits the given events in order and then returns nil, so the
+// collector treats it as finished and does not restart it.
+func sliceSource(name string, events []runtimeevent.Event) runtimeevent.Source {
+	return &funcSource{name: name, run: func(ctx context.Context, out chan<- runtimeevent.Event) error {
+		for _, ev := range events {
+			select {
+			case <-ctx.Done():
+				return nil
+			case out <- ev:
+			}
+		}
+		return nil
+	}}
 }
 
 // ---------- tests ----------
@@ -213,7 +229,7 @@ func TestStagesRunInRegistrationOrderBeforeSinks(t *testing.T) {
 	}
 	got := make(chan runtimeevent.Event, 1)
 	c.AddSink(chanSink("sink", got))
-	c.AddSource(NewSyntheticSource("synth", []runtimeevent.Event{netEvent("base:")}))
+	c.AddSource(sliceSource("synth", []runtimeevent.Event{netEvent("base:")}))
 
 	_, stop := runCollector(t, c)
 	ev := recvEvent(t, got)
@@ -239,7 +255,7 @@ func TestStageReturningFalseDropsEventAndCountsByStageName(t *testing.T) {
 
 	c := New(logr.Discard(), WithBufferSize(4), WithMetrics(m))
 	c.AddStage(funcStage{name: "attribution", fn: func(*runtimeevent.Event) bool { return true }})
-	c.AddStage(funcStage{name: "classifier", fn: func(*runtimeevent.Event) bool {
+	c.AddStage(funcStage{name: "filter", fn: func(*runtimeevent.Event) bool {
 		reached <- 1
 		return false
 	}})
@@ -248,7 +264,7 @@ func TestStageReturningFalseDropsEventAndCountsByStageName(t *testing.T) {
 		return true
 	}})
 	c.AddSink(chanSink("sink", sinkSaw))
-	c.AddSource(NewSyntheticSource("synth", []runtimeevent.Event{netEvent("x")}))
+	c.AddSource(sliceSource("synth", []runtimeevent.Event{netEvent("x")}))
 
 	_, stop := runCollector(t, c)
 	if got := recvInt(t, reached); got != 1 {
@@ -269,7 +285,7 @@ func TestStageReturningFalseDropsEventAndCountsByStageName(t *testing.T) {
 	if got := c.Dropped(); got != 1 {
 		t.Errorf("Dropped() = %d, want 1", got)
 	}
-	if got := testutil.ToFloat64(m.EventsDropped.WithLabelValues("synth", "classifier")); got != 1 {
+	if got := testutil.ToFloat64(m.EventsDropped.WithLabelValues("synth", "filter")); got != 1 {
 		t.Errorf("EventsDropped{source=synth,reason=classifier} = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(m.EventsIngested.WithLabelValues("synth", "net")); got != 1 {
@@ -362,7 +378,7 @@ func TestPanickingStageDoesNotKillDispatchLoop(t *testing.T) {
 		return true
 	}})
 	c.AddSink(chanSink("sink", got))
-	c.AddSource(NewSyntheticSource("synth", []runtimeevent.Event{netEvent("bad"), netEvent("good")}))
+	c.AddSource(sliceSource("synth", []runtimeevent.Event{netEvent("bad"), netEvent("good")}))
 
 	_, stop := runCollector(t, c)
 	if ev := recvEvent(t, got); ev.Comm != "good" {
@@ -385,7 +401,7 @@ func TestPanickingSinkDoesNotKillDispatchLoopOrOtherSinks(t *testing.T) {
 	c := New(logr.New(rec), WithBufferSize(8))
 	c.AddSink(funcSink{name: "boomSink", fn: func(runtimeevent.Event) { panic("sink exploded") }})
 	c.AddSink(chanSink("goodSink", good))
-	c.AddSource(NewSyntheticSource("synth", []runtimeevent.Event{netEvent("one"), netEvent("two")}))
+	c.AddSource(sliceSource("synth", []runtimeevent.Event{netEvent("one"), netEvent("two")}))
 
 	_, stop := runCollector(t, c)
 	if ev := recvEvent(t, good); ev.Comm != "one" {

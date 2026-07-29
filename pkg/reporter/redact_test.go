@@ -94,74 +94,6 @@ func TestSanitizeBoundsValueLength(t *testing.T) {
 	}
 }
 
-func TestSanitizeEvidence(t *testing.T) {
-	tests := []struct {
-		name string
-		in   []string
-		want []string
-	}{
-		{"nil", nil, nil},
-		{
-			name: "well formed tokens pass through",
-			in:   []string{"dns:api.anthropic.com", "sni:api.openai.com", "port:11434", "body-shape:llm-chat"},
-			want: []string{"dns:api.anthropic.com", "sni:api.openai.com", "port:11434", "body-shape:llm-chat"},
-		},
-		{
-			name: "header token keeps the name only",
-			in:   []string{"header:authorization=Bearer sk-ant-api03-secret"},
-			want: []string{"header:authorization"},
-		},
-		{
-			name: "header token with a colon separated value",
-			in:   []string{"header:x-api-key: sk-proj-AAAABBBBCCCC"},
-			want: []string{"header:x-api-key"},
-		},
-		{
-			name: "header name is lowercased",
-			in:   []string{"header:Anthropic-Version"},
-			want: []string{"header:anthropic-version"},
-		},
-		{
-			name: "malformed tokens are dropped",
-			in:   []string{"Bearer sk-ant-api03-secret", "no-colon", "UPPER:value", "", "   "},
-			want: nil,
-		},
-		{
-			name: "free form text after the value is cut",
-			in:   []string{"dns:api.anthropic.com and then a whole sentence of prompt"},
-			want: []string{"dns:api.anthropic.com"},
-		},
-		{
-			name: "credential shaped token values are still scrubbed",
-			in:   []string{"sni:sk-ant-api03-abcdefgh"},
-			want: []string{"sni:REDACTED"},
-		},
-		{
-			name: "duplicates collapse",
-			in:   []string{"sni:api.openai.com", "sni:api.openai.com", "header:authorization=x", "header:authorization=y"},
-			want: []string{"sni:api.openai.com", "header:authorization"},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if diff := cmp.Diff(tc.want, sanitizeEvidence(tc.in)); diff != "" {
-				t.Errorf("sanitizeEvidence (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
-
-func TestSanitizeEvidenceBoundsTokenCount(t *testing.T) {
-	in := make([]string, 0, maxEvidenceTokens*2)
-	for i := 0; i < maxEvidenceTokens*2; i++ {
-		in = append(in, "dns:host-"+string(rune('a'+i%26))+string(rune('a'+i/26))+".example.com")
-	}
-	if got := len(sanitizeEvidence(in)); got != maxEvidenceTokens {
-		t.Errorf("sanitizeEvidence kept %d tokens, want %d", got, maxEvidenceTokens)
-	}
-}
-
 // canary is one planted secret and the marker that must never survive into a
 // Report. Every canary embeds the literal "CANARY" so the chokepoint test can
 // assert on the marker as well as on the whole planted string: a partial
@@ -189,21 +121,19 @@ var canaries = []canary{
 // TestRedactionChokepoint is the blocking test for DESIGN §2.7/§4.
 //
 // It plants a real-shaped secret in EVERY string field a Finding exposes —
-// including Message, the pod identity, the process argv, and the AI evidence
-// tokens — flushes through a controller-runtime fake client, marshals every
-// written Report to JSON, and asserts that no planted string (and no "CANARY"
-// marker) survives anywhere in the written objects.
+// including Message and the pod identity — flushes through a
+// controller-runtime fake client, marshals every written Report to JSON, and
+// asserts that no planted string (and no "CANARY" marker) survives anywhere
+// in the written objects.
 //
-// Three independent mechanisms are under test at once:
+// Two independent mechanisms are under test at once:
 //  1. structural: Finding has no header map, no body field, and no free-form
 //     property passthrough, and PodIdentity.Labels are never emitted;
-//  2. sanitize: every emitted property value is scrubbed and bounded;
-//  3. sanitizeEvidence: evidence carries header NAMES only.
+//  2. sanitize: every emitted property value is scrubbed and bounded.
 func TestRedactionChokepoint(t *testing.T) {
 	c := newRecordingClient(t)
 	r, _ := newTestReporter(t, c, Options{NodeName: "node-a", MaxResultsPerReport: 50})
 
-	yes := true
 	planted := Finding{
 		// Every string field below carries a planted secret.
 		PolicyName: "policy-" + canaries[6].value,
@@ -226,30 +156,10 @@ func TestRedactionChokepoint(t *testing.T) {
 		},
 		Net: &NetSummary{
 			DestIP:   "1.2.3.4 " + canaries[0].value,
-			DestPort: 443,
 			DestHost: "api.example.com " + canaries[8].value,
 		},
 		Process: &ProcessSummary{
 			Comm: "curl " + canaries[1].value,
-			Argv: "curl -H 'authorization: " + canaries[1].value + "' -d '" + canaries[7].value + "'",
-		},
-		AI: &AISummary{
-			Class:        "llm " + canaries[0].value,
-			Provider:     "anthropic " + canaries[2].value,
-			EndpointKind: "messages " + canaries[6].value,
-			Model:        "claude " + canaries[4].value,
-			Transport:    "https " + canaries[5].value,
-			Confidence:   95,
-			Evidence: []string{
-				"header:authorization=" + canaries[1].value,
-				"header:x-api-key: " + canaries[0].value,
-				"sni:" + canaries[0].value,
-				canaries[1].value, // malformed token: dropped outright
-				canaries[7].value, // a whole request body as a "token": dropped
-				"dns:api.anthropic.com" + " " + canaries[9].value,
-			},
-			Sanctioned: &yes,
-			Governed:   &yes,
 		},
 		Timestamp: fixedTime,
 	}
@@ -296,16 +206,13 @@ func TestRedactionChokepoint(t *testing.T) {
 		t.Error("no value was redacted; the chokepoint assertions are vacuous")
 	}
 	props := reports[0].Results[0].Properties
-	for _, key := range []string{propFingerprint, propCount, propFirstTimestamp, propLastTimestamp, propDestPort} {
+	for _, key := range []string{propFingerprint, propCount, propFirstTimestamp, propLastTimestamp} {
 		if props[key] == "" {
 			t.Errorf("property %q is empty; the report carries no usable signal", key)
 		}
 	}
-	if props[propDestPort] != "443" {
-		t.Errorf("destPort = %q, want 443 (non-string fields must survive)", props[propDestPort])
-	}
-	if got := props[propAIEvidence]; got != "header:authorization,header:x-api-key,sni:REDACTED,dns:api.anthropic.com" {
-		t.Errorf("aiEvidence = %q; header values and malformed tokens must not survive", got)
+	if props[propCount] != "1" {
+		t.Errorf("count = %q, want 1 (non-string fields must survive)", props[propCount])
 	}
 
 	// The pod labels map is structurally unrepresentable in a Report.
@@ -322,32 +229,26 @@ func TestRedactionChokepoint(t *testing.T) {
 func TestRedactionChokepointCoversEveryFindingStringField(t *testing.T) {
 	wantFindingFields := []string{
 		"PolicyName", "PolicyUID", "Behavior", "Severity", "Result", "Message",
-		"Pod", "Net", "Process", "AI", "Timestamp",
+		"Pod", "Net", "Process", "Timestamp",
 	}
 	if diff := cmp.Diff(wantFindingFields, structFieldNames(Finding{})); diff != "" {
 		t.Errorf("Finding fields changed (-want +got):\n%s\nplant the new field in TestRedactionChokepoint and emit it via buildResult", diff)
 	}
 
-	wantNet := []string{"DestIP", "DestPort", "DestHost"}
+	wantNet := []string{"DestIP", "DestHost"}
 	if diff := cmp.Diff(wantNet, structFieldNames(NetSummary{})); diff != "" {
 		t.Errorf("NetSummary fields changed (-want +got):\n%s", diff)
 	}
 
-	wantProcess := []string{"Comm", "Argv"}
+	wantProcess := []string{"Comm"}
 	if diff := cmp.Diff(wantProcess, structFieldNames(ProcessSummary{})); diff != "" {
 		t.Errorf("ProcessSummary fields changed (-want +got):\n%s", diff)
-	}
-
-	wantAI := []string{"Class", "Provider", "EndpointKind", "Model", "Transport", "Confidence", "Evidence", "Sanctioned", "Governed"}
-	if diff := cmp.Diff(wantAI, structFieldNames(AISummary{})); diff != "" {
-		t.Errorf("AISummary fields changed (-want +got):\n%s", diff)
 	}
 }
 
 func TestFindingHasNoFreeFormFields(t *testing.T) {
 	// The closed-struct argument in one assertion: no field of Finding or its
-	// summaries may be a map or an arbitrary-payload byte slice. Evidence
-	// ([]string) is the single exception and is bounded by sanitizeEvidence.
+	// summaries may be a map, a slice, or an arbitrary-payload byte slice.
 	for _, tc := range []struct {
 		name string
 		val  any
@@ -355,7 +256,6 @@ func TestFindingHasNoFreeFormFields(t *testing.T) {
 		{"Finding", Finding{}},
 		{"NetSummary", NetSummary{}},
 		{"ProcessSummary", ProcessSummary{}},
-		{"AISummary", AISummary{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, field := range structFields(tc.val) {
@@ -363,9 +263,7 @@ func TestFindingHasNoFreeFormFields(t *testing.T) {
 				case "map":
 					t.Errorf("%s.%s is a map: free-form key/values must not be representable at the report boundary", tc.name, field.name)
 				case "slice":
-					if tc.name != "AISummary" || field.name != "Evidence" {
-						t.Errorf("%s.%s is a slice: only AISummary.Evidence may be one", tc.name, field.name)
-					}
+					t.Errorf("%s.%s is a slice: free-form sequences must not be representable at the report boundary", tc.name, field.name)
 				}
 			}
 		})

@@ -16,7 +16,6 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/metrics"
 	"github.com/nirmata/kyverno-runtime/pkg/monitor"
 	"github.com/nirmata/kyverno-runtime/pkg/reporter"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
@@ -35,22 +34,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-// Compile-time assertions for the seams daemon wiring depends on. They live
-// here (rather than in the producing packages) so that a signature change in
-// any of them breaks the build at the wiring site, where it has to be fixed.
-var (
-	_ collector.Stage                   = (*attribution.Index)(nil)
-	_ events.EventIface                 = (*attribution.Index)(nil)
-	_ runtimeevent.Sink                 = (*monitor.Monitor)(nil)
-	_ events.EventIface                 = (*monitor.Monitor)(nil)
-	_ monitor.FindingSink               = (*reporter.Reporter)(nil)
-	_ events.EventIface                 = (*controller.StatusWriter)(nil)
-	_ runtimeevent.PolicyStatusRecorder = (*controller.StatusWriter)(nil)
-)
-
 // observePollInterval is how often the managers' observation maps are drained.
-// Observation in PR A is poll-based over the existing BPF maps (no ring
-// buffer), so this interval bounds detection latency for monitor mode.
+// Observation is poll-based over the existing BPF maps (no ring buffer), so
+// this interval bounds detection latency for monitor mode.
 const observePollInterval = 10 * time.Second
 
 var (

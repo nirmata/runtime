@@ -10,7 +10,7 @@ import (
 )
 
 // trackableMode reports whether the manager has anything to do for a policy in
-// this mode: enforce programs the maps, monitor/discover only observe.
+// this mode: enforce programs the maps, monitor only observes.
 func trackableMode(mode string) bool {
 	return mode == compiler.ModeEnforce || compiler.IsObserveMode(mode)
 }
@@ -153,7 +153,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	}
 }
 
-// observeRpUpdated handles an update of a monitor/discover policy. Nothing is
+// observeRpUpdated handles an update of a monitor policy. Nothing is
 // ever programmed for those, so the only work is keeping the OBSERVE refcount in
 // step with the selector.
 func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.EvaluationResult) {

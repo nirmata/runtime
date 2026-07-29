@@ -46,19 +46,8 @@ const (
 	propOwner          = "owner"
 	propServiceAccount = "serviceAccount"
 	propDestIP         = "destIP"
-	propDestPort       = "destPort"
 	propDestHost       = "destHost"
 	propComm           = "comm"
-	propArgv           = "argv"
-	propAIClass        = "aiClass"
-	propAIProvider     = "aiProvider"
-	propAIEndpointKind = "aiEndpointKind"
-	propAIModel        = "aiModel"
-	propAITransport    = "aiTransport"
-	propAIConfidence   = "aiConfidence"
-	propAIEvidence     = "aiEvidence"
-	propAISanctioned   = "aiSanctioned"
-	propAIGoverned     = "aiGoverned"
 )
 
 // pending is one deduplicated finding awaiting the next flush.
@@ -85,7 +74,7 @@ func (p *pending) merge(f Finding, at time.Time) {
 
 // buildResult renders one deduplicated finding as an OpenReports result.
 //
-// Every value it emits goes through sanitize (or sanitizeEvidence), and it
+// Every value it emits goes through sanitize, and it
 // emits only the fixed key set declared above. PodIdentity.Labels are never
 // emitted: arbitrary user-controlled key/values do not belong in a Report.
 func buildResult(p *pending) openreportsv1alpha1.ReportResult {
@@ -114,32 +103,9 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 	if f.Net != nil {
 		put(propDestIP, f.Net.DestIP)
 		put(propDestHost, f.Net.DestHost)
-		if f.Net.DestPort != 0 {
-			props[propDestPort] = strconv.Itoa(int(f.Net.DestPort))
-		}
 	}
 	if f.Process != nil {
 		put(propComm, f.Process.Comm)
-		put(propArgv, f.Process.Argv)
-	}
-	if f.AI != nil {
-		put(propAIClass, f.AI.Class)
-		put(propAIProvider, f.AI.Provider)
-		put(propAIEndpointKind, f.AI.EndpointKind)
-		put(propAIModel, f.AI.Model)
-		put(propAITransport, f.AI.Transport)
-		if f.AI.Confidence != 0 {
-			props[propAIConfidence] = strconv.Itoa(f.AI.Confidence)
-		}
-		if ev := sanitizeEvidence(f.AI.Evidence); len(ev) > 0 {
-			props[propAIEvidence] = strings.Join(ev, ",")
-		}
-		if f.AI.Sanctioned != nil {
-			props[propAISanctioned] = strconv.FormatBool(*f.AI.Sanctioned)
-		}
-		if f.AI.Governed != nil {
-			props[propAIGoverned] = strconv.FormatBool(*f.AI.Governed)
-		}
 	}
 
 	return openreportsv1alpha1.ReportResult{

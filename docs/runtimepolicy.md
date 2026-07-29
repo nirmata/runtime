@@ -142,7 +142,7 @@ Conditions:
 
 | Type | Reasons | Meaning |
 | --- | --- | --- |
-| `Applied` | `Enforcing`, `Monitoring`, `Discovering` | The daemon has the policy loaded, and in which mode. |
+| `Applied` | `Enforcing`, `Monitoring` | The daemon has the policy loaded, and in which mode. |
 | `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why. |
 | `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy would silently produce no findings. |
 

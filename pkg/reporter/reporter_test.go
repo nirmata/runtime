@@ -134,7 +134,7 @@ func findingIn(namespace, podUID string, at time.Time) Finding {
 			Container: "app",
 			NodeName:  "node-a",
 		},
-		Net:       &NetSummary{DestIP: "1.2.3.4", DestPort: 443},
+		Net:       &NetSummary{DestIP: "1.2.3.4"},
 		Timestamp: at,
 	}
 }

@@ -19,7 +19,7 @@ import (
 // modes: monitor gets its findings from them (#42) and enforce gets deny
 // delivery data from them (#17).
 func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
-	for _, mode := range []string{compiler.ModeEnforce, compiler.ModeMonitor, compiler.ModeDiscover} {
+	for _, mode := range []string{compiler.ModeEnforce, compiler.ModeMonitor} {
 		t.Run(mode, func(t *testing.T) {
 			h := newHarness(t)
 			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {

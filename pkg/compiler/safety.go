@@ -10,13 +10,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
-// Policy modes. The mode axis is: enforce (block in the kernel), monitor
-// (observe + emit findings, never block) and discover (observe + inventory,
-// no findings, no blocking).
+// Policy modes. The mode axis is: enforce (block in the kernel) and monitor
+// (observe + emit findings, never block).
 const (
-	ModeEnforce  = "enforce"
-	ModeMonitor  = "monitor"
-	ModeDiscover = "discover"
+	ModeEnforce = "enforce"
+	ModeMonitor = "monitor"
 
 	// StarTarget is the default-deny sentinel accepted in a behavior's deny
 	// values: it means "everything not explicitly allowed".
@@ -26,7 +24,7 @@ const (
 // IsObserveMode reports whether the mode only observes behavior and never
 // programs deny/allow entries into the kernel.
 func IsObserveMode(mode string) bool {
-	return mode == ModeMonitor || mode == ModeDiscover
+	return mode == ModeMonitor
 }
 
 // ValidateNetworkValues validates the hardcoded values of a network behavior.
