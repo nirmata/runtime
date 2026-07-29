@@ -116,8 +116,8 @@ func (l *LsmManager) PodDeleted(uid string) error {
 }
 
 // addPodCgids adds cgids to one program's cgroup map and turns observation on
-// for them. Observation is enabled in enforce mode too: the counted paths feed
-// userspace deny delivery.
+// for them. Attached implies observed, in enforce mode as well: the counted
+// paths feed userspace deny delivery. Keep the two calls together.
 func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids []uint64) {
 	if len(cgids) == 0 {
 		return
@@ -130,7 +130,7 @@ func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids 
 	}
 }
 
-// removePodCgids is addPodCgids' inverse.
+// removePodCgids is addPodCgids' inverse, and pairs the same two calls.
 func (l *LsmManager) removePodCgids(rpUID, progType string, prog *progState, cgids []uint64) {
 	if len(cgids) == 0 {
 		return
