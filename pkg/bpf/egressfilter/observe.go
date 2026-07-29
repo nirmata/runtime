@@ -10,8 +10,7 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-// SetObserve turns the OBSERVE (LEARNING_MODE) flag bit on or off. It is a thin
-// alias for SetFlagIdx kept for readability at the manager call sites.
+// SetObserve turns the OBSERVE (LEARNING_MODE) flag bit on or off.
 func (e *EgressFilter) SetObserve(enabled bool) {
 	e.SetFlagIdx(OBSERVE, enabled)
 }
@@ -19,28 +18,20 @@ func (e *EgressFilter) SetObserve(enabled bool) {
 // IPEventKey identifies one observation counter: a destination address plus
 // the enforcement decision the kernel program applied to the flow.
 type IPEventKey struct {
-	Addr    netip.Addr
+	Addr     netip.Addr
 	Decision runtimeevent.KernelDecision
 }
 
-// ipEventKernelKey is the kernel layout of `struct ip_event_key` in
-// _cprog/maps.h: two naturally-aligned __u32 words, 8 bytes, no padding. It is
-// kept separate from the exported IPEventKey so the iterator key's size and
-// layout match the loaded map's BTF key exactly (cilium/ebpf rejects a
-// mismatch).
+// ipEventKernelKey mirrors `struct ip_event_key` in _cprog/maps.h. cilium/ebpf
+// rejects a key whose Go layout does not match the loaded map's BTF key.
 type ipEventKernelKey struct {
-	Daddr   uint32
+	Daddr    uint32
 	Decision uint32
 }
 
-// ReadIPEvents reads and RESETS the ip_events counter map: it returns the
-// (destination, decision) pairs the program saw since the last read, with the
-// number of packets counted for each, and removes the entries so the next poll
-// reports a delta rather than a running total.
-//
-// Entries whose counter is zero are omitted. A read error for one key does not
-// abort the sweep: every key is visited and the errors are joined, so a single
-// bad entry cannot hide the rest of the observations.
+// ReadIPEvents reads and resets the ip_events counter map, so each poll reports
+// a delta rather than a running total. Entries whose counter is zero are
+// omitted.
 func (e *EgressFilter) ReadIPEvents() (map[IPEventKey]uint32, error) {
 	if e.bpfObjs == nil || e.bpfObjs.IpEvents == nil {
 		return nil, ErrNotLoaded
@@ -48,11 +39,9 @@ func (e *EgressFilter) ReadIPEvents() (map[IPEventKey]uint32, error) {
 	return readAndResetIPEvents(e.bpfObjs.IpEvents)
 }
 
-// SeedIPEvent writes one observation entry directly through the ip_events map
-// handle. It exists for the kernel smoke test (test/e2e): a Put through the
-// handle is rejected by cilium/ebpf unless the Go key layout matches the
-// loaded map's BTF key size, which is exactly the marshaling seam the test
-// pins. Production counting happens in the BPF program, never here.
+// SeedIPEvent writes one observation entry through the ip_events map handle. It
+// exists for the kernel smoke test in test/e2e, which pins the key marshaling
+// seam; production counting happens in the BPF program.
 func (e *EgressFilter) SeedIPEvent(addr netip.Addr, decision runtimeevent.KernelDecision, count uint32) error {
 	if e.bpfObjs == nil || e.bpfObjs.IpEvents == nil {
 		return ErrNotLoaded
@@ -65,8 +54,6 @@ func (e *EgressFilter) SeedIPEvent(addr netip.Addr, decision runtimeevent.Kernel
 	return e.bpfObjs.IpEvents.Put(&key, &count)
 }
 
-// readAndResetIPEvents is split out so the (kernel-only) map plumbing has a
-// single implementation and a narrow signature.
 func readAndResetIPEvents(m *ebpf.Map) (map[IPEventKey]uint32, error) {
 	out := make(map[IPEventKey]uint32)
 	keys := make([]ipEventKernelKey, 0, 16)
@@ -99,10 +86,9 @@ func readAndResetIPEvents(m *ebpf.Map) (map[IPEventKey]uint32, error) {
 	return out, errors.Join(errs...)
 }
 
-// eventKey converts the kernel-layout key into the exported form.
 func eventKey(k ipEventKernelKey) IPEventKey {
 	return IPEventKey{
-		Addr:    keyAddr(k.Daddr),
+		Addr:     keyAddr(k.Daddr),
 		Decision: runtimeevent.KernelDecision(k.Decision),
 	}
 }

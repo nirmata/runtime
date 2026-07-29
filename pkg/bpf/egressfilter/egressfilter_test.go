@@ -2,6 +2,7 @@ package egressfilter
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -13,9 +14,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// newUnloadedFilter builds a filter with no BPF objects. It exercises the
-// argument handling and the nil-guards, which is where the panics used to live;
-// kernel behavior is covered by the linux e2e lane, not here.
+// newUnloadedFilter builds a filter with no BPF objects, which exercises the
+// argument handling and the nil-guards. Kernel behavior is covered by the linux
+// e2e lane.
 func newUnloadedFilter() *EgressFilter {
 	l := logr.Discard()
 	return &EgressFilter{logger: &l}
@@ -44,16 +45,27 @@ func TestFlagIndicesMatchKernelDefines(t *testing.T) {
 
 func TestSetFlagIdx_DoesNotPanicWithoutLoadedObjects(t *testing.T) {
 	e := newUnloadedFilter()
-	// The former implementation panicked ("corrupt state") whenever the flags
-	// map could not be read, taking the whole daemon down.
 	e.SetFlagIdx(DEFAULT_DENY, true)
 	e.SetFlagIdx(OBSERVE, false)
 }
 
-func TestSetFlagIdx_DoesNotPanicOnOutOfRangeIndex(t *testing.T) {
+func TestFlagIdx_PanicsOnOutOfRangeIndex(t *testing.T) {
 	e := newUnloadedFilter()
-	e.SetFlagIdx(8, true)
-	e.SetFlagIdx(255, true)
+
+	for _, idx := range []uint8{maxFlagIdx + 1, 255} {
+		assertPanics(t, fmt.Sprintf("SetFlagIdx(%d)", idx), func() { e.SetFlagIdx(idx, true) })
+		assertPanics(t, fmt.Sprintf("FlagIdx(%d)", idx), func() { _, _ = e.FlagIdx(idx) })
+	}
+}
+
+func assertPanics(t *testing.T, what string, fn func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Errorf("%s did not panic", what)
+		}
+	}()
+	fn()
 }
 
 func TestSetFlagIdx_DoesNotPanicWithNilLogger(t *testing.T) {
@@ -61,14 +73,11 @@ func TestSetFlagIdx_DoesNotPanicWithNilLogger(t *testing.T) {
 	e.SetFlagIdx(DEFAULT_DENY, true)
 }
 
-func TestFlagIdx_ReportsErrorsInsteadOfPanicking(t *testing.T) {
+func TestFlagIdx_ReportsUnloadedObjectsAsAnError(t *testing.T) {
 	e := newUnloadedFilter()
 
 	if _, err := e.FlagIdx(DEFAULT_DENY); !errors.Is(err, ErrNotLoaded) {
 		t.Errorf("FlagIdx err = %v, want ErrNotLoaded", err)
-	}
-	if _, err := e.FlagIdx(9); err == nil {
-		t.Error("FlagIdx(9) err = nil, want out-of-range error")
 	}
 }
 

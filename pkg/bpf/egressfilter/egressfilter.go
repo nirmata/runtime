@@ -14,18 +14,14 @@ import (
 
 //go:generate go tool bpf2go egressBlock ./_cprog/probe.c -- -I ./_cprog
 
-// Flag bit indices in the BPF `flags` array map. They mirror the defines in
+// Flag bit indices in the BPF `flags` array map, mirroring the defines in
 // _cprog/maps.h; the C program tests `*f & (1 << IDX)`.
 const (
-	// DEFAULT_DENY makes the program drop everything not in allowed_ips.
 	DEFAULT_DENY = 1
-	// OBSERVE (LEARNING_MODE in the C) makes the program count every flow
-	// into ip_events, keyed by (destination, decision). The program computes
-	// its decision first and records before returning, so flows dropped by a
-	// default-deny are observed too, with VERDICT_DENY.
+	// OBSERVE is LEARNING_MODE in the C.
 	OBSERVE = 2
 
-	// maxFlagIdx is the highest usable bit index: the map value is a __u8.
+	// maxFlagIdx is bounded by the __u8 map value.
 	maxFlagIdx = 7
 )
 
@@ -70,54 +66,60 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 // Targets ParseTargets cannot represent are returned as typed rejections and
 // logged; err covers only map-write failures. Both may be non-empty at once.
 func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
-	rejected, err := e.applyIps(pair, mapOpAdd)
-	e.logRejected(rejected)
-	return rejected, err
-}
-
-// DeleteIps removes the allow and deny targets of pair from the BPF maps.
-// Rejections are reported for symmetry with AddIps: a target that was never
-// programmed cannot be removed either, and the caller's bookkeeping should say
-// so out loud.
-func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
-	return e.applyIps(pair, mapOpDelete)
-}
-
-type mapOp int
-
-const (
-	mapOpAdd mapOp = iota
-	mapOpDelete
-)
-
-func (e *EgressFilter) applyIps(pair *compiler.AllowDenyPair, op mapOp) ([]RejectedTarget, error) {
 	if pair == nil {
 		return nil, nil
 	}
 
-	allowAddrs, _, allowRejected := ParseTargets(pair.Allow)
-	denyAddrs, _, denyRejected := ParseTargets(pair.Deny)
+	allowAddrs, denyAddrs, rejected := parsePair(pair)
+	e.logRejected(rejected)
 
-	rejected := make([]RejectedTarget, 0, len(allowRejected)+len(denyRejected))
-	rejected = append(rejected, allowRejected...)
-	rejected = append(rejected, denyRejected...)
-
-	var allowedMap, bannedMap *ebpf.Map
-	if e.bpfObjs != nil {
-		allowedMap, bannedMap = e.bpfObjs.AllowedIps, e.bpfObjs.BannedIps
-	}
-
-	var errs []error
-	errs = append(errs, e.applyAddrs(allowedMap, "allowed_ips", allowAddrs, op))
-	errs = append(errs, e.applyAddrs(bannedMap, "banned_ips", denyAddrs, op))
-
-	if len(rejected) == 0 {
-		rejected = nil
-	}
-	return rejected, errors.Join(errs...)
+	allowedMap, bannedMap := e.ipMaps()
+	return rejected, errors.Join(
+		putAddrs(allowedMap, "allowed_ips", allowAddrs),
+		putAddrs(bannedMap, "banned_ips", denyAddrs),
+	)
 }
 
-func (e *EgressFilter) applyAddrs(m *ebpf.Map, name string, addrs []netip.Addr, op mapOp) error {
+// DeleteIps removes the allow and deny targets of pair from the BPF maps.
+// Rejections are reported for symmetry with AddIps: a target that was never
+// programmed cannot be removed either.
+func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+	if pair == nil {
+		return nil, nil
+	}
+
+	allowAddrs, denyAddrs, rejected := parsePair(pair)
+
+	allowedMap, bannedMap := e.ipMaps()
+	return rejected, errors.Join(
+		deleteAddrs(allowedMap, "allowed_ips", allowAddrs),
+		deleteAddrs(bannedMap, "banned_ips", denyAddrs),
+	)
+}
+
+// parsePair resolves both target lists of pair through the single target
+// grammar. rejected is nil when nothing was rejected.
+func parsePair(pair *compiler.AllowDenyPair) (allow, deny []netip.Addr, rejected []RejectedTarget) {
+	allow, _, allowRejected := ParseTargets(pair.Allow)
+	deny, _, denyRejected := ParseTargets(pair.Deny)
+	if len(allowRejected)+len(denyRejected) == 0 {
+		return allow, deny, nil
+	}
+
+	rejected = make([]RejectedTarget, 0, len(allowRejected)+len(denyRejected))
+	rejected = append(rejected, allowRejected...)
+	rejected = append(rejected, denyRejected...)
+	return allow, deny, rejected
+}
+
+func (e *EgressFilter) ipMaps() (allowed, banned *ebpf.Map) {
+	if e.bpfObjs == nil {
+		return nil, nil
+	}
+	return e.bpfObjs.AllowedIps, e.bpfObjs.BannedIps
+}
+
+func putAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
 	if len(addrs) == 0 {
 		return nil
 	}
@@ -129,27 +131,34 @@ func (e *EgressFilter) applyAddrs(m *ebpf.Map, name string, addrs []netip.Addr, 
 	for _, addr := range addrs {
 		key, ok := addrKey(addr)
 		if !ok {
-			// ParseTargets only ever returns IPv4; belt and braces.
 			continue
 		}
-		var err error
-		if op == mapOpAdd {
-			err = m.Put(&key, uint8(0))
-		} else {
-			err = m.Delete(&key)
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s %s: %w", opVerb(op), name, err))
+		if err := m.Put(&key, uint8(0)); err != nil {
+			errs = append(errs, fmt.Errorf("writing %s: %w", name, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func opVerb(op mapOp) string {
-	if op == mapOpAdd {
-		return "writing"
+func deleteAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
+	if len(addrs) == 0 {
+		return nil
 	}
-	return "deleting from"
+	if m == nil {
+		return fmt.Errorf("%s: %w", name, ErrNotLoaded)
+	}
+
+	var errs []error
+	for _, addr := range addrs {
+		key, ok := addrKey(addr)
+		if !ok {
+			continue
+		}
+		if err := m.Delete(&key); err != nil {
+			errs = append(errs, fmt.Errorf("deleting from %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (e *EgressFilter) logRejected(rejected []RejectedTarget) {
@@ -157,20 +166,15 @@ func (e *EgressFilter) logRejected(rejected []RejectedTarget) {
 		return
 	}
 	for _, r := range rejected {
-		e.logger.Info("rejected egress network target: it will NOT be enforced",
+		e.logger.Info("rejected egress network target: it will not be enforced",
 			"target", r.Value, "reason", r.Reason)
 	}
 }
 
-// SetFlagIdx sets or clears one bit of the flags map. It never panics: a
-// unreadable flags map is logged and the write is skipped, because clobbering
-// the other bits with a guessed value would silently change enforcement.
+// SetFlagIdx sets or clears bit idx of the flags map. It panics on an
+// out-of-range idx, which can only be a programming error.
 func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
-	if idx > maxFlagIdx {
-		e.logError(fmt.Errorf("flag index %d out of range (max %d)", idx, maxFlagIdx),
-			"refusing to set out-of-range egress flag")
-		return
-	}
+	checkFlagIdx(idx)
 	if e.bpfObjs == nil || e.bpfObjs.Flags == nil {
 		e.logError(ErrNotLoaded, "cannot set egress flag")
 		return
@@ -195,11 +199,9 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 	}
 }
 
-// FlagIdx reports whether the given flag bit is set.
+// FlagIdx reports whether bit idx is set. It panics on an out-of-range idx.
 func (e *EgressFilter) FlagIdx(idx uint8) (bool, error) {
-	if idx > maxFlagIdx {
-		return false, fmt.Errorf("flag index %d out of range (max %d)", idx, maxFlagIdx)
-	}
+	checkFlagIdx(idx)
 	if e.bpfObjs == nil || e.bpfObjs.Flags == nil {
 		return false, ErrNotLoaded
 	}
@@ -210,6 +212,12 @@ func (e *EgressFilter) FlagIdx(idx uint8) (bool, error) {
 		return false, fmt.Errorf("reading flags map: %w", err)
 	}
 	return currentval&(1<<idx) != 0, nil
+}
+
+func checkFlagIdx(idx uint8) {
+	if idx > maxFlagIdx {
+		panic(fmt.Sprintf("egressfilter: flag index %d out of range (max %d)", idx, maxFlagIdx))
+	}
 }
 
 func (e *EgressFilter) logError(err error, msg string) {

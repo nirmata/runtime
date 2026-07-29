@@ -10,33 +10,27 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-// ErrObservationUnavailable is returned when the loaded program has no
-// open_events hash-of-maps (or it could not be prepared), so per-cgid path
-// counting cannot be turned on.
+// ErrObservationUnavailable is returned when the loaded program has no usable
+// open_events hash-of-maps, so per-cgid path counting cannot be turned on.
 var ErrObservationUnavailable = errors.New("lsm: observation maps unavailable")
 
 // PathEventKey identifies one observation counter: a path (or exec filename)
 // plus the enforcement decision the kernel program applied to the operation.
 type PathEventKey struct {
-	Path    string
+	Path     string
 	Decision runtimeevent.KernelDecision
 }
 
-// pathEventKernelKey is the kernel layout of `struct path_event_key` in
-// _cprog/maps.h: a NUL-padded 128-byte path followed by a naturally-aligned
-// __u32 decision, 132 bytes, no padding. It is kept separate from the exported
-// PathEventKey so the iterator key's size and layout match the loaded map's
-// BTF key exactly (cilium/ebpf rejects a mismatch).
+// pathEventKernelKey mirrors `struct path_event_key` in _cprog/maps.h.
+// cilium/ebpf rejects a key whose Go layout does not match the loaded map's BTF
+// key.
 type pathEventKernelKey struct {
-	Path    [maxPathLen]byte
+	Path     [maxPathLen]byte
 	Decision uint32
 }
 
 // EnableObservation creates (or reuses) an inner hash map in open_events for
 // each cgid so the kernel program starts recording path counts for it.
-//
-// Every cgid is attempted; failures are collected and joined so one bad cgid
-// cannot stop the rest from being enabled.
 func (l *LsmEnforcer) EnableObservation(cgids []uint64) error {
 	if len(cgids) == 0 {
 		return nil
@@ -106,13 +100,9 @@ func (l *LsmEnforcer) DisableObservation(cgids []uint64) error {
 	return errors.Join(errs...)
 }
 
-// ReadEvents reads and RESETS the per-cgid path counts.
-//
-// EVERY cgid in cgids is visited: a cgid with no inner map is skipped (not an
-// error) and a read failure for one cgid is recorded and joined at the end
-// rather than returned immediately. That structure is deliberate — an early
-// `break` here once made the counts of every enforcer after the first
-// invisible.
+// ReadEvents reads and resets the per-cgid path counts. Every cgid is visited
+// even when one of them fails, so a single bad cgid cannot hide the counts of
+// the rest.
 func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]uint32, error) {
 	out := make(map[uint64]map[PathEventKey]uint32, len(cgids))
 	if len(cgids) == 0 {
@@ -126,18 +116,16 @@ func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]ui
 	for _, cgid := range cgids {
 		inner, owned, err := l.innerFor(cgid)
 		if err != nil {
-			// no inner map for this cgid: nothing was observed. keep going.
+			// no inner map for this cgid: nothing was observed
 			continue
 		}
 
 		counts, err := readAndResetCounts(inner)
 		if !owned {
-			// a handle we opened just for this read
 			_ = inner.Close()
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("reading observations for cgid %d: %w", cgid, err))
-			// counts may still hold what was read before the failure; fold it in.
 		}
 		if len(counts) == 0 {
 			continue
@@ -151,11 +139,11 @@ func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]ui
 }
 
 // innerFor returns the inner map for cgid. owned is true when the handle is the
-// long-lived one this enforcer created (callers must not close it).
+// long-lived one this enforcer created, which callers must not close.
 func (l *LsmEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error) {
-	l.observeMu.Lock()
+	l.observeMu.RLock()
 	inner, ok := l.observed[cgid]
-	l.observeMu.Unlock()
+	l.observeMu.RUnlock()
 	if ok {
 		return inner, true, nil
 	}
@@ -167,7 +155,6 @@ func (l *LsmEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error)
 	return inner, false, nil
 }
 
-// lookupInner fetches the inner map registered for cgid from the kernel.
 func (l *LsmEnforcer) lookupInner(cgid uint64) (*ebpf.Map, error) {
 	if l.openEvents == nil {
 		return nil, ErrObservationUnavailable
@@ -184,7 +171,7 @@ func (l *LsmEnforcer) lookupInner(cgid uint64) (*ebpf.Map, error) {
 
 // readAndResetCounts drains one inner path->count map. Keys are collected
 // before deletion because deleting during iteration can make the kernel restart
-// the walk. Whatever was read is returned even when the sweep errors.
+// the walk.
 func readAndResetCounts(m *ebpf.Map) (map[PathEventKey]uint32, error) {
 	counts := make(map[PathEventKey]uint32)
 	keys := make([]pathEventKernelKey, 0, 16)
@@ -229,10 +216,8 @@ func trimPathKey(key [maxPathLen]byte) string {
 	return string(key[:])
 }
 
-// mergeCounts folds src into dst, adding counts for (path, decision) keys
-// present in both. The addition saturates instead of wrapping: a wrapped
-// counter would report a busy path as quiet, which is the wrong direction for
-// a security signal.
+// mergeCounts folds src into dst. The addition saturates rather than wrapping,
+// so a busy path can never be reported as quiet.
 func mergeCounts(dst, src map[PathEventKey]uint32) {
 	if dst == nil {
 		return

@@ -18,11 +18,8 @@ struct iphdr {
     __be32 daddr;
 };
 
-// record_ip_event bumps the (daddr, decision) counter. The value is a __u32 --
-// looking it up as anything narrower would only ever increment the low byte on
-// little-endian, wrapping counts at 255. The add is atomic because cgroup_skb
-// programs run concurrently per-CPU and a plain (*val)++ is a lossy
-// read-modify-write.
+// The counter is __u32: a narrower lookup would only bump its low byte on
+// little-endian and wrap at 255.
 static __always_inline void record_ip_event(__u32 daddr, __u32 decision)
 {
     struct ip_event_key key = {};
@@ -45,10 +42,8 @@ static __always_inline void record_ip_event(__u32 daddr, __u32 decision)
     }
 }
 
-// The program is structured decision -> record -> return: the decision is fully
-// computed first, then observed, then returned. No enforcement path may return
-// before the observation branch -- that is exactly how default-deny drops used
-// to become invisible to monitoring.
+// Ordered decision -> record -> return, so no enforcement return can skip the
+// observation branch.
 SEC("cgroup_skb/egress")
 int cgroup_egress(struct __sk_buff *skb)
 {
@@ -64,16 +59,11 @@ int cgroup_egress(struct __sk_buff *skb)
     __u8 *f = bpf_map_lookup_elem(&flags, &zero_key);
     __u32 daddr = ip->daddr;
 
-    // invalid state. it should always be present.
-    // 3 is NET_XMIT_CN (transmit with congestion signal), i.e. this fails
-    // open. Preserved byte-for-byte; changing the return contract is out of
-    // scope here.
+    // invalid state. it should always be present
     if (f == NULL) {
         return 3;
     };
 
-    // decision: under default deny only allowed_ips passes, otherwise only
-    // banned_ips drops
     __u32 decision = DECISION_ALLOW;
     if (*f & (1 << DEFAULT_DENY)) {
         if (bpf_map_lookup_elem(&allowed_ips, &daddr) == NULL) {
@@ -83,12 +73,11 @@ int cgroup_egress(struct __sk_buff *skb)
         decision = DECISION_DENY;
     }
 
-    // record: learning mode counts every flow, denied ones included
     if (*f & (1 << LEARNING_MODE)) {
         record_ip_event(daddr, decision);
     }
 
-    // return: 1 = pass, 0 = drop
+    // 1 = pass, 0 = drop
     if (decision == DECISION_DENY) {
         return 0;
     }

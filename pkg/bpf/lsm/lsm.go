@@ -35,12 +35,12 @@ type LsmEnforcer struct {
 
 	// openEvents is a hash-of-maps keyed by cgroup id; each value is an inner
 	// path->count hash the kernel program bumps on every open/exec. innerSpec is
-	// the template used to create those inner maps (see observe.go).
+	// the template for those inner maps.
 	openEvents *ebpf.Map
 	innerSpec  *ebpf.MapSpec
 
 	// observeMu guards observed, the inner maps this enforcer created.
-	observeMu sync.Mutex
+	observeMu sync.RWMutex
 	observed  map[uint64]*ebpf.Map
 }
 
@@ -56,10 +56,9 @@ func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error
 }
 
 // prepareOpenEvents clears the ELF-provided contents of the open_events
-// hash-of-maps (its single entry is the template inner map at key 0, not a real
-// cgroup id) and returns a copy of the inner-map template used to create the
-// per-cgid count maps. It returns nil when the program has no open_events map,
-// which leaves observation unavailable rather than panicking.
+// hash-of-maps, whose single entry is the template inner map at key 0 rather
+// than a real cgroup id, and returns a copy of that template. nil means
+// observation is unavailable for this program.
 func prepareOpenEvents(spec *ebpf.CollectionSpec) *ebpf.MapSpec {
 	outer := spec.Maps["open_events"]
 	if outer == nil {
@@ -87,9 +86,6 @@ func newForFileOpen(logger *logr.Logger) (*LsmEnforcer, error) {
 	spec.Programs["generic_lsm_handler"].AttachTo = PROG_TYPE_LSM_OPEN
 	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
-	// open_events starts empty: the ELF pre-populates it with the template inner
-	// map at key 0, which is not a real cgroup id. EnableObservation inserts the
-	// per-cgid inner maps explicitly.
 	innerSpec := prepareOpenEvents(spec)
 
 	objs := &lsmFileOpenObjects{}
@@ -97,10 +93,8 @@ func newForFileOpen(logger *logr.Logger) (*LsmEnforcer, error) {
 		return nil, err
 	}
 	l.innerSpec = innerSpec
-	// take out the relevant bpf objects from the program type specific variant
-	// into generic fields and store them on the LsmEnforcer. this is to avoid
-	// embedding both lsmFileOpenObjects and lsmExecCheckOptions and later in
-	// the code having to check which one isn't nil
+	// hoist the program-specific objects into generic fields so the rest of the
+	// code never has to ask which variant is loaded
 	l.closer = objs
 	l.prog = objs.GenericLsmHandler
 	l.cgids = objs.Cgids
@@ -156,7 +150,6 @@ func (l *LsmEnforcer) Close() error {
 			retErr = err
 		}
 	}
-	// try to close the bpf objects even if closing the link errored
 	if l.closer != nil {
 		if err := l.closer.Close(); err != nil && retErr == nil {
 			retErr = err
@@ -264,8 +257,6 @@ func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
 		return nil
 	}
 
-	// key deletions may error if the key doesn't exist. but thats fine
-	// we don't care about that
 	_ = l.defaultDeny.Delete(&k)
 	return nil
 }
