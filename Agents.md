@@ -1,5 +1,8 @@
 # Instructions for coding agents
 
+Read [CLAUDE.md](CLAUDE.md) first: it holds the conventions review keeps
+catching, and every rule in it is there because a real PR broke it.
+
 Read the [DESIGN](docs/dev/DESIGN.md) before making any significant change.
 
 ## Documentation Guidelines
