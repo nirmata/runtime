@@ -88,16 +88,18 @@ func TestPathMatcher(t *testing.T) {
 
 func TestBehaviorsWithoutEntriesAreAbsent(t *testing.T) {
 	for _, p := range []*compiler.AllowDenyPair{nil, {}, {Allow: nil, Deny: nil}} {
-		if nb := compileNetBehavior(p); nb.present {
-			t.Errorf("net behavior for %+v is present", p)
+		nb := compileNetBehavior(p)
+		if nb != nil {
+			t.Errorf("net behavior for %+v = %+v, want nil", p, nb)
 		}
-		if nb := compileNetBehavior(p); nb.eval(netip.MustParseAddr("10.0.0.5")).violation {
+		if nb.eval(netip.MustParseAddr("10.0.0.5")).violation {
 			t.Errorf("absent net behavior for %+v reported a violation", p)
 		}
-		if pb := compilePathBehavior(p); pb.present {
-			t.Errorf("path behavior for %+v is present", p)
+		pb := compilePathBehavior(p)
+		if pb != nil {
+			t.Errorf("path behavior for %+v = %+v, want nil", p, pb)
 		}
-		if pb := compilePathBehavior(p); pb.eval("/etc/shadow").violation {
+		if pb.eval("/etc/shadow").violation {
 			t.Errorf("absent path behavior for %+v reported a violation", p)
 		}
 	}

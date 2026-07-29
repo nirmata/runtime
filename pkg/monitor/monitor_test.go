@@ -25,10 +25,14 @@ import (
 type fakeSink struct {
 	mu       sync.Mutex
 	findings []reporter.Finding
+	calls    int
 	panics   bool
 }
 
 func (f *fakeSink) Report(fi reporter.Finding) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
 	if f.panics {
 		panic("boom: reporting finding")
 	}
@@ -43,44 +47,28 @@ func (f *fakeSink) all() []reporter.Finding {
 	return append([]reporter.Finding(nil), f.findings...)
 }
 
-type violation struct{ PolicyUID, PodUID string }
-
-type fakeStatus struct {
-	mu         sync.Mutex
-	violations []violation
-	conditions int
-	panics     bool
-}
-
-func (f *fakeStatus) RecordViolation(policyUID, podUID string) {
-	if f.panics {
-		panic("boom: recording violation")
-	}
+func (f *fakeSink) reports() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.violations = append(f.violations, violation{policyUID, podUID})
-}
-
-func (f *fakeStatus) RecordCondition(policyUID string, cond metav1.Condition) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.conditions++
-}
-
-func (f *fakeStatus) all() []violation {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]violation(nil), f.violations...)
+	return f.calls
 }
 
 // --- helpers ---------------------------------------------------------------
 
-func testMonitor(t *testing.T) (*Monitor, *fakeSink, *fakeStatus, *metrics.Metrics) {
+func testMonitor(t *testing.T) (*Monitor, *fakeSink, *metrics.Metrics) {
 	t.Helper()
 	sink := &fakeSink{}
-	status := &fakeStatus{}
 	m := metrics.New(prometheus.NewRegistry())
-	return New(testr.New(t), sink, status, m), sink, status, m
+	return New(testr.New(t), sink, m), sink, m
+}
+
+// findingsPerPolicy counts the findings emitted per policy uid.
+func findingsPerPolicy(fs []reporter.Finding) map[string]int {
+	out := map[string]int{}
+	for _, f := range fs {
+		out[f.PolicyUID]++
+	}
+	return out
 }
 
 func sel(t *testing.T, kv map[string]string) labels.Selector {
@@ -270,7 +258,7 @@ func TestHandleEvent_ViolationDecisionTable(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, sink, status, _ := testMonitor(t)
+			m, sink, _ := testMonitor(t)
 			if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", tc.ips, tc.open, tc.exec), events.EventTypeCreate); err != nil {
 				t.Fatalf("RuntimePolicyEvent: %v", err)
 			}
@@ -281,9 +269,6 @@ func TestHandleEvent_ViolationDecisionTable(t *testing.T) {
 			if !tc.wantViolation {
 				if len(got) != 0 {
 					t.Fatalf("expected no findings, got %d: %+v", len(got), got)
-				}
-				if v := status.all(); len(v) != 0 {
-					t.Fatalf("expected no violations, got %+v", v)
 				}
 				return
 			}
@@ -299,9 +284,8 @@ func TestHandleEvent_ViolationDecisionTable(t *testing.T) {
 			if got[0].Result != reporter.ResultFail {
 				t.Errorf("result = %q, want %q", got[0].Result, reporter.ResultFail)
 			}
-			want := []violation{{PolicyUID: "uid-p", PodUID: "pod-uid-1"}}
-			if diff := cmp.Diff(want, status.all()); diff != "" {
-				t.Errorf("violations (-want +got):\n%s", diff)
+			if got[0].PolicyUID != "uid-p" || got[0].Pod.UID != "pod-uid-1" {
+				t.Errorf("finding is for (%q, %q), want (uid-p, pod-uid-1)", got[0].PolicyUID, got[0].Pod.UID)
 			}
 		})
 	}
@@ -324,7 +308,7 @@ func TestHandleEvent_SelectorGatesOnPodLabels(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, sink, status, _ := testMonitor(t)
+			m, sink, _ := testMonitor(t)
 			if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 				t.Fatalf("RuntimePolicyEvent: %v", err)
 			}
@@ -333,10 +317,9 @@ func TestHandleEvent_SelectorGatesOnPodLabels(t *testing.T) {
 
 			m.HandleEvent(ev)
 
-			gotViolation := len(sink.all()) == 1 && len(status.all()) == 1
+			gotViolation := len(sink.all()) == 1
 			if gotViolation != tc.wantViolation {
-				t.Errorf("violation = %v, want %v (findings=%d violations=%d)",
-					gotViolation, tc.wantViolation, len(sink.all()), len(status.all()))
+				t.Errorf("violation = %v, want %v (findings=%d)", gotViolation, tc.wantViolation, len(sink.all()))
 			}
 		})
 	}
@@ -345,7 +328,7 @@ func TestHandleEvent_SelectorGatesOnPodLabels(t *testing.T) {
 // The label map belongs to pkg/attribution's index and is shared with every
 // other sink (HANDOFFS: A7 -> sinks). Monitor must treat it as read-only.
 func TestHandleEvent_DoesNotMutatePodLabels(t *testing.T) {
-	m, _, _, _ := testMonitor(t)
+	m, _, _ := testMonitor(t)
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{compiler.StarTarget}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -364,7 +347,7 @@ func TestHandleEvent_DoesNotMutatePodLabels(t *testing.T) {
 // --- finding contents ------------------------------------------------------
 
 func TestHandleEvent_FindingContents(t *testing.T) {
-	m, sink, _, _ := testMonitor(t)
+	m, sink, _ := testMonitor(t)
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-net", "block-egress", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -390,7 +373,7 @@ func TestHandleEvent_FindingContents(t *testing.T) {
 }
 
 func TestHandleEvent_ExecFindingCarriesProcessSummary(t *testing.T) {
-	m, sink, _, _ := testMonitor(t)
+	m, sink, _ := testMonitor(t)
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-exec", "no-curl", nil, nil, pair(nil, []string{"/usr/bin/curl"})), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -412,8 +395,8 @@ func TestHandleEvent_ExecFindingCarriesProcessSummary(t *testing.T) {
 
 // --- once per (policy, pod) per event --------------------------------------
 
-func TestRecordViolationOncePerPolicyPodPerEvent(t *testing.T) {
-	m, sink, status, _ := testMonitor(t)
+func TestHandleEvent_OneFindingPerViolatedPolicyPerEvent(t *testing.T) {
+	m, sink, _ := testMonitor(t)
 	// two policies, both selecting the pod and both violated by the same event
 	a := monitorPolicy(t, "uid-a", "a", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	b := monitorPolicy(t, "uid-b", "b", pair([]string{"10.0.0.9"}, []string{compiler.StarTarget}), nil, nil)
@@ -425,21 +408,14 @@ func TestRecordViolationOncePerPolicyPodPerEvent(t *testing.T) {
 
 	m.HandleEvent(netEvent("10.0.0.5"))
 
-	if got := len(sink.all()); got != 2 {
-		t.Errorf("findings = %d, want 2 (one per policy)", got)
-	}
-	perPolicy := map[string]int{}
-	for _, v := range status.all() {
-		perPolicy[v.PolicyUID+"/"+v.PodUID]++
-	}
-	want := map[string]int{"uid-a/pod-uid-1": 1, "uid-b/pod-uid-1": 1}
-	if diff := cmp.Diff(want, perPolicy); diff != "" {
-		t.Errorf("violations per (policy,pod) (-want +got):\n%s", diff)
+	want := map[string]int{"uid-a": 1, "uid-b": 1}
+	if diff := cmp.Diff(want, findingsPerPolicy(sink.all())); diff != "" {
+		t.Errorf("findings per policy (-want +got):\n%s", diff)
 	}
 }
 
-func TestRecordViolationOncePerEvent_RepeatEventRecordsAgain(t *testing.T) {
-	m, _, status, _ := testMonitor(t)
+func TestHandleEvent_RepeatEventProducesAnotherFinding(t *testing.T) {
+	m, sink, _ := testMonitor(t)
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -447,13 +423,13 @@ func TestRecordViolationOncePerEvent_RepeatEventRecordsAgain(t *testing.T) {
 	m.HandleEvent(netEvent("10.0.0.5"))
 	m.HandleEvent(netEvent("10.0.0.5"))
 
-	if got := len(status.all()); got != 2 {
-		t.Errorf("violations = %d, want 2 (one per event)", got)
+	if got := len(sink.all()); got != 2 {
+		t.Errorf("findings = %d, want 2 (one per event)", got)
 	}
 }
 
-func TestHandleEvent_SecondPodOfSamePolicyRecordsItsOwnViolation(t *testing.T) {
-	m, _, status, _ := testMonitor(t)
+func TestHandleEvent_SecondPodOfSamePolicyGetsItsOwnFinding(t *testing.T) {
+	m, sink, _ := testMonitor(t)
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -464,9 +440,12 @@ func TestHandleEvent_SecondPodOfSamePolicyRecordsItsOwnViolation(t *testing.T) {
 	m.HandleEvent(first)
 	m.HandleEvent(second)
 
-	want := []violation{{"uid-p", "pod-uid-1"}, {"uid-p", "pod-uid-2"}}
-	if diff := cmp.Diff(want, status.all()); diff != "" {
-		t.Errorf("violations (-want +got):\n%s", diff)
+	var pods []string
+	for _, f := range sink.all() {
+		pods = append(pods, f.Pod.UID)
+	}
+	if diff := cmp.Diff([]string{"pod-uid-1", "pod-uid-2"}, pods); diff != "" {
+		t.Errorf("finding pod uids (-want +got):\n%s", diff)
 	}
 }
 
@@ -486,7 +465,7 @@ func TestRuntimePolicyEvent_IgnoresUndecidableModes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, sink, status, _ := testMonitor(t)
+			m, sink, _ := testMonitor(t)
 			rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{compiler.StarTarget}), nil, nil)
 			rp.Mode = tc.mode
 			if err := m.RuntimePolicyEvent(rp, tc.eventType); err != nil {
@@ -498,15 +477,15 @@ func TestRuntimePolicyEvent_IgnoresUndecidableModes(t *testing.T) {
 
 			m.HandleEvent(netEvent("10.0.0.5"))
 
-			if len(sink.all()) != 0 || len(status.all()) != 0 {
-				t.Errorf("undecidable policy produced output: findings=%+v violations=%+v", sink.all(), status.all())
+			if got := sink.all(); len(got) != 0 {
+				t.Errorf("undecidable policy produced findings: %+v", got)
 			}
 		})
 	}
 }
 
 func TestRuntimePolicyEvent_PolicySwitchingToEnforceStopsCounterfactuals(t *testing.T) {
-	m, sink, _, _ := testMonitor(t)
+	m, sink, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
@@ -550,7 +529,7 @@ func TestRuntimePolicyEvent_PolicySwitchingToEnforceStopsCounterfactuals(t *test
 // --- kernel deny attribution (enforce mode) ---------------------------------
 
 func TestHandleEvent_KernelDenyIsAttributedToEnforcePolicy(t *testing.T) {
-	m, sink, status, mtx := testMonitor(t)
+	m, sink, mtx := testMonitor(t)
 	rp := monitorPolicy(t, "uid-e", "block-egress", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	rp.Mode = compiler.ModeEnforce
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
@@ -577,10 +556,6 @@ func TestHandleEvent_KernelDenyIsAttributedToEnforcePolicy(t *testing.T) {
 	if diff := cmp.Diff(want, sink.all()); diff != "" {
 		t.Errorf("findings (-want +got):\n%s", diff)
 	}
-	// the violation lands on the enforcing policy's status
-	if diff := cmp.Diff([]violation{{PolicyUID: "uid-e", PodUID: "pod-uid-1"}}, status.all()); diff != "" {
-		t.Errorf("violations (-want +got):\n%s", diff)
-	}
 	// an attributed deny is not dropped
 	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 0 {
 		t.Errorf("unattributed kernel deny counter = %v, want 0", got)
@@ -588,7 +563,7 @@ func TestHandleEvent_KernelDenyIsAttributedToEnforcePolicy(t *testing.T) {
 }
 
 func TestHandleEvent_EnforcePolicyIgnoresEventsTheKernelAllowed(t *testing.T) {
-	m, sink, status, _ := testMonitor(t)
+	m, sink, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-e", "e", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	rp.Mode = compiler.ModeEnforce
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
@@ -600,8 +575,8 @@ func TestHandleEvent_EnforcePolicyIgnoresEventsTheKernelAllowed(t *testing.T) {
 	// not claim an enforcement that never happened
 	m.HandleEvent(netEvent("10.0.0.5"))
 
-	if len(sink.all()) != 0 || len(status.all()) != 0 {
-		t.Errorf("enforce policy produced output for an allowed event: findings=%+v violations=%+v", sink.all(), status.all())
+	if got := sink.all(); len(got) != 0 {
+		t.Errorf("enforce policy produced findings for an allowed event: %+v", got)
 	}
 }
 
@@ -634,7 +609,7 @@ func TestHandleEvent_UnattributedKernelDenyIsCounted(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, _, _, mtx := testMonitor(t)
+			m, _, mtx := testMonitor(t)
 			tc.setup(t, m)
 
 			ev := netEvent("10.0.0.5")
@@ -651,7 +626,7 @@ func TestHandleEvent_UnattributedKernelDenyIsCounted(t *testing.T) {
 // A kernel deny attributed to an enforce policy does not stop monitor-mode
 // policies from issuing their independent counterfactual for the same event.
 func TestHandleEvent_MonitorCounterfactualIsIndependentOfKernelDeny(t *testing.T) {
-	m, sink, _, mtx := testMonitor(t)
+	m, sink, mtx := testMonitor(t)
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-m", "m", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -685,7 +660,7 @@ func TestHandleEvent_MonitorCounterfactualIsIndependentOfKernelDeny(t *testing.T
 }
 
 func TestRuntimePolicyEvent_UpdateReplacesValues(t *testing.T) {
-	m, sink, _, _ := testMonitor(t)
+	m, sink, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
@@ -698,8 +673,8 @@ func TestRuntimePolicyEvent_UpdateReplacesValues(t *testing.T) {
 		t.Fatalf("tracked %d policies, want 1", m.Len())
 	}
 
-	m.HandleEvent(netEvent("10.0.0.5")) // old value: no longer denied
-	m.HandleEvent(netEvent("10.0.0.6")) // new value: denied
+	m.HandleEvent(netEvent("10.0.0.5")) // the replaced value: not denied
+	m.HandleEvent(netEvent("10.0.0.6")) // the updated value: denied
 
 	got := sink.all()
 	if len(got) != 1 {
@@ -713,7 +688,7 @@ func TestRuntimePolicyEvent_UpdateReplacesValues(t *testing.T) {
 // A tracked policy snapshots the pair values: egressmgr mutates the
 // EvaluationResult it holds in place, and monitor must not see that.
 func TestRuntimePolicyEvent_SnapshotsBehaviorValues(t *testing.T) {
-	m, sink, _, _ := testMonitor(t)
+	m, sink, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
@@ -747,7 +722,7 @@ func TestRuntimePolicyEvent_IgnoresPoliciesThatCanNeverViolate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, sink, status, _ := testMonitor(t)
+			m, sink, _ := testMonitor(t)
 			rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{compiler.StarTarget}), nil, nil)
 			tc.mut(rp)
 			if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
@@ -757,15 +732,15 @@ func TestRuntimePolicyEvent_IgnoresPoliciesThatCanNeverViolate(t *testing.T) {
 				t.Fatalf("tracked %d policies, want 0", m.Len())
 			}
 			m.HandleEvent(netEvent("10.0.0.5"))
-			if len(sink.all()) != 0 || len(status.all()) != 0 {
-				t.Errorf("unexpected output: findings=%+v violations=%+v", sink.all(), status.all())
+			if got := sink.all(); len(got) != 0 {
+				t.Errorf("unexpected findings: %+v", got)
 			}
 		})
 	}
 }
 
 func TestRuntimePolicyEvent_NilResultIsAnError(t *testing.T) {
-	m, _, _, _ := testMonitor(t)
+	m, _, _ := testMonitor(t)
 	if err := m.RuntimePolicyEvent(nil, events.EventTypeCreate); err == nil {
 		t.Error("expected an error for a nil evaluation result")
 	}
@@ -790,7 +765,7 @@ func TestHandleEvent_IgnoresUndecidableEvents(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, sink, status, _ := testMonitor(t)
+			m, sink, _ := testMonitor(t)
 			rp := monitorPolicy(t, "uid-p", "p",
 				pair(nil, []string{compiler.StarTarget}),
 				pair(nil, []string{compiler.StarTarget}),
@@ -801,8 +776,8 @@ func TestHandleEvent_IgnoresUndecidableEvents(t *testing.T) {
 
 			m.HandleEvent(tc.ev)
 
-			if len(sink.all()) != 0 || len(status.all()) != 0 {
-				t.Errorf("undecidable event produced output: findings=%+v violations=%+v", sink.all(), status.all())
+			if got := sink.all(); len(got) != 0 {
+				t.Errorf("undecidable event produced findings: %+v", got)
 			}
 		})
 	}
@@ -810,8 +785,8 @@ func TestHandleEvent_IgnoresUndecidableEvents(t *testing.T) {
 
 // --- degraded wiring -------------------------------------------------------
 
-func TestHandleEvent_ToleratesNilSinkStatusAndMetrics(t *testing.T) {
-	m := New(testr.New(t), nil, nil, nil)
+func TestHandleEvent_ToleratesNilSinkAndMetrics(t *testing.T) {
+	m := New(testr.New(t), nil, nil)
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -823,34 +798,19 @@ func TestHandleEvent_ToleratesNilSinkStatusAndMetrics(t *testing.T) {
 }
 
 func TestHandleEvent_NeverPanicsOutward(t *testing.T) {
-	tests := []struct {
-		name         string
-		sinkPanics   bool
-		statusPanics bool
-	}{
-		{name: "panicking finding sink", sinkPanics: true},
-		{name: "panicking status recorder", statusPanics: true},
-		{name: "both panic", sinkPanics: true, statusPanics: true},
+	m := New(testr.New(t), &fakeSink{panics: true}, metrics.New(prometheus.NewRegistry()))
+	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			sink := &fakeSink{panics: tc.sinkPanics}
-			status := &fakeStatus{panics: tc.statusPanics}
-			m := New(testr.New(t), sink, status, metrics.New(prometheus.NewRegistry()))
-			if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
-				t.Fatalf("RuntimePolicyEvent: %v", err)
-			}
 
-			m.HandleEvent(netEvent("10.0.0.5")) // must return normally
-		})
-	}
+	m.HandleEvent(netEvent("10.0.0.5")) // must return normally
 }
 
-// A panicking collaborator for one policy must not hide the violation of the
-// next policy: each call is guarded individually.
-func TestHandleEvent_PanickingStatusDoesNotSkipRemainingPolicies(t *testing.T) {
-	sink := &fakeSink{}
-	m := New(testr.New(t), sink, &fakeStatus{panics: true}, nil)
+// A panicking sink for one policy must not hide the violation of the next
+// policy: each Report call is guarded individually.
+func TestHandleEvent_PanickingSinkDoesNotSkipRemainingPolicies(t *testing.T) {
+	sink := &fakeSink{panics: true}
+	m := New(testr.New(t), sink, nil)
 	for _, uid := range []string{"uid-a", "uid-b"} {
 		if err := m.RuntimePolicyEvent(monitorPolicy(t, uid, uid, pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 			t.Fatalf("RuntimePolicyEvent: %v", err)
@@ -859,15 +819,14 @@ func TestHandleEvent_PanickingStatusDoesNotSkipRemainingPolicies(t *testing.T) {
 
 	m.HandleEvent(netEvent("10.0.0.5"))
 
-	if got := len(sink.all()); got != 2 {
-		t.Errorf("findings = %d, want 2 despite the panicking status recorder", got)
+	if got := sink.reports(); got != 2 {
+		t.Errorf("Report calls = %d, want 2 despite the first one panicking", got)
 	}
 }
 
 // Findings without a DNS-1123 namespace are dropped by the reporter
-// (HANDOFFS: A8), so monitor counts them instead of emitting silently. The
-// violation itself still happened and is still recorded.
-func TestHandleEvent_DropsFindingWithoutUsableNamespaceButRecordsViolation(t *testing.T) {
+// (HANDOFFS: A8), so monitor counts them instead of emitting silently.
+func TestHandleEvent_CountsFindingWithoutUsableNamespace(t *testing.T) {
 	tests := []struct {
 		name      string
 		namespace string
@@ -877,7 +836,7 @@ func TestHandleEvent_DropsFindingWithoutUsableNamespaceButRecordsViolation(t *te
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, sink, status, mtx := testMonitor(t)
+			m, sink, mtx := testMonitor(t)
 			if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 				t.Fatalf("RuntimePolicyEvent: %v", err)
 			}
@@ -886,11 +845,8 @@ func TestHandleEvent_DropsFindingWithoutUsableNamespaceButRecordsViolation(t *te
 
 			m.HandleEvent(ev)
 
-			if got := len(sink.all()); got != 0 {
-				t.Errorf("findings = %d, want 0", got)
-			}
-			if got := len(status.all()); got != 1 {
-				t.Errorf("violations = %d, want 1", got)
+			if got := sink.reports(); got != 0 {
+				t.Errorf("Report calls = %d, want 0", got)
 			}
 			if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, "unattributed")); got != 1 {
 				t.Errorf("events_dropped_total{source=monitor,reason=unattributed} = %v, want 1", got)
@@ -900,7 +856,7 @@ func TestHandleEvent_DropsFindingWithoutUsableNamespaceButRecordsViolation(t *te
 }
 
 func TestNameIsMonitor(t *testing.T) {
-	m, _, _, _ := testMonitor(t)
+	m, _, _ := testMonitor(t)
 	if got := m.Name(); got != "monitor" {
 		t.Errorf("Name() = %q, want monitor", got)
 	}
@@ -911,7 +867,7 @@ func TestNameIsMonitor(t *testing.T) {
 // The collector fans events out while the informer updates policies; -race
 // must stay clean across that overlap.
 func TestHandleEvent_ConcurrentWithPolicyUpdates(t *testing.T) {
-	m, _, _, _ := testMonitor(t)
+	m, _, _ := testMonitor(t)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {

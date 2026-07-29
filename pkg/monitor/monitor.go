@@ -1,34 +1,3 @@
-// Package monitor turns observed runtime events into findings — the userspace
-// half of observation. It answers two distinct questions, one per policy mode:
-//
-//   - Monitor mode is the "trial run" of a RuntimePolicy: the kernel programs
-//     nothing to block, the managers only count what happened, and this
-//     package decides — in userspace, from the same allow/deny values the
-//     enforcing form of the policy would program — whether an observation
-//     WOULD have been denied (Event.WouldDeny). Each such observation becomes
-//     a reporter.Finding with result "fail" and a violation recorded against
-//     the policy's status.
-//
-//   - Enforce mode blocks in the kernel, and the poll sources report the
-//     kernel's actual decision on each observation (Event.KernelDenied). The
-//     kernel itself is policy-blind: its BPF maps are per-pod flat sets
-//     (allowed/banned entries plus one default-deny bit) with no policy
-//     dimension, so attributing a deny to a policy in the kernel would require
-//     per-policy maps. This package does the attribution in userspace instead:
-//     it re-evaluates the same matchers over the enforce-mode policies it
-//     tracks, and each policy whose lists produce that deny gets a finding
-//     saying the operation WAS denied, plus a violation on its status. A
-//     kernel deny that no tracked enforce policy explains is counted and
-//     logged — it must never vanish silently.
-//
-// Two properties matter more than features here:
-//
-//   - HandleEvent is on the event hot path. Policy values are compiled into
-//     matchers once, when the policy is tracked, so the per-event cost is a
-//     selector match plus map lookups.
-//   - HandleEvent never panics outward (runtimeevent.Sink contract) and
-//     never mutates the event's pod labels: that map is owned by
-//     pkg/attribution's index and shared with every other sink.
 package monitor
 
 import (
@@ -84,9 +53,11 @@ type trackedPolicy struct {
 	// attributes the kernel's actual denies.
 	mode     string
 	selector labels.Selector
-	net      netBehavior
-	open     pathBehavior
-	exec     pathBehavior
+	// net, open and exec are nil when the policy lists nothing for that
+	// behavior.
+	net  *netBehavior
+	open *pathBehavior
+	exec *pathBehavior
 }
 
 // Monitor implements events.RuntimePolicyEventHandler (policy tracking) and
@@ -96,7 +67,6 @@ type trackedPolicy struct {
 type Monitor struct {
 	log     logr.Logger
 	sink    FindingSink
-	status  runtimeevent.PolicyStatusRecorder
 	metrics *metrics.Metrics
 
 	mu sync.RWMutex
@@ -105,20 +75,13 @@ type Monitor struct {
 	policies map[string]*trackedPolicy
 }
 
-var (
-	_ events.RuntimePolicyEventHandler = (*Monitor)(nil)
-	_ runtimeevent.Sink                = (*Monitor)(nil)
-	_ FindingSink                      = (*reporter.Reporter)(nil)
-)
-
-// New builds a Monitor. sink, status and m may each be nil: a daemon without a
-// reporter (or without status writing, or without metrics) still evaluates
-// events, it just has fewer places to put the result.
-func New(log logr.Logger, findings FindingSink, status runtimeevent.PolicyStatusRecorder, m *metrics.Metrics) *Monitor {
+// New builds a Monitor. findings and m may each be nil: a daemon without a
+// reporter (or without metrics) still evaluates events, it just has fewer
+// places to put the result.
+func New(log logr.Logger, findings FindingSink, m *metrics.Metrics) *Monitor {
 	return &Monitor{
 		log:      log.WithName(sinkName),
 		sink:     findings,
-		status:   status,
 		metrics:  m,
 		policies: make(map[string]*trackedPolicy),
 	}
@@ -135,7 +98,7 @@ func (m *Monitor) Name() string { return sinkName }
 // attributed to the policy whose lists produced it: the kernel maps have no
 // policy dimension, so this userspace re-evaluation is what answers "which
 // policy denied that". A deleted policy is untracked, as is one whose
-// behaviors no longer hold any value or whose mode is unknown: none of those
+// behaviors hold no value at all or whose mode is unknown: none of those
 // can ever produce a finding, and keeping them would only slow the event path
 // down.
 func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error {
@@ -162,7 +125,7 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 		open:     compilePathBehavior(rp.Open),
 		exec:     compilePathBehavior(rp.Exec),
 	}
-	if !tp.net.present && !tp.open.present && !tp.exec.present {
+	if tp.net == nil && tp.open == nil && tp.exec == nil {
 		m.untrack(rp.UID, "policy has no network, open or exec entries")
 		return nil
 	}
@@ -178,7 +141,7 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 	m.mu.Unlock()
 
 	m.log.V(2).Info("tracking policy", "policy", tp.name, "uid", tp.uid, "mode", tp.mode,
-		"network", tp.net.present, "open", tp.open.present, "exec", tp.exec.present)
+		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil)
 	return nil
 }
 
@@ -215,14 +178,14 @@ func (m *Monitor) Len() int {
 }
 
 // HandleEvent evaluates ev against every tracked policy that selects the
-// event's pod, emitting at most one finding — and exactly one recorded
-// violation — per (policy, pod) for this event. Monitor-mode policies produce
-// counterfactual findings for every violation; enforce-mode policies produce
-// enforced findings only for events the kernel actually denied.
+// event's pod, emitting at most one finding per (policy, pod) for this event.
+// Monitor-mode policies produce counterfactual findings for every violation;
+// enforce-mode policies produce enforced findings only for events the kernel
+// actually denied.
 //
 // It satisfies runtimeevent.Sink: fast, non-blocking and never panicking
-// outward. The whole body runs behind utils.Guard because the finding sink and
-// the status recorder are interfaces supplied by the daemon.
+// outward. The whole body runs behind utils.Guard because the finding sink is
+// an interface supplied by the daemon.
 func (m *Monitor) HandleEvent(ev runtimeevent.Event) {
 	if err := utils.Guard("monitor: handling event", func() error {
 		m.handleEvent(ev)
@@ -301,22 +264,10 @@ func (tp *trackedPolicy) eval(behavior string, ev runtimeevent.Event) decision {
 	return decision{}
 }
 
-// record emits the finding and the status violation for one (policy, pod).
-// enforced says which kind of finding this is: the kernel actually denied the
-// operation and tp explains it (true), or tp is a monitor-mode policy that
-// would have denied it (false).
+// record emits the finding for one (policy, pod). enforced says which kind of
+// finding this is: the kernel actually denied the operation and tp explains it
+// (true), or tp is a monitor-mode policy that would have denied it (false).
 func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision, ev runtimeevent.Event, enforced bool) {
-	// The violation happened whether or not it can be reported, so status is
-	// recorded first and unconditionally.
-	if m.status != nil {
-		if err := utils.Guard("monitor: recording violation", func() error {
-			m.status.RecordViolation(tp.uid, ev.Pod.UID)
-			return nil
-		}); err != nil {
-			m.log.Error(err, "recording violation failed", "policy", tp.name, "uid", tp.uid)
-		}
-	}
-
 	m.log.V(4).Info("policy violation", "policy", tp.name, "uid", tp.uid,
 		"behavior", behavior, "podUid", ev.Pod.UID, "count", ev.Count,
 		"kernelDenied", ev.KernelDenied, "wouldDeny", ev.WouldDeny)

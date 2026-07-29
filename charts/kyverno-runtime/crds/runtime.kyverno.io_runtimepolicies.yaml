@@ -319,12 +319,6 @@ spec:
                       type: string
                     nodeName:
                       type: string
-                    observedPods:
-                      format: int32
-                      type: integer
-                    violatingPods:
-                      format: int32
-                      type: integer
                   required:
                   - nodeName
                   type: object
@@ -332,16 +326,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - nodeName
                 x-kubernetes-list-type: map
-              observedPods:
-                description: ObservedPods is the cluster-wide sum of per-node observed
-                  pods.
-                format: int32
-                type: integer
-              violatingPods:
-                description: ViolatingPods is the cluster-wide sum of per-node violating
-                  pods.
-                format: int32
-                type: integer
             type: object
         type: object
     served: true

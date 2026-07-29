@@ -80,14 +80,6 @@ type Behavior struct {
 
 // RuntimePolicyStatus reflects the observed state of the policy.
 type RuntimePolicyStatus struct {
-	// ObservedPods is the cluster-wide sum of per-node observed pods.
-	// +optional
-	ObservedPods int32 `json:"observedPods,omitempty"`
-
-	// ViolatingPods is the cluster-wide sum of per-node violating pods.
-	// +optional
-	ViolatingPods int32 `json:"violatingPods,omitempty"`
-
 	// LastEvaluatedTime is the last time the policy was evaluated.
 	// +optional
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
@@ -106,12 +98,6 @@ type RuntimePolicyStatus struct {
 // only by that node's daemon.
 type NodePolicyStatus struct {
 	NodeName string `json:"nodeName"`
-
-	// +optional
-	ObservedPods int32 `json:"observedPods,omitempty"`
-
-	// +optional
-	ViolatingPods int32 `json:"violatingPods,omitempty"`
 
 	// +optional
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`

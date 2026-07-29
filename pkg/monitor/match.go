@@ -111,34 +111,34 @@ func (m pathMatcher) matches(path string) bool {
 // netBehavior is a compiled network allow/deny pair.
 type netBehavior struct {
 	allow, deny netMatcher
-	present     bool
 }
 
 // pathBehavior is a compiled open or exec allow/deny pair.
 type pathBehavior struct {
 	allow, deny pathMatcher
-	present     bool
 }
 
-func compileNetBehavior(p *compiler.AllowDenyPair) netBehavior {
+// compileNetBehavior returns nil for a pair with no entries: the behavior is
+// absent from the policy, and nil is what every reader checks.
+func compileNetBehavior(p *compiler.AllowDenyPair) *netBehavior {
 	if !p.HasEntries() {
-		return netBehavior{}
+		return nil
 	}
-	return netBehavior{allow: newNetMatcher(p.Allow), deny: newNetMatcher(p.Deny), present: true}
+	return &netBehavior{allow: newNetMatcher(p.Allow), deny: newNetMatcher(p.Deny)}
 }
 
-func compilePathBehavior(p *compiler.AllowDenyPair) pathBehavior {
+func compilePathBehavior(p *compiler.AllowDenyPair) *pathBehavior {
 	if !p.HasEntries() {
-		return pathBehavior{}
+		return nil
 	}
-	return pathBehavior{allow: newPathMatcher(p.Allow), deny: newPathMatcher(p.Deny), present: true}
+	return &pathBehavior{allow: newPathMatcher(p.Allow), deny: newPathMatcher(p.Deny)}
 }
 
 // eval implements the network half of DESIGN §2.10: the destination violates
 // when an explicit deny value covers it, or when the behavior default-denies
 // ("*" in deny) and no allow value covers it.
-func (b netBehavior) eval(addr netip.Addr) decision {
-	if !b.present || !addr.IsValid() {
+func (b *netBehavior) eval(addr netip.Addr) decision {
+	if b == nil || !addr.IsValid() {
 		return decision{}
 	}
 	if b.deny.matches(addr) {
@@ -152,8 +152,8 @@ func (b netBehavior) eval(addr netip.Addr) decision {
 
 // eval is the open/exec form of netBehavior.eval, over the path (or exec
 // filename) instead of the destination address.
-func (b pathBehavior) eval(path string) decision {
-	if !b.present || path == "" {
+func (b *pathBehavior) eval(path string) decision {
+	if b == nil || path == "" {
 		return decision{}
 	}
 	if b.deny.matches(path) {

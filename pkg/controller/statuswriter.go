@@ -10,17 +10,13 @@ import (
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/util/retry"
 )
 
@@ -44,13 +40,8 @@ type policyStatusState struct {
 	// RuntimePolicyEvent arrives. Conditions and violations can be recorded
 	// before that (the handler fan-out is concurrent), in which case the entry
 	// waits, unflushed, for the name.
-	name     string
-	mode     string
-	selector labels.Selector
-
-	// matched and violating hold pod UIDs on THIS node.
-	matched   map[string]struct{}
-	violating map[string]struct{}
+	name string
+	mode string
 
 	// conditions is keyed by condition type; the last write wins.
 	conditions map[string]metav1.Condition
@@ -64,8 +55,6 @@ type policyStatusState struct {
 
 func newPolicyStatusState() *policyStatusState {
 	return &policyStatusState{
-		matched:    make(map[string]struct{}),
-		violating:  make(map[string]struct{}),
 		conditions: make(map[string]metav1.Condition),
 	}
 }
@@ -75,15 +64,10 @@ func (p *policyStatusState) touch() {
 	p.dirty = true
 }
 
-// StatusWriter turns the RuntimePolicy and pod event streams into this node's
-// shard of each policy's status. It handles both the pod and the policy
-// event streams (so it sees which pods this node matched) and is a
-// runtimeevent.PolicyStatusRecorder (so managers and sinks can attach
-// violations and conditions).
-//
-// Every daemon in the DaemonSet writes the same cluster-scoped object, so a
-// node only ever replaces its own entry in status.nodes and recomputes the
-// scalar sums from the full list.
+// StatusWriter turns the RuntimePolicy event stream into this node's shard of
+// each policy's status. Every daemon in the DaemonSet writes the same
+// cluster-scoped object, so a node only ever replaces its own entry in
+// status.nodes.
 type StatusWriter struct {
 	client   v1alpha1client.Interface
 	nodeName string
@@ -95,14 +79,7 @@ type StatusWriter struct {
 	mu sync.Mutex
 	// policies is keyed by policy UID.
 	policies map[string]*policyStatusState
-	// podLabels caches the labels of the pods on this node, keyed by pod UID,
-	// so a policy arriving after its pods can still compute its matched set.
-	podLabels map[string]map[string]string
 }
-
-var _ events.PodEventHandler = (*StatusWriter)(nil)
-var _ events.RuntimePolicyEventHandler = (*StatusWriter)(nil)
-var _ runtimeevent.PolicyStatusRecorder = (*StatusWriter)(nil)
 
 // NewStatusWriter builds a StatusWriter for this node. A non-positive interval
 // falls back to DefaultStatusFlushInterval.
@@ -111,13 +88,12 @@ func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval 
 		interval = DefaultStatusFlushInterval
 	}
 	return &StatusWriter{
-		client:    client,
-		nodeName:  nodeName,
-		interval:  interval,
-		log:       log.WithName("statuswriter"),
-		clock:     time.Now,
-		policies:  make(map[string]*policyStatusState),
-		podLabels: make(map[string]map[string]string),
+		client:   client,
+		nodeName: nodeName,
+		interval: interval,
+		log:      log.WithName("statuswriter"),
+		clock:    time.Now,
+		policies: make(map[string]*policyStatusState),
 	}
 }
 
@@ -132,8 +108,7 @@ func (s *StatusWriter) getOrCreate(uid string) *policyStatusState {
 	return st
 }
 
-// RuntimePolicyEvent caches the policy's identity, selector and mode, and
-// recomputes the set of pods on this node that it matches.
+// RuntimePolicyEvent caches the policy's identity and mode.
 func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventType string) error {
 	if res == nil || res.UID == "" {
 		return nil
@@ -153,110 +128,9 @@ func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventT
 		st.name = res.Name
 	}
 	st.mode = res.Mode
-	st.selector = res.Selector
 	st.conditions[ConditionApplied] = s.appliedCondition(res.Mode)
-	s.rematchLocked(st)
 	st.touch()
 	return nil
-}
-
-// PodEvent tracks the labels of the pods on this node and keeps every policy's
-// matched set in sync with them.
-func (s *StatusWriter) PodEvent(pod corev1.Pod, _ []*containers.ContainerCgroupInfo, t string) error {
-	uid := string(pod.UID)
-	if uid == "" {
-		return nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// copy: the index and the informer both hand out shared, read-only maps
-	podLabels := make(map[string]string, len(pod.Labels))
-	for k, v := range pod.Labels {
-		podLabels[k] = v
-	}
-	s.podLabels[uid] = podLabels
-
-	for _, st := range s.policies {
-		if s.applyMatchLocked(st, uid, podLabels) {
-			st.touch()
-		}
-	}
-	return nil
-}
-
-// PodDeleted drops the pod's cached labels and removes it from every policy's
-// matched and violating sets.
-func (s *StatusWriter) PodDeleted(uid string) error {
-	if uid == "" {
-		return nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	delete(s.podLabels, uid)
-	for _, st := range s.policies {
-		_, matched := st.matched[uid]
-		_, violating := st.violating[uid]
-		if !matched && !violating {
-			continue
-		}
-		delete(st.matched, uid)
-		delete(st.violating, uid)
-		st.touch()
-	}
-	return nil
-}
-
-// applyMatchLocked reconciles one pod's membership in one policy's matched set
-// and reports whether anything changed. Callers hold s.mu.
-func (s *StatusWriter) applyMatchLocked(st *policyStatusState, podUID string, podLabels map[string]string) bool {
-	_, was := st.matched[podUID]
-	now := st.selector != nil && st.selector.Matches(labels.Set(podLabels))
-	switch {
-	case now && !was:
-		st.matched[podUID] = struct{}{}
-		return true
-	case !now && was:
-		delete(st.matched, podUID)
-		// a pod that no longer matches cannot be violating the policy either
-		delete(st.violating, podUID)
-		return true
-	}
-	return false
-}
-
-// rematchLocked re-evaluates a policy's selector against every pod this node
-// has cached, which is what a selector change means. Pods that were recorded by
-// RecordViolation but never seen on the pod stream have no cached labels and are
-// left alone: they are removed when their delete event arrives, not on a guess.
-// Callers hold s.mu.
-func (s *StatusWriter) rematchLocked(st *policyStatusState) {
-	for podUID, podLabels := range s.podLabels {
-		s.applyMatchLocked(st, podUID, podLabels)
-	}
-}
-
-// RecordViolation marks a pod on this node as violating a policy. It is
-// idempotent: the same (policy, pod) pair reported repeatedly counts once.
-func (s *StatusWriter) RecordViolation(policyUID, podUID string) {
-	if policyUID == "" || podUID == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	st := s.getOrCreate(policyUID)
-	if _, ok := st.violating[podUID]; ok {
-		return
-	}
-	st.violating[podUID] = struct{}{}
-	// a violation is proof the pod is observed by this policy, even if the
-	// pod stream has not reached us yet
-	st.matched[podUID] = struct{}{}
-	st.touch()
 }
 
 // RecordCondition stores a condition to be merged into the policy's status on
@@ -325,8 +199,6 @@ func (s *StatusWriter) Run(ctx context.Context) error {
 type flushItem struct {
 	uid        string
 	name       string
-	observed   int32
-	violating  int32
 	conditions []metav1.Condition
 	gen        uint64
 }
@@ -355,9 +227,8 @@ func (s *StatusWriter) snapshot() []flushItem {
 			continue
 		}
 		if st.name == "" {
-			// a condition or violation arrived before the policy event; the
-			// object cannot be addressed yet, so keep it dirty and retry on
-			// the next tick
+			// a condition arrived before the policy event, so the object
+			// cannot be addressed yet; stay dirty and retry next tick
 			s.log.V(2).Info("policy status pending: no name known yet", "policyUid", uid)
 			continue
 		}
@@ -368,8 +239,6 @@ func (s *StatusWriter) snapshot() []flushItem {
 		items = append(items, flushItem{
 			uid:        uid,
 			name:       st.name,
-			observed:   int32(len(st.matched)),
-			violating:  int32(len(st.violating)),
 			conditions: conds,
 			gen:        st.gen,
 		})
@@ -424,11 +293,9 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 
 		setNodeShard(&updated.Status, v1alpha1.NodePolicyStatus{
 			NodeName:          s.nodeName,
-			ObservedPods:      item.observed,
-			ViolatingPods:     item.violating,
 			LastEvaluatedTime: &now,
 		})
-		recomputeStatusSums(&updated.Status)
+		recomputeLastEvaluated(&updated.Status)
 		for _, cond := range item.conditions {
 			if cond.Reason == "" {
 				// Reason is required by the API; a condition without one would
@@ -473,16 +340,12 @@ func setNodeShard(status *v1alpha1.RuntimePolicyStatus, shard v1alpha1.NodePolic
 	status.Nodes[idx] = shard
 }
 
-// recomputeStatusSums derives the cluster-wide scalars from the per-node
-// shards. It is the only writer of the scalar fields, so a node never has to
-// guess what the other nodes contributed.
-func recomputeStatusSums(status *v1alpha1.RuntimePolicyStatus) {
-	var observed, violating int32
+// recomputeLastEvaluated lifts the newest per-node timestamp to the top level,
+// so a node never has to guess what the other nodes contributed.
+func recomputeLastEvaluated(status *v1alpha1.RuntimePolicyStatus) {
 	var latest *metav1.Time
 	for i := range status.Nodes {
 		n := &status.Nodes[i]
-		observed += n.ObservedPods
-		violating += n.ViolatingPods
 		if n.LastEvaluatedTime == nil {
 			continue
 		}
@@ -491,8 +354,6 @@ func recomputeStatusSums(status *v1alpha1.RuntimePolicyStatus) {
 			latest = &t
 		}
 	}
-	status.ObservedPods = observed
-	status.ViolatingPods = violating
 	if latest != nil {
 		status.LastEvaluatedTime = latest
 	}

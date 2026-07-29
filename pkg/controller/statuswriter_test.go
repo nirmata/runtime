@@ -9,12 +9,10 @@ import (
 	fakeversioned "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned/fake"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -52,14 +50,6 @@ func selectorFor(t *testing.T, kv map[string]string) labels.Selector {
 	return sel
 }
 
-func labeledPod(ns, name, uid string, podLabels map[string]string) corev1.Pod {
-	return corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: ns, Name: name, UID: types.UID(uid), Labels: podLabels,
-		},
-	}
-}
-
 func getPolicy(t *testing.T, c *fakeversioned.Clientset, name string) *v1alpha1.RuntimePolicy {
 	t.Helper()
 	got, err := c.RuntimeV1alpha1().RuntimePolicies().Get(context.Background(), name, metav1.GetOptions{})
@@ -72,88 +62,40 @@ func getPolicy(t *testing.T, c *fakeversioned.Clientset, name string) *v1alpha1.
 // TestStatusWriterImplementsBothInterfaces documents the two seams the daemon
 // wires the StatusWriter into: the event fan-out and the recorder handed to the
 // managers and sinks.
-func TestStatusWriterImplementsBothInterfaces(t *testing.T) {
-	sel := selectorFor(t, map[string]string{"app": "web"})
-	sw, client := newTestStatusWriter(t, "node-1", policyObj("p", "uid-p"))
-
-	// Exercise the StatusWriter through each seam rather than nil-checking it:
-	// the assignments below are the compile-time proof, and the calls prove the
-	// daemon's entry points reach the same instance.
-	var podHandler events.PodEventHandler = sw
-	var rpHandler events.RuntimePolicyEventHandler = sw
-	var recorder runtimeevent.PolicyStatusRecorder = sw
-
-	if err := rpHandler.RuntimePolicyEvent(evalResult("uid-p", "p", compiler.ModeMonitor, sel), events.EventTypeCreate); err != nil {
-		t.Fatalf("RuntimePolicyEvent via events.RuntimePolicyEventHandler: %v", err)
-	}
-	if err := podHandler.PodEvent(labeledPod("ns", "a", "pod-a", map[string]string{"app": "web"}), nil, events.EventTypeCreate); err != nil {
-		t.Fatalf("PodEvent via events.PodEventHandler: %v", err)
-	}
-	recorder.RecordViolation("uid-p", "pod-a")
-
-	if err := sw.Flush(t.Context()); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	if got := getPolicy(t, client, "p").Status.ViolatingPods; got != 1 {
-		t.Errorf("violation recorded through the recorder seam did not reach status: got %d, want 1", got)
-	}
-}
-
-func TestStatusWriterWritesOwnNodeShardAndSums(t *testing.T) {
-	sel := selectorFor(t, map[string]string{"app": "web"})
+func TestStatusWriterWritesOwnNodeShard(t *testing.T) {
 	sw, client := newTestStatusWriter(t, "node-b", policyObj("p", "uid-1"))
 
-	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, sel), events.EventTypeCreate); err != nil {
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	// two matching pods, one that does not match
-	for _, p := range []corev1.Pod{
-		labeledPod("ns", "a", "pod-a", map[string]string{"app": "web"}),
-		labeledPod("ns", "b", "pod-b", map[string]string{"app": "web"}),
-		labeledPod("ns", "c", "pod-c", map[string]string{"app": "other"}),
-	} {
-		if err := sw.PodEvent(p, nil, events.EventTypeCreate); err != nil {
-			t.Fatal(err)
-		}
-	}
-	sw.RecordViolation("uid-1", "pod-a")
-
 	if err := sw.Flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 
 	got := getPolicy(t, client, "p")
-	wantNodes := []v1alpha1.NodePolicyStatus{{
-		NodeName:          "node-b",
-		ObservedPods:      2,
-		ViolatingPods:     1,
-		LastEvaluatedTime: ptrTime(fixedNow),
-	}}
-	if diff := cmp.Diff(wantNodes, got.Status.Nodes); diff != "" {
-		t.Errorf("status.nodes mismatch (-want +got):\n%s", diff)
+	if len(got.Status.Nodes) != 1 {
+		t.Fatalf("nodes = %+v, want exactly this node's shard", got.Status.Nodes)
 	}
-	if got.Status.ObservedPods != 2 || got.Status.ViolatingPods != 1 {
-		t.Errorf("scalars = (%d, %d), want (2, 1)", got.Status.ObservedPods, got.Status.ViolatingPods)
+	if got.Status.Nodes[0].NodeName != "node-b" {
+		t.Errorf("nodes[0].nodeName = %q, want node-b", got.Status.Nodes[0].NodeName)
 	}
-	if got.Status.LastEvaluatedTime == nil || !got.Status.LastEvaluatedTime.Time.Equal(fixedNow) {
-		t.Errorf("lastEvaluatedTime = %v, want %v", got.Status.LastEvaluatedTime, fixedNow)
+	if got.Status.Nodes[0].LastEvaluatedTime == nil {
+		t.Error("nodes[0].lastEvaluatedTime is nil, want the flush timestamp")
+	}
+	if got.Status.LastEvaluatedTime == nil {
+		t.Error("status.lastEvaluatedTime is nil, want it lifted from the shard")
 	}
 }
 
-// TestStatusWriterReplacesOnlyOwnNodeShard is the DaemonSet-contention case:
-// every node writes the same cluster-scoped object, so a flush must leave the
-// other nodes' entries alone and recompute the scalars from the whole list.
 func TestStatusWriterReplacesOnlyOwnNodeShard(t *testing.T) {
 	other := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
 	existing := policyObj("p", "uid-1")
 	existing.Status = v1alpha1.RuntimePolicyStatus{
-		ObservedPods:      7,
-		ViolatingPods:     3,
 		LastEvaluatedTime: ptrTime(other),
 		Nodes: []v1alpha1.NodePolicyStatus{
-			{NodeName: "node-a", ObservedPods: 4, ViolatingPods: 1, LastEvaluatedTime: ptrTime(other)},
-			{NodeName: "node-b", ObservedPods: 3, ViolatingPods: 2, LastEvaluatedTime: ptrTime(other)},
-			{NodeName: "node-c", ObservedPods: 0, ViolatingPods: 0, LastEvaluatedTime: ptrTime(other)},
+			{NodeName: "node-a", LastEvaluatedTime: ptrTime(other)},
+			{NodeName: "node-b", LastEvaluatedTime: ptrTime(other)},
+			{NodeName: "node-c", LastEvaluatedTime: ptrTime(other)},
 		},
 	}
 
@@ -163,28 +105,22 @@ func TestStatusWriterReplacesOnlyOwnNodeShard(t *testing.T) {
 	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, sel), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := sw.PodEvent(labeledPod("ns", "x", "pod-x", map[string]string{"app": "web"}), nil, events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
 	if err := sw.Flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 
 	got := getPolicy(t, client, "p")
 	want := []v1alpha1.NodePolicyStatus{
-		{NodeName: "node-a", ObservedPods: 4, ViolatingPods: 1, LastEvaluatedTime: ptrTime(other)},
-		{NodeName: "node-b", ObservedPods: 1, ViolatingPods: 0, LastEvaluatedTime: ptrTime(fixedNow)},
-		{NodeName: "node-c", ObservedPods: 0, ViolatingPods: 0, LastEvaluatedTime: ptrTime(other)},
+		{NodeName: "node-a", LastEvaluatedTime: ptrTime(other)},
+		{NodeName: "node-b", LastEvaluatedTime: ptrTime(fixedNow)},
+		{NodeName: "node-c", LastEvaluatedTime: ptrTime(other)},
 	}
 	if diff := cmp.Diff(want, got.Status.Nodes); diff != "" {
 		t.Errorf("status.nodes mismatch (-want +got):\n%s", diff)
 	}
 	// 4 + 1 + 0 observed, 1 + 0 + 0 violating
-	if got.Status.ObservedPods != 5 {
-		t.Errorf("observedPods = %d, want 5 (recomputed across all shards)", got.Status.ObservedPods)
-	}
-	if got.Status.ViolatingPods != 1 {
-		t.Errorf("violatingPods = %d, want 1 (recomputed across all shards)", got.Status.ViolatingPods)
+	if got.Status.LastEvaluatedTime == nil || !got.Status.LastEvaluatedTime.Time.Equal(fixedNow) {
+		t.Errorf("lastEvaluatedTime = %v, want the newest shard time %v", got.Status.LastEvaluatedTime, fixedNow)
 	}
 	if got.Status.LastEvaluatedTime == nil || !got.Status.LastEvaluatedTime.Time.Equal(fixedNow) {
 		t.Errorf("lastEvaluatedTime = %v, want the newest shard time %v", got.Status.LastEvaluatedTime, fixedNow)
@@ -212,7 +148,7 @@ func TestStatusWriterInsertsNodeShardInSortedOrder(t *testing.T) {
 			for _, n := range tc.existing {
 				status.Nodes = append(status.Nodes, v1alpha1.NodePolicyStatus{NodeName: n})
 			}
-			setNodeShard(status, v1alpha1.NodePolicyStatus{NodeName: tc.nodeName, ObservedPods: 9})
+			setNodeShard(status, v1alpha1.NodePolicyStatus{NodeName: tc.nodeName, LastEvaluatedTime: ptrTime(fixedNow)})
 
 			var got []string
 			for _, n := range status.Nodes {
@@ -222,7 +158,7 @@ func TestStatusWriterInsertsNodeShardInSortedOrder(t *testing.T) {
 				t.Errorf("node order mismatch (-want +got):\n%s", diff)
 			}
 			for _, n := range status.Nodes {
-				if n.NodeName == tc.nodeName && n.ObservedPods != 9 {
+				if n.NodeName == tc.nodeName && n.LastEvaluatedTime == nil {
 					t.Errorf("the shard for %s was not written: %+v", tc.nodeName, n)
 				}
 			}
@@ -381,25 +317,6 @@ func TestStatusWriterSkipsNoOpUpdates(t *testing.T) {
 	}
 }
 
-func TestStatusWriterRecordViolationIsIdempotent(t *testing.T) {
-	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeMonitor, labels.Everything()), events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 5; i++ {
-		sw.RecordViolation("uid-1", "pod-a")
-	}
-	sw.RecordViolation("uid-1", "pod-b")
-	if err := sw.Flush(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	got := getPolicy(t, client, "p")
-	if got.Status.ViolatingPods != 2 {
-		t.Errorf("violatingPods = %d, want 2 distinct pods", got.Status.ViolatingPods)
-	}
-}
-
 // TestStatusWriterRecordersToleratePolicyEventOrdering covers the concurrent
 // fan-out: a manager can record a condition before the StatusWriter itself has
 // seen the policy event, so the entry has to wait for its name rather than be
@@ -410,8 +327,6 @@ func TestStatusWriterRecordersToleratePolicyEventOrdering(t *testing.T) {
 	sw.RecordCondition("uid-1", metav1.Condition{
 		Type: "TargetsValid", Status: metav1.ConditionFalse, Reason: "UnsupportedTargets",
 	})
-	sw.RecordViolation("uid-1", "pod-a")
-
 	// nothing can be written yet: the policy name is unknown
 	if err := sw.Flush(context.Background()); err != nil {
 		t.Fatal(err)
@@ -434,128 +349,12 @@ func TestStatusWriterRecordersToleratePolicyEventOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := getPolicy(t, client, "p")
-	if got.Status.ViolatingPods != 1 {
-		t.Errorf("violatingPods = %d, want the violation recorded before the policy event", got.Status.ViolatingPods)
-	}
 	var types []string
 	for _, c := range got.Status.Conditions {
 		types = append(types, c.Type)
 	}
 	if diff := cmp.Diff([]string{ConditionApplied, "TargetsValid"}, types, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("condition types mismatch (-want +got):\n%s", diff)
-	}
-}
-
-func TestStatusWriterPodMatching(t *testing.T) {
-	sel := selectorFor(t, map[string]string{"app": "web"})
-	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, sel), events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
-
-	// a pod that does not match yet
-	pod := labeledPod("ns", "a", "pod-a", map[string]string{"app": "batch"})
-	if err := sw.PodEvent(pod, nil, events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
-	if got := sw.observedPods("uid-1"); got != 0 {
-		t.Fatalf("observed = %d, want 0 for a non-matching pod", got)
-	}
-
-	// it gains the label
-	pod.Labels = map[string]string{"app": "web"}
-	if err := sw.PodEvent(pod, nil, events.EventTypeUpdate); err != nil {
-		t.Fatal(err)
-	}
-	if got := sw.observedPods("uid-1"); got != 1 {
-		t.Fatalf("observed = %d, want 1 after the label change", got)
-	}
-	sw.RecordViolation("uid-1", "pod-a")
-
-	// and loses it again: the violation goes with it
-	pod.Labels = map[string]string{"app": "batch"}
-	if err := sw.PodEvent(pod, nil, events.EventTypeUpdate); err != nil {
-		t.Fatal(err)
-	}
-	if got := sw.observedPods("uid-1"); got != 0 {
-		t.Errorf("observed = %d, want 0 after the pod stopped matching", got)
-	}
-	if err := sw.Flush(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := getPolicy(t, client, "p"); got.Status.ViolatingPods != 0 {
-		t.Errorf("violatingPods = %d, want 0 once the pod no longer matches", got.Status.ViolatingPods)
-	}
-}
-
-func TestStatusWriterPodDeleteRemovesFromEveryPolicy(t *testing.T) {
-	sel := selectorFor(t, map[string]string{"app": "web"})
-	sw, _ := newTestStatusWriter(t, "node-a", policyObj("p1", "uid-1"), policyObj("p2", "uid-2"))
-	for _, res := range []*compiler.EvaluationResult{
-		evalResult("uid-1", "p1", compiler.ModeEnforce, sel),
-		evalResult("uid-2", "p2", compiler.ModeMonitor, sel),
-	} {
-		if err := sw.RuntimePolicyEvent(res, events.EventTypeCreate); err != nil {
-			t.Fatal(err)
-		}
-	}
-	pod := labeledPod("ns", "a", "pod-a", map[string]string{"app": "web"})
-	if err := sw.PodEvent(pod, nil, events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
-	sw.RecordViolation("uid-2", "pod-a")
-
-	if err := sw.PodDeleted(string(pod.UID)); err != nil {
-		t.Fatal(err)
-	}
-	for _, uid := range []string{"uid-1", "uid-2"} {
-		if got := sw.observedPods(uid); got != 0 {
-			t.Errorf("policy %s observed = %d, want 0 after the pod was deleted", uid, got)
-		}
-	}
-}
-
-// TestStatusWriterSelectorChangeRematchesCachedPods covers a policy update that
-// narrows the selector: the matched set is recomputed from the pods this node
-// already knows about, not just from future pod events.
-func TestStatusWriterSelectorChangeRematchesCachedPods(t *testing.T) {
-	sw, _ := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []corev1.Pod{
-		labeledPod("ns", "a", "pod-a", map[string]string{"app": "web"}),
-		labeledPod("ns", "b", "pod-b", map[string]string{"app": "batch"}),
-	} {
-		if err := sw.PodEvent(p, nil, events.EventTypeCreate); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := sw.observedPods("uid-1"); got != 2 {
-		t.Fatalf("observed = %d, want 2 with an empty selector", got)
-	}
-
-	narrowed := selectorFor(t, map[string]string{"app": "web"})
-	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, narrowed), events.EventTypeUpdate); err != nil {
-		t.Fatal(err)
-	}
-	if got := sw.observedPods("uid-1"); got != 1 {
-		t.Errorf("observed = %d, want 1 after the selector narrowed", got)
-	}
-}
-
-// TestStatusWriterNilSelectorMatchesNothing pins the safe default: a policy with
-// no podSelector must never inflate observedPods.
-func TestStatusWriterNilSelectorMatchesNothing(t *testing.T) {
-	sw, _ := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, nil), events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
-	if err := sw.PodEvent(labeledPod("ns", "a", "pod-a", map[string]string{"app": "web"}), nil, events.EventTypeCreate); err != nil {
-		t.Fatal(err)
-	}
-	if got := sw.observedPods("uid-1"); got != 0 {
-		t.Errorf("observed = %d, want 0 for a policy with no selector", got)
 	}
 }
 
@@ -669,7 +468,9 @@ func TestStatusWriterRunFlushesOnIntervalAndOnCancel(t *testing.T) {
 	}
 
 	// a change made just before cancellation must still land
-	sw.RecordViolation("uid-1", "pod-a")
+	sw.RecordCondition("uid-1", metav1.Condition{
+		Type: "TargetsValid", Status: metav1.ConditionFalse, Reason: "UnsupportedTargets",
+	})
 	cancel()
 	select {
 	case err := <-done:
@@ -679,28 +480,23 @@ func TestStatusWriterRunFlushesOnIntervalAndOnCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after cancellation")
 	}
-	if got := getPolicy(t, client, "p"); got.Status.ViolatingPods != 1 {
-		t.Errorf("violatingPods = %d, want the final flush to have written 1", got.Status.ViolatingPods)
+	got := getPolicy(t, client, "p")
+	if !hasCondition(got.Status.Conditions, "TargetsValid") {
+		t.Errorf("conditions = %+v, want the final flush to have written TargetsValid", got.Status.Conditions)
 	}
 }
 
-func TestRecomputeStatusSums(t *testing.T) {
+func TestRecomputeLastEvaluated(t *testing.T) {
 	early := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	late := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	status := &v1alpha1.RuntimePolicyStatus{
 		Nodes: []v1alpha1.NodePolicyStatus{
-			{NodeName: "a", ObservedPods: 2, ViolatingPods: 1, LastEvaluatedTime: ptrTime(late)},
-			{NodeName: "b", ObservedPods: 3, ViolatingPods: 0, LastEvaluatedTime: ptrTime(early)},
-			{NodeName: "c", ObservedPods: 1, ViolatingPods: 4},
+			{NodeName: "a", LastEvaluatedTime: ptrTime(late)},
+			{NodeName: "b", LastEvaluatedTime: ptrTime(early)},
+			{NodeName: "c"},
 		},
 	}
-	recomputeStatusSums(status)
-	if status.ObservedPods != 6 {
-		t.Errorf("observedPods = %d, want 6", status.ObservedPods)
-	}
-	if status.ViolatingPods != 5 {
-		t.Errorf("violatingPods = %d, want 5", status.ViolatingPods)
-	}
+	recomputeLastEvaluated(status)
 	if status.LastEvaluatedTime == nil || !status.LastEvaluatedTime.Time.Equal(late) {
 		t.Errorf("lastEvaluatedTime = %v, want the newest shard time %v", status.LastEvaluatedTime, late)
 	}
@@ -713,18 +509,16 @@ func TestNewStatusWriterDefaultsInterval(t *testing.T) {
 	}
 }
 
-// observedPods is a test helper reading the tracked matched-pod count.
-func (s *StatusWriter) observedPods(uid string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.policies[uid]
-	if !ok {
-		return 0
-	}
-	return len(st.matched)
-}
-
 func ptrTime(t time.Time) *metav1.Time {
 	mt := metav1.NewTime(t)
 	return &mt
+}
+
+func hasCondition(conds []metav1.Condition, condType string) bool {
+	for _, c := range conds {
+		if c.Type == condType {
+			return true
+		}
+	}
+	return false
 }
