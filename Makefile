@@ -28,19 +28,42 @@ verify-crds:
 		exit 1; \
 	}
 
-# TODO(#60): a `go generate ./...` drift check belongs here -- it would catch the
-# case where pkg/bpf/*/_cprog/*.c changes but the committed *_bpfel.o / *_bpfeb.o
-# objects do not (issue #54 recompiled them by hand and nothing guards that).
-# It is NOT wired up because bpf2go requires clang/llvm-strip plus a generated
-# vmlinux.h, which neither the developer hosts (darwin, no clang BPF target) nor
-# the current CI image provide. Adding the target without those would produce a
-# job that regenerates nothing and passes vacuously, which is worse than the
-# acknowledged gap. Enabling it needs a container image with clang >= 14 + bpftool
-# and a `make generate-bpf` target; tracked as the object-drift bullet of #60.
-#
-# verify-generate:
-#	go generate ./...
-#	git diff --exit-code
+# BPF object generation runs in a container: bpf2go needs clang and llvm-strip,
+# which developer hosts (darwin) do not have with a BPF target. clang compiles
+# with -target bpfel/bpfeb, so the image architecture does not affect the emitted
+# bytecode -- only the clang version does, which is why it is pinned in the image
+# tag. Bump it deliberately and regenerate every object in the same commit.
+BPF_BUILDER_IMAGE ?= kyverno-runtime-bpf-builder:clang19
+BPF_OBJECTS := 'pkg/bpf/*/*_bpfe*.o' 'pkg/bpf/*/*_bpfe*.go'
+
+bpf-builder-image:
+	docker build -t $(BPF_BUILDER_IMAGE) hack/bpf-builder
+
+# Regenerate pkg/bpf/**/*_bpfe{l,b}.{go,o} from the _cprog sources. The container
+# runs as the invoking user so the regenerated files are never root-owned on the
+# host, even when generation fails partway.
+generate-bpf: bpf-builder-image
+	docker run --rm \
+		--user $(shell id -u):$(shell id -g) \
+		-v $(CURDIR):/src -w /src \
+		-v $(shell go env GOMODCACHE):/go/pkg/mod \
+		-e GOFLAGS=-buildvcs=false \
+		-e HOME=/tmp \
+		-e GOCACHE=/tmp/gocache \
+		$(BPF_BUILDER_IMAGE) \
+		go generate ./pkg/bpf/...
+
+# The committed objects must be exactly what the pinned toolchain produces from
+# the committed C. That is what makes an unreviewable binary diff trustworthy:
+# nobody reads bytecode, but CI proves the bytecode came from the source next to
+# it. Replaces the hand-recompilation that nothing used to guard.
+verify-bpf: generate-bpf
+	@if ! git diff --exit-code -- $(BPF_OBJECTS); then \
+		echo ""; \
+		echo "ERROR: committed BPF objects do not match pkg/bpf/*/_cprog sources."; \
+		echo "Run 'make generate-bpf' ($(BPF_BUILDER_IMAGE)) and commit the result."; \
+		exit 1; \
+	fi
 
 generate-client:
 	go run k8s.io/code-generator/cmd/client-gen \

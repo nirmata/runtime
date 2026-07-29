@@ -4,4 +4,7 @@ bin/
 /cmd/kyverno-runtime/kyverno-runtime
 *.log
 .vscode
+# Generated full-kernel vmlinux.h dumps stay untracked; the minimal,
+# hand-maintained header the LSM programs compile against is committed.
 vmlinux.h
+!pkg/bpf/lsm/_cprog/include/vmlinux.h

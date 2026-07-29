@@ -17,8 +17,16 @@ RUN apt-get update \
         "clang-${BPF_CLANG}" \
         "llvm-${BPF_CLANG}" \
         libbpf-dev \
+        bpftool \
     && ln -sf "/usr/bin/clang-${BPF_CLANG}" /usr/local/bin/clang \
     && ln -sf "/usr/bin/llvm-strip-${BPF_CLANG}" /usr/local/bin/llvm-strip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN clang --version && llvm-strip --version
+# probe.c includes <linux/bpf.h>, which pulls <asm/types.h>. Debian installs the
+# uapi asm headers under the multiarch triplet, and clang -target bpf does not
+# search it. The types this reaches are fixed-width uapi scalars, so any triplet
+# serves; symlink the native one to the search root.
+RUN ARCH_INCLUDE="$(dirname "$(find /usr/include -maxdepth 2 -type d -name asm | head -n1)")" \
+    && ln -sfn "${ARCH_INCLUDE}/asm" /usr/include/asm
+
+RUN clang --version && llvm-strip --version && bpftool version
