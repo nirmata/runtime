@@ -54,24 +54,22 @@ type podCall struct {
 	evType  string
 }
 
-// recordingHandler records every event it receives. Handlers are invoked from
-// goroutines so every field is mutex guarded. rpPanic/podPanic make the handler
-// panic, which is what the utils.Guard wrapping in the fan-out has to absorb.
-type recordingHandler struct {
-	name     string
-	rpErr    error
-	podErr   error
-	rpPanic  any
-	podPanic any
+// recordingRpHandler records every policy event it receives. Handlers are
+// invoked from goroutines so every field is mutex guarded. rpPanic makes the
+// handler panic, which is what the utils.Guard wrapping in the fan-out has to
+// absorb.
+type recordingRpHandler struct {
+	name    string
+	rpErr   error
+	rpPanic any
 
-	mu       sync.Mutex
-	rpCalls  []rpCall
-	podCalls []podCall
+	mu      sync.Mutex
+	rpCalls []rpCall
 }
 
-var _ events.EventIface = (*recordingHandler)(nil)
+var _ events.RuntimePolicyEventHandler = (*recordingRpHandler)(nil)
 
-func (h *recordingHandler) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error {
+func (h *recordingRpHandler) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error {
 	h.mu.Lock()
 	h.rpCalls = append(h.rpCalls, rpCall{res: rp, evType: rpEventType, handler: h.name})
 	h.mu.Unlock()
@@ -81,7 +79,28 @@ func (h *recordingHandler) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpE
 	return h.rpErr
 }
 
-func (h *recordingHandler) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
+func (h *recordingRpHandler) runtimePolicyCalls() []rpCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]rpCall(nil), h.rpCalls...)
+}
+
+// recordingPodHandler records every pod event and delete it receives. podErr
+// and podPanic apply to both PodEvent and PodDeleted so requeue behavior can
+// be driven on either path.
+type recordingPodHandler struct {
+	name     string
+	podErr   error
+	podPanic any
+
+	mu           sync.Mutex
+	podCalls     []podCall
+	deletedCalls []string
+}
+
+var _ events.PodEventHandler = (*recordingPodHandler)(nil)
+
+func (h *recordingPodHandler) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	h.mu.Lock()
 	h.podCalls = append(h.podCalls, podCall{pod: pod, cgInfos: cgInfos, evType: podEventType})
 	h.mu.Unlock()
@@ -91,20 +110,38 @@ func (h *recordingHandler) PodEvent(pod corev1.Pod, cgInfos []*containers.Contai
 	return h.podErr
 }
 
-func (h *recordingHandler) runtimePolicyCalls() []rpCall {
+func (h *recordingPodHandler) PodDeleted(uid string) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]rpCall(nil), h.rpCalls...)
+	h.deletedCalls = append(h.deletedCalls, uid)
+	h.mu.Unlock()
+	if h.podPanic != nil {
+		panic(h.podPanic)
+	}
+	return h.podErr
 }
 
-func (h *recordingHandler) podEventCalls() []podCall {
+func (h *recordingPodHandler) podEventCalls() []podCall {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]podCall(nil), h.podCalls...)
 }
 
-func handlers(hs ...*recordingHandler) []events.EventIface {
-	out := make([]events.EventIface, 0, len(hs))
+func (h *recordingPodHandler) podDeletedCalls() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.deletedCalls...)
+}
+
+func rpHandlers(hs ...*recordingRpHandler) []events.RuntimePolicyEventHandler {
+	out := make([]events.RuntimePolicyEventHandler, 0, len(hs))
+	for _, h := range hs {
+		out = append(out, h)
+	}
+	return out
+}
+
+func podHandlers(hs ...*recordingPodHandler) []events.PodEventHandler {
+	out := make([]events.PodEventHandler, 0, len(hs))
 	for _, h := range hs {
 		out = append(out, h)
 	}

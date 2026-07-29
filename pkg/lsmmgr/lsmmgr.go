@@ -163,10 +163,16 @@ func (l *LsmManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgr
 		return nil
 	case events.EventTypeUpdate:
 		return l.podUpdated(pod, cgInfos)
-	case events.EventTypeDelete:
-		l.podDeleted(string(pod.UID))
-		return nil
 	}
+	return nil
+}
+
+// PodDeleted removes the pod's cgroups from every attached program and drops
+// its bookkeeping.
+func (l *LsmManager) PodDeleted(uid string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.podDeleted(uid)
 	return nil
 }
 

@@ -33,7 +33,7 @@ func newPodQueue() workqueue.TypedRateLimitingInterface[queueKey] {
 	)
 }
 
-func newTestPodWatcher(t *testing.T, hs []events.EventIface, seed ...*corev1.Pod) (*podWatcher, cache.Indexer) {
+func newTestPodWatcher(t *testing.T, hs []events.PodEventHandler, seed ...*corev1.Pod) (*podWatcher, cache.Indexer) {
 	t.Helper()
 	client := k8sfake.NewSimpleClientset()
 	factory := informers.NewSharedInformerFactory(client, 0)
@@ -47,8 +47,7 @@ func newTestPodWatcher(t *testing.T, hs []events.EventIface, seed ...*corev1.Pod
 		factory:       factory,
 		informer:      pods.Informer(),
 		lister:        pods.Lister(),
-		podCgInfos:    make(map[string][]*containers.ContainerCgroupInfo),
-		tombstones:    make(map[string]*corev1.Pod),
+		deletedUIDs:   make(map[string]string),
 		queue:         newPodQueue(),
 		nodeName:      "node-1",
 		eventHandlers: hs,
@@ -59,16 +58,16 @@ func newTestPodWatcher(t *testing.T, hs []events.EventIface, seed ...*corev1.Pod
 }
 
 func TestPodHandleCreateFansOutToAllHandlers(t *testing.T) {
-	h1 := &recordingHandler{name: "h1"}
-	h2 := &recordingHandler{name: "h2"}
-	w, _ := newTestPodWatcher(t, handlers(h1, h2))
+	h1 := &recordingPodHandler{name: "h1"}
+	h2 := &recordingPodHandler{name: "h2"}
+	w, _ := newTestPodWatcher(t, podHandlers(h1, h2))
 
 	p := pod("ns", "p", "uid-1")
 	if err := w.handleCreateOrUpdate(p, events.EventTypeCreate); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, h := range []*recordingHandler{h1, h2} {
+	for _, h := range []*recordingPodHandler{h1, h2} {
 		calls := h.podEventCalls()
 		if len(calls) != 1 {
 			t.Fatalf("%s got %d pod events, want 1", h.name, len(calls))
@@ -83,18 +82,14 @@ func TestPodHandleCreateFansOutToAllHandlers(t *testing.T) {
 			t.Errorf("%s cgInfos = %+v, want empty for a pod with no container statuses", h.name, calls[0].cgInfos)
 		}
 	}
-	// nothing resolved means nothing is stashed
-	if len(w.podCgInfos) != 0 {
-		t.Errorf("podCgInfos = %+v, want empty", w.podCgInfos)
-	}
 }
 
 func TestPodHandleCreateJoinsHandlerErrors(t *testing.T) {
 	errA := errors.New("handler a failed")
 	errB := errors.New("handler b failed")
-	h1 := &recordingHandler{name: "h1", podErr: errA}
-	h2 := &recordingHandler{name: "h2", podErr: errB}
-	w, _ := newTestPodWatcher(t, handlers(h1, h2))
+	h1 := &recordingPodHandler{name: "h1", podErr: errA}
+	h2 := &recordingPodHandler{name: "h2", podErr: errB}
+	w, _ := newTestPodWatcher(t, podHandlers(h1, h2))
 
 	err := w.handleCreateOrUpdate(pod("ns", "p", "uid-1"), events.EventTypeCreate)
 	if err == nil {
@@ -110,9 +105,9 @@ func TestPodHandleCreateJoinsHandlerErrors(t *testing.T) {
 
 func TestPodHandleUpdateFansOutAndJoinsErrors(t *testing.T) {
 	errA := errors.New("handler a failed")
-	h1 := &recordingHandler{name: "h1", podErr: errA}
-	h2 := &recordingHandler{name: "h2"}
-	w, _ := newTestPodWatcher(t, handlers(h1, h2))
+	h1 := &recordingPodHandler{name: "h1", podErr: errA}
+	h2 := &recordingPodHandler{name: "h2"}
+	w, _ := newTestPodWatcher(t, podHandlers(h1, h2))
 
 	err := w.handleCreateOrUpdate(pod("ns", "p", "uid-1"), events.EventTypeUpdate)
 	if !errors.Is(err, errA) {
@@ -128,9 +123,9 @@ func TestPodHandleUpdateFansOutAndJoinsErrors(t *testing.T) {
 // that panics must not take the informer worker down with it, it must surface
 // as an error on the work item like any other failure.
 func TestPodFanOutConvertsHandlerPanicToError(t *testing.T) {
-	boom := &recordingHandler{name: "boom", podPanic: "handler exploded"}
-	healthy := &recordingHandler{name: "healthy"}
-	w, _ := newTestPodWatcher(t, handlers(boom, healthy))
+	boom := &recordingPodHandler{name: "boom", podPanic: "handler exploded"}
+	healthy := &recordingPodHandler{name: "healthy"}
+	w, _ := newTestPodWatcher(t, podHandlers(boom, healthy))
 
 	err := w.handleCreateOrUpdate(pod("ns", "p", "uid-1"), events.EventTypeCreate)
 	if err == nil {
@@ -145,12 +140,31 @@ func TestPodFanOutConvertsHandlerPanicToError(t *testing.T) {
 	}
 }
 
+// TestPodDeleteFanOutConvertsHandlerPanicToError is the same barrier on the
+// delete path, which dispatches PodDeleted rather than PodEvent.
+func TestPodDeleteFanOutConvertsHandlerPanicToError(t *testing.T) {
+	boom := &recordingPodHandler{name: "boom", podPanic: "handler exploded"}
+	healthy := &recordingPodHandler{name: "healthy"}
+	w, _ := newTestPodWatcher(t, podHandlers(boom, healthy))
+
+	err := w.handleDelete("uid-1")
+	if err == nil {
+		t.Fatal("a panicking handler produced no error")
+	}
+	if !errors.Is(err, utils.ErrPanic) {
+		t.Errorf("err = %v, want it to wrap utils.ErrPanic", err)
+	}
+	if got := len(healthy.podDeletedCalls()); got != 1 {
+		t.Errorf("healthy handler got %d deletes, want 1", got)
+	}
+}
+
 // TestPodProcessNextWorkItemSurvivesHandlerPanic drives the panic through the
 // worker loop: the item is requeued and the worker keeps running.
 func TestPodProcessNextWorkItemSurvivesHandlerPanic(t *testing.T) {
-	boom := &recordingHandler{name: "boom", podPanic: errors.New("handler exploded")}
+	boom := &recordingPodHandler{name: "boom", podPanic: errors.New("handler exploded")}
 	p := pod("ns", "p", "uid-1")
-	w, _ := newTestPodWatcher(t, handlers(boom), p)
+	w, _ := newTestPodWatcher(t, podHandlers(boom), p)
 
 	w.queue.Add(queueKey{Type: events.EventTypeCreate, Key: "ns/p"})
 	if !w.processNextWorkItem() {
@@ -161,75 +175,46 @@ func TestPodProcessNextWorkItemSurvivesHandlerPanic(t *testing.T) {
 	}
 }
 
-func TestPodHandleDeleteUsesStashedCgInfosAndClearsThem(t *testing.T) {
-	h1 := &recordingHandler{name: "h1"}
-	h2 := &recordingHandler{name: "h2"}
-	w, _ := newTestPodWatcher(t, handlers(h1, h2))
+// TestPodHandleDeleteFansOutUIDToAllHandlers: deletes deliver the UID and
+// nothing else, through PodDeleted rather than PodEvent.
+func TestPodHandleDeleteFansOutUIDToAllHandlers(t *testing.T) {
+	h1 := &recordingPodHandler{name: "h1"}
+	h2 := &recordingPodHandler{name: "h2"}
+	w, _ := newTestPodWatcher(t, podHandlers(h1, h2))
 
-	stashed := []*containers.ContainerCgroupInfo{
-		{ID: 111, Path: "/sys/fs/cgroup/a", Name: "c1"},
-		{ID: 222, Path: "/sys/fs/cgroup/b", Name: "c2"},
-	}
-	w.podCgInfos["uid-1"] = stashed
-	w.podCgInfos["uid-2"] = []*containers.ContainerCgroupInfo{{ID: 333, Path: "/sys/fs/cgroup/c"}}
-
-	p := pod("ns", "p", "uid-1")
-	if err := w.handleDelete(p); err != nil {
+	if err := w.handleDelete("uid-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, h := range []*recordingHandler{h1, h2} {
-		calls := h.podEventCalls()
-		if len(calls) != 1 {
-			t.Fatalf("%s got %d pod events, want 1", h.name, len(calls))
+	for _, h := range []*recordingPodHandler{h1, h2} {
+		deletes := h.podDeletedCalls()
+		if len(deletes) != 1 {
+			t.Fatalf("%s got %d deletes, want 1", h.name, len(deletes))
 		}
-		if calls[0].evType != events.EventTypeDelete {
-			t.Errorf("%s event type = %q, want delete", h.name, calls[0].evType)
+		if deletes[0] != "uid-1" {
+			t.Errorf("%s deleted uid = %q, want uid-1", h.name, deletes[0])
 		}
-		if diff := cmp.Diff(stashed, calls[0].cgInfos); diff != "" {
-			t.Errorf("%s cgInfos mismatch (-want +got):\n%s", h.name, diff)
+		if got := len(h.podEventCalls()); got != 0 {
+			t.Errorf("%s got %d pod events for a delete, want 0", h.name, got)
 		}
-	}
-
-	if _, ok := w.podCgInfos["uid-1"]; ok {
-		t.Error("the stash entry for the deleted pod was not removed")
-	}
-	if _, ok := w.podCgInfos["uid-2"]; !ok {
-		t.Error("the stash entry for an unrelated pod was removed")
 	}
 }
 
-func TestPodHandleDeleteWithNoStashedCgInfos(t *testing.T) {
-	h := &recordingHandler{name: "h"}
-	w, _ := newTestPodWatcher(t, handlers(h))
-
-	if err := w.handleDelete(pod("ns", "p", "unknown")); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	calls := h.podEventCalls()
-	if len(calls) != 1 {
-		t.Fatalf("handler got %d pod events, want 1", len(calls))
-	}
-	if calls[0].cgInfos != nil {
-		t.Errorf("cgInfos = %+v, want nil for a pod that was never stashed", calls[0].cgInfos)
-	}
-}
-
-// TestPodEnqueueStashesTombstonesForDeletesOnly checks the enqueue side of the
-// stable-key design: create/update carry no object, deletes stash one because
-// the lister no longer has it.
-func TestPodEnqueueStashesTombstonesForDeletesOnly(t *testing.T) {
+// TestPodEnqueueRecordsUIDsForDeletesOnly checks the enqueue side of the
+// stable-key design: create/update carry no object, deletes record the UID
+// because the lister no longer has the object.
+func TestPodEnqueueRecordsUIDsForDeletesOnly(t *testing.T) {
 	w, _ := newTestPodWatcher(t, nil)
 
 	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeCreate)
 	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeUpdate)
-	if len(w.tombstones) != 0 {
-		t.Errorf("tombstones = %+v, want empty after create/update", w.tombstones)
+	if len(w.deletedUIDs) != 0 {
+		t.Errorf("deletedUIDs = %+v, want empty after create/update", w.deletedUIDs)
 	}
 
 	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeDelete)
-	if w.tombstone("ns/p") == nil {
-		t.Error("no tombstone stashed for a delete event")
+	if got := w.deletedUID("ns/p"); got != "uid-1" {
+		t.Errorf("deletedUID(ns/p) = %q, want uid-1", got)
 	}
 
 	want := []queueKey{
@@ -254,8 +239,8 @@ func TestPodEnqueueStashesTombstonesForDeletesOnly(t *testing.T) {
 func TestPodProcessNextWorkItemFetchesObjectFromLister(t *testing.T) {
 	current := pod("ns", "p", "uid-1")
 	current.Labels = map[string]string{"app": "fresh"}
-	h := &recordingHandler{name: "h"}
-	w, _ := newTestPodWatcher(t, handlers(h), current)
+	h := &recordingPodHandler{name: "h"}
+	w, _ := newTestPodWatcher(t, podHandlers(h), current)
 
 	w.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: "ns/p"})
 	if !w.processNextWorkItem() {
@@ -272,9 +257,9 @@ func TestPodProcessNextWorkItemFetchesObjectFromLister(t *testing.T) {
 }
 
 func TestPodProcessNextWorkItemRequeuesThenDrops(t *testing.T) {
-	h := &recordingHandler{name: "h", podErr: errors.New("handler boom")}
+	h := &recordingPodHandler{name: "h", podErr: errors.New("handler boom")}
 	p := pod("ns", "p", "uid-1")
-	w, _ := newTestPodWatcher(t, handlers(h), p)
+	w, _ := newTestPodWatcher(t, podHandlers(h), p)
 
 	key := queueKey{Type: events.EventTypeCreate, Key: "ns/p"}
 	w.queue.Add(key)
@@ -313,8 +298,8 @@ func TestPodProcessNextWorkItemRequeuesThenDrops(t *testing.T) {
 // requeuing, so every attempt was a new key with a fresh requeue count and the
 // cap never fired.
 func TestPodRequeueCapSurvivesPointerChange_Issue59(t *testing.T) {
-	h := &recordingHandler{name: "h", podErr: errors.New("handler boom")}
-	w, indexer := newTestPodWatcher(t, handlers(h), pod("ns", "p", "uid-1"))
+	h := &recordingPodHandler{name: "h", podErr: errors.New("handler boom")}
+	w, indexer := newTestPodWatcher(t, podHandlers(h), pod("ns", "p", "uid-1"))
 
 	key := queueKey{Type: events.EventTypeCreate, Key: "ns/p"}
 	w.queue.Add(key)
@@ -367,8 +352,8 @@ func TestPodRequeueCapSurvivesPointerChange_Issue59(t *testing.T) {
 }
 
 func TestPodProcessNextWorkItemListerMissDropsEvent(t *testing.T) {
-	h := &recordingHandler{name: "h", podErr: errors.New("handler boom")}
-	w, _ := newTestPodWatcher(t, handlers(h))
+	h := &recordingPodHandler{name: "h", podErr: errors.New("handler boom")}
+	w, _ := newTestPodWatcher(t, podHandlers(h))
 
 	key := queueKey{Type: events.EventTypeCreate, Key: "ns/gone"}
 	w.queue.Add(key)
@@ -387,12 +372,13 @@ func TestPodProcessNextWorkItemListerMissDropsEvent(t *testing.T) {
 	}
 }
 
-// TestPodDeleteIsServedFromTombstoneAcrossRequeues checks that the stashed
-// delete object survives a failed attempt (the lister cannot supply it) and is
-// released only once the item leaves the queue.
-func TestPodDeleteIsServedFromTombstoneAcrossRequeues(t *testing.T) {
-	h := &recordingHandler{name: "h", podErr: errors.New("handler boom")}
-	w, _ := newTestPodWatcher(t, handlers(h))
+// TestPodDeleteUIDSurvivesRequeues checks that the recorded delete UID
+// survives a failed attempt (the lister cannot supply it) and is released only
+// once the item leaves the queue. It is the safety net that a requeued delete
+// still reaches the handlers.
+func TestPodDeleteUIDSurvivesRequeues(t *testing.T) {
+	h := &recordingPodHandler{name: "h", podErr: errors.New("handler boom")}
+	w, _ := newTestPodWatcher(t, podHandlers(h))
 
 	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeDelete)
 	key := queueKey{Type: events.EventTypeDelete, Key: "ns/p"}
@@ -403,8 +389,8 @@ func TestPodDeleteIsServedFromTombstoneAcrossRequeues(t *testing.T) {
 	if got := w.queue.Len(); got != 1 {
 		t.Fatalf("queue len = %d, want the delete requeued", got)
 	}
-	if w.tombstone("ns/p") == nil {
-		t.Fatal("the tombstone was released while the delete was still queued")
+	if got := w.deletedUID("ns/p"); got != "uid-1" {
+		t.Fatalf("deletedUID(ns/p) = %q, want it kept while the delete is still queued", got)
 	}
 
 	// let it succeed this time
@@ -415,17 +401,23 @@ func TestPodDeleteIsServedFromTombstoneAcrossRequeues(t *testing.T) {
 	if got := w.queue.NumRequeues(key); got != 0 {
 		t.Errorf("NumRequeues = %d, want the item forgotten", got)
 	}
-	if w.tombstone("ns/p") != nil {
-		t.Error("the tombstone was not released after the delete was handled")
+	if got := w.deletedUID("ns/p"); got != "" {
+		t.Errorf("deletedUID(ns/p) = %q, want it released after the delete was handled", got)
 	}
-	if got := len(h.podEventCalls()); got != 2 {
-		t.Fatalf("handler got %d delete events, want 2 (one failed, one successful)", got)
+	deletes := h.podDeletedCalls()
+	if len(deletes) != 2 {
+		t.Fatalf("handler got %d deletes, want 2 (one failed, one successful)", len(deletes))
+	}
+	for i, uid := range deletes {
+		if uid != "uid-1" {
+			t.Errorf("delete %d carried uid %q, want uid-1", i, uid)
+		}
 	}
 }
 
-func TestPodProcessNextWorkItemDeleteWithoutTombstoneIsDropped(t *testing.T) {
-	h := &recordingHandler{name: "h"}
-	w, _ := newTestPodWatcher(t, handlers(h))
+func TestPodProcessNextWorkItemDeleteWithoutUIDIsDropped(t *testing.T) {
+	h := &recordingPodHandler{name: "h"}
+	w, _ := newTestPodWatcher(t, podHandlers(h))
 
 	w.queue.Add(queueKey{Type: events.EventTypeDelete, Key: "ns/p"})
 	if !w.processNextWorkItem() {
@@ -434,15 +426,15 @@ func TestPodProcessNextWorkItemDeleteWithoutTombstoneIsDropped(t *testing.T) {
 	if got := w.queue.Len(); got != 0 {
 		t.Fatalf("queue len = %d, want the event dropped", got)
 	}
-	if got := len(h.podEventCalls()); got != 0 {
-		t.Fatalf("handler got %d events, want 0 when there is nothing to report", got)
+	if got := len(h.podDeletedCalls()); got != 0 {
+		t.Fatalf("handler got %d deletes, want 0 when there is nothing to report", got)
 	}
 }
 
 func TestPodProcessNextWorkItemForgetsOnSuccessAndDispatchesByType(t *testing.T) {
 	p := pod("ns", "p", "uid-1")
-	h := &recordingHandler{name: "h"}
-	w, _ := newTestPodWatcher(t, handlers(h), p)
+	h := &recordingPodHandler{name: "h"}
+	w, _ := newTestPodWatcher(t, podHandlers(h), p)
 
 	w.queue.Add(queueKey{Type: events.EventTypeCreate, Key: "ns/p"})
 	w.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: "ns/p"})
@@ -461,9 +453,12 @@ func TestPodProcessNextWorkItemForgetsOnSuccessAndDispatchesByType(t *testing.T)
 	for _, c := range h.podEventCalls() {
 		got = append(got, c.evType)
 	}
-	want := []string{events.EventTypeCreate, events.EventTypeUpdate, events.EventTypeDelete}
+	want := []string{events.EventTypeCreate, events.EventTypeUpdate}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("dispatched event types mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"uid-1"}, h.podDeletedCalls()); diff != "" {
+		t.Errorf("dispatched deletes mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -507,8 +502,8 @@ func TestResolveRetryableOnlyWhenNothingResolved(t *testing.T) {
 // TestPodHandleCreateOrUpdateFansOutPartialCgInfos proves the partial result
 // reaches the handlers rather than being dropped on the floor with the error.
 func TestPodHandleCreateOrUpdateFansOutPartialCgInfos(t *testing.T) {
-	h := &recordingHandler{name: "h"}
-	w, _ := newTestPodWatcher(t, handlers(h))
+	h := &recordingPodHandler{name: "h"}
+	w, _ := newTestPodWatcher(t, podHandlers(h))
 
 	partial := []*containers.ContainerCgroupInfo{{ID: 7, Path: "/sys/fs/cgroup/x", Name: "c1"}}
 	if err := w.fanOut(pod("ns", "p", "uid-1"), partial, events.EventTypeCreate); err != nil {
@@ -529,8 +524,8 @@ func TestPodHandleCreateOrUpdateFansOutPartialCgInfos(t *testing.T) {
 func TestPodUnresolvableContainerIsRetried(t *testing.T) {
 	p := pod("ns", "p", "uid-1")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "c1", ContainerID: ""}}
-	h := &recordingHandler{name: "h"}
-	w, _ := newTestPodWatcher(t, handlers(h), p)
+	h := &recordingPodHandler{name: "h"}
+	w, _ := newTestPodWatcher(t, podHandlers(h), p)
 
 	err := w.handleCreateOrUpdate(p, events.EventTypeCreate)
 	if err == nil {

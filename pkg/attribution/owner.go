@@ -8,7 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-var _ events.EventIface = (*Index)(nil)
+var _ events.PodEventHandler = (*Index)(nil)
 
 // podTemplateHashLabel is set by the Deployment controller on the ReplicaSet it
 // creates and on every pod of that ReplicaSet.

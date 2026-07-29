@@ -78,15 +78,16 @@ func TestStatusWriterImplementsBothInterfaces(t *testing.T) {
 
 	// Exercise the StatusWriter through each seam rather than nil-checking it:
 	// the assignments below are the compile-time proof, and the calls prove the
-	// daemon's two entry points reach the same instance.
-	var handler events.EventIface = sw
+	// daemon's entry points reach the same instance.
+	var podHandler events.PodEventHandler = sw
+	var rpHandler events.RuntimePolicyEventHandler = sw
 	var recorder runtimeevent.PolicyStatusRecorder = sw
 
-	if err := handler.RuntimePolicyEvent(evalResult("uid-p", "p", compiler.ModeMonitor, sel), events.EventTypeCreate); err != nil {
-		t.Fatalf("RuntimePolicyEvent via events.EventIface: %v", err)
+	if err := rpHandler.RuntimePolicyEvent(evalResult("uid-p", "p", compiler.ModeMonitor, sel), events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent via events.RuntimePolicyEventHandler: %v", err)
 	}
-	if err := handler.PodEvent(labeledPod("ns", "a", "pod-a", map[string]string{"app": "web"}), nil, events.EventTypeCreate); err != nil {
-		t.Fatalf("PodEvent via events.EventIface: %v", err)
+	if err := podHandler.PodEvent(labeledPod("ns", "a", "pod-a", map[string]string{"app": "web"}), nil, events.EventTypeCreate); err != nil {
+		t.Fatalf("PodEvent via events.PodEventHandler: %v", err)
 	}
 	recorder.RecordViolation("uid-p", "pod-a")
 
@@ -504,7 +505,7 @@ func TestStatusWriterPodDeleteRemovesFromEveryPolicy(t *testing.T) {
 	}
 	sw.RecordViolation("uid-2", "pod-a")
 
-	if err := sw.PodEvent(pod, nil, events.EventTypeDelete); err != nil {
+	if err := sw.PodDeleted(string(pod.UID)); err != nil {
 		t.Fatal(err)
 	}
 	for _, uid := range []string{"uid-1", "uid-2"} {

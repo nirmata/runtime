@@ -37,7 +37,6 @@ import (
 	"sync"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/metrics"
 	"github.com/nirmata/kyverno-runtime/pkg/reporter"
@@ -45,7 +44,6 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -91,8 +89,10 @@ type trackedPolicy struct {
 	exec     pathBehavior
 }
 
-// Monitor implements events.EventIface (policy tracking) and
-// runtimeevent.Sink (event evaluation).
+// Monitor implements events.RuntimePolicyEventHandler (policy tracking) and
+// runtimeevent.Sink (event evaluation). It is not a pod-event handler: events
+// carry their own attributed pod identity (filled by pkg/attribution), so
+// monitor keeps no pod state at all.
 type Monitor struct {
 	log     logr.Logger
 	sink    FindingSink
@@ -106,9 +106,9 @@ type Monitor struct {
 }
 
 var (
-	_ events.EventIface = (*Monitor)(nil)
-	_ runtimeevent.Sink = (*Monitor)(nil)
-	_ FindingSink       = (*reporter.Reporter)(nil)
+	_ events.RuntimePolicyEventHandler = (*Monitor)(nil)
+	_ runtimeevent.Sink                = (*Monitor)(nil)
+	_ FindingSink                      = (*reporter.Reporter)(nil)
 )
 
 // New builds a Monitor. sink, status and m may each be nil: a daemon without a
@@ -126,12 +126,6 @@ func New(log logr.Logger, findings FindingSink, status runtimeevent.PolicyStatus
 
 // Name identifies this sink to the collector.
 func (m *Monitor) Name() string { return sinkName }
-
-// PodEvent is a no-op: events carry their own attributed pod identity (filled
-// by pkg/attribution), so monitor keeps no pod state at all.
-func (m *Monitor) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
-	return nil
-}
 
 // RuntimePolicyEvent tracks monitor- AND enforce-mode policies and forgets
 // everything else.

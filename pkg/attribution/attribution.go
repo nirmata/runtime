@@ -1,7 +1,7 @@
 // Package attribution maps kernel-sourced identities (cgroup inode, PID) and
 // pod UID hints back to the workload that produced an event.
 //
-// The index is fed by the pod watcher through the events.EventIface seam, so it
+// The index is fed by the pod watcher through the events.PodEventHandler seam, so it
 // tracks exactly the pods this node runs. Every pod update refreshes the cached
 // labels and cgroup set, which keeps attribution correct even for pods whose
 // labels change while they are running.
@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/metrics"
@@ -90,26 +89,23 @@ func NewIndex(log logr.Logger, opts ...Option) *Index {
 	return ix
 }
 
-// PodEvent implements events.EventIface. Create and update are idempotent
-// upserts: labels, owner and the cgroup set are recomputed from scratch and
-// cgroups that the pod no longer owns are evicted. Delete evicts the pod and
-// every cgroup it owned.
+// PodEvent implements events.PodEventHandler. Create and update are
+// idempotent upserts: labels, owner and the cgroup set are recomputed from
+// scratch and cgroups that the pod no longer owns are evicted.
 func (ix *Index) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	switch podEventType {
 	case events.EventTypeCreate, events.EventTypeUpdate:
 		ix.upsert(&pod, cgInfos)
-		return nil
-	case events.EventTypeDelete:
-		ix.evict(string(pod.UID))
 		return nil
 	default:
 		return fmt.Errorf("attribution: invalid pod event type %q", podEventType)
 	}
 }
 
-// RuntimePolicyEvent implements events.EventIface. Attribution is
-// policy-independent, so this is a no-op.
-func (ix *Index) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error {
+// PodDeleted implements events.PodEventHandler: it evicts the pod and every
+// cgroup it owned.
+func (ix *Index) PodDeleted(uid string) error {
+	ix.evict(uid)
 	return nil
 }
 

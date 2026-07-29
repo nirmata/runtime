@@ -30,7 +30,7 @@ type rpWatch struct {
 }
 
 type RuntimePolicyMgr struct {
-	eventHandlers []events.EventIface
+	eventHandlers []events.RuntimePolicyEventHandler
 	queue         workqueue.TypedRateLimitingInterface[queueKey]
 	factory       v1alpha1informers.SharedInformerFactory
 	rpInformer    cache.SharedIndexInformer
@@ -41,10 +41,13 @@ type RuntimePolicyMgr struct {
 	threadMu    sync.Mutex
 	rpThreadMap map[string]*rpWatch
 
-	// tombMu guards tombstones, written by the informer's handler goroutine
-	// and read by the worker.
-	tombMu     sync.Mutex
-	tombstones map[string]*v1alpha1.RuntimePolicy
+	// mu guards deletedUIDs, which is written by the informer's handler
+	// goroutine and read by the worker.
+	mu sync.Mutex
+	// deletedUIDs maps the name of a queued delete to the policy's UID. The
+	// delete fan-out needs only the identity (UID and name), and the lister no
+	// longer holds the object by the time the worker picks the key up.
+	deletedUIDs map[string]string
 
 	lister v1alpha1listers.RuntimePolicyLister
 	log    logr.Logger
@@ -75,7 +78,7 @@ func (m *RuntimePolicyMgr) HasSynced() bool {
 }
 
 func NewRuntimePolicyMgr(cfg *rest.Config,
-	eventHandlers []events.EventIface,
+	eventHandlers []events.RuntimePolicyEventHandler,
 	client v1alpha1client.Interface,
 	rpCompiler compiler.Compiler) (*RuntimePolicyMgr, error) {
 	factory := v1alpha1informers.NewSharedInformerFactory(client, 0)
@@ -87,7 +90,7 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 
 	m := &RuntimePolicyMgr{
 		rpThreadMap:   make(map[string]*rpWatch),
-		tombstones:    make(map[string]*v1alpha1.RuntimePolicy),
+		deletedUIDs:   make(map[string]string),
 		factory:       factory,
 		eventHandlers: eventHandlers,
 		compiler:      rpCompiler,
@@ -118,11 +121,11 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 			rp, ok := obj.(*v1alpha1.RuntimePolicy)
 			if !ok {
 				// handle cache.DeletedFinalStateUnknown
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				unknown, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
 					return
 				}
-				rp, ok = tombstone.Obj.(*v1alpha1.RuntimePolicy)
+				rp, ok = unknown.Obj.(*v1alpha1.RuntimePolicy)
 				if !ok {
 					return
 				}
@@ -135,32 +138,35 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 }
 
 // enqueue converts an informer notification into a stable queueKey.
-// RuntimePolicies are cluster-scoped so the key is just the name.
+// RuntimePolicies are cluster-scoped so the key is just the name. Delete
+// notifications additionally record the policy's UID: the delete fan-out
+// needs only the identity, and the lister no longer has the object by the
+// time the worker picks the key up.
 func (m *RuntimePolicyMgr) enqueue(rp *v1alpha1.RuntimePolicy, evType string) {
 	if rp.Name == "" {
 		m.log.V(0).Info("ignoring a RuntimePolicy notification with no name", "type", evType)
 		return
 	}
 	if evType == events.EventTypeDelete {
-		m.tombMu.Lock()
-		m.tombstones[rp.Name] = rp
-		m.tombMu.Unlock()
+		m.mu.Lock()
+		m.deletedUIDs[rp.Name] = string(rp.UID)
+		m.mu.Unlock()
 	}
 	m.queue.Add(queueKey{Type: evType, Key: rp.Name})
 }
 
-func (m *RuntimePolicyMgr) tombstone(name string) *v1alpha1.RuntimePolicy {
-	m.tombMu.Lock()
-	defer m.tombMu.Unlock()
-	return m.tombstones[name]
+func (m *RuntimePolicyMgr) deletedUID(name string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.deletedUIDs[name]
 }
 
-// dropTombstone releases a stashed delete object once the item leaves the
-// queue for good, so requeued deletes can still find their object.
-func (m *RuntimePolicyMgr) dropTombstone(name string) {
-	m.tombMu.Lock()
-	defer m.tombMu.Unlock()
-	delete(m.tombstones, name)
+// dropDeletedUID releases a recorded delete UID once the item leaves the
+// queue for good, so requeued deletes can still find their UID.
+func (m *RuntimePolicyMgr) dropDeletedUID(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.deletedUIDs, name)
 }
 
 func (m *RuntimePolicyMgr) runWorker(ctx context.Context) {
@@ -196,18 +202,18 @@ func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
 func (m *RuntimePolicyMgr) forget(key queueKey) {
 	m.queue.Forget(key)
 	if key.Type == events.EventTypeDelete {
-		m.dropTombstone(key.Key)
+		m.dropDeletedUID(key.Key)
 	}
 }
 
 func (m *RuntimePolicyMgr) handle(ctx context.Context, key queueKey) error {
 	if key.Type == events.EventTypeDelete {
-		rp := m.tombstone(key.Key)
-		if rp == nil {
-			m.log.V(2).Info("no tombstone for deleted policy, dropping event", "policy", key.Key)
+		uid := m.deletedUID(key.Key)
+		if uid == "" {
+			m.log.V(2).Info("no recorded UID for deleted policy, dropping event", "policy", key.Key)
 			return nil
 		}
-		return m.handleDelete(rp)
+		return m.handleDelete(uid, key.Key)
 	}
 
 	// always read the policy from the lister at processing time so a retry
@@ -322,11 +328,11 @@ func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, rp *v1alpha1.Runtim
 	return r.fanOut(evalRes, events.EventTypeUpdate)
 }
 
-func (r *RuntimePolicyMgr) handleDelete(rp *v1alpha1.RuntimePolicy) error {
+func (r *RuntimePolicyMgr) handleDelete(uid, name string) error {
 	// if there was a re-eval thread running, stop it
 	r.threadMu.Lock()
-	if rpwatch, ok := r.rpThreadMap[string(rp.UID)]; ok {
-		delete(r.rpThreadMap, string(rp.UID))
+	if rpwatch, ok := r.rpThreadMap[uid]; ok {
+		delete(r.rpThreadMap, uid)
 		if rpwatch.cancel != nil {
 			rpwatch.cancel()
 		}
@@ -335,7 +341,7 @@ func (r *RuntimePolicyMgr) handleDelete(rp *v1alpha1.RuntimePolicy) error {
 
 	// deletion events should not depend on runtime behavior data. given the
 	// UID, mark it for removal from any internal data structures.
-	return r.fanOut(&compiler.EvaluationResult{UID: string(rp.UID), Name: rp.Name}, events.EventTypeDelete)
+	return r.fanOut(&compiler.EvaluationResult{UID: uid, Name: name}, events.EventTypeDelete)
 }
 
 // fanOut delivers the evaluation result to every handler concurrently. Each
@@ -347,7 +353,7 @@ func (r *RuntimePolicyMgr) fanOut(evalRes *compiler.EvaluationResult, evType str
 	wg.Add(len(r.eventHandlers))
 
 	for _, handler := range r.eventHandlers {
-		go func(handler events.EventIface) {
+		go func(handler events.RuntimePolicyEventHandler) {
 			defer wg.Done()
 			op := fmt.Sprintf("%T.RuntimePolicyEvent(%s, %s)", handler, policyRef(evalRes), evType)
 			if err := utils.Guard(op, func() error {

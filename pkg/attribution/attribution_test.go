@@ -104,7 +104,7 @@ func TestPodEventLifecycle(t *testing.T) {
 		t.Errorf("Len() after update = (%d, %d), want (1, 1)", pods, cgroups)
 	}
 
-	if err := ix.PodEvent(updated, newCg, events.EventTypeDelete); err != nil {
+	if err := ix.PodDeleted(string(updated.UID)); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, ok := ix.Lookup(5353); ok {
@@ -208,10 +208,10 @@ func TestPodEventSkipsPodWithoutUID(t *testing.T) {
 	}
 }
 
-func TestRuntimePolicyEventIsNoOp(t *testing.T) {
+func TestPodDeletedUnknownUIDIsANoOp(t *testing.T) {
 	ix := testIndex(t)
-	if err := ix.RuntimePolicyEvent(nil, events.EventTypeCreate); err != nil {
-		t.Errorf("RuntimePolicyEvent: %v", err)
+	if err := ix.PodDeleted("never-seen"); err != nil {
+		t.Errorf("PodDeleted: %v", err)
 	}
 	if pods, cgroups := ix.Len(); pods != 0 || cgroups != 0 {
 		t.Errorf("Len() = (%d, %d), want (0, 0)", pods, cgroups)
@@ -424,7 +424,7 @@ func TestIndexIsSafeForConcurrentUse(t *testing.T) {
 				ix.Annotate(ev)
 				ix.Len()
 				if w%3 == 0 {
-					_ = ix.PodEvent(pod, cg, events.EventTypeDelete)
+					_ = ix.PodDeleted(string(pod.UID))
 				}
 			}
 		}(w)

@@ -296,7 +296,7 @@ func TestPodDeleted(t *testing.T) {
 	}
 	h.resetAll()
 
-	if err := h.l.PodEvent(testPod("podA", nil), nil, events.EventTypeDelete); err != nil {
+	if err := h.l.PodDeleted("podA"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -321,7 +321,7 @@ func TestPodDeleted(t *testing.T) {
 
 	// deleting an unknown pod must not touch the enforcers
 	h.resetAll()
-	if err := h.l.PodEvent(testPod("ghost", nil), nil, events.EventTypeDelete); err != nil {
+	if err := h.l.PodDeleted("ghost"); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.enf("rpWeb", open).delCgids; len(got) != 0 {
@@ -351,7 +351,7 @@ func TestPodEvents_CgidFailuresAreNonFatal(t *testing.T) {
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(12), events.EventTypeUpdate); err != nil {
 		t.Fatalf("podUpdated returned %v, want nil", err)
 	}
-	if err := h.l.PodEvent(testPod("podA", nil), nil, events.EventTypeDelete); err != nil {
+	if err := h.l.PodDeleted("podA"); err != nil {
 		t.Fatalf("podDeleted returned %v, want nil", err)
 	}
 	if _, ok := h.l.pods["podA"]; ok {
@@ -405,7 +405,7 @@ func TestPodDeleted_ThenRecreatedGetsFreshRepresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := h.l.pods["podA"]
-	if err := h.l.PodEvent(testPod("podA", nil), nil, events.EventTypeDelete); err != nil {
+	if err := h.l.PodDeleted("podA"); err != nil {
 		t.Fatal(err)
 	}
 	// recreated with a different cgid, as happens when a pod is rescheduled

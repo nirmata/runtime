@@ -147,12 +147,17 @@ func (e *EgressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.Container
 		return e.podCreated(pod, cgInfos)
 	case events.EventTypeUpdate:
 		return e.podUpdated(pod, cgInfos)
-	case events.EventTypeDelete:
-		e.podDeleted(string(pod.UID))
-		return nil
 	default:
 		return fmt.Errorf("invalid pod event type")
 	}
+}
+
+// PodDeleted tears down the pod's egress filter and bookkeeping.
+func (e *EgressManager) PodDeleted(uid string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.podDeleted(uid)
+	return nil
 }
 
 // attachPolicy programs rp's contribution onto one pod and records the

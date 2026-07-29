@@ -76,8 +76,8 @@ func (p *policyStatusState) touch() {
 }
 
 // StatusWriter turns the RuntimePolicy and pod event streams into this node's
-// shard of each policy's status (#44). It is both an events.EventIface handler
-// (so it sees which pods this node matched) and a
+// shard of each policy's status (#44). It handles both the pod and the policy
+// event streams (so it sees which pods this node matched) and is a
 // runtimeevent.PolicyStatusRecorder (so managers and sinks can attach
 // violations and conditions).
 //
@@ -100,7 +100,8 @@ type StatusWriter struct {
 	podLabels map[string]map[string]string
 }
 
-var _ events.EventIface = (*StatusWriter)(nil)
+var _ events.PodEventHandler = (*StatusWriter)(nil)
+var _ events.RuntimePolicyEventHandler = (*StatusWriter)(nil)
 var _ runtimeevent.PolicyStatusRecorder = (*StatusWriter)(nil)
 
 // NewStatusWriter builds a StatusWriter for this node. A non-positive interval
@@ -170,21 +171,6 @@ func (s *StatusWriter) PodEvent(pod corev1.Pod, _ []*containers.ContainerCgroupI
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if t == events.EventTypeDelete {
-		delete(s.podLabels, uid)
-		for _, st := range s.policies {
-			_, matched := st.matched[uid]
-			_, violating := st.violating[uid]
-			if !matched && !violating {
-				continue
-			}
-			delete(st.matched, uid)
-			delete(st.violating, uid)
-			st.touch()
-		}
-		return nil
-	}
-
 	// copy: the index and the informer both hand out shared, read-only maps
 	podLabels := make(map[string]string, len(pod.Labels))
 	for k, v := range pod.Labels {
@@ -196,6 +182,30 @@ func (s *StatusWriter) PodEvent(pod corev1.Pod, _ []*containers.ContainerCgroupI
 		if s.applyMatchLocked(st, uid, podLabels) {
 			st.touch()
 		}
+	}
+	return nil
+}
+
+// PodDeleted drops the pod's cached labels and removes it from every policy's
+// matched and violating sets.
+func (s *StatusWriter) PodDeleted(uid string) error {
+	if uid == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.podLabels, uid)
+	for _, st := range s.policies {
+		_, matched := st.matched[uid]
+		_, violating := st.violating[uid]
+		if !matched && !violating {
+			continue
+		}
+		delete(st.matched, uid)
+		delete(st.violating, uid)
+		st.touch()
 	}
 	return nil
 }

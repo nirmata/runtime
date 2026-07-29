@@ -127,10 +127,10 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 
 	// 9. both pods go away
 	step("delete podDb", func() error {
-		return h.l.PodEvent(testPod("podDb", nil), nil, events.EventTypeDelete)
+		return h.l.PodDeleted("podDb")
 	})
 	step("delete podWeb", func() error {
-		return h.l.PodEvent(testPod("podWeb", nil), nil, events.EventTypeDelete)
+		return h.l.PodDeleted("podWeb")
 	})
 	for name, f := range map[string]*fakeEnforcer{"rp1": openEnf, "rp2": rp2Enf} {
 		if got := f.cgidSet(); len(got) != 0 {
@@ -293,7 +293,7 @@ func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), nil, events.EventTypeDelete); err != nil {
+			if err := h.l.PodDeleted(podUID(i)); err != nil {
 				errCh <- err
 			}
 		}()

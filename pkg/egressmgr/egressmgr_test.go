@@ -129,7 +129,7 @@ func TestConcurrentPodAndPolicyEventsKeepStateConsistent(t *testing.T) {
 				t.Errorf("pod update %s: %v", uid, err)
 			}
 			if i%3 == 0 {
-				if err := e.PodEvent(makePod(uid, webLabels), nil, events.EventTypeDelete); err != nil {
+				if err := e.PodDeleted(uid); err != nil {
 					t.Errorf("pod delete %s: %v", uid, err)
 				}
 			}

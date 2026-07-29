@@ -32,7 +32,7 @@ const maxRequeues = 5
 
 // queueKey identifies a logical work item. It deliberately carries no object
 // pointer: objects are fetched from the lister at processing time and deletes
-// are served from a tombstone map, so NumRequeues counts retries of the item
+// are served from a key-to-UID map, so NumRequeues counts retries of the item
 // rather than retries of one particular revision of it (#59).
 type queueKey struct {
 	// Type is one of events.EventTypeCreate|Update|Delete.
@@ -50,19 +50,16 @@ type podWatcher struct {
 	lister   corev1listers.PodLister
 	queue    workqueue.TypedRateLimitingInterface[queueKey]
 
-	// mu guards podCgInfos and tombstones. podCgInfos is only touched by the
-	// worker, but tombstones is written by the informer's handler goroutine
-	// and read by the worker.
+	// mu guards deletedUIDs, which is written by the informer's handler
+	// goroutine and read by the worker.
 	mu sync.Mutex
-	// podCgInfos stashes resolved cgroup infos per pod UID so a delete event
-	// can still tell handlers which cgroups went away.
-	podCgInfos map[string][]*containers.ContainerCgroupInfo
-	// tombstones holds the last seen object for keys whose delete event has
-	// been queued but not yet handled. The lister no longer has them.
-	tombstones map[string]*corev1.Pod
+	// deletedUIDs maps the informer key ("ns/name") of a queued delete to the
+	// pod's UID. Handlers only need the UID on delete, and the lister no
+	// longer holds the object by the time the worker picks the key up.
+	deletedUIDs map[string]string
 
 	nodeName      string
-	eventHandlers []events.EventIface
+	eventHandlers []events.PodEventHandler
 	log           logr.Logger
 }
 
@@ -84,7 +81,7 @@ func (w *podWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.EventIface) *podWatcher {
+func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.PodEventHandler) *podWatcher {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		client,
 		0,
@@ -110,8 +107,7 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 		lister:        pods.Lister(),
 		nodeName:      nodeName,
 		eventHandlers: eventHandlers,
-		podCgInfos:    make(map[string][]*containers.ContainerCgroupInfo),
-		tombstones:    make(map[string]*corev1.Pod),
+		deletedUIDs:   make(map[string]string),
 		log:           ctrl.Log.WithName("podwatcher"),
 	}
 
@@ -136,11 +132,11 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
 				// handle cache.DeletedFinalStateUnknown
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				unknown, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
 					return
 				}
-				pod, ok = tombstone.Obj.(*corev1.Pod)
+				pod, ok = unknown.Obj.(*corev1.Pod)
 				if !ok {
 					return
 				}
@@ -153,8 +149,9 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 }
 
 // enqueue converts an informer notification into a stable queueKey. Delete
-// notifications additionally stash the object, since it is gone from the
-// lister by the time the worker picks the key up.
+// notifications additionally record the pod's UID, since the object is gone
+// from the lister by the time the worker picks the key up and the UID is all
+// the handlers need on delete.
 func (w *podWatcher) enqueue(pod *corev1.Pod, evType string) {
 	key, err := cache.MetaNamespaceKeyFunc(pod)
 	if err != nil {
@@ -163,42 +160,25 @@ func (w *podWatcher) enqueue(pod *corev1.Pod, evType string) {
 	}
 	if evType == events.EventTypeDelete {
 		w.mu.Lock()
-		w.tombstones[key] = pod
+		w.deletedUIDs[key] = string(pod.UID)
 		w.mu.Unlock()
 	}
 	w.queue.Add(queueKey{Type: evType, Key: key})
 }
 
-func (w *podWatcher) tombstone(key string) *corev1.Pod {
+func (w *podWatcher) deletedUID(key string) string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.tombstones[key]
+	return w.deletedUIDs[key]
 }
 
-// dropTombstone releases a stashed delete object. It is only called once the
+// dropDeletedUID releases a recorded delete UID. It is only called once the
 // item leaves the queue for good (handled or given up on), so requeued
-// deletes can still find their object.
-func (w *podWatcher) dropTombstone(key string) {
+// deletes can still find their UID.
+func (w *podWatcher) dropDeletedUID(key string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	delete(w.tombstones, key)
-}
-
-func (w *podWatcher) stashCgInfos(uid string, cgInfos []*containers.ContainerCgroupInfo) {
-	if len(cgInfos) == 0 {
-		return
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.podCgInfos[uid] = cgInfos
-}
-
-func (w *podWatcher) takeCgInfos(uid string) []*containers.ContainerCgroupInfo {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	cgInfos := w.podCgInfos[uid]
-	delete(w.podCgInfos, uid)
-	return cgInfos
+	delete(w.deletedUIDs, key)
 }
 
 func (w *podWatcher) runWorker() {
@@ -234,23 +214,23 @@ func (w *podWatcher) processNextWorkItem() bool {
 	return true
 }
 
-// forget drops the item's rate limiter history and any delete stash it owned.
+// forget drops the item's rate limiter history and any delete UID it owned.
 func (w *podWatcher) forget(key queueKey) {
 	w.queue.Forget(key)
 	if key.Type == events.EventTypeDelete {
-		w.dropTombstone(key.Key)
+		w.dropDeletedUID(key.Key)
 	}
 }
 
 func (w *podWatcher) handle(key queueKey) error {
 	if key.Type == events.EventTypeDelete {
-		pod := w.tombstone(key.Key)
-		if pod == nil {
+		uid := w.deletedUID(key.Key)
+		if uid == "" {
 			// nothing to tell handlers about
-			w.log.V(2).Info("no tombstone for deleted pod, dropping event", "pod", key.Key)
+			w.log.V(2).Info("no recorded UID for deleted pod, dropping event", "pod", key.Key)
 			return nil
 		}
-		return w.handleDelete(pod)
+		return w.handleDelete(uid)
 	}
 
 	namespace, name, err := cache.SplitMetaNamespaceKey(key.Key)
@@ -291,8 +271,6 @@ func (w *podWatcher) handleCreateOrUpdate(pod *corev1.Pod, evType string) error 
 			"resolved", len(cgInfos), "reason", resolveErr.Error())
 	}
 
-	w.stashCgInfos(string(pod.UID), cgInfos)
-
 	fanOutErr := w.fanOut(pod, cgInfos, evType)
 
 	if resolveRetryable(cgInfos, resolveErr) {
@@ -311,24 +289,42 @@ func resolveRetryable(cgInfos []*containers.ContainerCgroupInfo, err error) bool
 	return err != nil && len(cgInfos) == 0
 }
 
-func (w *podWatcher) handleDelete(pod *corev1.Pod) error {
-	cgInfos := w.takeCgInfos(string(pod.UID))
-	return w.fanOut(pod, cgInfos, events.EventTypeDelete)
+// handleDelete announces the deletion to every handler. Only the UID is
+// delivered: every handler's teardown is keyed by pod UID, and a synthesized
+// object would invite reads of fields that are empty only on this path.
+func (w *podWatcher) handleDelete(uid string) error {
+	return w.dispatch(
+		func(handler events.PodEventHandler) string {
+			return fmt.Sprintf("%T.PodDeleted(%s)", handler, uid)
+		},
+		func(handler events.PodEventHandler) error {
+			return handler.PodDeleted(uid)
+		})
 }
 
-// fanOut delivers the event to every handler concurrently. Each call is
-// wrapped in utils.Guard: a panicking handler becomes an error on this item
-// instead of taking the informer worker down with it.
+// fanOut delivers a create or update to every handler.
 func (w *podWatcher) fanOut(pod *corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, evType string) error {
+	return w.dispatch(
+		func(handler events.PodEventHandler) string {
+			return fmt.Sprintf("%T.PodEvent(%s/%s, %s)", handler, pod.Namespace, pod.Name, evType)
+		},
+		func(handler events.PodEventHandler) error {
+			return handler.PodEvent(*pod, cgInfos, evType)
+		})
+}
+
+// dispatch runs call against every handler concurrently. Each call is wrapped
+// in utils.Guard: a panicking handler becomes an error on this item instead of
+// taking the informer worker down with it.
+func (w *podWatcher) dispatch(describe func(events.PodEventHandler) string, call func(events.PodEventHandler) error) error {
 	errChan := make(chan error, len(w.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(w.eventHandlers))
 	for _, e := range w.eventHandlers {
-		go func(handler events.EventIface) {
+		go func(handler events.PodEventHandler) {
 			defer wg.Done()
-			op := fmt.Sprintf("%T.PodEvent(%s/%s, %s)", handler, pod.Namespace, pod.Name, evType)
-			if err := utils.Guard(op, func() error {
-				return handler.PodEvent(*pod, cgInfos, evType)
+			if err := utils.Guard(describe(handler), func() error {
+				return call(handler)
 			}); err != nil {
 				errChan <- err
 			}

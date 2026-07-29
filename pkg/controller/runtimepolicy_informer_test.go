@@ -58,12 +58,12 @@ func newLister(t *testing.T, objs ...*v1alpha1.RuntimePolicy) (v1alpha1listers.R
 	return informer.Lister(), informer.Informer().GetIndexer()
 }
 
-func newTestRpMgr(t *testing.T, c compiler.Compiler, hs []events.EventIface, seed ...*v1alpha1.RuntimePolicy) (*RuntimePolicyMgr, cache.Indexer) {
+func newTestRpMgr(t *testing.T, c compiler.Compiler, hs []events.RuntimePolicyEventHandler, seed ...*v1alpha1.RuntimePolicy) (*RuntimePolicyMgr, cache.Indexer) {
 	t.Helper()
 	lister, indexer := newLister(t, seed...)
 	m := &RuntimePolicyMgr{
 		rpThreadMap:   make(map[string]*rpWatch),
-		tombstones:    make(map[string]*v1alpha1.RuntimePolicy),
+		deletedUIDs:   make(map[string]string),
 		eventHandlers: hs,
 		compiler:      c,
 		queue:         newRpQueue(),
@@ -86,7 +86,7 @@ func newTestRpMgr(t *testing.T, c compiler.Compiler, hs []events.EventIface, see
 func TestRpProcessNextWorkItemRequeuesThenDropsAfterMaxRequeues(t *testing.T) {
 	boom := errors.New("compile boom")
 	c := &fakeCompiler{err: boom}
-	m, _ := newTestRpMgr(t, c, handlers(&recordingHandler{}), rp("p", "uid-1", nil))
+	m, _ := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}), rp("p", "uid-1", nil))
 
 	key := queueKey{Type: events.EventTypeCreate, Key: "p"}
 	m.queue.Add(key)
@@ -128,7 +128,7 @@ func TestRpProcessNextWorkItemRequeuesThenDropsAfterMaxRequeues(t *testing.T) {
 // the object.
 func TestRpRequeueCapSurvivesPointerChange_Issue59(t *testing.T) {
 	c := &fakeCompiler{err: errors.New("compile boom")}
-	m, indexer := newTestRpMgr(t, c, handlers(&recordingHandler{}), rp("p", "uid-1", nil))
+	m, indexer := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}), rp("p", "uid-1", nil))
 
 	key := queueKey{Type: events.EventTypeUpdate, Key: "p"}
 	m.queue.Add(key)
@@ -184,7 +184,7 @@ func TestRpProcessNextWorkItemFetchesObjectFromLister(t *testing.T) {
 	current := rp("p", "uid-1", dur(time.Hour))
 	current.ResourceVersion = "99"
 	c := &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}
-	m, _ := newTestRpMgr(t, c, handlers(&recordingHandler{}), current)
+	m, _ := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}), current)
 
 	m.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: "p"})
 	if !m.processNextWorkItem(context.Background()) {
@@ -203,7 +203,7 @@ func TestRpProcessNextWorkItemFetchesObjectFromLister(t *testing.T) {
 func TestRpProcessNextWorkItemListerMissDropsEvent(t *testing.T) {
 	c := &fakeCompiler{err: errors.New("compile boom")}
 	// nothing seeded in the lister: the fetch misses
-	m, _ := newTestRpMgr(t, c, handlers(&recordingHandler{}))
+	m, _ := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}))
 
 	key := queueKey{Type: events.EventTypeUpdate, Key: "gone"}
 	m.queue.Add(key)
@@ -224,8 +224,8 @@ func TestRpProcessNextWorkItemListerMissDropsEvent(t *testing.T) {
 
 func TestRpProcessNextWorkItemForgetsOnSuccess(t *testing.T) {
 	c := &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}
-	h := &recordingHandler{name: "h"}
-	m, _ := newTestRpMgr(t, c, handlers(h), rp("p", "uid-1", nil))
+	h := &recordingRpHandler{name: "h"}
+	m, _ := newTestRpMgr(t, c, rpHandlers(h), rp("p", "uid-1", nil))
 
 	m.queue.Add(queueKey{Type: events.EventTypeCreate, Key: "p"})
 	if !m.processNextWorkItem(context.Background()) {
@@ -247,16 +247,16 @@ func TestRpProcessNextWorkItemReturnsFalseAfterShutdown(t *testing.T) {
 	}
 }
 
-func TestRpEnqueueStashesTombstonesForDeletesOnly(t *testing.T) {
+func TestRpEnqueueRecordsUIDsForDeletesOnly(t *testing.T) {
 	m, _ := newTestRpMgr(t, &fakeCompiler{}, nil)
 
 	m.enqueue(rp("p", "uid-1", nil), events.EventTypeUpdate)
-	if len(m.tombstones) != 0 {
-		t.Errorf("tombstones = %+v, want empty after an update", m.tombstones)
+	if len(m.deletedUIDs) != 0 {
+		t.Errorf("deletedUIDs = %+v, want empty after an update", m.deletedUIDs)
 	}
 	m.enqueue(rp("p", "uid-1", nil), events.EventTypeDelete)
-	if m.tombstone("p") == nil {
-		t.Fatal("no tombstone stashed for a delete event")
+	if got := m.deletedUID("p"); got != "uid-1" {
+		t.Fatalf("deletedUID(p) = %q, want uid-1", got)
 	}
 
 	want := []queueKey{
@@ -274,11 +274,12 @@ func TestRpEnqueueStashesTombstonesForDeletesOnly(t *testing.T) {
 	}
 }
 
-// TestRpDeleteIsServedFromTombstone proves a delete does not need the lister:
-// the object is gone from it by the time the worker runs.
-func TestRpDeleteIsServedFromTombstone(t *testing.T) {
-	h := &recordingHandler{name: "h"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{}, handlers(h))
+// TestRpDeleteIsServedFromRecordedUID proves a delete does not need the
+// lister: the object is gone from it by the time the worker runs, and the
+// recorded UID plus the queue key (the name) are the whole identity.
+func TestRpDeleteIsServedFromRecordedUID(t *testing.T) {
+	h := &recordingRpHandler{name: "h"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(h))
 
 	m.enqueue(rp("p", "uid-1", nil), events.EventTypeDelete)
 	if !m.processNextWorkItem(context.Background()) {
@@ -297,14 +298,14 @@ func TestRpDeleteIsServedFromTombstone(t *testing.T) {
 	if calls[0].res.UID != "uid-1" {
 		t.Errorf("result UID = %q, want uid-1", calls[0].res.UID)
 	}
-	if m.tombstone("p") != nil {
-		t.Error("the tombstone was not released after the delete was handled")
+	if got := m.deletedUID("p"); got != "" {
+		t.Errorf("deletedUID(p) = %q, want it released after the delete was handled", got)
 	}
 }
 
-func TestRpProcessNextWorkItemDeleteWithoutTombstoneIsDropped(t *testing.T) {
-	h := &recordingHandler{name: "h"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{}, handlers(h))
+func TestRpProcessNextWorkItemDeleteWithoutUIDIsDropped(t *testing.T) {
+	h := &recordingRpHandler{name: "h"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(h))
 
 	m.queue.Add(queueKey{Type: events.EventTypeDelete, Key: "p"})
 	if !m.processNextWorkItem(context.Background()) {
@@ -321,9 +322,9 @@ func TestRpProcessNextWorkItemDeleteWithoutTombstoneIsDropped(t *testing.T) {
 // TestRpFanOutConvertsHandlerPanicToError pins the panic barrier on the policy
 // stream: a panicking handler becomes an error on the work item.
 func TestRpFanOutConvertsHandlerPanicToError(t *testing.T) {
-	boom := &recordingHandler{name: "boom", rpPanic: "handler exploded"}
-	healthy := &recordingHandler{name: "healthy"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{}, handlers(boom, healthy))
+	boom := &recordingRpHandler{name: "boom", rpPanic: "handler exploded"}
+	healthy := &recordingRpHandler{name: "healthy"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(boom, healthy))
 
 	err := m.fanOut(&compiler.EvaluationResult{UID: "uid-1", Name: "p"}, events.EventTypeCreate)
 	if err == nil {
@@ -340,10 +341,10 @@ func TestRpFanOutConvertsHandlerPanicToError(t *testing.T) {
 // TestRpProcessNextWorkItemSurvivesHandlerPanic drives the panic through the
 // worker: the item is requeued and the worker keeps going.
 func TestRpProcessNextWorkItemSurvivesHandlerPanic(t *testing.T) {
-	boom := &recordingHandler{name: "boom", rpPanic: errors.New("handler exploded")}
+	boom := &recordingRpHandler{name: "boom", rpPanic: errors.New("handler exploded")}
 	m, _ := newTestRpMgr(t,
 		&fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}},
-		handlers(boom), rp("p", "uid-1", nil))
+		rpHandlers(boom), rp("p", "uid-1", nil))
 
 	m.queue.Add(queueKey{Type: events.EventTypeCreate, Key: "p"})
 	if !m.processNextWorkItem(context.Background()) {
@@ -356,8 +357,8 @@ func TestRpProcessNextWorkItemSurvivesHandlerPanic(t *testing.T) {
 
 func TestHandleCreateCompileErrorPropagates(t *testing.T) {
 	boom := errors.New("compile boom")
-	h := &recordingHandler{name: "h"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{err: boom}, handlers(h))
+	h := &recordingRpHandler{name: "h"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{err: boom}, rpHandlers(h))
 
 	err := m.handleCreate(context.Background(), rp("p", "uid-1", nil))
 	if !errors.Is(err, boom) {
@@ -370,17 +371,17 @@ func TestHandleCreateCompileErrorPropagates(t *testing.T) {
 
 func TestHandleCreateFansOutToAllHandlers(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1"}
-	h1 := &recordingHandler{name: "h1"}
-	h2 := &recordingHandler{name: "h2"}
-	h3 := &recordingHandler{name: "h3"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(h1, h2, h3))
+	h1 := &recordingRpHandler{name: "h1"}
+	h2 := &recordingRpHandler{name: "h2"}
+	h3 := &recordingRpHandler{name: "h3"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(h1, h2, h3))
 
 	if err := m.handleCreate(context.Background(), rp("p", "uid-1", nil)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	var first *compiler.EvaluationResult
-	for _, h := range []*recordingHandler{h1, h2, h3} {
+	for _, h := range []*recordingRpHandler{h1, h2, h3} {
 		calls := h.runtimePolicyCalls()
 		if len(calls) != 1 {
 			t.Fatalf("%s got %d events, want 1", h.name, len(calls))
@@ -405,10 +406,10 @@ func TestHandleCreateFansOutToAllHandlers(t *testing.T) {
 func TestHandleCreateJoinsAllHandlerErrors(t *testing.T) {
 	errA := errors.New("handler a failed")
 	errB := errors.New("handler b failed")
-	h1 := &recordingHandler{name: "h1", rpErr: errA}
-	h2 := &recordingHandler{name: "h2", rpErr: errB}
-	h3 := &recordingHandler{name: "h3"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}, handlers(h1, h2, h3))
+	h1 := &recordingRpHandler{name: "h1", rpErr: errA}
+	h2 := &recordingRpHandler{name: "h2", rpErr: errB}
+	h3 := &recordingRpHandler{name: "h3"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}, rpHandlers(h1, h2, h3))
 
 	err := m.handleCreate(context.Background(), rp("p", "uid-1", nil))
 	if err == nil {
@@ -428,8 +429,8 @@ func TestHandleCreateJoinsAllHandlerErrors(t *testing.T) {
 
 func TestHandleCreateRegistersIntervalThread(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
-	h := &recordingHandler{name: "h"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(h))
+	h := &recordingRpHandler{name: "h"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(h))
 
 	if err := m.handleCreate(context.Background(), rp("p", "uid-1", dur(time.Hour))); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -452,7 +453,7 @@ func TestHandleCreateRegistersIntervalThread(t *testing.T) {
 // handleUpdate read rp.Spec.EvaluationInterval.Duration unconditionally.
 func TestHandleUpdateNilEvaluationIntervalDoesNotPanic(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(&recordingHandler{name: "h"}))
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(&recordingRpHandler{name: "h"}))
 
 	cancelled := false
 	m.rpThreadMap["uid-1"] = &rpWatch{
@@ -477,7 +478,7 @@ func TestHandleUpdateNilEvaluationIntervalDoesNotPanic(t *testing.T) {
 // This dereferenced currentRb.compiled.ReevalInterval.
 func TestHandleUpdateNilTrackedIntervalDoesNotPanic(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(&recordingHandler{name: "h"}))
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(&recordingRpHandler{name: "h"}))
 
 	cancelled := false
 	m.rpThreadMap["uid-1"] = &rpWatch{
@@ -506,7 +507,7 @@ func TestHandleUpdateNilTrackedIntervalDoesNotPanic(t *testing.T) {
 
 func TestHandleUpdateReplacesThreadWhenIntervalChanges(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(2 * time.Hour)}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(&recordingHandler{name: "h"}))
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(&recordingRpHandler{name: "h"}))
 
 	cancelled := false
 	old := &rpWatch{
@@ -534,7 +535,7 @@ func TestHandleUpdateReplacesThreadWhenIntervalChanges(t *testing.T) {
 func TestHandleUpdateKeepsThreadWhenIntervalUnchanged(t *testing.T) {
 	m, _ := newTestRpMgr(t,
 		&fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}},
-		handlers(&recordingHandler{name: "h"}))
+		rpHandlers(&recordingRpHandler{name: "h"}))
 
 	cancelled := false
 	old := &rpWatch{
@@ -562,7 +563,7 @@ func TestHandleUpdateKeepsThreadWhenIntervalUnchanged(t *testing.T) {
 // pre-update policy until the interval happened to change.
 func TestHandleUpdateRefreshesCompiledWhenIntervalUnchanged(t *testing.T) {
 	fresh := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: fresh}, handlers(&recordingHandler{name: "h"}))
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: fresh}, rpHandlers(&recordingRpHandler{name: "h"}))
 
 	stale := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
 	m.rpThreadMap["uid-1"] = &rpWatch{compiled: stale, cancel: func() {}}
@@ -585,7 +586,7 @@ func TestHandleUpdateRefreshesCompiledWhenIntervalUnchanged(t *testing.T) {
 // one.
 func TestHandleUpdateStartsThreadWhenPolicyGainsInterval(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(&recordingHandler{name: "h"}))
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(&recordingRpHandler{name: "h"}))
 
 	if len(m.rpThreadMap) != 0 {
 		t.Fatalf("precondition failed, rpThreadMap = %v", m.rpThreadMap)
@@ -612,7 +613,7 @@ func TestHandleUpdateStartsThreadWhenPolicyGainsInterval(t *testing.T) {
 func TestHandleUpdateNoIntervalStaysUntracked(t *testing.T) {
 	m, _ := newTestRpMgr(t,
 		&fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}},
-		handlers(&recordingHandler{name: "h"}))
+		rpHandlers(&recordingRpHandler{name: "h"}))
 
 	if err := m.handleUpdate(context.Background(), rp("p", "uid-1", nil)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -628,7 +629,7 @@ func TestHandleUpdateNoIntervalStaysUntracked(t *testing.T) {
 // entry. Meant to be run under -race.
 func TestIntervalThreadConcurrentWithUpdates(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Millisecond)}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, handlers(&recordingHandler{name: "h"}))
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(&recordingRpHandler{name: "h"}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -643,7 +644,7 @@ func TestIntervalThreadConcurrentWithUpdates(t *testing.T) {
 		}
 	}
 
-	if err := m.handleDelete(rp("p", "uid-1", dur(time.Millisecond))); err != nil {
+	if err := m.handleDelete("uid-1", "p"); err != nil {
 		t.Fatalf("unexpected delete error: %v", err)
 	}
 
@@ -658,9 +659,9 @@ func TestIntervalThreadConcurrentWithUpdates(t *testing.T) {
 func TestHandleUpdateFansOutAndJoinsErrors(t *testing.T) {
 	errA := errors.New("handler a failed")
 	errB := errors.New("handler b failed")
-	h1 := &recordingHandler{name: "h1", rpErr: errA}
-	h2 := &recordingHandler{name: "h2", rpErr: errB}
-	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}, handlers(h1, h2))
+	h1 := &recordingRpHandler{name: "h1", rpErr: errA}
+	h2 := &recordingRpHandler{name: "h2", rpErr: errB}
+	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}, rpHandlers(h1, h2))
 
 	err := m.handleUpdate(context.Background(), rp("p", "uid-1", nil))
 	if err == nil {
@@ -669,7 +670,7 @@ func TestHandleUpdateFansOutAndJoinsErrors(t *testing.T) {
 	if !errors.Is(err, errA) || !errors.Is(err, errB) {
 		t.Errorf("aggregated error is missing one of the handler errors: %v", err)
 	}
-	for _, h := range []*recordingHandler{h1, h2} {
+	for _, h := range []*recordingRpHandler{h1, h2} {
 		calls := h.runtimePolicyCalls()
 		if len(calls) != 1 || calls[0].evType != events.EventTypeUpdate {
 			t.Errorf("%s calls = %+v, want a single update event", h.name, calls)
@@ -678,9 +679,9 @@ func TestHandleUpdateFansOutAndJoinsErrors(t *testing.T) {
 }
 
 func TestHandleDeleteCancelsThreadAndSendsUIDOnly(t *testing.T) {
-	h1 := &recordingHandler{name: "h1"}
-	h2 := &recordingHandler{name: "h2"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{}, handlers(h1, h2))
+	h1 := &recordingRpHandler{name: "h1"}
+	h2 := &recordingRpHandler{name: "h2"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(h1, h2))
 
 	cancelled := false
 	m.rpThreadMap["uid-1"] = &rpWatch{
@@ -688,7 +689,7 @@ func TestHandleDeleteCancelsThreadAndSendsUIDOnly(t *testing.T) {
 		cancel:   func() { cancelled = true },
 	}
 
-	if err := m.handleDelete(rp("p", "uid-1", nil)); err != nil {
+	if err := m.handleDelete("uid-1", "p"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -702,7 +703,7 @@ func TestHandleDeleteCancelsThreadAndSendsUIDOnly(t *testing.T) {
 		t.Errorf("compiler called %d times on delete, want 0", got)
 	}
 
-	for _, h := range []*recordingHandler{h1, h2} {
+	for _, h := range []*recordingRpHandler{h1, h2} {
 		calls := h.runtimePolicyCalls()
 		if len(calls) != 1 {
 			t.Fatalf("%s got %d events, want 1", h.name, len(calls))
@@ -722,11 +723,11 @@ func TestHandleDeleteCancelsThreadAndSendsUIDOnly(t *testing.T) {
 
 func TestHandleDeleteUnknownUIDStillFansOut(t *testing.T) {
 	errA := errors.New("handler a failed")
-	h1 := &recordingHandler{name: "h1", rpErr: errA}
-	h2 := &recordingHandler{name: "h2"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{}, handlers(h1, h2))
+	h1 := &recordingRpHandler{name: "h1", rpErr: errA}
+	h2 := &recordingRpHandler{name: "h2"}
+	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(h1, h2))
 
-	err := m.handleDelete(rp("p", "never-seen", nil))
+	err := m.handleDelete("never-seen", "p")
 	if !errors.Is(err, errA) {
 		t.Fatalf("err = %v, want it to contain %v", err, errA)
 	}

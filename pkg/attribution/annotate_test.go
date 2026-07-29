@@ -124,7 +124,7 @@ func TestAnnotateDropsUnattributedAndCounts(t *testing.T) {
 	if err := ix.PodEvent(testPod(nil), appCgroup(), events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := ix.PodEvent(testPod(nil), appCgroup(), events.EventTypeDelete); err != nil {
+	if err := ix.PodDeleted(string(testPod(nil).UID)); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 

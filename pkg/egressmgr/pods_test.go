@@ -169,7 +169,7 @@ func TestPodDeletedDropsStateAndStopsFutureUpdates(t *testing.T) {
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil), events.EventTypeCreate)
 	addPod(t, e, "pod-1", webLabels, "/cg/a")
 
-	if err := e.PodEvent(makePod("pod-1", webLabels), nil, events.EventTypeDelete); err != nil {
+	if err := e.PodDeleted("pod-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if len(e.pods) != 0 {

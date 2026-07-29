@@ -151,9 +151,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// turns matches into findings + violation counts.
 	mon := monitor.New(logger.WithName("monitor"), rep, sw, m)
 
-	// Fan-out order matters: attribution must know a pod before monitor or the
-	// managers can act on its events.
-	eventHandlers := []events.EventIface{em, lsmm, attrIdx, sw, mon}
+	// Both fan-outs dispatch every handler in its own goroutine and wait, so
+	// ordering between handlers is not guaranteed. That is safe: an event
+	// observed before attribution has indexed its pod is dropped by the
+	// attribution stage and counted (metrics.AttributionMisses), never
+	// misattributed.
+	podHandlers := []events.PodEventHandler{em, lsmm, attrIdx, sw}
+	policyHandlers := []events.RuntimePolicyEventHandler{em, lsmm, sw, mon}
 
 	// collector: poll the managers' observation maps, attribute, then hand to
 	// the monitor sink.
@@ -164,7 +168,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	col.AddSink(mon)
 
 	// runtime policy informer
-	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, eventHandlers, c, rpCompiler)
+	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy informer")
 		os.Exit(1)
@@ -186,7 +190,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	// pod informer
-	pw := controller.NewPodWatcher(k8sClient, nodeName, eventHandlers)
+	pw := controller.NewPodWatcher(k8sClient, nodeName, podHandlers)
 	g.Go(func() error {
 		for {
 			if err := pw.Start(ctx); err != nil {

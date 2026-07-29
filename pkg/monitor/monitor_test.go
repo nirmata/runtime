@@ -16,7 +16,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -769,16 +768,6 @@ func TestRuntimePolicyEvent_NilResultIsAnError(t *testing.T) {
 	m, _, _, _ := testMonitor(t)
 	if err := m.RuntimePolicyEvent(nil, events.EventTypeCreate); err == nil {
 		t.Error("expected an error for a nil evaluation result")
-	}
-}
-
-func TestPodEventIsANoOp(t *testing.T) {
-	m, sink, status, _ := testMonitor(t)
-	if err := m.PodEvent(corev1.Pod{}, nil, events.EventTypeCreate); err != nil {
-		t.Errorf("PodEvent: %v", err)
-	}
-	if len(sink.all()) != 0 || len(status.all()) != 0 || m.Len() != 0 {
-		t.Error("PodEvent changed monitor state")
 	}
 }
 
