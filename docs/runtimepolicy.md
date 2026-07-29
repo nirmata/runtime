@@ -97,8 +97,7 @@ the programs do is *count* what the workload touched:
 The daemon polls those counters every 10 seconds, attributes each observation to a pod (via the
 cgroup ID → pod index built from the local pod watch), and evaluates the policy's `allow`/`deny`
 lists **in userspace**. A match produces a finding (see
-[Findings and Reports](#findings-and-reports)) and increments the policy's `violatingPods`
-count. Because counters are read-and-reset, each observation carries the number of occurrences
+[Findings and Reports](#findings-and-reports)). Because counters are read-and-reset, each observation carries the number of occurrences
 since the previous poll.
 
 Matching in monitor mode follows the same semantics as enforcement: an explicit `deny` entry
@@ -109,24 +108,21 @@ program must never inherit deny entries and an enforcing one must not start from
 
 ## Status
 
-`status` is written per node and then summed. Each daemon owns exactly one entry in
-`status.nodes` (keyed by `nodeName`) and never touches another node's entry; the scalar
-`status.observedPods` / `status.violatingPods` are the sums across all shards, and
-`status.lastEvaluatedTime` is the newest shard timestamp. Updates are flushed every 30 seconds
-with conflict retry.
+`status` is written per node. Each daemon owns exactly one entry in `status.nodes` (keyed by
+`nodeName`) and never touches another node's entry; `status.lastEvaluatedTime` is the newest shard
+timestamp. Updates are flushed every 30 seconds with conflict retry.
+
+Per-pod detail is not in the status. Which pods a policy matched and which of them violated it are
+in the Reports (which name them) and in the Prometheus counters; the status answers "is this policy
+loaded on this node, in which mode, and when was it last evaluated".
 
 ```yaml
 status:
-  observedPods: 3
-  violatingPods: 1
   lastEvaluatedTime: "2026-07-27T10:15:04Z"
   nodes:
   - nodeName: node-1
-    observedPods: 2
-    violatingPods: 1
     lastEvaluatedTime: "2026-07-27T10:15:04Z"
   - nodeName: node-2
-    observedPods: 1
   conditions:
   - type: Applied
     status: "True"

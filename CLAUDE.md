@@ -29,31 +29,66 @@ from now has the merged tree and git history, not your branch plan.
 If a change only makes sense as part of a sequence, the commit message is where
 that context goes — not the code.
 
-## Comments describe the code as it stands
+## Comments earn their place or they go
 
-What it does and why, never where it came from or what will happen to it.
+The default is no comment. Write one only where a competent reader of the code
+would still get it wrong. Everything else is cost: it has to be read, and it
+has to be kept true.
 
-- **No issue or PR numbers.** `(#41)`, `see issue #60`, `the #52 bug class` — the
-  tracker holds that, and git blame holds the rest. Keep the explanation, drop
-  the reference: "an early break made the counts of every enforcer after the
-  first invisible" is useful forever; "#52" stops being useful the moment the
-  tracker moves.
-- **No issue numbers in identifiers either.** Not `TestFooBar_Issue59`. Name the
-  invariant: `TestPodRequeueCapSurvivesPointerChange`. The invariant outlives the
-  ticket.
-- **A comment must carry more than the signature below it.** Three lines
-  explaining why a struct has a `Name` field is noise.
+- **Never write historical context.** Not "no longer", not "used to", not
+  "previously", not "preserved byte-for-byte". A diff that says what the code
+  did before is describing something the reader cannot see and does not need.
+  Git holds it. A reviewer's exact words on the third instance of this in one
+  PR: *"please NEVER do that"*.
+- **No issue or PR numbers**, in comments or in identifiers. Not `(#41)`, not
+  `TestFooBar_Issue59`. Name the invariant instead:
+  `TestPodRequeueCapSurvivesPointerChange` — it outlives the ticket.
+- **A comment must carry more than the signature below it.** Three lines on why
+  a struct has a `Name` field is noise. So is a comment above
+  `if verdict == DENY { return 0 }`.
+- **No package doc comments** in this repo.
 - **A comment block longer than the body it explains is a smell.** Seven lines
-  of narration above a one-line `return nil, fmt.Errorf(...)` means the
-  narration is doing something other than explaining the code.
+  of narration above a one-line `return nil, fmt.Errorf(...)` is doing
+  something other than explaining the code.
+- **No error-handling narration.** "If this fails we log and continue" is
+  visible in the three lines underneath it.
+- **No loud notation.** ALL-CAPS MUST/NEVER/ALWAYS and em-dash flourishes
+  arguing with an imagined objector are not documentation.
 - **Do not let a comment go stale into a lie.** One said `V(0):` above a plain
-  `.Info()` call; another documented an observation limit that a later commit in
-  the same PR had removed. If you change behavior, grep for comments describing
-  the old behavior.
+  `.Info()` call; another documented an observation limit a later commit in the
+  same PR had removed. Change behavior, then grep for comments describing the
+  old behavior.
 
-Keep facts that are genuinely non-obvious from the signature. That
-`buildCandidatePaths` takes a **raw** pod UID and escapes it internally is a
-trap worth documenting; the fact that it builds paths is not.
+The failure mode is not "too many comments" on its own — it is spending the
+reader's attention in the wrong place. The same review that cut thirty blocky
+comments also asked for four new ones, all on genuinely clever code:
+*"crazy how you overexplained many parts of the codebase and left no proper
+explanation in the part where we actually need it."* A goroutine-per-source
+fan-in, a non-blocking handoff, a padding-free BPF map key, a poller that wraps
+a single manager: one line each, because none of them are readable from the
+signature. `buildCandidatePaths` taking a **raw** pod UID and escaping it
+internally is the same kind of trap. That it builds paths is not.
+
+## A panic is a bug report, not a runtime condition
+
+Do not wrap library or internal calls in a recover() barrier on the theory that
+anything might panic. If a dependency we rely on panics, or an index is out of
+range, we have a bug and the process should die loudly where it broke — not
+convert it into an error that gets logged and swallowed three layers up.
+
+- **Programmer errors panic.** An out-of-range flag index, a constructor handed
+  a nil collector func: panic. Do not return an error the caller cannot act on.
+- **`utils.Guard` is for fan-out boundaries only** — the collector's stages and
+  sinks, and the informer handler fan-out — where one misbehaving handler must
+  not take out the other handlers on the same event. Not for CEL compile, not
+  for CEL eval: cel-go recovers inside its own interpreter and returns an
+  error, which is exactly the contract we want.
+- **User input is validated, not guarded.** A malformed policy must be rejected
+  by admission or produce a status condition. Reaching for `recover()` to make
+  bad input survivable means the validation is in the wrong place.
+
+The reviewer's framing, which is the right one: *"if it panics then this means
+we messed up pretty badly and i don't think this should be silenced."*
 
 ## One grammar, one home
 

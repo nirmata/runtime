@@ -67,17 +67,16 @@ On startup it wires together:
 - `pkg/controller.NewPodWatcher`: watches `Pod` objects filtered to `spec.nodeName=<NODE_NAME>`
   and `status.phase=Running`, resolving each pod's container cgroup info
   (`pkg/containers.ResolveCgInfos`).
-- `pkg/lsmmgr.LsmManager` and `pkg/egressmgr.EgressManager`: two of the `events.EventIface`
-  implementations that receive `PodEvent` and `RuntimePolicyEvent` callbacks and drive the actual
-  eBPF attachments (see [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
-- `pkg/attribution.Index`, `pkg/controller.StatusWriter`, and `pkg/monitor.Monitor`: the other
-  three `events.EventIface` implementations — the cgroup→pod index, the status writer, and the
-  monitor-mode evaluator (see [The event plane](#the-event-plane)).
+- `pkg/lsmmgr.LsmManager` and `pkg/egressmgr.EgressManager`: both an `events.PodEventHandler` and
+  an `events.RuntimePolicyEventHandler`; they drive the actual eBPF attachments (see
+  [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
+- `pkg/attribution.Index` is a `PodEventHandler`; `pkg/controller.StatusWriter` and
+  `pkg/monitor.Monitor` are `RuntimePolicyEventHandler`s — the cgroup→pod index, the status writer,
+  and the monitor-mode evaluator (see [The event plane](#the-event-plane)).
 - `pkg/metrics`, `pkg/collector`, `pkg/reporter`: the Prometheus registry and `/metrics` server,
   the observation pipeline, and the OpenReports writer.
 
-Wiring order in `runDaemon` matters and is asserted at the wiring site by a block of
-compile-time interface assertions at the top of `daemon.go`:
+`runDaemon` is the single wiring site; the two typed handler slices are what the compiler checks:
 
 ```text
 metrics registry + Serve(--metrics-addr)    -> errgroup
@@ -86,8 +85,9 @@ reporter.New(controller-runtime client)     -> Run in errgroup
 controller.NewStatusWriter(nodeName, 30s)   -> Run in errgroup
 egressmgr.NewEgressManager(log, statusWriter)
 lsmmgr.NewLsmManager(log, statusWriter)
-monitor.New(log, reporter, statusWriter, metrics)
-eventHandlers = [em, lsmm, attrIdx, statusWriter, monitor]   // attribution before monitor
+monitor.New(log, reporter, metrics)
+podHandlers    = [em, lsmm, attrIdx]
+policyHandlers = [em, lsmm, statusWriter, monitor]
 collector: PollSource(egress-observe, 10s) + PollSource(lsm-observe, 10s)
            -> Stage(attrIdx) -> Sink(monitor)                -> Run in errgroup
 RuntimePolicy informer -> wait for cache sync -> pod watcher  -> both in errgroup
@@ -161,8 +161,8 @@ the daemon.
 
 `pkg/controller.RuntimePolicyMgr` (`runtimepolicy_informer.go`) drives this: on `RuntimePolicy`
 create/update/delete informer events it compiles/evaluates the policy and fans the resulting
-`EvaluationResult` out to every registered `events.EventIface` — `EgressManager`, `LsmManager`,
-`attribution.Index`, `StatusWriter`, `Monitor` — via `RuntimePolicyEvent`, each call wrapped in
+`EvaluationResult` out to every registered `events.RuntimePolicyEventHandler` — `EgressManager`,
+`LsmManager`, `StatusWriter`, `Monitor` — via `RuntimePolicyEvent`, each call wrapped in
 `utils.Guard` so one handler's panic cannot take the informer down. If `evaluationInterval` is set, a background goroutine
 re-evaluates and re-dispatches on that interval until the policy is deleted or the interval
 changes.
@@ -207,7 +207,7 @@ up changes.
 
 ### File open and exec (`pkg/lsmmgr`, `pkg/bpf/lsm`)
 
-`LsmManager` (`pkg/lsmmgr/lsmmgr.go`) is the `events.EventIface` responsible for both the `open` and
+`LsmManager` (`pkg/lsmmgr/lsmmgr.go`) is the pod and policy handler responsible for both the `open` and
 the `exec` behavior. On `RuntimePolicyEvent` create, `rpCreated` (`pkg/lsmmgr/runtimepolicies.go`)
 returns early unless the policy's mode is `enforce` or an observe mode
 (`compiler.IsObserveMode`), then instantiates **one LSM enforcer per behavior type that has
@@ -254,7 +254,7 @@ programs to the same hook, each with its own map set. The kernel denies if any o
 
 ### Network egress (`pkg/egressmgr`, `pkg/bpf/egressfilter`)
 
-`EgressManager` (`pkg/egressmgr/egressmgr.go`) is the `events.EventIface` for the `network`
+`EgressManager` (`pkg/egressmgr/egressmgr.go`) is the pod and policy handler for the `network`
 behavior. Where `LsmManager` keys its BPF state by policy, `EgressManager` keys it by pod: each
 matched pod gets one `egressfilter.EgressFilter` (`pkg/bpf/egressfilter/egressfilter.go`), a
 `cgroup/skb egress` BPF program (`pkg/bpf/egressfilter/_cprog/probe.c`) attached per-container
@@ -296,10 +296,7 @@ Three interfaces define the plumbing, all in `pkg/runtimeevent/iface.go`:
 | --- | --- | --- |
 | `Source` | `collector.NewPollSource` | Produces events until its context ends. |
 | `Sink` | `monitor.Monitor` | Consumes fully-annotated events; must be fast and must not panic outward. |
-| `PolicyStatusRecorder` | `controller.StatusWriter` | Receives violation counts and status conditions from anywhere in the plane. |
-
-`ErrSourceNotWired` is the sentinel a source returns when its kernel-side bindings do not exist on
-this platform; the collector logs it once at `V(0)` and does not restart that source.
+| `PolicyStatusRecorder` | `controller.StatusWriter` | Receives status conditions from anywhere in the plane. |
 
 ### Observation: draining the existing maps
 
@@ -343,13 +340,13 @@ list of `Stage`s → N `Sink`s, all driven by `Run(ctx)`.
 - Drops are always counted, labeled by source and reason (`buffer_full`, `unattributed`), and
   exposed via `Dropped()` and `kyverno_runtime_events_dropped_total`. A full buffer drops the
   newest event rather than blocking a source.
-- Sources are restarted with backoff if they fail, except on `ErrSourceNotWired`.
+- Sources are restarted with backoff if they fail.
 
 ### Attribution (`pkg/attribution`)
 
 `attribution.Index` is the only component that appears twice in the wiring, because it is both:
 
-- an `events.EventIface`: `PodEvent` upserts (create/update are idempotent) the pod's labels,
+- an `events.PodEventHandler`: `PodEvent` upserts (create/update are idempotent) the pod's labels,
   owner, and cgroup set from `containers.ResolveCgInfos`, evicting cgroups the pod no longer owns;
   delete evicts the pod and everything it owned. Label refresh on update is what lets a
   relabeled pod be re-matched.
@@ -423,13 +420,12 @@ redacted accessor output may be logged — never a raw header map, body, or CEL 
 ## Status reporting
 
 `pkg/controller.StatusWriter` is the single writer of `RuntimePolicyStatus` and the single
-implementation of `runtimeevent.PolicyStatusRecorder`. It is an `events.EventIface` too, so it
-sees the same policy and pod streams as the managers.
+implementation of `runtimeevent.PolicyStatusRecorder`. It consumes the policy event stream only;
+pod-level detail belongs to the Reports and the Prometheus counters, not to the status.
 
 Because every node runs a daemon and `RuntimePolicy` is cluster-scoped, status is **sharded**:
 `status.nodes` holds one `NodePolicyStatus` per node and each daemon replaces only its own entry,
-then recomputes the top-level `observedPods`/`violatingPods` sums and the newest
-`lastEvaluatedTime` from all shards. Updates flush every 30 seconds (and once on shutdown) via
+then lifts the newest `lastEvaluatedTime` across all shards to the top level. Updates flush every 30 seconds (and once on shutdown) via
 `retry.RetryOnConflict` against the `status` subresource, so concurrent per-node writes converge
 instead of clobbering each other.
 
@@ -482,13 +478,6 @@ file, but nothing increments them yet.
 
 These are verified, current limitations — not planned features to build toward, which belong in a
 future `PLAN.md`.
-
-> Two items that used to be listed here are gone. `exec` enforcement landed in #51 (`3568f42`) and
-> is described under [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering) (#34). And
-> "no reporting, metrics, or status" no longer holds: `pkg/reporter`, `pkg/metrics`, and
-> `pkg/controller.StatusWriter` cover #29, #44, and the userspace half of #17 — see
-> [The event plane](#the-event-plane), [Status reporting](#status-reporting), and
-> [Metrics](#metrics). What remains is scoped below.
 
 - **An omitted `spec.mode` still leaves a policy inert.** `mode` is `+optional` with no
   `+kubebuilder:default` (`api/v1alpha1/runtimepolicy_types.go`), so it compiles to `""`, which is

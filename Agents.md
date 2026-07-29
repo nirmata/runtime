@@ -67,9 +67,11 @@ Follow these rules when generating and updating code:
 - inject time (`Clock func() time.Time`) and filesystem roots (`procRoot`) — never sleep in a test
   and never touch the real `/proc`. Kernel-touching code goes behind the managers' seam interfaces
   so its bookkeeping is testable off-kernel; "returns an error on darwin" is not a test.
-- nothing reachable from a `RuntimePolicy` field, a pod object, a fixture, or kernel-supplied bytes
-  may panic: no unchecked index, no `[1]` after `Split`, no `panic("not implemented")` in a CEL
-  binding or decoder. Wrap third-party/user-authored callbacks in `utils.Guard`.
+- malformed user input must be rejected or reported, never crash: no unchecked index, no `[1]` after
+  `Split`, no `panic("not implemented")` in a CEL binding or decoder. But do not add a `recover()`
+  barrier around library or internal calls — a panic there is a bug and should surface. `utils.Guard`
+  belongs at the fan-out boundaries only (collector stages/sinks, informer handler fan-out). See the
+  panic rule in [CLAUDE.md](CLAUDE.md).
 - anything a user authored that cannot be honored must reach a `V(0)` log **and** a status
   condition. "Silently skipped" is the forbidden failure mode.
 - never regenerate or edit `*_bpfel.go`, `*_bpfeb.go`, or `.o` files unless you have the full BPF
@@ -84,14 +86,14 @@ is the one-line-per-package index.
 | --- | --- |
 | `api/v1alpha1` | The `RuntimePolicy` CRD: spec, `mode`, and the node-sharded status + conditions. |
 | `pkg/compiler` | Compiles a `RuntimePolicy` into CEL programs and evaluates it into an `EvaluationResult`. Policy-time, not per event. |
-| `pkg/utils` | `Guard(op, fn)` — the panic barrier wrapped around every user-authored CEL evaluation and every handler fan-out. |
-| `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, tombstones) plus `StatusWriter`. |
+| `pkg/utils` | `Guard(op, fn)` — the panic barrier used at handler fan-out boundaries so one bad handler cannot take out its siblings. |
+| `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID) plus `StatusWriter`. |
 | `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
 | `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The two eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
 | `pkg/lsmmgr`, `pkg/egressmgr` | The managers that attach those programs per matched pod and drain their observation counters (`CollectObservations`). |
-| `pkg/runtimeevent` | The normalized `Event` type and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. |
+| `pkg/runtimeevent` | The normalized `Event` type, its `KernelDecision`, and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. |
 | `pkg/collector` | Sources → stages → sinks pipeline, with drop accounting and source restart. |
-| `pkg/attribution` | cgroup/pod-UID/PID → pod identity index. Both an `events.EventIface` and a `collector.Stage`. |
+| `pkg/attribution` | cgroup/pod-UID/PID → pod identity index. Both an `events.PodEventHandler` and a `collector.Stage`. |
 | `pkg/monitor` | The sink that evaluates observations against monitor-mode policies and emits findings. |
 | `pkg/reporter` | Writes findings into namespaced OpenReports `Report`s. The redaction chokepoint. |
 | `pkg/metrics` | Prometheus collectors and the `/metrics` server (`--metrics-addr`). |
@@ -101,20 +103,19 @@ is the one-line-per-package index.
 
 There is one event pipeline: `pkg/collector`, fed by poll sources over the observation counters the
 two existing eBPF programs keep, annotated by `pkg/attribution`, consumed by `pkg/monitor`. There is
-no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency — that design was removed in
-`f806f25`; earlier revisions of this file described it, which was wrong (#45).
+no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency.
 
 The filtering rules that apply to that pipeline:
 
 - Events that cannot be attributed to a pod are dropped by the `pkg/attribution` stage, and every
   drop increments `kyverno_runtime_attribution_misses_total`. Dropping is only acceptable *because*
-  it is counted: a silent drop hides an attribution regression, which is what #38 was.
+  it is counted: a silent drop hides an attribution regression.
 - Buffer-full drops are likewise counted, labeled by source and reason. Never add a drop path
   without a counter.
 - `open`/`exec` observations are kept even when metadata is sparse, so long as the pod is known.
-- Egress observation is destination-IPv4 only, and does not see flows a default-deny is already
-  dropping (the BPF program returns before the counting branch). Do not write docs or tests that
-  assume otherwise.
+- Egress observation is destination-IPv4 only. It does see flows a default-deny drops: the BPF
+  program computes its decision, records it, and only then returns, and the decision is part of the
+  observation counter key. Never move an enforcement return ahead of the counting branch.
 
 ## Redaction (non-negotiable)
 
