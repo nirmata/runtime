@@ -17,10 +17,10 @@ func (e *EgressFilter) SetObserve(enabled bool) {
 }
 
 // IPEventKey identifies one observation counter: a destination address plus
-// the enforcement verdict the kernel program applied to the flow.
+// the enforcement decision the kernel program applied to the flow.
 type IPEventKey struct {
 	Addr    netip.Addr
-	Verdict runtimeevent.KernelVerdict
+	Decision runtimeevent.KernelDecision
 }
 
 // ipEventKernelKey is the kernel layout of `struct ip_event_key` in
@@ -30,11 +30,11 @@ type IPEventKey struct {
 // mismatch).
 type ipEventKernelKey struct {
 	Daddr   uint32
-	Verdict uint32
+	Decision uint32
 }
 
 // ReadIPEvents reads and RESETS the ip_events counter map: it returns the
-// (destination, verdict) pairs the program saw since the last read, with the
+// (destination, decision) pairs the program saw since the last read, with the
 // number of packets counted for each, and removes the entries so the next poll
 // reports a delta rather than a running total.
 //
@@ -53,7 +53,7 @@ func (e *EgressFilter) ReadIPEvents() (map[IPEventKey]uint32, error) {
 // handle is rejected by cilium/ebpf unless the Go key layout matches the
 // loaded map's BTF key size, which is exactly the marshaling seam the test
 // pins. Production counting happens in the BPF program, never here.
-func (e *EgressFilter) SeedIPEvent(addr netip.Addr, verdict runtimeevent.KernelVerdict, count uint32) error {
+func (e *EgressFilter) SeedIPEvent(addr netip.Addr, decision runtimeevent.KernelDecision, count uint32) error {
 	if e.bpfObjs == nil || e.bpfObjs.IpEvents == nil {
 		return ErrNotLoaded
 	}
@@ -61,7 +61,7 @@ func (e *EgressFilter) SeedIPEvent(addr netip.Addr, verdict runtimeevent.KernelV
 	if !ok {
 		return fmt.Errorf("seeding ip_events: %s is not an IPv4 address", addr)
 	}
-	key := ipEventKernelKey{Daddr: daddr, Verdict: uint32(verdict)}
+	key := ipEventKernelKey{Daddr: daddr, Decision: uint32(decision)}
 	return e.bpfObjs.IpEvents.Put(&key, &count)
 }
 
@@ -103,6 +103,6 @@ func readAndResetIPEvents(m *ebpf.Map) (map[IPEventKey]uint32, error) {
 func eventKey(k ipEventKernelKey) IPEventKey {
 	return IPEventKey{
 		Addr:    keyAddr(k.Daddr),
-		Verdict: runtimeevent.KernelVerdict(k.Verdict),
+		Decision: runtimeevent.KernelDecision(k.Decision),
 	}
 }

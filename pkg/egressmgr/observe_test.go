@@ -27,15 +27,15 @@ func addr(t *testing.T, s string) netip.Addr {
 	return a
 }
 
-// ipKey builds an allow-verdict observation key; ipKeyDeny a deny-verdict one.
+// ipKey builds an allow-decision observation key; ipKeyDeny a deny-decision one.
 func ipKey(t *testing.T, s string) egressfilter.IPEventKey {
 	t.Helper()
-	return egressfilter.IPEventKey{Addr: addr(t, s), Verdict: runtimeevent.VerdictAllow}
+	return egressfilter.IPEventKey{Addr: addr(t, s), Decision: runtimeevent.DecisionAllow}
 }
 
 func ipKeyDeny(t *testing.T, s string) egressfilter.IPEventKey {
 	t.Helper()
-	return egressfilter.IPEventKey{Addr: addr(t, s), Verdict: runtimeevent.VerdictDeny}
+	return egressfilter.IPEventKey{Addr: addr(t, s), Decision: runtimeevent.DecisionDeny}
 }
 
 // A monitor policy must observe, not enforce. Nothing may be
@@ -163,7 +163,7 @@ func TestCollectObservationsEmitsNetEventsWithPodUidAndCounts(t *testing.T) {
 		},
 		{
 			// the deny counter for the same destination is its own event,
-			// sorted after the allow one, with the kernel verdict carried over
+			// sorted after the allow one, with the kernel decision carried over
 			Kind: runtimeevent.KindNet, Time: testTime, Count: 2, KernelDenied: true,
 			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.2")},
 			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},

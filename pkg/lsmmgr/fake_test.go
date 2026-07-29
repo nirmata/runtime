@@ -195,17 +195,17 @@ func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventK
 	return out, f.note("ReadEvents")
 }
 
-// seed puts kernel-side allow-verdict counts in place for the next ReadEvents
-// call. seedVerdict is the general form.
+// seed puts kernel-side allow-decision counts in place for the next ReadEvents
+// call. seedDecision is the general form.
 func (f *fakeEnforcer) seed(cgid uint64, counts map[string]uint32) {
 	for p, c := range counts {
-		f.seedVerdict(cgid, lsm.PathEventKey{Path: p, Verdict: runtimeevent.VerdictAllow}, c)
+		f.seedDecision(cgid, lsm.PathEventKey{Path: p, Decision: runtimeevent.DecisionAllow}, c)
 	}
 }
 
-// seedVerdict puts one kernel-side (path, verdict) count in place for the next
+// seedDecision puts one kernel-side (path, decision) count in place for the next
 // ReadEvents call.
-func (f *fakeEnforcer) seedVerdict(cgid uint64, key lsm.PathEventKey, count uint32) {
+func (f *fakeEnforcer) seedDecision(cgid uint64, key lsm.PathEventKey, count uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.pending[cgid] == nil {

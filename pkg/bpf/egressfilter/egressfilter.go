@@ -20,8 +20,8 @@ const (
 	// DEFAULT_DENY makes the program drop everything not in allowed_ips.
 	DEFAULT_DENY = 1
 	// OBSERVE (LEARNING_MODE in the C) makes the program count every flow
-	// into ip_events, keyed by (destination, verdict). The program computes
-	// its verdict first and records before returning, so flows dropped by a
+	// into ip_events, keyed by (destination, decision). The program computes
+	// its decision first and records before returning, so flows dropped by a
 	// default-deny are observed too, with VERDICT_DENY.
 	OBSERVE = 2
 

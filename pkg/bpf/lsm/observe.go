@@ -16,20 +16,20 @@ import (
 var ErrObservationUnavailable = errors.New("lsm: observation maps unavailable")
 
 // PathEventKey identifies one observation counter: a path (or exec filename)
-// plus the enforcement verdict the kernel program applied to the operation.
+// plus the enforcement decision the kernel program applied to the operation.
 type PathEventKey struct {
 	Path    string
-	Verdict runtimeevent.KernelVerdict
+	Decision runtimeevent.KernelDecision
 }
 
 // pathEventKernelKey is the kernel layout of `struct path_event_key` in
 // _cprog/maps.h: a NUL-padded 128-byte path followed by a naturally-aligned
-// __u32 verdict, 132 bytes, no padding. It is kept separate from the exported
+// __u32 decision, 132 bytes, no padding. It is kept separate from the exported
 // PathEventKey so the iterator key's size and layout match the loaded map's
 // BTF key exactly (cilium/ebpf rejects a mismatch).
 type pathEventKernelKey struct {
 	Path    [maxPathLen]byte
-	Verdict uint32
+	Decision uint32
 }
 
 // EnableObservation creates (or reuses) an inner hash map in open_events for
@@ -203,7 +203,7 @@ func readAndResetCounts(m *ebpf.Map) (map[PathEventKey]uint32, error) {
 		if path == "" {
 			continue
 		}
-		ek := PathEventKey{Path: path, Verdict: runtimeevent.KernelVerdict(key.Verdict)}
+		ek := PathEventKey{Path: path, Decision: runtimeevent.KernelDecision(key.Decision)}
 		mergeCounts(counts, map[PathEventKey]uint32{ek: count})
 	}
 
@@ -229,7 +229,7 @@ func trimPathKey(key [maxPathLen]byte) string {
 	return string(key[:])
 }
 
-// mergeCounts folds src into dst, adding counts for (path, verdict) keys
+// mergeCounts folds src into dst, adding counts for (path, decision) keys
 // present in both. The addition saturates instead of wrapping: a wrapped
 // counter would report a busy path as quiet, which is the wrong direction for
 // a security signal.

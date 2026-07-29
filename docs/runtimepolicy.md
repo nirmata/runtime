@@ -204,7 +204,7 @@ current limits, not rounding errors:
   every 10 seconds, so a finding can lag the behavior by up to that interval, and only counts
   are preserved — not the ordering or timing of individual occurrences within a window.
 - **Open/exec path counters cap per cgroup.** The per-cgroup path map holds 2048 distinct
-  `(path, verdict)` keys; a workload touching more than that within one poll interval loses
+  `(path, decision)` keys; a workload touching more than that within one poll interval loses
   the excess. The read-and-reset drain mitigates this but does not eliminate it.
 - **Network observation is IPv4 only** — destination address only, with no port or protocol —
   because the egress maps are keyed on a `u32` IPv4 address.

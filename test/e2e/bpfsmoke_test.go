@@ -85,21 +85,21 @@ func TestBPFEgressProgramLoadsAndVerifies(t *testing.T) {
 	}
 
 	// The observation round trip pins the Go<->BTF key layout: a synthetic
-	// (addr, VerdictDeny) entry is written through the map handle and must
-	// come back from ReadIPEvents with the verdict intact. cilium/ebpf rejects
+	// (addr, DecisionDeny) entry is written through the map handle and must
+	// come back from ReadIPEvents with the decision intact. cilium/ebpf rejects
 	// a Put or Iterate whose Go key size does not match the loaded map's BTF
 	// key, so this is exactly the seam a key-struct marshaling bug hides in.
 	// It cannot prove packet-driven counting — no packet traverses the
 	// program here; that needs the kind-based egress lane.
 	seedAddr := netip.MustParseAddr("192.0.2.55")
-	if err := f.SeedIPEvent(seedAddr, runtimeevent.VerdictDeny, 4); err != nil {
+	if err := f.SeedIPEvent(seedAddr, runtimeevent.DecisionDeny, 4); err != nil {
 		t.Fatalf("seeding a synthetic deny observation: %v", err)
 	}
 	events, err := f.ReadIPEvents()
 	if err != nil {
 		t.Fatalf("reading back the seeded observation: %v", err)
 	}
-	key := egressfilter.IPEventKey{Addr: seedAddr, Verdict: runtimeevent.VerdictDeny}
+	key := egressfilter.IPEventKey{Addr: seedAddr, Decision: runtimeevent.DecisionDeny}
 	if got := events[key]; got != 4 {
 		t.Errorf("ReadIPEvents()[%v] = %d, want 4 (full map: %v)", key, got, events)
 	}

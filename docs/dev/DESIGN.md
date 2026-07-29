@@ -285,8 +285,8 @@ already keep — no new kernel programs, no ring buffers, no new `.o` files.
 `runtimeevent.Event` is the single currency of the plane: a `Kind`
 (`net|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
 (observations are deltas, not individual occurrences), two deliberately distinct deny flags —
-`KernelDenied`, the kernel's actual enforcement verdict, set only by the BPF poll sources from
-the verdict dimension of the observation maps, and `WouldDeny`, monitor mode's counterfactual,
+`KernelDenied`, the kernel's actual enforcement decision, set only by the BPF poll sources from
+the decision dimension of the observation maps, and `WouldDeny`, monitor mode's counterfactual,
 set only by `pkg/monitor` on its per-policy copy — one non-nil facts struct
 per kind, and a `PodIdentity`.
 
@@ -502,7 +502,7 @@ future `PLAN.md`.
   programs:
   - Counters are drained every 10 seconds, so findings lag behavior by up to that interval and
     only counts survive — not per-occurrence ordering or timing.
-  - The per-cgroup `open_events` inner map holds 2048 `(path, verdict)` keys; a workload touching
+  - The per-cgroup `open_events` inner map holds 2048 `(path, decision)` keys; a workload touching
     more than that within one interval loses the excess (read-and-reset mitigates, does not
     eliminate).
   - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
@@ -538,7 +538,7 @@ future `PLAN.md`.
   `RejectedTarget` values that reach a `V(0)` log and a `TargetsValid=False` condition. They are no
   longer dropped silently, but they are still not enforceable. An LPM-trie/IPv6 map redesign is the
   follow-up (#41).
-- **Enforcement findings are counter-grained.** The observation maps count `(target, verdict)`
+- **Enforcement findings are counter-grained.** The observation maps count `(target, decision)`
   pairs, so an enforce-mode deny surfaces as a finding with `enforced=true` — but only counts
   survive, not per-occurrence ordering, PIDs, or timing, and only for pods some policy has in
   observe scope (egress counting still requires the pod's `OBSERVE` flag).

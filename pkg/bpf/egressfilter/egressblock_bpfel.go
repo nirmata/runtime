@@ -14,9 +14,9 @@ import (
 )
 
 type egressBlockIpEventKey struct {
-	_       structs.HostLayout
-	Daddr   uint32
-	Verdict uint32
+	_        structs.HostLayout
+	Daddr    uint32
+	Decision uint32
 }
 
 // loadEgressBlock returns the embedded CollectionSpec for egressBlock.

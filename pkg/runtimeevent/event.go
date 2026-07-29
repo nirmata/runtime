@@ -20,15 +20,15 @@ const (
 	KindOpen Kind = "open"
 )
 
-// KernelVerdict is the enforcement verdict a BPF program recorded for an
+// KernelDecision is the enforcement decision a BPF program recorded for an
 // observation. The values mirror the VERDICT_ALLOW / VERDICT_DENY defines in
 // the C programs (pkg/bpf/egressfilter/_cprog/maps.h and
 // pkg/bpf/lsm/_cprog/maps.h); keep them in sync.
-type KernelVerdict uint32
+type KernelDecision uint32
 
 const (
-	VerdictAllow KernelVerdict = 0
-	VerdictDeny  KernelVerdict = 1
+	DecisionAllow KernelDecision = 0
+	DecisionDeny  KernelDecision = 1
 )
 
 // Event is one normalized, attributed runtime observation.
@@ -41,15 +41,15 @@ type Event struct {
 	Comm     string    `json:"comm,omitempty"`
 	// Count > 1 for poll-sourced events that aggregate N kernel occurrences.
 	//
-	// Invariant: the kernel verdict is part of the observation counter key,
+	// Invariant: the kernel decision is part of the observation counter key,
 	// so every occurrence a Count aggregates shares the same KernelDenied
 	// value. One address or path can therefore yield two events per poll —
-	// one per verdict — but never a mixed count.
+	// one per decision — but never a mixed count.
 	Count uint32 `json:"count,omitempty"`
 
-	// KernelDenied is the kernel's ACTUAL enforcement verdict for the
+	// KernelDenied is the kernel's ACTUAL enforcement decision for the
 	// occurrences this event aggregates. Written only by the BPF poll
-	// sources, from the verdict dimension of the observation maps. In pure
+	// sources, from the decision dimension of the observation maps. In pure
 	// monitor mode nothing is programmed to block, so it is false there; it
 	// becomes true when an enforce-mode policy's maps denied the operation.
 	KernelDenied bool `json:"kernelDenied,omitempty"`

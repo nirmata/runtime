@@ -10,7 +10,7 @@
 //     the policy's status.
 //
 //   - Enforce mode blocks in the kernel, and the poll sources report the
-//     kernel's actual verdict on each observation (Event.KernelDenied). The
+//     kernel's actual decision on each observation (Event.KernelDenied). The
 //     kernel itself is policy-blind: its BPF maps are per-pod flat sets
 //     (allowed/banned entries plus one default-deny bit) with no policy
 //     dimension, so attributing a deny to a policy in the kernel would require

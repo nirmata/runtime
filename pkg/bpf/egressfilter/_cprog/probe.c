@@ -18,16 +18,16 @@ struct iphdr {
     __be32 daddr;
 };
 
-// record_ip_event bumps the (daddr, verdict) counter. The value is a __u32 --
+// record_ip_event bumps the (daddr, decision) counter. The value is a __u32 --
 // looking it up as anything narrower would only ever increment the low byte on
 // little-endian, wrapping counts at 255. The add is atomic because cgroup_skb
 // programs run concurrently per-CPU and a plain (*val)++ is a lossy
 // read-modify-write.
-static __always_inline void record_ip_event(__u32 daddr, __u32 verdict)
+static __always_inline void record_ip_event(__u32 daddr, __u32 decision)
 {
     struct ip_event_key key = {};
     key.daddr = daddr;
-    key.verdict = verdict;
+    key.decision = decision;
 
     __u32 *val = bpf_map_lookup_elem(&ip_events, &key);
     if (val) {
@@ -45,7 +45,7 @@ static __always_inline void record_ip_event(__u32 daddr, __u32 verdict)
     }
 }
 
-// The program is structured verdict -> record -> return: the verdict is fully
+// The program is structured decision -> record -> return: the decision is fully
 // computed first, then observed, then returned. No enforcement path may return
 // before the observation branch -- that is exactly how default-deny drops used
 // to become invisible to monitoring.
@@ -72,24 +72,24 @@ int cgroup_egress(struct __sk_buff *skb)
         return 3;
     };
 
-    // verdict: under default deny only allowed_ips passes, otherwise only
+    // decision: under default deny only allowed_ips passes, otherwise only
     // banned_ips drops
-    __u32 verdict = VERDICT_ALLOW;
+    __u32 decision = DECISION_ALLOW;
     if (*f & (1 << DEFAULT_DENY)) {
         if (bpf_map_lookup_elem(&allowed_ips, &daddr) == NULL) {
-            verdict = VERDICT_DENY;
+            decision = DECISION_DENY;
         }
     } else if (bpf_map_lookup_elem(&banned_ips, &daddr) != NULL) {
-        verdict = VERDICT_DENY;
+        decision = DECISION_DENY;
     }
 
     // record: learning mode counts every flow, denied ones included
     if (*f & (1 << LEARNING_MODE)) {
-        record_ip_event(daddr, verdict);
+        record_ip_event(daddr, decision);
     }
 
     // return: 1 = pass, 0 = drop
-    if (verdict == VERDICT_DENY) {
+    if (decision == DECISION_DENY) {
         return 0;
     }
     return 1;

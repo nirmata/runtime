@@ -12,8 +12,8 @@ import (
 )
 
 // CollectObservations drains the per-pod egress observation counters and turns
-// them into normalized events, one per (destination, verdict): the kernel
-// counters carry the program's enforcement verdict, so a flow dropped by a
+// them into normalized events, one per (destination, decision): the kernel
+// counters carry the program's enforcement decision, so a flow dropped by a
 // default-deny is emitted with KernelDenied set rather than lost.
 //
 // Only pods with at least one observe-mode policy attached are polled: the
@@ -68,9 +68,9 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 				Kind:  runtimeevent.KindNet,
 				Time:  now,
 				Count: count,
-				// the kernel's actual verdict for these occurrences; monitor
+				// the kernel's actual decision for these occurrences; monitor
 				// attributes it to a policy in userspace
-				KernelDenied: key.Verdict == runtimeevent.VerdictDeny,
+				KernelDenied: key.Decision == runtimeevent.DecisionDeny,
 				Net:          &runtimeevent.NetFacts{DestIP: key.Addr},
 				// the poll source knows the pod but not the cgroup: pre-fill
 				// the identity hint so attribution can skip the pid lookup
@@ -82,7 +82,7 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 	return out, errors.Join(errs...)
 }
 
-// sortedIPEventKeys orders keys by address, with the verdict as a tiebreaker
+// sortedIPEventKeys orders keys by address, with the decision as a tiebreaker
 // (allow before deny), so the emitted event slice is deterministic.
 func sortedIPEventKeys(counts map[egressfilter.IPEventKey]uint32) []egressfilter.IPEventKey {
 	keys := make([]egressfilter.IPEventKey, 0, len(counts))
@@ -93,7 +93,7 @@ func sortedIPEventKeys(counts map[egressfilter.IPEventKey]uint32) []egressfilter
 		if c := keys[i].Addr.Compare(keys[j].Addr); c != 0 {
 			return c < 0
 		}
-		return keys[i].Verdict < keys[j].Verdict
+		return keys[i].Decision < keys[j].Decision
 	})
 	return keys
 }

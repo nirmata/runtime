@@ -59,11 +59,11 @@ func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
 	}
 }
 
-// One path counted under both verdicts yields two events — the kernel counter
-// key carries the verdict, so a Count is always homogeneous with respect to
+// One path counted under both decisions yields two events — the kernel counter
+// key carries the decision, so a Count is always homogeneous with respect to
 // KernelDenied — and the deny event sorts after the allow one for the same
 // path, deterministically.
-func TestCollectObservations_SplitsEventsByKernelVerdict(t *testing.T) {
+func TestCollectObservations_SplitsEventsByKernelDecision(t *testing.T) {
 	h := newHarness(t)
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
@@ -73,8 +73,8 @@ func TestCollectObservations_SplitsEventsByKernelVerdict(t *testing.T) {
 		t.Fatal(err)
 	}
 	enf := h.enf("rp1", open)
-	enf.seedVerdict(11, lsm.PathEventKey{Path: "/etc/shadow", Verdict: runtimeevent.VerdictDeny}, 2)
-	enf.seedVerdict(11, lsm.PathEventKey{Path: "/etc/shadow", Verdict: runtimeevent.VerdictAllow}, 5)
+	enf.seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionDeny}, 2)
+	enf.seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionAllow}, 5)
 
 	got, err := h.l.CollectObservations(context.Background())
 	if err != nil {

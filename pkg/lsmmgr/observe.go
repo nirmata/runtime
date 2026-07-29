@@ -77,16 +77,16 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 	return sortEvents(out), errors.Join(errs...)
 }
 
-// newObservation builds the event for one observed (path, verdict) count. The
+// newObservation builds the event for one observed (path, decision) count. The
 // cgroup id is what attribution resolves; the pod uid is a hint the manager
 // happens to know. KernelDenied carries the kernel's actual enforcement
-// verdict; monitor attributes it to a policy in userspace.
+// decision; monitor attributes it to a policy in userspace.
 func newObservation(progType string, now time.Time, cgid uint64, podUID string, key lsm.PathEventKey, count uint32) runtimeevent.Event {
 	ev := runtimeevent.Event{
 		Time:         now,
 		CgroupID:     cgid,
 		Count:        count,
-		KernelDenied: key.Verdict == runtimeevent.VerdictDeny,
+		KernelDenied: key.Decision == runtimeevent.DecisionDeny,
 		Pod:          runtimeevent.PodIdentity{UID: podUID},
 	}
 	switch progType {
@@ -131,7 +131,7 @@ func sortEvents(evs []runtimeevent.Event) []runtimeevent.Event {
 		if c := cmp.Compare(eventPath(a), eventPath(b)); c != 0 {
 			return c
 		}
-		// verdict tiebreaker: the same path can now appear once per verdict
+		// decision tiebreaker: the same path can now appear once per decision
 		return cmp.Compare(boolToInt(a.KernelDenied), boolToInt(b.KernelDenied))
 	})
 	return evs

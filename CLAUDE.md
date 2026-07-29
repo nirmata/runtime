@@ -84,7 +84,7 @@ A counter that cannot distinguish an allowed operation from a blocked one is not
 monitoring, however many events it produces. Put each dimension in the layer
 that actually knows it:
 
-- The **kernel** knows the verdict and has no policy identity. Encode the verdict
+- The **kernel** knows the decision and has no policy identity. Encode the decision
   in the map key.
 - **Userspace** knows the policies. Attribute there, by re-evaluating the
   compiled policy against the observed target.

@@ -14,9 +14,9 @@ import (
 )
 
 type lsmExecCheckPathEventKey struct {
-	_       structs.HostLayout
-	Path    [128]int8
-	Verdict uint32
+	_        structs.HostLayout
+	Path     [128]int8
+	Decision uint32
 }
 
 // loadLsmExecCheck returns the embedded CollectionSpec for lsmExecCheck.

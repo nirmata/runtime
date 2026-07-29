@@ -15,14 +15,14 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// pk builds an allow-verdict key; pkDeny a deny-verdict one. Counts for the
-// same path under different verdicts must never merge.
+// pk builds an allow-decision key; pkDeny a deny-decision one. Counts for the
+// same path under different decisions must never merge.
 func pk(path string) PathEventKey {
-	return PathEventKey{Path: path, Verdict: runtimeevent.VerdictAllow}
+	return PathEventKey{Path: path, Decision: runtimeevent.DecisionAllow}
 }
 
 func pkDeny(path string) PathEventKey {
-	return PathEventKey{Path: path, Verdict: runtimeevent.VerdictDeny}
+	return PathEventKey{Path: path, Decision: runtimeevent.DecisionDeny}
 }
 
 func TestMergeCounts(t *testing.T) {
@@ -51,7 +51,7 @@ func TestMergeCounts(t *testing.T) {
 			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 7, pk("/etc/passwd"): 2},
 		},
 		{
-			name: "same path under different verdicts stays distinct",
+			name: "same path under different decisions stays distinct",
 			dst:  map[PathEventKey]uint32{pk("/etc/shadow"): 3},
 			src:  map[PathEventKey]uint32{pkDeny("/etc/shadow"): 4},
 			want: map[PathEventKey]uint32{pk("/etc/shadow"): 3, pkDeny("/etc/shadow"): 4},
@@ -228,8 +228,8 @@ func TestPathEventKernelKeyLayout(t *testing.T) {
 	if got := int(unsafe.Sizeof(lsmExecCheckPathEventKey{})); got != want {
 		t.Errorf("sizeof(lsmExecCheckPathEventKey) = %d, want %d (generated from the C)", got, want)
 	}
-	if got, want := unsafe.Offsetof(pathEventKernelKey{}.Verdict), unsafe.Offsetof(lsmFileOpenPathEventKey{}.Verdict); got != want {
-		t.Errorf("offsetof(Verdict) = %d, want %d (generated from the C)", got, want)
+	if got, want := unsafe.Offsetof(pathEventKernelKey{}.Decision), unsafe.Offsetof(lsmFileOpenPathEventKey{}.Decision); got != want {
+		t.Errorf("offsetof(Decision) = %d, want %d (generated from the C)", got, want)
 	}
 }
 

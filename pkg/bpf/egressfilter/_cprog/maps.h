@@ -5,22 +5,22 @@
 #define DEFAULT_DENY 1
 #define LEARNING_MODE 2
 
-/* Kernel enforcement verdicts, recorded per observation so userspace can tell
+/* Kernel enforcement decisions, recorded per observation so userspace can tell
  * an allowed flow from a denied one. Mirrored by runtimeevent.KernelVerdict on
  * the Go side; keep the values in sync. */
-#define VERDICT_ALLOW 0
-#define VERDICT_DENY 1
+#define DECISION_ALLOW 0
+#define DECISION_DENY 1
 
-/* Key of the ip_events observation map: one counter per (destination, verdict).
+/* Key of the ip_events observation map: one counter per (destination, decision).
  *
  * Both members are deliberately __u32: two naturally-aligned 32-bit words give
  * sizeof(struct ip_event_key) == 8 with NO padding bytes. That matters because
  * a hash map key is compared as raw bytes -- uninitialized padding would make
- * the same logical (daddr, verdict) pair hash to distinct entries, producing
+ * the same logical (daddr, decision) pair hash to distinct entries, producing
  * phantom keys and split counts. */
 struct ip_event_key {
     __u32 daddr;
-    __u32 verdict;
+    __u32 decision;
 };
 
 struct {
@@ -44,9 +44,9 @@ struct {
     __type(value, __u8);
 } flags SEC(".maps");
 
-/* 2048, not 1024: the verdict dimension can double the number of distinct
+/* 2048, not 1024: the decision dimension can double the number of distinct
  * keys, and a full map would silently drop exactly the deny observations the
- * verdict dimension exists to record. */
+ * decision dimension exists to record. */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 2048);
