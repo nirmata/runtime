@@ -83,19 +83,6 @@ func (r *recorder) Error(err error, msg string, _ ...any) {
 func (r *recorder) WithValues(...any) logr.LogSink { return r }
 func (r *recorder) WithName(string) logr.LogSink   { return r }
 
-// count returns how many captured entries are at level and contain substr.
-func (r *recorder) count(level int, substr string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	n := 0
-	for _, e := range r.entries {
-		if e.level == level && strings.Contains(e.msg, substr) {
-			n++
-		}
-	}
-	return n
-}
-
 // errorsContaining returns captured Error() messages mentioning substr.
 func (r *recorder) errorsContaining(substr string) []string {
 	r.mu.Lock()
