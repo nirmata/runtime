@@ -10,19 +10,15 @@ import (
 
 var _ events.PodEventHandler = (*Index)(nil)
 
-// podTemplateHashLabel is set by the Deployment controller on the ReplicaSet it
-// creates and on every pod of that ReplicaSet.
+// set by the Deployment controller on the ReplicaSet it creates and on every pod
+// of that ReplicaSet.
 const podTemplateHashLabel = "pod-template-hash"
 
-// deriveOwner reports the workload that owns pod without reading any object
-// besides the pod itself (no ReplicaSet GET, hence no extra RBAC).
-//
-// The first owner reference wins. A ReplicaSet owner is rewritten to its
-// Deployment when the pod carries a pod-template-hash label that is the
-// trailing segment of the ReplicaSet name -- which is exactly how the
-// Deployment controller names ReplicaSets. Anything else (StatefulSet,
-// DaemonSet, Job, a hand-made ReplicaSet without the label) is reported
-// verbatim, and a bare pod has no owner at all.
+// deriveOwner reports the workload that owns pod, reading nothing but the pod
+// itself so no extra RBAC is needed. The first owner reference wins, and a
+// ReplicaSet owner is rewritten to its Deployment when the pod-template-hash
+// label is the trailing segment of the ReplicaSet name, which is how the
+// Deployment controller names them. Any other owner is reported verbatim.
 func deriveOwner(pod *corev1.Pod) (kind string, name string) {
 	if pod == nil || len(pod.OwnerReferences) == 0 {
 		return "", ""

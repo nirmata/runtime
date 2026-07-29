@@ -145,6 +145,29 @@ func recvDuration(t *testing.T, ch <-chan time.Duration) time.Duration {
 	}
 }
 
+// pumpForward runs c.forward over evs with nothing draining c.events, so the
+// buffer state at each handoff is exact. It returns once forward has processed
+// every event and exited.
+func pumpForward(t *testing.T, c *Collector, source string, evs ...runtimeevent.Event) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	in := make(chan runtimeevent.Event)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.forward(ctx, source, in)
+	}()
+	for _, ev := range evs {
+		in <- ev
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("forward did not return after cancel")
+	}
+}
+
 // runCollector starts c.Run and returns a func that cancels it and asserts a
 // clean return.
 func runCollector(t *testing.T, c *Collector) (context.Context, func()) {
@@ -186,21 +209,24 @@ func sliceSource(name string, events []runtimeevent.Event) runtimeevent.Source {
 
 // ---------- tests ----------
 
-func TestNewAppliesDefaultsAndOptions(t *testing.T) {
-	c := New(logr.Discard())
+func TestNewAppliesArgsAndFallsBackToDefaults(t *testing.T) {
+	m := metrics.New(prometheus.NewRegistry())
+	c := New(logr.Discard(), 7, time.Millisecond, m)
+	if c.bufferSize != 7 || c.backoff != time.Millisecond || c.metrics != m {
+		t.Errorf("got bufferSize=%d backoff=%v metrics=%v, want 7, 1ms and the registry",
+			c.bufferSize, c.backoff, c.metrics != nil)
+	}
+	if got := cap(c.events); got != 7 {
+		t.Errorf("buffer capacity = %d, want 7", got)
+	}
+
+	c = New(logr.Discard(), 0, -1, nil) // non-positive values fall back
 	if c.bufferSize != DefaultBufferSize || c.backoff != DefaultRestartBackoff {
 		t.Errorf("defaults: got bufferSize=%d backoff=%v, want %d and %v",
 			c.bufferSize, c.backoff, DefaultBufferSize, DefaultRestartBackoff)
 	}
 	if got := cap(c.events); got != DefaultBufferSize {
 		t.Errorf("buffer capacity = %d, want %d", got, DefaultBufferSize)
-	}
-
-	m := metrics.New(prometheus.NewRegistry())
-	c = New(logr.Discard(), WithBufferSize(7), WithRestartBackoff(time.Millisecond), WithMetrics(m),
-		WithBufferSize(0), WithRestartBackoff(-1)) // invalid values must be ignored
-	if c.bufferSize != 7 || c.backoff != time.Millisecond || c.metrics != m {
-		t.Errorf("options: got bufferSize=%d backoff=%v metrics=%v", c.bufferSize, c.backoff, c.metrics != nil)
 	}
 
 	// Nil registrations are ignored rather than producing nil entries.
@@ -216,7 +242,7 @@ func TestStagesRunInRegistrationOrderBeforeSinks(t *testing.T) {
 	var mu sync.Mutex
 	var order []string
 
-	c := New(logr.Discard(), WithBufferSize(4))
+	c := New(logr.Discard(), 4, DefaultRestartBackoff, nil)
 	for _, name := range []string{"a", "b", "c"} {
 		name := name
 		c.AddStage(funcStage{name: name, fn: func(ev *runtimeevent.Event) bool {
@@ -253,7 +279,7 @@ func TestStageReturningFalseDropsEventAndCountsByStageName(t *testing.T) {
 	reached := make(chan int, 4)
 	sinkSaw := make(chan runtimeevent.Event, 4)
 
-	c := New(logr.Discard(), WithBufferSize(4), WithMetrics(m))
+	c := New(logr.Discard(), 4, DefaultRestartBackoff, m)
 	c.AddStage(funcStage{name: "attribution", fn: func(*runtimeevent.Event) bool { return true }})
 	c.AddStage(funcStage{name: "filter", fn: func(*runtimeevent.Event) bool {
 		reached <- 1
@@ -293,16 +319,14 @@ func TestStageReturningFalseDropsEventAndCountsByStageName(t *testing.T) {
 	}
 }
 
-func TestIngestDropsWhenBufferFullAndCountsBufferFull(t *testing.T) {
+func TestForwardDropsWhenBufferFullAndCountsBufferFull(t *testing.T) {
 	m := metrics.New(prometheus.NewRegistry())
-	// No Run: ingest is exercised directly so the buffer state is exact and
-	// the assertion cannot race the dispatch goroutine.
-	c := New(logr.Discard(), WithBufferSize(2), WithMetrics(m))
+	c := New(logr.Discard(), 2, DefaultRestartBackoff, m)
 
-	for i, want := range []bool{true, true, false, false} {
-		if got := c.ingest("egress", netEvent("e")); got != want {
-			t.Errorf("ingest #%d = %v, want %v", i+1, got, want)
-		}
+	pumpForward(t, c, "egress", netEvent("e"), netEvent("e"), netEvent("e"), netEvent("e"))
+
+	if got := len(c.events); got != 2 {
+		t.Errorf("buffered events = %d, want 2 (the buffer capacity)", got)
 	}
 	if got := c.Dropped(); got != 2 {
 		t.Errorf("Dropped() = %d, want 2", got)
@@ -322,7 +346,7 @@ func TestBufferFullDropsAreCountedEndToEnd(t *testing.T) {
 	emitted := make(chan int, 1)
 	var once sync.Once
 
-	c := New(logr.Discard(), WithBufferSize(1), WithMetrics(m))
+	c := New(logr.Discard(), 1, DefaultRestartBackoff, m)
 	c.AddSink(funcSink{name: "slow", fn: func(runtimeevent.Event) {
 		// Hold the dispatch loop on the first event so the buffer fills.
 		once.Do(func() {
@@ -370,7 +394,7 @@ func TestPanickingStageDoesNotKillDispatchLoop(t *testing.T) {
 	m := metrics.New(prometheus.NewRegistry())
 	got := make(chan runtimeevent.Event, 4)
 
-	c := New(logr.New(rec), WithBufferSize(8), WithMetrics(m))
+	c := New(logr.New(rec), 8, DefaultRestartBackoff, m)
 	c.AddStage(funcStage{name: "boomStage", fn: func(ev *runtimeevent.Event) bool {
 		if ev.Comm == "bad" {
 			panic("stage exploded")
@@ -398,7 +422,7 @@ func TestPanickingSinkDoesNotKillDispatchLoopOrOtherSinks(t *testing.T) {
 	rec := &recorder{}
 	good := make(chan runtimeevent.Event, 4)
 
-	c := New(logr.New(rec), WithBufferSize(8))
+	c := New(logr.New(rec), 8, DefaultRestartBackoff, nil)
 	c.AddSink(funcSink{name: "boomSink", fn: func(runtimeevent.Event) { panic("sink exploded") }})
 	c.AddSink(chanSink("goodSink", good))
 	c.AddSource(sliceSource("synth", []runtimeevent.Event{netEvent("one"), netEvent("two")}))
@@ -427,7 +451,7 @@ func TestSourceRestartsWithBackoffAfterError(t *testing.T) {
 	fire := make(chan time.Time)
 
 	const backoff = 42 * time.Millisecond
-	c := New(logr.New(rec), WithBufferSize(4), WithRestartBackoff(backoff))
+	c := New(logr.New(rec), 4, backoff, nil)
 	c.after = func(d time.Duration) <-chan time.Time {
 		backoffs <- d
 		return fire
@@ -462,62 +486,9 @@ func TestSourceRestartsWithBackoffAfterError(t *testing.T) {
 	}
 }
 
-func TestSourceNotWiredLoggedOnceAndNeverRestarted(t *testing.T) {
-	rec := &recorder{}
-	runs := make(chan int, 8)
-	backoffs := make(chan time.Duration, 8)
-
-	c := New(logr.New(rec), WithBufferSize(4), WithRestartBackoff(time.Millisecond))
-	c.after = func(d time.Duration) <-chan time.Time {
-		backoffs <- d
-		ch := make(chan time.Time, 1)
-		ch <- time.Now()
-		return ch
-	}
-
-	attempt := 0
-	c.AddSource(&funcSource{name: "dnstrace", run: func(context.Context, chan<- runtimeevent.Event) error {
-		attempt++
-		runs <- attempt
-		return runtimeevent.ErrSourceNotWired
-	}})
-	// A second, live source keeps Run blocked so a spurious restart of the
-	// not-wired source would have time to show up on runs.
-	ready := make(chan int, 1)
-	c.AddSource(&funcSource{name: "live", run: func(ctx context.Context, _ chan<- runtimeevent.Event) error {
-		ready <- 1
-		<-ctx.Done()
-		return nil
-	}})
-
-	_, stop := runCollector(t, c)
-	if got := recvInt(t, runs); got != 1 {
-		t.Fatalf("run count = %d, want 1", got)
-	}
-	recvInt(t, ready)
-	stop()
-
-	select {
-	case n := <-runs:
-		t.Fatalf("not-wired source was restarted (run #%d)", n)
-	default:
-	}
-	select {
-	case d := <-backoffs:
-		t.Fatalf("backoff was scheduled (%v) for a not-wired source", d)
-	default:
-	}
-	if n := rec.count(0, "not wired"); n != 1 {
-		t.Errorf("V(0) not-wired log lines = %d, want exactly 1", n)
-	}
-	if n := len(rec.errorsContaining("restarting")); n != 0 {
-		t.Errorf("not-wired source produced %d restart errors, want 0", n)
-	}
-}
-
 func TestSourceReturningNilIsNotRestarted(t *testing.T) {
 	runs := make(chan int, 8)
-	c := New(logr.Discard(), WithBufferSize(4), WithRestartBackoff(time.Millisecond))
+	c := New(logr.Discard(), 4, time.Millisecond, nil)
 	c.after = func(time.Duration) <-chan time.Time {
 		t.Error("backoff scheduled for a source that finished cleanly")
 		ch := make(chan time.Time)
@@ -551,7 +522,7 @@ func TestSourceReturningNilIsNotRestarted(t *testing.T) {
 }
 
 func TestRunReturnsCleanlyOnContextCancel(t *testing.T) {
-	c := New(logr.Discard(), WithBufferSize(2))
+	c := New(logr.Discard(), 2, DefaultRestartBackoff, nil)
 	c.AddSource(&funcSource{name: "blocking", run: func(ctx context.Context, _ chan<- runtimeevent.Event) error {
 		<-ctx.Done()
 		return ctx.Err()
@@ -565,7 +536,7 @@ func TestRunReturnsCleanlyOnContextCancel(t *testing.T) {
 
 func TestRunTwiceReturnsError(t *testing.T) {
 	started := make(chan int, 1)
-	c := New(logr.Discard())
+	c := New(logr.Discard(), DefaultBufferSize, DefaultRestartBackoff, nil)
 	c.AddSource(&funcSource{name: "live", run: func(ctx context.Context, _ chan<- runtimeevent.Event) error {
 		started <- 1
 		<-ctx.Done()
@@ -594,9 +565,8 @@ func TestRunTwiceReturnsError(t *testing.T) {
 }
 
 func TestCollectorWithoutMetricsStillCountsDrops(t *testing.T) {
-	c := New(logr.Discard(), WithBufferSize(1)) // no WithMetrics
-	_ = c.ingest("s", netEvent("a"))
-	_ = c.ingest("s", netEvent("b"))
+	c := New(logr.Discard(), 1, DefaultRestartBackoff, nil)
+	pumpForward(t, c, "s", netEvent("a"), netEvent("b"))
 	if got := c.Dropped(); got != 1 {
 		t.Errorf("Dropped() = %d, want 1", got)
 	}

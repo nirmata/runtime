@@ -59,10 +59,9 @@ func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
 	}
 }
 
-// One path counted under both decisions yields two events — the kernel counter
-// key carries the decision, so a Count is always homogeneous with respect to
-// KernelDenied — and the deny event sorts after the allow one for the same
-// path, deterministically.
+// one path counted under both decisions yields two events, the deny one sorted
+// after the allow one. the counter key carries the decision, so a Count never
+// mixes the two.
 func TestCollectObservations_SplitsEventsByKernelDecision(t *testing.T) {
 	h := newHarness(t)
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
@@ -101,11 +100,8 @@ func TestCollectObservations_SplitsEventsByKernelDecision(t *testing.T) {
 	}
 }
 
-// TestCollectObservationsReadsAllEnforcers pins the read-loop structure: an
-// early `break` in the read loop meant that for a pod with both an open and an exec
-// enforcer, everything after the first enforcer was silently dropped. This test
-// fails if anyone reintroduces a break (or any early return) that stops after the
-// first enforcer of an attachment, or after the first attachment.
+// the read loop drains every enforcer of every attachment: a break or early return
+// after the first one drops what the rest counted.
 func TestCollectObservationsReadsAllEnforcers(t *testing.T) {
 	h := newHarness(t)
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {

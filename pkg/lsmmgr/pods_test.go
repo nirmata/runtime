@@ -165,11 +165,8 @@ func TestPodUpdated_UnknownPodErrors(t *testing.T) {
 	}
 }
 
-// TestPodUpdated_LabelChangeReEvaluatesSelectors pins that a label-only pod
-// update re-evaluates every attachment's selector. Labels used to be
-// snapshotted at pod creation, so enforcement outlived its selector and a newly
-// matching pod was never picked up. Both directions are asserted here, plus the
-// refreshed cache.
+// a label-only pod update re-evaluates every attachment's selector. both
+// directions are asserted here, plus the refreshed label cache.
 func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	h := newHarness(t)
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}), cgs(11), events.EventTypeCreate); err != nil {
@@ -210,7 +207,7 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
 		t.Errorf("rpWeb attached pods = %v, want [podA]", got)
 	}
-	// and the policy that no longer selects it detaches: enforcement must not
+	// and the policy that stopped selecting it detaches, so enforcement does not
 	// outlive its selector
 	dbEnf := h.enf("rpDb", open)
 	assertCgidCalls(t, "rpDb DeleteCgids", dbEnf.delCgids, [][]uint64{{11}})

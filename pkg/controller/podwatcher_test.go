@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
@@ -47,7 +49,6 @@ func newTestPodWatcher(t *testing.T, hs []events.PodEventHandler, seed ...*corev
 		factory:       factory,
 		informer:      pods.Informer(),
 		lister:        pods.Lister(),
-		deletedUIDs:   make(map[string]string),
 		queue:         newPodQueue(),
 		nodeName:      "node-1",
 		eventHandlers: hs,
@@ -200,36 +201,54 @@ func TestPodHandleDeleteFansOutUIDToAllHandlers(t *testing.T) {
 	}
 }
 
-// TestPodEnqueueRecordsUIDsForDeletesOnly checks the enqueue side of the
-// stable-key design: create/update carry no object, deletes record the UID
-// because the lister no longer has the object.
-func TestPodEnqueueRecordsUIDsForDeletesOnly(t *testing.T) {
-	w, _ := newTestPodWatcher(t, nil)
+// nextKey returns the next item the queue hands out, failing the test rather
+// than blocking forever when nothing is queued.
+func nextKey(t *testing.T, q workqueue.TypedRateLimitingInterface[queueKey]) queueKey {
+	t.Helper()
+	got := make(chan queueKey, 1)
+	go func() {
+		k, shutdown := q.Get()
+		if shutdown {
+			return
+		}
+		q.Done(k)
+		got <- k
+	}()
+	select {
+	case k := <-got:
+		return k
+	case <-time.After(10 * time.Second):
+		t.Fatal("nothing was queued")
+		return queueKey{}
+	}
+}
 
-	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeCreate)
-	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeUpdate)
-	if len(w.deletedUIDs) != 0 {
-		t.Errorf("deletedUIDs = %+v, want empty after create/update", w.deletedUIDs)
+// TestPodInformerQueuesKeysByEventType drives the informer's own callbacks:
+// creates and updates queue the namespaced key, deletes queue the pod UID
+// because the lister cannot serve the object by the time the worker runs.
+func TestPodInformerQueuesKeysByEventType(t *testing.T) {
+	client := k8sfake.NewSimpleClientset(pod("ns", "p", "uid-1"))
+	w := NewPodWatcher(client, "node-1", nil)
+	t.Cleanup(w.queue.ShutDown)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	w.factory.Start(stop)
+	if !cache.WaitForCacheSync(stop, w.informer.HasSynced) {
+		t.Fatal("informer never synced")
 	}
 
-	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeDelete)
-	if got := w.deletedUID("ns/p"); got != "uid-1" {
-		t.Errorf("deletedUID(ns/p) = %q, want uid-1", got)
+	want := queueKey{Type: events.EventTypeCreate, Key: "ns/p"}
+	if got := nextKey(t, w.queue); got != want {
+		t.Errorf("queued key = %+v, want %+v", got, want)
 	}
 
-	want := []queueKey{
-		{Type: events.EventTypeCreate, Key: "ns/p"},
-		{Type: events.EventTypeUpdate, Key: "ns/p"},
-		{Type: events.EventTypeDelete, Key: "ns/p"},
+	if err := client.CoreV1().Pods("ns").Delete(context.Background(), "p", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
 	}
-	var got []queueKey
-	for range want {
-		k, _ := w.queue.Get()
-		w.queue.Done(k)
-		got = append(got, k)
-	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("queued keys mismatch (-want +got):\n%s", diff)
+	want = queueKey{Type: events.EventTypeDelete, Key: "uid-1"}
+	if got := nextKey(t, w.queue); got != want {
+		t.Errorf("queued key = %+v, want %+v", got, want)
 	}
 }
 
@@ -292,11 +311,9 @@ func TestPodProcessNextWorkItemRequeuesThenDrops(t *testing.T) {
 }
 
 // TestPodRequeueCapSurvivesPointerChange pins the requeue cap for the pod
-// queue. The lister returns a DIFFERENT pod pointer on every attempt, which
-// is exactly what an informer resync or a genuine mid-retry update looks like.
-// The old code carried the object in the queue item and replaced it before
-// requeuing, so every attempt was a new key with a fresh requeue count and the
-// cap never fired.
+// queue: the lister returns a different pod pointer on every attempt, the way
+// an informer resync or a mid-retry update does, and retries must still be
+// bounded.
 func TestPodRequeueCapSurvivesPointerChange(t *testing.T) {
 	h := &recordingPodHandler{name: "h", podErr: errors.New("handler boom")}
 	w, indexer := newTestPodWatcher(t, podHandlers(h), pod("ns", "p", "uid-1"))
@@ -368,29 +385,24 @@ func TestPodProcessNextWorkItemListerMissDropsEvent(t *testing.T) {
 		t.Fatalf("NumRequeues = %d, want the event forgotten", got)
 	}
 	if got := len(h.podEventCalls()); got != 0 {
-		t.Fatalf("handler was called %d times for a pod that no longer exists, want 0", got)
+		t.Fatalf("handler was called %d times for a pod missing from the lister, want 0", got)
 	}
 }
 
-// TestPodDeleteUIDSurvivesRequeues checks that the recorded delete UID
-// survives a failed attempt (the lister cannot supply it) and is released only
-// once the item leaves the queue. It is the safety net that a requeued delete
-// still reaches the handlers.
+// TestPodDeleteUIDSurvivesRequeues checks that a requeued delete still reaches
+// the handlers with its UID, which the lister cannot supply.
 func TestPodDeleteUIDSurvivesRequeues(t *testing.T) {
 	h := &recordingPodHandler{name: "h", podErr: errors.New("handler boom")}
 	w, _ := newTestPodWatcher(t, podHandlers(h))
 
-	w.enqueue(pod("ns", "p", "uid-1"), events.EventTypeDelete)
-	key := queueKey{Type: events.EventTypeDelete, Key: "ns/p"}
+	key := queueKey{Type: events.EventTypeDelete, Key: "uid-1"}
+	w.queue.Add(key)
 
 	if !w.processNextWorkItem() {
 		t.Fatal("processNextWorkItem returned false")
 	}
 	if got := w.queue.Len(); got != 1 {
 		t.Fatalf("queue len = %d, want the delete requeued", got)
-	}
-	if got := w.deletedUID("ns/p"); got != "uid-1" {
-		t.Fatalf("deletedUID(ns/p) = %q, want it kept while the delete is still queued", got)
 	}
 
 	// let it succeed this time
@@ -400,9 +412,6 @@ func TestPodDeleteUIDSurvivesRequeues(t *testing.T) {
 	}
 	if got := w.queue.NumRequeues(key); got != 0 {
 		t.Errorf("NumRequeues = %d, want the item forgotten", got)
-	}
-	if got := w.deletedUID("ns/p"); got != "" {
-		t.Errorf("deletedUID(ns/p) = %q, want it released after the delete was handled", got)
 	}
 	deletes := h.podDeletedCalls()
 	if len(deletes) != 2 {
@@ -415,22 +424,6 @@ func TestPodDeleteUIDSurvivesRequeues(t *testing.T) {
 	}
 }
 
-func TestPodProcessNextWorkItemDeleteWithoutUIDIsDropped(t *testing.T) {
-	h := &recordingPodHandler{name: "h"}
-	w, _ := newTestPodWatcher(t, podHandlers(h))
-
-	w.queue.Add(queueKey{Type: events.EventTypeDelete, Key: "ns/p"})
-	if !w.processNextWorkItem() {
-		t.Fatal("processNextWorkItem returned false")
-	}
-	if got := w.queue.Len(); got != 0 {
-		t.Fatalf("queue len = %d, want the event dropped", got)
-	}
-	if got := len(h.podDeletedCalls()); got != 0 {
-		t.Fatalf("handler got %d deletes, want 0 when there is nothing to report", got)
-	}
-}
-
 func TestPodProcessNextWorkItemForgetsOnSuccessAndDispatchesByType(t *testing.T) {
 	p := pod("ns", "p", "uid-1")
 	h := &recordingPodHandler{name: "h"}
@@ -438,7 +431,7 @@ func TestPodProcessNextWorkItemForgetsOnSuccessAndDispatchesByType(t *testing.T)
 
 	w.queue.Add(queueKey{Type: events.EventTypeCreate, Key: "ns/p"})
 	w.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: "ns/p"})
-	w.enqueue(p, events.EventTypeDelete)
+	w.queue.Add(queueKey{Type: events.EventTypeDelete, Key: "uid-1"})
 
 	for i := 0; i < 3; i++ {
 		if !w.processNextWorkItem() {
@@ -470,10 +463,9 @@ func TestPodProcessNextWorkItemReturnsFalseAfterShutdown(t *testing.T) {
 	}
 }
 
-// TestResolveRetryableOnlyWhenNothingResolved pins the A1 handoff: since
-// containers.ResolveCgInfos reports partial success, a failure that still
-// yielded cgroups must not be treated as retryable and the partial result must
-// never be discarded.
+// containers.ResolveCgInfos reports partial success, so a failure that still
+// yielded cgroups must not be retryable and the partial result must not be
+// discarded.
 func TestResolveRetryableOnlyWhenNothingResolved(t *testing.T) {
 	boom := errors.New("one container is not started yet")
 	partial := []*containers.ContainerCgroupInfo{{ID: 1, Path: "/sys/fs/cgroup/a", Name: "c1"}}

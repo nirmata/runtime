@@ -34,14 +34,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-// observePollInterval is how often the managers' observation maps are drained.
-// Observation is poll-based over the existing BPF maps (no ring buffer), so
-// this interval bounds detection latency for monitor mode.
-const observePollInterval = 10 * time.Second
+// Defaults for the daemon's tunables.
+const (
+	defaultObserveInterval      = 10 * time.Second
+	defaultEventBufferSize      = collector.DefaultBufferSize
+	defaultSourceRestartBackoff = collector.DefaultRestartBackoff
+)
 
 var (
-	logLevel    int
-	metricsAddr string
+	logLevel             int
+	metricsAddr          string
+	observeInterval      time.Duration
+	eventBufferSize      int
+	sourceRestartBackoff time.Duration
 )
 
 var daemonCmd = &cobra.Command{
@@ -54,6 +59,12 @@ func init() {
 	daemonCmd.Flags().IntVar(&logLevel, "log-level", 0, "Verbosity level for debug logs (higher is more verbose).")
 	daemonCmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":9090",
 		"Address the Prometheus /metrics endpoint binds to. Set to an empty string to disable it.")
+	daemonCmd.Flags().DurationVar(&observeInterval, "observe-interval", defaultObserveInterval,
+		"How often the BPF observation maps are drained. Bounds monitor-mode detection latency.")
+	daemonCmd.Flags().IntVar(&eventBufferSize, "event-buffer-size", defaultEventBufferSize,
+		"Depth of the collector's fan-in buffer. Events arriving when it is full are dropped and counted.")
+	daemonCmd.Flags().DurationVar(&sourceRestartBackoff, "source-restart-backoff", defaultSourceRestartBackoff,
+		"How long a failed event source waits before it is restarted.")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -96,9 +107,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	// crClient writes OpenReports Reports; the scheme above already has the
+	// orClient writes OpenReports Reports; the scheme above already has the
 	// openreports types installed.
-	crClient, err := crclient.New(cfg, crclient.Options{Scheme: scheme})
+	orClient, err := crclient.New(cfg, crclient.Options{Scheme: scheme})
 	if err != nil {
 		logger.Error(err, "failed to create controller-runtime client")
 		os.Exit(1)
@@ -119,8 +130,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	sigCtx := ctrl.SetupSignalHandler()
 	g, ctx := errgroup.WithContext(sigCtx)
 
-	// metrics: one private registry so repeated wiring never panics on
-	// duplicate registration.
+	// a private registry so repeated wiring never panics on duplicate
+	// registration
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
 	if metricsAddr != "" {
@@ -131,39 +142,32 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Info("metrics endpoint disabled (--metrics-addr is empty)")
 	}
 
-	// attribution index: a pod-event handler (it builds the cgroup -> pod map)
+	// attribution is both a pod-event handler (it builds the cgroup -> pod map)
 	// and a collector stage (it annotates events and drops unattributed ones).
 	attrIdx := attribution.NewIndex(logger.WithName("attribution"), attribution.WithMetrics(m))
 
-	// reporter: buffers findings and writes namespaced OpenReports Reports.
-	rep := reporter.New(crClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName})
+	rep := reporter.New(orClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName})
 
-	// status writer: the single PolicyStatusRecorder; owns this node's shard of
-	// every RuntimePolicy status.
+	// sw owns this node's shard of every RuntimePolicy status.
 	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"))
 
-	// bpf program wrappers; both report rejected targets and match counts
-	// through the status writer.
 	em := egressmgr.NewEgressManager(logger, sw)
 	lsmm := lsmmgr.NewLsmManager(logger, sw)
 
-	// monitor: evaluates observed events against monitor-mode policies and
-	// turns matches into findings + violation counts.
-	mon := monitor.New(logger.WithName("monitor"), rep, sw, m)
+	// mon evaluates observed events against monitor-mode policies and turns
+	// matches into findings.
+	mon := monitor.New(logger.WithName("monitor"), rep, m)
 
-	// Both fan-outs dispatch every handler in its own goroutine and wait, so
-	// ordering between handlers is not guaranteed. That is safe: an event
-	// observed before attribution has indexed its pod is dropped by the
-	// attribution stage and counted (metrics.AttributionMisses), never
-	// misattributed.
-	podHandlers := []events.PodEventHandler{em, lsmm, attrIdx, sw}
+	// Handlers are dispatched concurrently, so ordering between them is not
+	// guaranteed. An event observed before attribution has indexed its pod is
+	// dropped by the attribution stage and counted, never misattributed.
+	podHandlers := []events.PodEventHandler{em, lsmm, attrIdx}
 	policyHandlers := []events.RuntimePolicyEventHandler{em, lsmm, sw, mon}
 
-	// collector: poll the managers' observation maps, attribute, then hand to
-	// the monitor sink.
-	col := collector.New(logger.WithName("collector"), collector.WithMetrics(m))
-	col.AddSource(collector.NewPollSource("egress-observe", observePollInterval, em.CollectObservations))
-	col.AddSource(collector.NewPollSource("lsm-observe", observePollInterval, lsmm.CollectObservations))
+	// Poll the managers' observation maps, attribute, then hand to the monitor.
+	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
+	col.AddSource(collector.NewPollSource("egress-observe", observeInterval, em.CollectObservations))
+	col.AddSource(collector.NewPollSource("lsm-observe", observeInterval, lsmm.CollectObservations))
 	col.AddStage(attrIdx)
 	col.AddSink(mon)
 

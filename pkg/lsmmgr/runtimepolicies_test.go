@@ -110,10 +110,8 @@ func TestRpCreated_ProgTypeSelection(t *testing.T) {
 	}
 }
 
-// TestExecBehaviorReachesExecEnforcer pins a real gap: exec behaviors used to be
-// compiled into EvaluationResult.Exec and then dropped, with nothing attaching to
-// bprm_check_security. This asserts the compiled exec pair lands verbatim in the
-// exec enforcer's target maps, and that open and exec never cross over.
+// the compiled exec pair lands verbatim in the exec enforcer's target maps, and
+// open and exec do not cross over.
 func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 	tests := []struct {
 		name          string

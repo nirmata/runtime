@@ -20,10 +20,8 @@ const (
 	KindOpen Kind = "open"
 )
 
-// KernelDecision is the enforcement decision a BPF program recorded for an
-// observation. The values mirror the VERDICT_ALLOW / VERDICT_DENY defines in
-// the C programs (pkg/bpf/egressfilter/_cprog/maps.h and
-// pkg/bpf/lsm/_cprog/maps.h); keep them in sync.
+// KernelDecision mirrors the DECISION_ALLOW / DECISION_DENY defines in the C
+// programs; keep the values in sync.
 type KernelDecision uint32
 
 const (
@@ -40,24 +38,15 @@ type Event struct {
 	PID      uint32    `json:"pid,omitempty"`
 	Comm     string    `json:"comm,omitempty"`
 	// Count > 1 for poll-sourced events that aggregate N kernel occurrences.
-	//
-	// Invariant: the kernel decision is part of the observation counter key,
-	// so every occurrence a Count aggregates shares the same KernelDenied
-	// value. One address or path can therefore yield two events per poll —
-	// one per decision — but never a mixed count.
+	// The decision is part of the counter key, so a Count never mixes allowed
+	// and denied occurrences.
 	Count uint32 `json:"count,omitempty"`
 
-	// KernelDenied is the kernel's ACTUAL enforcement decision for the
-	// occurrences this event aggregates. Written only by the BPF poll
-	// sources, from the decision dimension of the observation maps. In pure
-	// monitor mode nothing is programmed to block, so it is false there; it
-	// becomes true when an enforce-mode policy's maps denied the operation.
+	// KernelDenied marks events actually denied at the kernel level.
 	KernelDenied bool `json:"kernelDenied,omitempty"`
 
-	// WouldDeny is monitor mode's counterfactual: an enforcing form of a
-	// matched monitor-mode policy would have blocked this. Written only by
-	// pkg/monitor, on its per-policy copy of the event. Independent of
-	// KernelDenied.
+	// WouldDeny marks events that would have been blocked but whose policy is
+	// in monitor mode. Written by pkg/monitor.
 	WouldDeny bool `json:"wouldDeny,omitempty"`
 
 	Net  *NetFacts  `json:"net,omitempty"`

@@ -166,10 +166,10 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 	}
 }
 
-// TestConcurrent_PodAndPolicyEvents drives the pod and policy informer entry points
-// from separate goroutines (both real informers run in parallel). Beyond -race, the
-// end state is deterministic because the manager serializes every event: a pod is
-// attached to a policy iff its labels match, whatever order the events arrived in.
+// drives the pod and policy informer entry points from separate goroutines, as the
+// real informers run. beyond -race, the end state is deterministic because the
+// manager serializes every event: a pod is attached to a policy iff its labels
+// match, whatever order the events arrived in.
 func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
 	const (
 		numPods     = 12

@@ -11,20 +11,15 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 )
 
-// progTypeOrder fixes the order in which the program types of one attachment are
-// drained, so the emitted event slice is reproducible.
+// progTypeOrder fixes the drain order of the program types of one attachment, so
+// the emitted event slice is reproducible.
 var progTypeOrder = []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC}
 
 // CollectObservations drains the per-cgroup path counters of every enforcer of
-// every attachment and turns them into events.
-//
-// It reads EVERY program type of EVERY attachment: the counters live in a map per
-// enforcer, so stopping after the first one silently discards everything the
-// other programs saw (an early `break` here once made exec counts invisible
-// for any pod that also had an open enforcer).
-//
-// Counts are deltas: the kernel maps are read-and-reset, so Count is the number
-// of occurrences since the previous call.
+// every attachment and turns them into events. The counters live in a map per
+// enforcer, so every program type has to be read: stopping at the first one
+// discards what the others saw. The kernel maps are read-and-reset, so Count is
+// the number of occurrences since the previous call.
 func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -54,9 +49,9 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 			counts, err := prog.enf.ReadEvents(cgids)
 			if err != nil {
 				if errors.Is(err, lsm.ErrObservationUnavailable) {
-					// the loaded program has no observation maps at all. loud for
-					// the operator and visible on the policy, but not an error for
-					// the caller: every later poll would report the same thing.
+					// the loaded program has no observation maps, so every later
+					// poll reports the same thing: report it on the policy rather
+					// than to the caller
 					l.observationUnavailable(rpUID, progType, "observation is unavailable", err)
 				} else {
 					errs = append(errs, err)
@@ -77,10 +72,9 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 	return sortEvents(out), errors.Join(errs...)
 }
 
-// newObservation builds the event for one observed (path, decision) count. The
-// cgroup id is what attribution resolves; the pod uid is a hint the manager
-// happens to know. KernelDenied carries the kernel's actual enforcement
-// decision; monitor attributes it to a policy in userspace.
+// newObservation builds the event for one observed (path, decision) count.
+// Attribution resolves the cgroup id; the pod uid is a hint the manager already
+// knows. Monitor attributes the kernel's decision to a policy in userspace.
 func newObservation(progType string, now time.Time, cgid uint64, podUID string, key lsm.PathEventKey, count uint32) runtimeevent.Event {
 	ev := runtimeevent.Event{
 		Time:         now,
@@ -101,7 +95,7 @@ func newObservation(progType string, now time.Time, cgid uint64, podUID string, 
 }
 
 // attachedCgids returns the cgroup ids of every pod attached to la, plus the
-// cgid -> pod uid mapping used to pre-fill the event's pod hint.
+// cgid to pod uid mapping that pre-fills the event's pod hint.
 func attachedCgids(la *lsmAttachment) ([]uint64, map[uint64]string) {
 	cgids := make([]uint64, 0, len(la.attachedPods))
 	cgidPods := make(map[uint64]string, len(la.attachedPods))
@@ -119,7 +113,7 @@ func attachedCgids(la *lsmAttachment) ([]uint64, map[uint64]string) {
 }
 
 // sortEvents makes the emitted slice deterministic despite the map iteration
-// above, so callers (and tests) see a stable order.
+// above.
 func sortEvents(evs []runtimeevent.Event) []runtimeevent.Event {
 	slices.SortStableFunc(evs, func(a, b runtimeevent.Event) int {
 		if c := cmp.Compare(a.CgroupID, b.CgroupID); c != 0 {
@@ -131,7 +125,7 @@ func sortEvents(evs []runtimeevent.Event) []runtimeevent.Event {
 		if c := cmp.Compare(eventPath(a), eventPath(b)); c != 0 {
 			return c
 		}
-		// decision tiebreaker: the same path can now appear once per decision
+		// the same path appears once per decision
 		return cmp.Compare(boolToInt(a.KernelDenied), boolToInt(b.KernelDenied))
 	})
 	return evs

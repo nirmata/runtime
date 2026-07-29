@@ -1,12 +1,3 @@
-// Package collector fans events in from every runtimeevent.Source, runs them
-// through an ordered list of stages (attribution), and fans them out to every
-// runtimeevent.Sink.
-//
-// The collector is the only place in kyverno-runtime where an event can be
-// dropped without a policy decision, so every drop is counted:
-// metrics.EventsDropped{source,reason} where reason is "buffer_full" or the
-// name of the stage that rejected the event. Apparent quiet is never allowed
-// to be indistinguishable from a stalled pipeline.
 package collector
 
 import (
@@ -23,7 +14,7 @@ import (
 	"github.com/go-logr/logr"
 )
 
-// Defaults for the tunables exposed as Options.
+// Defaults used when New is given a non-positive value.
 const (
 	DefaultBufferSize     = 4096
 	DefaultRestartBackoff = 5 * time.Second
@@ -69,51 +60,23 @@ type Collector struct {
 	after func(time.Duration) <-chan time.Time
 }
 
-// Option customizes a Collector.
-type Option func(*Collector)
-
-// WithBufferSize sets the fan-in buffer depth (default DefaultBufferSize).
-// Values < 1 are ignored.
-func WithBufferSize(n int) Option {
-	return func(c *Collector) {
-		if n > 0 {
-			c.bufferSize = n
-		}
+// New builds a Collector. Sources, stages, and sinks are registered separately
+// so that daemon wiring can be conditional.
+func New(log logr.Logger, bufferSize int, backoff time.Duration, m *metrics.Metrics) *Collector {
+	if bufferSize <= 0 {
+		bufferSize = DefaultBufferSize
 	}
-}
-
-// WithRestartBackoff sets how long a failed source waits before restarting
-// (default DefaultRestartBackoff). Values <= 0 are ignored.
-func WithRestartBackoff(d time.Duration) Option {
-	return func(c *Collector) {
-		if d > 0 {
-			c.backoff = d
-		}
+	if backoff <= 0 {
+		backoff = DefaultRestartBackoff
 	}
-}
-
-// WithMetrics attaches the shared metrics registry. Without it the collector
-// still runs, but drops are only visible in logs.
-func WithMetrics(m *metrics.Metrics) Option {
-	return func(c *Collector) { c.metrics = m }
-}
-
-// New builds a Collector. Sources, stages, and sinks are registered
-// separately so that daemon wiring can be conditional.
-func New(log logr.Logger, opts ...Option) *Collector {
-	c := &Collector{
+	return &Collector{
 		log:        log,
-		bufferSize: DefaultBufferSize,
-		backoff:    DefaultRestartBackoff,
+		metrics:    m,
+		bufferSize: bufferSize,
+		backoff:    backoff,
+		events:     make(chan taggedEvent, bufferSize),
 		after:      time.After,
 	}
-	for _, o := range opts {
-		if o != nil {
-			o(c)
-		}
-	}
-	c.events = make(chan taggedEvent, c.bufferSize)
-	return c
 }
 
 // AddSource registers an event producer. Nil sources are ignored.
@@ -167,23 +130,25 @@ func (c *Collector) Run(ctx context.Context) error {
 	}()
 
 	for _, src := range c.sources {
-		// Each source gets its own unbuffered channel; the forwarder tags
-		// events with the source name and performs the non-blocking handoff
-		// into the shared buffer, so a slow dispatch loop can never block a
-		// source's Run for longer than one handoff.
+		// Two goroutines per source, joined by an unbuffered channel: runSource
+		// keeps the source running and writes its events into in, forward tags
+		// them with the source name and moves them into the shared c.events
+		// buffer. The dispatch goroutine drains that buffer through process,
+		// which is where stages enrich and sinks consume. The handoff is what
+		// keeps a slow stage or sink from blocking a source's Run.
 		in := make(chan runtimeevent.Event)
 		src := src
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.forward(ctx, src.Name(), in)
+			c.runSource(ctx, src, in)
 		}()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.runSource(ctx, src, in)
+			c.forward(ctx, src.Name(), in)
 		}()
 	}
 
@@ -192,10 +157,7 @@ func (c *Collector) Run(ctx context.Context) error {
 	return nil
 }
 
-// runSource runs one source, restarting it with backoff after a failure. A
-// source that reports runtimeevent.ErrSourceNotWired is logged once at V(0)
-// and never restarted: its kernel bindings do not exist on this build, and
-// retrying forever would only produce log noise.
+// runSource runs one source, restarting it with backoff after a failure.
 func (c *Collector) runSource(ctx context.Context, src runtimeevent.Source, out chan<- runtimeevent.Event) {
 	name := src.Name()
 	for {
@@ -203,16 +165,15 @@ func (c *Collector) runSource(ctx context.Context, src runtimeevent.Source, out 
 			return
 		}
 
+		// Typically a poll source wrapping a single manager: it ticks on its
+		// own interval, calls that manager's collect function and writes the
+		// events it returns to out.
 		err := utils.Guard("collector: source "+name, func() error {
 			return src.Run(ctx, out)
 		})
 
 		switch {
 		case ctx.Err() != nil:
-			return
-		case errors.Is(err, runtimeevent.ErrSourceNotWired):
-			c.log.V(0).Info("source is not wired on this platform; it will not be restarted",
-				"source", name, "reason", err.Error())
 			return
 		case err == nil:
 			c.log.V(2).Info("source finished", "source", name)
@@ -230,32 +191,27 @@ func (c *Collector) runSource(ctx context.Context, src runtimeevent.Source, out 
 	}
 }
 
-// forward pumps one source's events into the shared fan-in buffer.
+// forward takes the events runSource produced on in and hands them to the
+// shared fan-in buffer, tagged with the source they came from.
 func (c *Collector) forward(ctx context.Context, source string, in <-chan runtimeevent.Event) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ev := <-in:
-			c.ingest(source, ev)
+			// Non-blocking send: a full buffer drops the event instead of
+			// stalling the source behind dispatch.
+			select {
+			case c.events <- taggedEvent{source: source, ev: ev}:
+				if c.metrics != nil {
+					c.metrics.EventsIngested.WithLabelValues(source, string(ev.Kind)).Inc()
+				}
+			default:
+				c.drop(source, reasonBufferFull)
+				c.log.V(2).Info("collector buffer full; dropping event",
+					"source", source, "kind", string(ev.Kind), "bufferSize", c.bufferSize)
+			}
 		}
-	}
-}
-
-// ingest performs the non-blocking handoff into the fan-in buffer, counting
-// the event as ingested or dropped. It reports whether the event was queued.
-func (c *Collector) ingest(source string, ev runtimeevent.Event) bool {
-	select {
-	case c.events <- taggedEvent{source: source, ev: ev}:
-		if c.metrics != nil {
-			c.metrics.EventsIngested.WithLabelValues(source, string(ev.Kind)).Inc()
-		}
-		return true
-	default:
-		c.drop(source, reasonBufferFull)
-		c.log.V(2).Info("collector buffer full; dropping event",
-			"source", source, "kind", string(ev.Kind), "bufferSize", c.bufferSize)
-		return false
 	}
 }
 
@@ -271,9 +227,8 @@ func (c *Collector) dispatch(ctx context.Context) {
 	}
 }
 
-// process runs the stages and sinks for one event. Stages and sinks are
-// third-party code from the collector's point of view, so each call is
-// wrapped in utils.Guard: a panic must not take down the dispatch loop.
+// process enriches one event through the stages and, if it survives them all,
+// hands it to every sink.
 func (c *Collector) process(te taggedEvent) {
 	ev := te.ev
 

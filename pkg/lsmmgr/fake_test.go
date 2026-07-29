@@ -26,8 +26,7 @@ const (
 	exec = lsm.PROG_TYPE_LSM_EXEC
 )
 
-// fixedTime is the clock every harness runs on: never sleep, never read the wall
-// clock in a unit test.
+// the clock every harness runs on: no sleeping and no wall clock in a unit test.
 var fixedTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 
 // fakeEnforcer records every call the manager makes on it and also maintains the
@@ -349,10 +348,9 @@ func newHarness(t *testing.T) *harness {
 		h.created = append(h.created, f)
 		return f, nil
 	}
-	h.l = NewLsmManager(logr.Discard(), h.status,
-		withEnforcerFactory(factory),
-		WithClock(func() time.Time { return fixedTime }),
-	)
+	h.l = NewLsmManager(logr.Discard(), h.status)
+	h.l.newEnforcer = factory
+	h.l.clock = func() time.Time { return fixedTime }
 	return h
 }
 

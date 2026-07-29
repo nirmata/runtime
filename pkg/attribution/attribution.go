@@ -1,13 +1,3 @@
-// Package attribution maps kernel-sourced identities (cgroup inode, PID) and
-// pod UID hints back to the workload that produced an event.
-//
-// The index is fed by the pod watcher through the events.PodEventHandler seam, so it
-// tracks exactly the pods this node runs. Every pod update refreshes the cached
-// labels and cgroup set, which keeps attribution correct even for pods whose
-// labels change while they are running.
-//
-// The index is safe for concurrent use: the pod watcher writes while the
-// collector's Annotate stage reads on the event hot path.
 package attribution
 
 import (
@@ -26,16 +16,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// entry is the container-level part of an attribution record.
+// the container-level part of an attribution record.
 type entry struct {
 	podUID      string
 	container   string
 	containerID string
 }
 
-// podEntry is the pod-level part of an attribution record. id.Labels is
-// replaced (never mutated) on every pod update so readers that hold a
-// previously returned PodIdentity never observe a torn map.
+// the pod-level part of an attribution record. id.Labels is replaced rather than
+// mutated on every pod update, so a reader holding a returned PodIdentity cannot
+// observe a torn map.
 type podEntry struct {
 	id      runtimeevent.PodIdentity
 	cgroups map[uint64]struct{}
@@ -51,8 +41,8 @@ type Index struct {
 	metrics  *metrics.Metrics
 	log      logr.Logger
 
-	// resolveByPID is a seam so the PID path can be exercised without a real
-	// cgroup mount; it defaults to containers.ResolveCgroupByPID.
+	// defaults to containers.ResolveCgroupByPID; a seam so the PID path can run
+	// without a real cgroup mount
 	resolveByPID func(procRoot string, pid uint32) (*containers.ContainerCgroupInfo, error)
 }
 
@@ -89,9 +79,9 @@ func NewIndex(log logr.Logger, opts ...Option) *Index {
 	return ix
 }
 
-// PodEvent implements events.PodEventHandler. Create and update are
-// idempotent upserts: labels, owner and the cgroup set are recomputed from
-// scratch and cgroups that the pod no longer owns are evicted.
+// PodEvent implements events.PodEventHandler. Create and update are idempotent
+// upserts: labels, owner and the cgroup set are recomputed from scratch and
+// cgroups the pod has stopped owning are evicted.
 func (ix *Index) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	switch podEventType {
 	case events.EventTypeCreate, events.EventTypeUpdate:
@@ -102,8 +92,7 @@ func (ix *Index) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupI
 	}
 }
 
-// PodDeleted implements events.PodEventHandler: it evicts the pod and every
-// cgroup it owned.
+// PodDeleted implements events.PodEventHandler.
 func (ix *Index) PodDeleted(uid string) error {
 	ix.evict(uid)
 	return nil
@@ -112,7 +101,7 @@ func (ix *Index) PodDeleted(uid string) error {
 func (ix *Index) upsert(pod *corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) {
 	uid := string(pod.UID)
 	if uid == "" {
-		ix.log.V(0).Info("skipping pod with empty UID", "namespace", pod.Namespace, "pod", pod.Name)
+		ix.log.V(2).Info("skipping pod with empty UID", "namespace", pod.Namespace, "pod", pod.Name)
 		return
 	}
 
@@ -146,7 +135,7 @@ func (ix *Index) upsert(pod *corev1.Pod, cgInfos []*containers.ContainerCgroupIn
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 
-	// Evict cgroups this pod owned but no longer does (restarted containers).
+	// evict the cgroups of restarted containers
 	for cgID := range ix.byPodUID[uid].cgroups {
 		if _, still := cgroups[cgID]; !still {
 			delete(ix.byCgroup, cgID)
@@ -196,10 +185,8 @@ func (ix *Index) Lookup(cgroupID uint64) (runtimeevent.PodIdentity, bool) {
 }
 
 // LookupPodUID resolves a pod UID to its identity. The container fields are
-// empty: a pod UID does not identify a container.
-//
-// The returned Labels map is shared with the index and must not be mutated;
-// the index replaces it wholesale on every pod update.
+// empty, since a pod UID does not identify a container. The returned Labels map
+// is shared with the index and must not be mutated.
 func (ix *Index) LookupPodUID(uid string) (runtimeevent.PodIdentity, bool) {
 	if uid == "" {
 		return runtimeevent.PodIdentity{}, false
@@ -213,11 +200,11 @@ func (ix *Index) LookupPodUID(uid string) (runtimeevent.PodIdentity, bool) {
 	return pe.id, true
 }
 
-// LookupPID resolves a PID to its pod. It first asks pkg/containers to stat
-// the cgroup named by <procRoot>/<pid>/cgroup, which yields the inode the BPF
+// LookupPID resolves a PID to its pod. It first asks pkg/containers to stat the
+// cgroup named by <procRoot>/<pid>/cgroup, which yields the inode the bpf
 // programs key on. When that is unavailable (no cgroup mount visible, stat
-// denied, cgroup namespaced) it falls back to extracting the pod UID from the
-// cgroup path itself, which every kubelet cgroup driver embeds.
+// denied, cgroup namespaced) it falls back to the pod UID embedded in the cgroup
+// path, which every kubelet cgroup driver writes.
 func (ix *Index) LookupPID(pid uint32) (runtimeevent.PodIdentity, bool) {
 	if pid == 0 {
 		return runtimeevent.PodIdentity{}, false
@@ -249,9 +236,8 @@ func (ix *Index) LookupPID(pid uint32) (runtimeevent.PodIdentity, bool) {
 	return ix.LookupPodUID(uid)
 }
 
-// readProcCgroup returns the cgroup path recorded for pid. The unified (v2)
-// entry wins; the first v1 controller entry is the fallback. Malformed lines
-// are skipped, never indexed blindly.
+// readProcCgroup returns the cgroup path recorded for pid. The unified (v2) entry
+// wins; the first v1 controller entry is the fallback.
 func (ix *Index) readProcCgroup(pid uint32) (string, error) {
 	file := filepath.Join(ix.procRoot, fmt.Sprint(pid), "cgroup")
 	data, err := os.ReadFile(file)
@@ -282,8 +268,8 @@ func (ix *Index) readProcCgroup(pid uint32) (string, error) {
 	return v1, nil
 }
 
-// Put seeds the index directly with a pod-level identity. Exported for tests
-// and fixture loaders; production code goes through PodEvent.
+// Put seeds the index directly with a pod-level identity. Exported for tests and
+// fixture loaders; production code goes through PodEvent.
 func (ix *Index) Put(cgroupID uint64, id runtimeevent.PodIdentity) {
 	if id.UID == "" {
 		return
@@ -310,8 +296,7 @@ func (ix *Index) Put(cgroupID uint64, id runtimeevent.PodIdentity) {
 	ix.byPodUID[id.UID] = pe
 }
 
-// Len reports how many pods and cgroups the index holds. Used by tests and
-// debug logging.
+// Len reports how many pods and cgroups the index holds.
 func (ix *Index) Len() (pods int, cgroups int) {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
@@ -329,6 +314,7 @@ func copyLabels(in map[string]string) map[string]string {
 	return out
 }
 
+// create a map of container names in a pod to container ids
 func containerIDsByName(pod *corev1.Pod) map[string]string {
 	out := make(map[string]string, len(pod.Status.ContainerStatuses))
 	for i := range pod.Status.ContainerStatuses {
@@ -354,7 +340,7 @@ func podUIDFromCgroupPath(path string) string {
 		candidate := seg[idx+len("pod"):]
 		candidate = strings.TrimSuffix(candidate, ".slice")
 		candidate = strings.TrimSuffix(candidate, ".scope")
-		// systemd escapes the dashes of a UID as underscores.
+		// systemd escapes the dashes of a UID as underscores
 		candidate = strings.ReplaceAll(candidate, "_", "-")
 		if isPodUID(candidate) {
 			return candidate

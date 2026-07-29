@@ -15,7 +15,6 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
-	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
@@ -63,7 +62,6 @@ func newTestRpMgr(t *testing.T, c compiler.Compiler, hs []events.RuntimePolicyEv
 	lister, indexer := newLister(t, seed...)
 	m := &RuntimePolicyMgr{
 		rpThreadMap:   make(map[string]*rpWatch),
-		deletedUIDs:   make(map[string]string),
 		eventHandlers: hs,
 		compiler:      c,
 		queue:         newRpQueue(),
@@ -122,10 +120,9 @@ func TestRpProcessNextWorkItemRequeuesThenDropsAfterMaxRequeues(t *testing.T) {
 	}
 }
 
-// TestRpRequeueCapSurvivesPointerChange pins the requeue cap for the
-// policy queue. The lister hands back a different object on every attempt; the
-// requeue cap must still bound retries because the queue key no longer contains
-// the object.
+// TestRpRequeueCapSurvivesPointerChange pins the requeue cap for the policy
+// queue: the lister hands back a different object on every attempt and retries
+// must still be bounded.
 func TestRpRequeueCapSurvivesPointerChange(t *testing.T) {
 	c := &fakeCompiler{err: errors.New("compile boom")}
 	m, indexer := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}), rp("p", "uid-1", nil))
@@ -218,7 +215,7 @@ func TestRpProcessNextWorkItemListerMissDropsEvent(t *testing.T) {
 		t.Fatalf("NumRequeues = %d, want the event forgotten", got)
 	}
 	if got := c.callCount(); got != 0 {
-		t.Fatalf("compiler called %d times for a policy that no longer exists, want 0", got)
+		t.Fatalf("compiler called %d times for a policy missing from the lister, want 0", got)
 	}
 }
 
@@ -247,41 +244,14 @@ func TestRpProcessNextWorkItemReturnsFalseAfterShutdown(t *testing.T) {
 	}
 }
 
-func TestRpEnqueueRecordsUIDsForDeletesOnly(t *testing.T) {
-	m, _ := newTestRpMgr(t, &fakeCompiler{}, nil)
-
-	m.enqueue(rp("p", "uid-1", nil), events.EventTypeUpdate)
-	if len(m.deletedUIDs) != 0 {
-		t.Errorf("deletedUIDs = %+v, want empty after an update", m.deletedUIDs)
-	}
-	m.enqueue(rp("p", "uid-1", nil), events.EventTypeDelete)
-	if got := m.deletedUID("p"); got != "uid-1" {
-		t.Fatalf("deletedUID(p) = %q, want uid-1", got)
-	}
-
-	want := []queueKey{
-		{Type: events.EventTypeUpdate, Key: "p"},
-		{Type: events.EventTypeDelete, Key: "p"},
-	}
-	var got []queueKey
-	for range want {
-		k, _ := m.queue.Get()
-		m.queue.Done(k)
-		got = append(got, k)
-	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("queued keys mismatch (-want +got):\n%s", diff)
-	}
-}
-
-// TestRpDeleteIsServedFromRecordedUID proves a delete does not need the
-// lister: the object is gone from it by the time the worker runs, and the
-// recorded UID plus the queue key (the name) are the whole identity.
-func TestRpDeleteIsServedFromRecordedUID(t *testing.T) {
+// TestRpDeleteIsServedFromQueuedUID proves a delete does not need the lister:
+// the object is gone from it by the time the worker runs, and the queued UID is
+// the whole identity.
+func TestRpDeleteIsServedFromQueuedUID(t *testing.T) {
 	h := &recordingRpHandler{name: "h"}
 	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(h))
 
-	m.enqueue(rp("p", "uid-1", nil), events.EventTypeDelete)
+	m.queue.Add(queueKey{Type: events.EventTypeDelete, Key: "uid-1"})
 	if !m.processNextWorkItem(context.Background()) {
 		t.Fatal("processNextWorkItem returned false")
 	}
@@ -297,25 +267,6 @@ func TestRpDeleteIsServedFromRecordedUID(t *testing.T) {
 	}
 	if calls[0].res.UID != "uid-1" {
 		t.Errorf("result UID = %q, want uid-1", calls[0].res.UID)
-	}
-	if got := m.deletedUID("p"); got != "" {
-		t.Errorf("deletedUID(p) = %q, want it released after the delete was handled", got)
-	}
-}
-
-func TestRpProcessNextWorkItemDeleteWithoutUIDIsDropped(t *testing.T) {
-	h := &recordingRpHandler{name: "h"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(h))
-
-	m.queue.Add(queueKey{Type: events.EventTypeDelete, Key: "p"})
-	if !m.processNextWorkItem(context.Background()) {
-		t.Fatal("processNextWorkItem returned false")
-	}
-	if got := m.queue.Len(); got != 0 {
-		t.Fatalf("queue len = %d, want the event dropped", got)
-	}
-	if got := len(h.runtimePolicyCalls()); got != 0 {
-		t.Fatalf("handler got %d events, want 0 when there is nothing to report", got)
 	}
 }
 
@@ -448,9 +399,7 @@ func TestHandleCreateRegistersIntervalThread(t *testing.T) {
 	}
 }
 
-// TestHandleUpdateNilEvaluationIntervalDoesNotPanic pins the nil dereference
-// that used to happen when a tracked policy dropped its evaluationInterval:
-// handleUpdate read rp.Spec.EvaluationInterval.Duration unconditionally.
+// A tracked policy that drops its evaluationInterval must not panic the worker.
 func TestHandleUpdateNilEvaluationIntervalDoesNotPanic(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1"}
 	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(&recordingRpHandler{name: "h"}))
@@ -461,7 +410,7 @@ func TestHandleUpdateNilEvaluationIntervalDoesNotPanic(t *testing.T) {
 		cancel:   func() { cancelled = true },
 	}
 
-	// the incoming policy no longer carries an evaluation interval
+	// the incoming policy carries no evaluation interval
 	if err := m.handleUpdate(context.Background(), rp("p", "uid-1", nil)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -475,7 +424,6 @@ func TestHandleUpdateNilEvaluationIntervalDoesNotPanic(t *testing.T) {
 }
 
 // The mirror case: the tracked entry has no interval but the new policy does.
-// This dereferenced currentRb.compiled.ReevalInterval.
 func TestHandleUpdateNilTrackedIntervalDoesNotPanic(t *testing.T) {
 	compiled := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
 	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: compiled}, rpHandlers(&recordingRpHandler{name: "h"}))
@@ -556,11 +504,8 @@ func TestHandleUpdateKeepsThreadWhenIntervalUnchanged(t *testing.T) {
 	}
 }
 
-// TestHandleUpdateRefreshesCompiledWhenIntervalUnchanged pins the stale policy
-// bug: when the interval did not change, handleUpdate kept the existing rpWatch
-// but left its old compiled pointer in place. evaluateForInterval reads compiled
-// from that entry on every tick, so interval re-evaluations kept applying the
-// pre-update policy until the interval happened to change.
+// evaluateForInterval reads compiled from the rpWatch on every tick, so an
+// unchanged interval must still refresh it or the ticks evaluate a stale policy.
 func TestHandleUpdateRefreshesCompiledWhenIntervalUnchanged(t *testing.T) {
 	fresh := &compiler.CompiledRuntimePolicy{UID: "uid-1", ReevalInterval: dur(time.Hour)}
 	m, _ := newTestRpMgr(t, &fakeCompiler{compiled: fresh}, rpHandlers(&recordingRpHandler{name: "h"}))
@@ -574,7 +519,7 @@ func TestHandleUpdateRefreshesCompiledWhenIntervalUnchanged(t *testing.T) {
 
 	got := m.rpThreadMap["uid-1"].compiled
 	if got == stale {
-		t.Error("rpThreadMap entry still holds the pre-update compiled policy; interval ticks would evaluate a stale policy")
+		t.Error("rpThreadMap entry holds a stale compiled policy; interval ticks would evaluate it")
 	}
 	if got != fresh {
 		t.Errorf("compiled = %p, want the freshly compiled policy %p", got, fresh)
@@ -644,7 +589,7 @@ func TestIntervalThreadConcurrentWithUpdates(t *testing.T) {
 		}
 	}
 
-	if err := m.handleDelete("uid-1", "p"); err != nil {
+	if err := m.handleDelete("uid-1"); err != nil {
 		t.Fatalf("unexpected delete error: %v", err)
 	}
 
@@ -689,7 +634,7 @@ func TestHandleDeleteCancelsThreadAndSendsUIDOnly(t *testing.T) {
 		cancel:   func() { cancelled = true },
 	}
 
-	if err := m.handleDelete("uid-1", "p"); err != nil {
+	if err := m.handleDelete("uid-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -712,8 +657,8 @@ func TestHandleDeleteCancelsThreadAndSendsUIDOnly(t *testing.T) {
 			t.Errorf("%s event type = %q, want delete", h.name, calls[0].evType)
 		}
 		res := calls[0].res
-		if res.UID != "uid-1" || res.Name != "p" {
-			t.Errorf("%s result identity = (%q, %q), want (uid-1, p)", h.name, res.UID, res.Name)
+		if res.UID != "uid-1" {
+			t.Errorf("%s result UID = %q, want uid-1", h.name, res.UID)
 		}
 		if res.IPs != nil || res.Open != nil || res.Exec != nil || res.Selector != nil || res.Mode != "" {
 			t.Errorf("%s delete result carries data beyond the identity: %+v", h.name, res)
@@ -727,7 +672,7 @@ func TestHandleDeleteUnknownUIDStillFansOut(t *testing.T) {
 	h2 := &recordingRpHandler{name: "h2"}
 	m, _ := newTestRpMgr(t, &fakeCompiler{}, rpHandlers(h1, h2))
 
-	err := m.handleDelete("never-seen", "p")
+	err := m.handleDelete("never-seen")
 	if !errors.Is(err, errA) {
 		t.Fatalf("err = %v, want it to contain %v", err, errA)
 	}

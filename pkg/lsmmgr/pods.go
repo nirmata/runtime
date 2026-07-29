@@ -31,14 +31,10 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	l.pods[string(pod.UID)] = pr
 }
 
-// podUpdated reconciles both halves of a pod update:
-//
-//   - a cgroup-id change is applied to every attachment the pod is already
-//     attached to (containers restarting inside a live pod);
-//   - a label change refreshes the cached label set and re-evaluates every
-//     attachment's selector. Without this, enforcement outlived its
-//     selector: a relabelled pod kept the deny maps of a policy that no longer
-//     selects it, and was invisible to policies that now do.
+// podUpdated reconciles both halves of a pod update: a cgroup-id change is
+// applied to every attachment the pod is already attached to (containers
+// restarting inside a live pod), and a label change refreshes the cached labels
+// and re-evaluates every attachment's selector.
 func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
 	l.logger.V(2).Info("pod updated", "podUid", pod.UID)
 	pr, ok := l.pods[string(pod.UID)]
@@ -51,7 +47,6 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	toRemove := utils.DiffSlice(cgids, pr.cgids)
 	labelsChanged := !maps.Equal(pr.labels, pod.Labels)
 
-	// nothing we track changed, do nothing
 	if len(toAdd) == 0 && len(toRemove) == 0 && !labelsChanged {
 		l.logger.V(2).Info("pod update had no cgid or label changes, skipping", "podUid", pod.UID)
 		return nil
@@ -61,17 +56,14 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 		l.logger.V(2).Info("pod cgids changed", "podUid", pod.UID, "toAdd", toAdd, "toRemove", toRemove)
 	}
 
-	// update the cgids and labels in the pod representation pointer. the labels
-	// have to land before syncPodAttachment below, which matches against them.
+	// the labels have to land before syncPodAttachment below, which matches
+	// against them
 	pr.cgids = cgids
 	pr.labels = pod.Labels
 
-	// apply the cgid diff to the attachments this pod is currently attached to.
-	// this runs before the selector re-evaluation so that a pod that is about to
-	// be detached is detached with its new cgid set, and a pod that is about to be
-	// attached is attached with it too.
+	// the cgid diff runs before the selector re-evaluation, so a pod on either
+	// side of an attachment change is handled with its new cgid set
 	for rpUid, la := range l.lsmAttachments {
-		// that policy wasn't attached to that pod. move on
 		if _, ok := la.attachedPods[string(pod.UID)]; !ok {
 			continue
 		}
@@ -92,7 +84,6 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 
 func (l *LsmManager) podDeleted(podUid string) {
 	l.logger.V(2).Info("pod deleted", "podUid", podUid)
-	// delete those cgids
 	delete(l.pods, podUid)
 	for rpUid, la := range l.lsmAttachments {
 		podAttachment, ok := la.attachedPods[podUid]
