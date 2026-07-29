@@ -35,9 +35,9 @@ func TestPodEventRejectsUnknownType(t *testing.T) {
 	}
 }
 
-// TestFullLifecycleLeavesNoDanglingState walks a realistic sequence and then
-// asserts that tearing the policies down empties every pod's ip set, clears the
-// default deny flag and leaves no cross references in either direction.
+// walks a realistic sequence, then asserts that tearing the policies down empties
+// every pod's ip set, clears the default deny flag and leaves no cross references
+// in either direction.
 func TestFullLifecycleLeavesNoDanglingState(t *testing.T) {
 	e, _, _ := newTestManager()
 
@@ -71,9 +71,9 @@ func TestFullLifecycleLeavesNoDanglingState(t *testing.T) {
 	wantAttachedRps(t, e, "pod-api", "rp-1", "rp-2")
 	assertSharedPointer(t, e, "rp-1", "pod-api")
 
-	// 5. pod-web is relabelled in place. The update path refreshes the labels
-	// and re-evaluates every tracked selector, so no delete/create pair is
-	// needed for the pod to pick rp-1 up.
+	// 5. pod-web is relabelled in place. the update path refreshes the labels and
+	// re-evaluates every tracked selector, so the pod picks rp-1 up without a
+	// delete/create pair.
 	relabelPod(t, e, "pod-web", apiLabels, "/cg/web")
 	wantLiveIps(t, web, []string{"2.2.2.2", "3.3.3.3", "9.9.9.9"}, []string{})
 	wantDefaultDeny(t, web, true)
@@ -106,9 +106,9 @@ func TestFullLifecycleLeavesNoDanglingState(t *testing.T) {
 }
 
 // the pod informer and the policy informer call into the manager from different
-// goroutines. run both event streams concurrently (meaningful under -race) and
-// assert the cross reference invariant afterwards: every attachment a pod holds
-// must be the very pointer the manager tracks for that policy.
+// goroutines. both event streams run concurrently (meaningful under -race) and the
+// cross reference invariant is asserted afterwards: every attachment a pod holds
+// is the pointer the manager tracks for that policy.
 func TestConcurrentPodAndPolicyEventsKeepStateConsistent(t *testing.T) {
 	e, _, _ := newTestManager()
 	const n = 40
@@ -123,8 +123,8 @@ func TestConcurrentPodAndPolicyEventsKeepStateConsistent(t *testing.T) {
 			if err := e.PodEvent(makePod(uid, webLabels), cgInfos("/cg/"+uid), events.EventTypeCreate); err != nil {
 				t.Errorf("pod create %s: %v", uid, err)
 			}
-			// relabelling exercises the re-match path concurrently with the
-			// policy stream
+			// relabelling exercises the re-match path concurrently with the policy
+			// stream
 			if err := e.PodEvent(makePod(uid, apiLabels), cgInfos("/cg/"+uid), events.EventTypeUpdate); err != nil {
 				t.Errorf("pod update %s: %v", uid, err)
 			}
@@ -172,17 +172,6 @@ func TestConcurrentPodAndPolicyEventsKeepStateConsistent(t *testing.T) {
 		for rpUid := range pa.defaultDeny {
 			if _, ok := pa.attachedFilters[rpUid]; !ok {
 				t.Errorf("pod %s keeps a default deny owner %s it is not attached to", podUid, rpUid)
-			}
-		}
-		for rpUid := range pa.observe {
-			if _, ok := pa.attachedFilters[rpUid]; !ok {
-				t.Errorf("pod %s keeps an observe owner %s it is not attached to", podUid, rpUid)
-			}
-		}
-		// a pod may never be both observed and enforced by the same policy
-		for rpUid := range pa.observe {
-			if _, ok := pa.defaultDeny[rpUid]; ok {
-				t.Errorf("pod %s has policy %s in both the observe and defaultDeny sets", podUid, rpUid)
 			}
 		}
 	}

@@ -38,10 +38,9 @@ func ipKeyDeny(t *testing.T, s string) egressfilter.IPEventKey {
 	return egressfilter.IPEventKey{Addr: addr(t, s), Decision: runtimeevent.DecisionDeny}
 }
 
-// A monitor policy must observe, not enforce. Nothing may be
-// programmed into the allow/deny maps and the default-deny bit must stay clear,
-// otherwise the BPF program can return -EPERM for a policy the user believes is
-// only watching.
+// a monitor policy observes without enforcing: nothing reaches the allow/deny
+// maps and the default-deny bit stays clear, so the bpf program cannot return
+// -EPERM for a policy the user believes is only watching.
 func TestObservePolicyProgramsNoIpsButSetsObserveFlag(t *testing.T) {
 	mode := compiler.ModeMonitor
 	e, _, _ := newTestManager()
@@ -55,7 +54,6 @@ func TestObservePolicyProgramsNoIpsButSetsObserveFlag(t *testing.T) {
 	wantDefaultDeny(t, f, false)
 	wantDefaultDenyOwners(t, e, "pod-1")
 	wantObserveFlag(t, f, true)
-	wantObserveOwners(t, e, "pod-1", "rp-1")
 	wantAttachedRps(t, e, "pod-1", "rp-1")
 	// the only flag write is the observe bit
 	want := []flagToggle{{idx: egressfilter.OBSERVE, val: true}}
@@ -63,28 +61,27 @@ func TestObservePolicyProgramsNoIpsButSetsObserveFlag(t *testing.T) {
 		t.Errorf("flag toggles (-want +got):\n%s", diff)
 	}
 
-	// and a pod that does not match is not observed either
+	// and a pod that matches nothing is not observed
 	other := addPod(t, e, "pod-2", apiLabels, "/cg/pod-2")
 	wantObserveFlag(t, other, false)
-	wantObserveOwners(t, e, "pod-2")
+	wantAttachedRps(t, e, "pod-2")
 }
 
-func TestObserveFlagIsRefcountedAcrossPolicies(t *testing.T) {
+func TestObserveFlagFollowsTheAttachedPolicies(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
 	mustRpEvent(t, e, rp("rp-2", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
-	wantObserveOwners(t, e, "pod-1", "rp-1", "rp-2")
+	wantAttachedRps(t, e, "pod-1", "rp-1", "rp-2")
 
-	// the first one leaving must NOT stop observation
+	// the first one leaving keeps observation on
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 	wantObserveFlag(t, f, true)
-	wantObserveOwners(t, e, "pod-1", "rp-2")
+	wantAttachedRps(t, e, "pod-1", "rp-2")
 
 	// the selector of the last one moving away stops it
 	mustRpEvent(t, e, rp("rp-2", compiler.ModeMonitor, apiLabels, nil, nil), events.EventTypeUpdate)
 	wantObserveFlag(t, f, false)
-	wantObserveOwners(t, e, "pod-1")
 	wantAttachedRps(t, e, "pod-1")
 	// an observe policy detaching may never touch the ip maps: it never
 	// programmed anything, so a DeleteIps here would remove another policy's ips
@@ -108,11 +105,10 @@ func TestModeTransitionsRebuildProgramming(t *testing.T) {
 		wantDefaultDeny(t, f, false)
 		wantDefaultDenyOwners(t, e, "pod-1")
 		wantObserveFlag(t, f, true)
-		wantObserveOwners(t, e, "pod-1", "rp-1")
 		assertSharedPointer(t, e, "rp-1", "pod-1")
 	})
 
-	t.Run("monitor to enforce programs and stops observing", func(t *testing.T) {
+	t.Run("monitor to enforce programs and keeps observing", func(t *testing.T) {
 		e, _, _ := newTestManager()
 		f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 		mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeCreate)
@@ -124,8 +120,7 @@ func TestModeTransitionsRebuildProgramming(t *testing.T) {
 		wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
 		wantDefaultDeny(t, f, true)
 		wantDefaultDenyOwners(t, e, "pod-1", "rp-1")
-		wantObserveFlag(t, f, false)
-		wantObserveOwners(t, e, "pod-1")
+		wantObserveFlag(t, f, true)
 	})
 }
 
@@ -133,7 +128,7 @@ func TestCollectObservationsEmitsNetEventsWithPodUidAndCounts(t *testing.T) {
 	e, _, _ := newTestManager()
 	f1 := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	f2 := addPod(t, e, "pod-2", webLabels, "/cg/pod-2")
-	// pod-3 matches nothing: it is not observed and must not be polled
+	// pod-3 matches nothing, so it is not polled
 	f3 := addPod(t, e, "pod-3", apiLabels, "/cg/pod-3")
 	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
 
@@ -162,8 +157,8 @@ func TestCollectObservationsEmitsNetEventsWithPodUidAndCounts(t *testing.T) {
 			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
 		},
 		{
-			// the deny counter for the same destination is its own event,
-			// sorted after the allow one, with the kernel decision carried over
+			// the deny counter for the same destination is its own event, sorted
+			// after the allow one
 			Kind: runtimeevent.KindNet, Time: testTime, Count: 2, KernelDenied: true,
 			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.2")},
 			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
@@ -191,10 +186,47 @@ func TestCollectObservationsEmitsNetEventsWithPodUidAndCounts(t *testing.T) {
 	}
 }
 
-func TestCollectObservationsWithoutObservePoliciesIsEmpty(t *testing.T) {
+// enforce-mode policies are observed too: gating observation on monitor mode left
+// a pod whose only policies enforce with no ip events at all.
+func TestCollectObservationsIncludesEnforceOnlyPods(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
-	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil), events.EventTypeCreate)
+	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeCreate)
+	wantObserveFlag(t, f, true)
+	f.ipEvents = map[egressfilter.IPEventKey]uint32{
+		ipKey(t, "1.1.1.1"):      5,
+		ipKeyDeny(t, "10.0.0.9"): 2,
+	}
+
+	got, err := e.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations: %v", err)
+	}
+	want := []runtimeevent.Event{
+		{
+			Kind: runtimeevent.KindNet, Time: testTime, Count: 5,
+			Net: &runtimeevent.NetFacts{DestIP: addr(t, "1.1.1.1")},
+			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
+		},
+		{
+			Kind: runtimeevent.KindNet, Time: testTime, Count: 2, KernelDenied: true,
+			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.9")},
+			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
+		},
+	}
+	if diff := cmp.Diff(want, got, cmp.Comparer(func(a, b netip.Addr) bool { return a == b })); diff != "" {
+		t.Errorf("observations (-want +got):\n%s", diff)
+	}
+	if f.reads != 1 {
+		t.Errorf("filter was polled %d times, want 1", f.reads)
+	}
+}
+
+// a pod no policy matches at all is never polled.
+func TestCollectObservationsSkipsPodsWithoutPolicies(t *testing.T) {
+	e, _, _ := newTestManager()
+	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rp("rp-1", "enforce", apiLabels, []string{"1.1.1.1"}, nil), events.EventTypeCreate)
 	f.ipEvents = map[egressfilter.IPEventKey]uint32{ipKey(t, "10.0.0.1"): 5}
 
 	got, err := e.CollectObservations(context.Background())
@@ -202,7 +234,7 @@ func TestCollectObservationsWithoutObservePoliciesIsEmpty(t *testing.T) {
 		t.Fatalf("CollectObservations: %v", err)
 	}
 	if len(got) != 0 {
-		t.Errorf("events emitted for a pod with no observe-mode policy: %v", got)
+		t.Errorf("events emitted for a pod with no attached policy: %v", got)
 	}
 	if f.reads != 0 {
 		t.Errorf("filter was polled %d times, want 0", f.reads)
@@ -249,8 +281,8 @@ func TestCollectObservationsRespectsCancelledContext(t *testing.T) {
 	}
 }
 
-// A target the runtime cannot honor must reach the policy's status, not just a
-// log line nobody sees.
+// a target the runtime cannot honor reaches the policy's status, not only a log
+// line nobody reads.
 func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -335,11 +367,12 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 	}
 }
 
-// a nil status recorder must not stop the manager: the daemon may run without
-// one, and the log line is still emitted.
+// a nil status recorder does not stop the manager: the daemon may run without one.
 func TestNilStatusRecorderIsTolerated(t *testing.T) {
 	ff := &fakeFactory{}
-	e := NewEgressManager(logr.Discard(), nil, withFilterFactory(ff.new), WithClock(func() time.Time { return testTime }))
+	e := NewEgressManager(logr.Discard(), nil)
+	e.newFilter = ff.new
+	e.clock = func() time.Time { return testTime }
 	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"2001:db8::1"}, nil), events.EventTypeCreate)
 	if _, ok := e.rps["rp-1"]; !ok {

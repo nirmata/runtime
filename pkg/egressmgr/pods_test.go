@@ -61,15 +61,15 @@ func TestPodCreatedWithNoMatchingPolicyLeavesFilterUntouched(t *testing.T) {
 		t.Errorf("flags touched with no matching policy: %v", f.toggles)
 	}
 	wantAttachedRps(t, e, "pod-web")
-	// the cgroup attachment still happens: the filter must be live before a
-	// policy shows up later
+	// the cgroup attachment still happens, so the filter is live before a policy
+	// shows up later
 	if !slices.Equal(f.attaches, []string{"/cg/a"}) {
 		t.Errorf("attached cgroups: got %v, want [/cg/a]", f.attaches)
 	}
 }
 
-// a pod that matches only an observe-mode policy at creation time must come up
-// counting, not enforcing.
+// a pod that matches only an observe-mode policy comes up counting, not
+// enforcing.
 func TestPodCreatedWithObservePolicySetsObserveOnly(t *testing.T) {
 	e, _, _ := newTestManager()
 	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeCreate)
@@ -80,7 +80,6 @@ func TestPodCreatedWithObservePolicySetsObserveOnly(t *testing.T) {
 	wantLiveIps(t, f, []string{}, []string{})
 	wantObserveFlag(t, f, true)
 	wantDefaultDeny(t, f, false)
-	wantObserveOwners(t, e, "pod-web", "rp-1")
 	wantDefaultDenyOwners(t, e, "pod-web")
 	wantAttachedRps(t, e, "pod-web", "rp-1")
 }
@@ -186,9 +185,8 @@ func TestPodDeletedDropsStateAndStopsFutureUpdates(t *testing.T) {
 	}
 }
 
-// TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors: an in-place relabel
-// must both stop enforcement that no longer selects the pod and start
-// enforcement that now does, without routing through a delete/create pair.
+// an in-place relabel both stops enforcement that stopped selecting the pod and
+// starts enforcement that begins to, without a delete/create pair.
 func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -200,12 +198,11 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 		// bookkeeping after the relabel
 		wantAttached    []string
 		wantDefaultDeny []string
-		wantObserve     []string
 		wantDDFlag      bool
 		wantObserveFlag bool
 	}{
 		{
-			name:            "policy that no longer selects the pod is detached",
+			name:            "policy that stopped selecting the pod is detached",
 			policies:        []*compiler.EvaluationResult{rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, []string{"*"})},
 			from:            webLabels,
 			to:              apiLabels,
@@ -225,6 +222,7 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			wantAttached:    []string{"rp-1"},
 			wantDefaultDeny: []string{"rp-1"},
 			wantDDFlag:      true,
+			wantObserveFlag: true,
 		},
 		{
 			name: "default deny survives while an overlapping policy still requires it",
@@ -239,9 +237,10 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			wantAttached:    []string{"rp-2"},
 			wantDefaultDeny: []string{"rp-2"},
 			wantDDFlag:      true,
+			wantObserveFlag: true,
 		},
 		{
-			name: "observe flag survives while an overlapping observe policy still requires it",
+			name: "observe flag survives while an overlapping policy is still attached",
 			policies: []*compiler.EvaluationResult{
 				rp("rp-1", compiler.ModeMonitor, webLabels, nil, []string{"*"}),
 				rp("rp-2", compiler.ModeMonitor, nil, nil, nil),
@@ -251,18 +250,16 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			wantAllow:       []string{},
 			wantDeny:        []string{},
 			wantAttached:    []string{"rp-2"},
-			wantObserve:     []string{"rp-2"},
 			wantObserveFlag: true,
 		},
 		{
-			name:            "last observe policy leaving clears the observe flag",
+			name:            "the last policy leaving clears the observe flag",
 			policies:        []*compiler.EvaluationResult{rp("rp-1", compiler.ModeMonitor, webLabels, nil, []string{"*"})},
 			from:            webLabels,
 			to:              apiLabels,
 			wantAllow:       []string{},
 			wantDeny:        []string{},
 			wantAttached:    nil,
-			wantObserve:     nil,
 			wantObserveFlag: false,
 		},
 		{
@@ -275,6 +272,7 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			wantAttached:    []string{"rp-1"},
 			wantDefaultDeny: []string{"rp-1"},
 			wantDDFlag:      true,
+			wantObserveFlag: true,
 		},
 	}
 
@@ -294,10 +292,9 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			wantLiveIps(t, f, tc.wantAllow, tc.wantDeny)
 			wantAttachedRps(t, e, "pod-1", tc.wantAttached...)
 			wantDefaultDenyOwners(t, e, "pod-1", tc.wantDefaultDeny...)
-			wantObserveOwners(t, e, "pod-1", tc.wantObserve...)
 			wantDefaultDeny(t, f, tc.wantDDFlag)
 			wantObserveFlag(t, f, tc.wantObserveFlag)
-			// the pod must hold the shared pointer for anything it kept
+			// the pod holds the shared pointer for anything it kept
 			for _, uid := range tc.wantAttached {
 				assertSharedPointer(t, e, uid, "pod-1")
 			}

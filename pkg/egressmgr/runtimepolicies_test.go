@@ -21,11 +21,10 @@ func mustRpEvent(t *testing.T, e *EgressManager, r *compiler.EvaluationResult, e
 	}
 }
 
-// TestRpUpdatedKeepsSharedRpPointerAcrossUpdates: rpUpdated mutates the
-// *shared* EvaluationResult in place; it must not replace e.rps[uid] with the
-// incoming object, otherwise the pods' attachedFilters pointer freezes on a
-// stale generation and the eventual detach deletes the wrong IP set from the
-// pod's BPF map.
+// rpUpdated mutates the shared EvaluationResult in place rather than replacing
+// e.rps[uid] with the incoming object: a replaced pointer freezes the pods'
+// attachedFilters on a stale generation, and the eventual detach then deletes the
+// wrong ip set from the pod's bpf map.
 func TestRpUpdatedKeepsSharedRpPointerAcrossUpdates(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
@@ -40,9 +39,8 @@ func TestRpUpdatedKeepsSharedRpPointerAcrossUpdates(t *testing.T) {
 	assertSharedPointer(t, e, "rp-1", "pod-1")
 	wantLiveIps(t, f, []string{"2.2.2.2"}, []string{})
 
-	// third generation: this is the one the bug broke. with the reassignment
-	// present, e.rps holds gen2 while the pod still holds gen1, whose IPs pointer
-	// was frozen at the gen2 pair.
+	// third generation: with a reassignment in rpUpdated, e.rps holds gen2 while
+	// the pod holds gen1, whose IPs pointer is frozen at the gen2 pair
 	gen3 := rp("rp-1", "enforce", webLabels, []string{"3.3.3.3"}, nil)
 	mustRpEvent(t, e, gen3, events.EventTypeUpdate)
 	assertSharedPointer(t, e, "rp-1", "pod-1")
@@ -53,8 +51,8 @@ func TestRpUpdatedKeepsSharedRpPointerAcrossUpdates(t *testing.T) {
 		t.Errorf("pod's attached rp holds stale ips %v, want [3.3.3.3]", attached.IPs.Allow)
 	}
 
-	// the delete path reads the IPs off the pointer the pod holds, so a stale
-	// pointer removes a previous generation's ips and leaks the current ones.
+	// the delete path reads the ips off the pointer the pod holds, so a stale
+	// pointer removes an older generation's ips and leaks the current ones
 	f.reset()
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"3.3.3.3"}, nil)})
@@ -76,8 +74,8 @@ func assertSharedPointer(t *testing.T, e *EgressManager, rpUid, podUid string) {
 		t.Fatalf("pod %s is not attached to rp %s", podUid, rpUid)
 	}
 	if shared != held {
-		// deliberately not fatal: the follow up assertions show what the diverged
-		// pointers do to the pod's programmed ip set
+		// not fatal: the follow up assertions show what the diverged pointers do to
+		// the pod's programmed ip set
 		t.Errorf("pod %s holds a different *EvaluationResult (%p) than e.rps[%s] (%p): the shared pointer was replaced",
 			podUid, held, rpUid, shared)
 	}
@@ -147,16 +145,16 @@ func TestRpUpdatedLeavingTrackedModeTearsDown(t *testing.T) {
 	wantAttachedRps(t, e, "pod-1")
 }
 
-// the detach branch must use the copy of the old ips taken before currentRp.IPs
-// is overwritten with the incoming generation, otherwise it deletes the new ips
-// and leaks the ones actually programmed into the map.
+// the detach branch uses the copy of the old ips taken before currentRp.IPs is
+// overwritten with the incoming generation, otherwise it deletes the new ips and
+// leaks the ones actually programmed into the map.
 func TestRpUpdatedDetachUsesCopiedOldIps(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1", "2.2.2.2"}, []string{"8.8.8.8"}), events.EventTypeCreate)
 	f.reset()
 
-	// selector moves off this pod AND the ip set changes at the same time
+	// the selector moves off this pod and the ip set changes at the same time
 	mustRpEvent(t, e, rp("rp-1", "enforce", apiLabels, []string{"3.3.3.3"}, nil), events.EventTypeUpdate)
 
 	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1", "2.2.2.2"}, []string{"8.8.8.8"})})
@@ -239,8 +237,8 @@ func TestRpUpdatedNewlyMatchedPodGetsFullIpSetAndSharedPointer(t *testing.T) {
 	assertSharedPointer(t, e, "rp-1", "pod-1")
 }
 
-// default deny is reference counted per pod: the flag may only clear when the
-// last policy asking for it is gone.
+// default deny is reference counted per pod: the flag clears only when the last
+// policy asking for it is gone.
 func TestDefaultDenyRefcountAcrossPolicies(t *testing.T) {
 	tests := []struct {
 		name string
@@ -260,7 +258,7 @@ func TestDefaultDenyRefcountAcrossPolicies(t *testing.T) {
 			},
 		},
 		{
-			name: "selector no longer matches",
+			name: "selector stops matching",
 			drop: func(t *testing.T, e *EgressManager, uid string) {
 				mustRpEvent(t, e, rp(uid, "enforce", apiLabels, nil, []string{"*"}), events.EventTypeUpdate)
 			},
@@ -313,7 +311,7 @@ func TestRpDeletedRemovesAttachedIpsPerPod(t *testing.T) {
 	wantDefaultDeny(t, web, false)
 	wantAttachedRps(t, e, "pod-web")
 
-	// a pod that was never attached must not be touched at all
+	// a pod that was never attached is not touched at all
 	wantPairs(t, "DeleteIps(api)", api.deletes, nil)
 	if len(api.toggles) != 0 {
 		t.Errorf("unattached pod's flags were touched: %v", api.toggles)

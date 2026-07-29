@@ -19,13 +19,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// testTime is the fixed clock every test manager uses, so conditions and events
-// can be compared without stripping timestamps.
+// the fixed clock every test manager runs on, so conditions and events can be
+// compared without stripping timestamps.
 var testTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 
-// ipPair is a value-copy snapshot of an *compiler.AllowDenyPair taken at call
-// time. The manager mutates the pairs it owns, so recording the pointer would
-// let later mutations rewrite history.
+// a value-copy snapshot of an *compiler.AllowDenyPair taken at call time. The
+// manager mutates the pairs it owns, so recording the pointer would let later
+// mutations rewrite history.
 type ipPair struct {
 	Allow []string
 	Deny  []string
@@ -47,11 +47,11 @@ type flagToggle struct {
 	val bool
 }
 
-// fakeFilter records every call the manager makes and also models the state the
-// real BPF maps would end up in: the ip maps behave as sets (adds and deletes
-// are idempotent), and the flags map holds the default-deny and observe bits.
-// Target parsing goes through the real egressfilter.ParseTargets, so unsupported
-// targets are rejected here exactly as the kernel-side filter would reject them.
+// fakeFilter records every call the manager makes and models the state the bpf
+// maps would end up in: the ip maps behave as sets and the flags map holds the
+// default-deny and observe bits. Target parsing goes through the real
+// egressfilter.ParseTargets, so unsupported targets are rejected here as the
+// kernel-side filter rejects them.
 type fakeFilter struct {
 	adds     []ipPair
 	deletes  []ipPair
@@ -124,14 +124,13 @@ func (f *fakeFilter) Attach(cgPath string) (link.Link, error) {
 	if f.attachErr != nil {
 		return nil, f.attachErr
 	}
-	// link.Link cannot be implemented outside package link (unexported isLink
-	// method), and the manager only uses the returned value as an opaque map
-	// value, so nil is enough.
+	// link.Link cannot be implemented outside package link, and the manager only
+	// uses the returned value as an opaque map value
 	return nil, nil
 }
 
-// ReadIPEvents models the destructive read of the real counter map: the events
-// are handed over once and the map is reset, so the next call reports a delta.
+// models the destructive read of the counter map: the events are handed over once
+// and the map is reset, so the next call reports a delta.
 func (f *fakeFilter) ReadIPEvents() (map[egressfilter.IPEventKey]uint32, error) {
 	f.reads++
 	out := f.ipEvents
@@ -175,9 +174,8 @@ func (ff *fakeFactory) new(*logr.Logger) (egressFilter, error) {
 	return f, nil
 }
 
-// fakeStatus records what the manager reports back onto policy status. It is
-// mutex guarded because the pod and policy informers call the manager from
-// different goroutines.
+// records what the manager reports back onto policy status. mutex guarded because
+// the pod and policy informers call the manager from different goroutines.
 type fakeStatus struct {
 	mu         sync.Mutex
 	conditions map[string][]metav1.Condition
@@ -220,10 +218,9 @@ func (s *fakeStatus) latest(policyUID, condType string) (metav1.Condition, bool)
 func newTestManager() (*EgressManager, *fakeFactory, *fakeStatus) {
 	ff := &fakeFactory{}
 	status := newFakeStatus()
-	e := NewEgressManager(logr.Discard(), status,
-		withFilterFactory(ff.new),
-		WithClock(func() time.Time { return testTime }),
-	)
+	e := NewEgressManager(logr.Discard(), status)
+	e.newFilter = ff.new
+	e.clock = func() time.Time { return testTime }
 	return e, ff, status
 }
 
@@ -332,11 +329,6 @@ func wantObserveFlag(t *testing.T, f *fakeFilter, want bool) {
 func wantDefaultDenyOwners(t *testing.T, e *EgressManager, podUid string, want ...string) {
 	t.Helper()
 	wantSetEquals(t, "defaultDeny owners", podUid, keysOf(e.pods[podUid].defaultDeny), want)
-}
-
-func wantObserveOwners(t *testing.T, e *EgressManager, podUid string, want ...string) {
-	t.Helper()
-	wantSetEquals(t, "observe owners", podUid, keysOf(e.pods[podUid].observe), want)
 }
 
 func wantAttachedRps(t *testing.T, e *EgressManager, podUid string, want ...string) {

@@ -22,7 +22,6 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		cgs:             make(map[containers.ContainerCgroupInfo]link.Link),
 		attachedFilters: make(map[string]*compiler.EvaluationResult),
 		defaultDeny:     make(map[string]struct{}),
-		observe:         make(map[string]struct{}),
 		labels:          pod.Labels,
 		filter:          filter,
 	}
@@ -43,9 +42,8 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		e.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpName)
 		pa.attachedFilters[rpName] = rp
 
-		// observe-mode policies program nothing: they only ask for observation
+		// observe-mode policies program nothing
 		if compiler.IsObserveMode(rp.Mode) {
-			pa.observe[rp.UID] = struct{}{}
 			continue
 		}
 
@@ -54,8 +52,6 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 			ips.Deny = append(ips.Deny, rp.IPs.Deny...)
 		}
 
-		// the filter's IP contain a default deny. add it to the group of filters
-		// that specify a default deny
 		if denyHasStar(rp.IPs) {
 			pa.defaultDeny[rp.UID] = struct{}{}
 		}
@@ -64,7 +60,8 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	if len(pa.defaultDeny) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 	}
-	if len(pa.observe) > 0 {
+	// every pod with an attached policy is observed, whatever mode it is in
+	if len(pa.attachedFilters) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
 	}
 
@@ -78,9 +75,9 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 }
 
 // podUpdated refreshes the cached labels and re-evaluates every tracked policy's
-// selector against them before reconciling the cgroup links. Without the
-// label refresh a relabelled pod keeps enforcement from a policy that no longer
-// selects it, and is never picked up by one that now does.
+// selector against them before reconciling the cgroup links. Without the label
+// refresh a relabelled pod keeps enforcement from a policy that stopped
+// selecting it, and is never picked up by one that starts to.
 func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
 	e.logger.V(2).Info("pod updated", "podUid", pod.UID)
 	pa, ok := e.pods[string(pod.UID)]
@@ -110,8 +107,8 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 }
 
 // refreshLabels stores the new label set and attaches/detaches every tracked
-// policy accordingly. Detaching decrements the default-deny and OBSERVE
-// refcounts rather than clearing the flags, so overlapping policies survive.
+// policy accordingly. Detaching decrements the default-deny refcount rather than
+// clearing the flag, so overlapping policies survive.
 func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabels map[string]string) {
 	pa.labels = newLabels
 
@@ -123,9 +120,8 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabel
 			e.logger.V(2).Info("relabelled pod newly matches runtime policy", "podUid", podUid, "uid", uid)
 			e.attachPolicy(podUid, pa, rp)
 		case !matches && attached:
-			e.logger.V(2).Info("relabelled pod no longer matches runtime policy, detaching", "podUid", podUid, "uid", uid)
-			_, observed := pa.observe[uid]
-			e.detachPolicy(podUid, pa, uid, observed, att.IPs)
+			e.logger.V(2).Info("relabelled pod stopped matching runtime policy, detaching", "podUid", podUid, "uid", uid)
+			e.detachPolicy(podUid, pa, uid, att.IPs)
 		}
 	}
 }
