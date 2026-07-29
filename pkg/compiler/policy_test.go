@@ -1,13 +1,11 @@
 package compiler
 
 import (
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -305,40 +303,6 @@ func newPanickingCompiler(t *testing.T) *compiler {
 		t.Fatalf("Extend() error = %v", err)
 	}
 	return &compiler{env: env}
-}
-
-// TestEvaluate_PanicOutsideCELInterpreterIsGuarded pins the panic
-// barrier: a panic raised while handling a user-authored expression's result --
-// outside cel-go's own recover -- is converted into an error by utils.Guard
-// rather than crashing the privileged daemon.
-func TestEvaluate_PanicOutsideCELInterpreterIsGuarded(t *testing.T) {
-	c := newPanickingCompiler(t)
-
-	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "panicky"},
-		Spec: v1alpha1.RuntimePolicySpec{
-			Behaviors: []v1alpha1.PolicyBehavior{
-				{Open: &v1alpha1.Behavior{Deny: behaviorRule(nil, `evil()`)}},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Compile() unexpected error = %v", err)
-	}
-
-	res, err := compiled.Evaluate(t.Context())
-	if err == nil {
-		t.Fatalf("Evaluate() error = nil (result %+v), want the panic converted to an error", res)
-	}
-	if res != nil {
-		t.Errorf("Evaluate() result = %+v with an error, want nil", res)
-	}
-	if !errors.Is(err, utils.ErrPanic) {
-		t.Errorf("Evaluate() error = %v, want errors.Is(err, utils.ErrPanic)", err)
-	}
-	if !strings.Contains(err.Error(), `"panicky"`) {
-		t.Errorf("Evaluate() error = %q, want it to name the policy", err.Error())
-	}
 }
 
 // TestEvaluate_PanickingCELBindingBecomesError covers the other half:

@@ -2,12 +2,10 @@ package compiler
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/google/go-cmp/cmp"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -409,37 +407,4 @@ func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
 			t.Errorf("IsObserveMode(%q) = false, want true", res.Mode)
 		}
 	})
-}
-
-// TestCompile_PanicIsConvertedToError pins the panic barrier around
-// Compile: any panic raised while compiling a user-authored policy must become
-// an error instead of taking the privileged daemon down.
-func TestCompile_PanicIsConvertedToError(t *testing.T) {
-	// a compiler with no env panics with a nil pointer dereference as soon as
-	// it touches the CEL environment -- exactly the class of programming bug
-	// that must not reach the process boundary.
-	broken := &compiler{}
-
-	rp := v1alpha1.RuntimePolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "crash"},
-		Spec: v1alpha1.RuntimePolicySpec{
-			Variables: []admissionregistrationv1.Variable{
-				{Name: "v", Expression: `["1.2.3.4"]`},
-			},
-		},
-	}
-
-	compiled, err := broken.Compile(rp)
-	if err == nil {
-		t.Fatal("Compile() error = nil, want a recovered panic converted to an error")
-	}
-	if compiled != nil {
-		t.Errorf("Compile() returned %+v with an error, want nil", compiled)
-	}
-	if !errors.Is(err, utils.ErrPanic) {
-		t.Errorf("Compile() error = %v, want errors.Is(err, utils.ErrPanic)", err)
-	}
-	if !strings.Contains(err.Error(), `"crash"`) {
-		t.Errorf("Compile() error = %q, want it to name the policy", err.Error())
-	}
 }

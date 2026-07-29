@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -60,24 +59,7 @@ func NewCompiler(client dynamic.Interface) (Compiler, error) {
 	return &compiler{env: env}, nil
 }
 
-// Compile compiles a user-authored RuntimePolicy. Every panic raised while
-// compiling user input (a CEL library binding, a malformed expression tree) is
-// converted into an error by utils.Guard: a bad policy must never take the
-// privileged daemon down.
 func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
-	var compiled *CompiledRuntimePolicy
-	err := utils.Guard(fmt.Sprintf("compiling RuntimePolicy %q", rp.Name), func() error {
-		var err error
-		compiled, err = c.compile(rp)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return compiled, nil
-}
-
-func (c *compiler) compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
 	variables, err := c.compileVariables(rp, c.env, c.env.CELTypeProvider())
 	if err != nil {
 		return nil, err

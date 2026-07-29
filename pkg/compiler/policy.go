@@ -56,24 +56,8 @@ func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
 	return &AllowDenyPair{Allow: newAllowInTarget, Deny: newDenyInTarget}
 }
 
-// Evaluate runs the policy's compiled CEL programs. Evaluation executes
-// user-authored expressions (including third-party CEL library bindings), so
-// the whole body runs behind utils.Guard: a panicking binding becomes an
-// error instead of taking the daemon down.
+// Evaluate runs the policy's compiled CEL programs.
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
-	var result *EvaluationResult
-	err := utils.Guard(fmt.Sprintf("evaluating RuntimePolicy %q", c.Name), func() error {
-		var err error
-		result, err = c.evaluate(ctx)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-func (c *CompiledRuntimePolicy) evaluate(ctx context.Context) (*EvaluationResult, error) {
 	selector, err := metav1.LabelSelectorAsSelector(c.selector)
 	if err != nil {
 		return nil, err

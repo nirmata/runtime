@@ -51,7 +51,8 @@ func TestNewPollSourceNameAndIntervalDefault(t *testing.T) {
 	if ps.interval != 3*time.Second {
 		t.Errorf("interval = %v, want 3s", ps.interval)
 	}
-	zero := NewPollSource("z", 0, nil).(*pollSource)
+	noop := func(context.Context) ([]runtimeevent.Event, error) { return nil, nil }
+	zero := NewPollSource("z", 0, noop).(*pollSource)
 	if zero.interval != time.Second {
 		t.Errorf("non-positive interval = %v, want the 1s default", zero.interval)
 	}
@@ -140,33 +141,13 @@ func TestPollSourceReturnsPollError(t *testing.T) {
 	}
 }
 
-func TestPollSourcePropagatesErrSourceNotWired(t *testing.T) {
-	f := newFakeTicker()
-	ps := newTestPollSource("dnstrace", time.Second, func(context.Context) ([]runtimeevent.Event, error) {
-		return nil, runtimeevent.ErrSourceNotWired
-	}, f)
-
-	done := make(chan error, 1)
-	go func() { done <- ps.Run(context.Background(), make(chan runtimeevent.Event, 1)) }()
-	recvDuration(t, f.interval)
-	f.c <- time.Now()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, runtimeevent.ErrSourceNotWired) {
-			t.Errorf("Run error = %v, want ErrSourceNotWired to survive wrapping", err)
+func TestNewPollSourceWithNilPollFuncPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("NewPollSource with a nil poll function did not panic")
 		}
-	case <-time.After(testTimeout):
-		t.Fatal("Run did not return")
-	}
-}
-
-func TestPollSourceWithNilPollFuncIsNotWired(t *testing.T) {
-	src := NewPollSource("nowhere", time.Second, nil)
-	err := src.Run(context.Background(), make(chan runtimeevent.Event, 1))
-	if !errors.Is(err, runtimeevent.ErrSourceNotWired) {
-		t.Errorf("Run error = %v, want ErrSourceNotWired", err)
-	}
+	}()
+	NewPollSource("nowhere", time.Second, nil)
 }
 
 // TestPollSourceThroughCollectorWithShortInterval exercises the real
@@ -174,7 +155,7 @@ func TestPollSourceWithNilPollFuncIsNotWired(t *testing.T) {
 // test blocks on the sink's channel).
 func TestPollSourceThroughCollectorWithShortInterval(t *testing.T) {
 	got := make(chan runtimeevent.Event, 16)
-	c := New(logr.Discard(), WithBufferSize(16))
+	c := New(logr.Discard(), 16, DefaultRestartBackoff, nil)
 	c.AddSink(chanSink("sink", got))
 	c.AddSource(NewPollSource("egress", time.Millisecond, func(context.Context) ([]runtimeevent.Event, error) {
 		return []runtimeevent.Event{netEvent("poll")}, nil

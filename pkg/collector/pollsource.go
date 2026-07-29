@@ -10,8 +10,7 @@ import (
 
 // PollFunc returns the events observed since the previous call. It is called
 // once per interval and must not block indefinitely; returning an error stops
-// the source, which the collector then restarts with backoff (or, for
-// runtimeevent.ErrSourceNotWired, leaves stopped).
+// the source, which the collector then restarts with backoff.
 type PollFunc func(ctx context.Context) ([]runtimeevent.Event, error)
 
 // pollSource adapts periodic counter scraping (egressmgr/lsmmgr map reads) to
@@ -27,8 +26,12 @@ type pollSource struct {
 }
 
 // NewPollSource builds a Source that calls poll every interval and emits
-// whatever it returns. A non-positive interval defaults to one second.
+// whatever it returns. A non-positive interval defaults to one second; a nil
+// poll function is a wiring bug and panics here rather than at the first tick.
 func NewPollSource(name string, interval time.Duration, poll PollFunc) runtimeevent.Source {
+	if poll == nil {
+		panic("collector: NewPollSource " + name + ": nil poll function")
+	}
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -48,10 +51,6 @@ func (p *pollSource) Name() string { return p.name }
 
 // Run polls until ctx is done or poll returns an error.
 func (p *pollSource) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
-	if p.poll == nil {
-		return fmt.Errorf("poll source %s: no poll function: %w", p.name, runtimeevent.ErrSourceNotWired)
-	}
-
 	tick, stop := p.ticks(p.interval)
 	defer stop()
 
