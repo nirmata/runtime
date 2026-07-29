@@ -3,7 +3,7 @@
 // suites under pkg/.
 //
 // These are NOT unit tests and deliberately do not assert "returns an error on
-// darwin" -- that would be coverage theatre (see issue #60). On any host that
+// darwin" -- that would be coverage theatre. On any host that
 // cannot run them they SKIP with an explicit reason, except where the caller
 // opts into a hard requirement via KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 (the
 // workflow_dispatch LSM lane sets it, so a misconfigured runner fails loudly
@@ -42,10 +42,10 @@ func requireBPFCapableHost(t *testing.T) {
 	}
 }
 
-// TestBPFEgressProgramLoadsAndVerifies is the verifier smoke test issue #60 asks
-// for: it loads the committed egressblock object into the running kernel, which
-// exercises BTF relocation and the full verifier pass, and prints the verifier
-// log on failure. It does not need BPF-LSM, so it runs on ordinary Linux CI.
+// TestBPFEgressProgramLoadsAndVerifies loads the committed egressblock object
+// into the running kernel, which exercises BTF relocation and the full verifier
+// pass, and prints the verifier log on failure. It does not need BPF-LSM, so it
+// runs on ordinary Linux CI.
 func TestBPFEgressProgramLoadsAndVerifies(t *testing.T) {
 	requireBPFCapableHost(t)
 
@@ -121,7 +121,6 @@ func TestBPFEgressProgramLoadsAndVerifies(t *testing.T) {
 // bprm_check_security). A BPF_PROG_TYPE_LSM program cannot be loaded at all
 // unless the kernel was booted with BPF-LSM active, so this skips by default and
 // only hard-fails when the caller declares the host is supposed to support it.
-// That boot-time requirement is the documented gap in issue #60.
 func TestBPFLsmProgramsLoadAndVerify(t *testing.T) {
 	required := os.Getenv("KYVERNO_RUNTIME_REQUIRE_BPF_LSM") == "1"
 
@@ -141,10 +140,10 @@ func TestBPFLsmProgramsLoadAndVerify(t *testing.T) {
 		t.Skipf("cannot determine active LSMs: %v", err)
 	case !enabled && required:
 		t.Fatal("KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 but 'bpf' is not in /sys/kernel/security/lsm; " +
-			"the kernel must be booted with lsm=...,bpf -- see issue #60")
+			"the kernel must be booted with lsm=...,bpf")
 	case !enabled:
 		t.Skip("kernel not booted with BPF-LSM ('bpf' absent from /sys/kernel/security/lsm); " +
-			"see issue #60 -- hosted GitHub runners cannot satisfy this")
+			"the kernel must be booted with lsm=...,bpf -- hosted GitHub runners cannot satisfy this")
 	}
 
 	for _, target := range []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC} {

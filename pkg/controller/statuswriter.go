@@ -76,7 +76,7 @@ func (p *policyStatusState) touch() {
 }
 
 // StatusWriter turns the RuntimePolicy and pod event streams into this node's
-// shard of each policy's status (#44). It handles both the pod and the policy
+// shard of each policy's status. It handles both the pod and the policy
 // event streams (so it sees which pods this node matched) and is a
 // runtimeevent.PolicyStatusRecorder (so managers and sinks can attach
 // violations and conditions).

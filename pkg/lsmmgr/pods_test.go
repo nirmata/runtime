@@ -165,12 +165,12 @@ func TestPodUpdated_UnknownPodErrors(t *testing.T) {
 	}
 }
 
-// TestPodUpdated_LabelChangeReEvaluatesSelectors_Issue58 replaces PR #57's
-// TestPodUpdated_LabelChangeAloneIsNotReEvaluated, which pinned the buggy
-// behavior: labels were snapshotted at pod creation, so enforcement outlived its
-// selector and a newly matching pod was never picked up. Both directions are
-// asserted here, plus the refreshed cache.
-func TestPodUpdated_LabelChangeReEvaluatesSelectors_Issue58(t *testing.T) {
+// TestPodUpdated_LabelChangeReEvaluatesSelectors pins that a label-only pod
+// update re-evaluates every attachment's selector. Labels used to be
+// snapshotted at pod creation, so enforcement outlived its selector and a newly
+// matching pod was never picked up. Both directions are asserted here, plus the
+// refreshed cache.
+func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	h := newHarness(t)
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}), cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)

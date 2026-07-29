@@ -314,6 +314,13 @@ kyverno-runtime/
 
 - Exported functions/types have comments describing purpose
 - Complex logic includes comments explaining why, not just what
+- Comments describe the code as it stands — what it does and why, never where it
+  came from or what a future PR will do. No GitHub issue or PR numbers, no
+  changelog narration; that history lives in git blame and the tracker. A
+  comment must carry more information than the signature below it, and a comment
+  block longer than the body it explains is a smell. When a test pins a
+  regression, encode the *invariant* in the test name and doc comment, not the
+  ticket number — the invariant outlives the tracker.
 - See [DESIGN.md](docs/dev/DESIGN.md) for architecture details
 
 ## Important Behaviors

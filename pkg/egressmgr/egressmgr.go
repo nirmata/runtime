@@ -20,8 +20,8 @@ import (
 )
 
 // Condition type and reasons the manager writes onto a RuntimePolicy's status.
-// A network target the runtime cannot program must never be dropped silently
-// (#41): every rejection reaches a V(0) log AND this condition.
+// A network target the runtime cannot program must never be dropped silently:
+// every rejection reaches a V(0) log AND this condition.
 const (
 	ConditionTargetsValid      = "TargetsValid"
 	ReasonUnsupportedTargets   = "UnsupportedTargets"
@@ -228,8 +228,8 @@ func (e *EgressManager) deleteIps(podUid, uid string, f egressFilter, pair *comp
 	}
 }
 
-// surfaceRejected is #41's loud half: every target the runtime cannot honor is
-// logged at V(0) and attached to the policy's status.
+// surfaceRejected makes rejections loud: every target the runtime cannot honor
+// is logged at V(0) and attached to the policy's status.
 func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []egressfilter.RejectedTarget) {
 	if len(rejected) == 0 {
 		return

@@ -6,11 +6,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// The DiffSlice and MergeMapCount tables below originate from PR #57
-// ("test: add unit tests for critical packages"), ported here so that work is
-// not lost when this PR supersedes it. reflect.DeepEqual was swapped for
-// cmp.Diff per CONVENTIONS, and the nil-map and overflow cases were added.
-
 func TestDiffSlice(t *testing.T) {
 	tests := []struct {
 		name string

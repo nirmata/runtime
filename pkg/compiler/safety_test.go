@@ -40,8 +40,8 @@ func TestModeConstantsMatchAPI(t *testing.T) {
 	}
 }
 
-// TestCompile_RejectsBadNetworkValuesWithFieldPath pins the admission-time half
-// of #41: an unsupported hardcoded network target is rejected with the field
+// TestCompile_RejectsBadNetworkValuesWithFieldPath pins the admission-time
+// half: an unsupported hardcoded network target is rejected with the field
 // path of the exact offending value instead of being dropped silently when it
 // reaches the BPF maps.
 func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {

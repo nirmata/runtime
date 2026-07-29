@@ -63,7 +63,7 @@ func NewCompiler(client dynamic.Interface) (Compiler, error) {
 // Compile compiles a user-authored RuntimePolicy. Every panic raised while
 // compiling user input (a CEL library binding, a malformed expression tree) is
 // converted into an error by utils.Guard: a bad policy must never take the
-// privileged daemon down (#40).
+// privileged daemon down.
 func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
 	var compiled *CompiledRuntimePolicy
 	err := utils.Guard(fmt.Sprintf("compiling RuntimePolicy %q", rp.Name), func() error {
@@ -95,7 +95,7 @@ func (c *compiler) compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 			errPath := path.Index(i).Child("network")
 			// hardcoded network targets are validated at compile time so an
 			// unsupported literal is rejected loudly instead of being dropped
-			// silently when it reaches the BPF maps (#41).
+			// silently when it reaches the BPF maps.
 			if errs := validateNetworkBehavior(errPath, b.Network); len(errs) != 0 {
 				return nil, errs.ToAggregate()
 			}

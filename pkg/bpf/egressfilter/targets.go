@@ -12,7 +12,7 @@ import (
 // MinCIDRPrefixBits is the narrowest (numerically smallest) IPv4 prefix length
 // ParseTargets will expand. /24 expands to MaxExpandedTargets addresses;
 // anything wider is rejected rather than expanded, because the deny/allow maps
-// are plain hashes of individual /32 keys (see #41 for the LPM-trie follow-up).
+// are plain hashes of individual /32 keys.
 const MinCIDRPrefixBits = 24
 
 // MaxExpandedTargets bounds the number of addresses a single CIDR may expand to.
@@ -48,7 +48,7 @@ func (r RejectedTarget) String() string {
 // the SINGLE narrowing point where the program-time restriction is applied on
 // top of it: a CIDR wider than /MinCIDRPrefixBits is rejected as
 // ReasonCIDRTooWide instead of expanded, because the deny/allow maps are
-// plain hashes of individual /32 keys (see #41 for the LPM-trie follow-up).
+// plain hashes of individual /32 keys.
 // Admission validation deliberately does NOT apply this restriction, so it
 // never rejects a value the runtime would accept.
 //

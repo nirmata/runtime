@@ -307,11 +307,11 @@ func newPanickingCompiler(t *testing.T) *compiler {
 	return &compiler{env: env}
 }
 
-// TestEvaluate_PanicOutsideCELInterpreterIsGuarded_Issue40 pins the panic
+// TestEvaluate_PanicOutsideCELInterpreterIsGuarded pins the panic
 // barrier: a panic raised while handling a user-authored expression's result --
 // outside cel-go's own recover -- is converted into an error by utils.Guard
 // rather than crashing the privileged daemon.
-func TestEvaluate_PanicOutsideCELInterpreterIsGuarded_Issue40(t *testing.T) {
+func TestEvaluate_PanicOutsideCELInterpreterIsGuarded(t *testing.T) {
 	c := newPanickingCompiler(t)
 
 	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
@@ -341,10 +341,10 @@ func TestEvaluate_PanicOutsideCELInterpreterIsGuarded_Issue40(t *testing.T) {
 	}
 }
 
-// TestEvaluate_PanickingCELBindingBecomesError_Issue40 covers the other half:
+// TestEvaluate_PanickingCELBindingBecomesError covers the other half:
 // a CEL function that panics inside the interpreter must surface as an
 // evaluation error (cel-go recovers it, and Evaluate must not mask it).
-func TestEvaluate_PanickingCELBindingBecomesError_Issue40(t *testing.T) {
+func TestEvaluate_PanickingCELBindingBecomesError(t *testing.T) {
 	c := newPanickingCompiler(t)
 
 	tests := []struct {

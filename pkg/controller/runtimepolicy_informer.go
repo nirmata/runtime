@@ -185,7 +185,7 @@ func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
 	if err != nil {
 		requeues := m.queue.NumRequeues(key)
 		// the key is stable, so this cap counts retries of the logical policy
-		// event and no longer resets when the lister's object changes (#59)
+		// event and no longer resets when the lister's object changes
 		if requeues >= maxRequeues {
 			m.log.Error(err, "giving up on event after max requeues", "policy", key.Key, "type", key.Type, "requeues", requeues)
 			m.forget(key)

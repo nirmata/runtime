@@ -16,8 +16,8 @@ import (
 )
 
 // CollectObservations turns the per-cgroup path counters into events for both
-// modes: monitor gets its findings from them (#42) and enforce gets deny
-// delivery data from them (#17).
+// modes: monitor gets its findings from them and enforce gets deny
+// delivery data from them.
 func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
 	for _, mode := range []string{compiler.ModeEnforce, compiler.ModeMonitor} {
 		t.Run(mode, func(t *testing.T) {
@@ -101,8 +101,8 @@ func TestCollectObservations_SplitsEventsByKernelVerdict(t *testing.T) {
 	}
 }
 
-// TestCollectObservationsReadsAllEnforcers closes #52 structurally. The bug was an
-// early `break` in the read loop: for a pod with both an open and an exec
+// TestCollectObservationsReadsAllEnforcers pins the read-loop structure: an
+// early `break` in the read loop meant that for a pod with both an open and an exec
 // enforcer, everything after the first enforcer was silently dropped. This test
 // fails if anyone reintroduces a break (or any early return) that stops after the
 // first enforcer of an attachment, or after the first attachment.

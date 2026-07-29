@@ -67,12 +67,12 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 }
 
 // AddIps programs the allow and deny targets of pair into the BPF maps.
-//
-// Targets that cannot be programmed (IPv6, hostnames, CIDRs wider than /24) are
-// returned as typed rejections rather than skipped silently; err covers only
-// map-write failures. Both may be non-empty at once.
+// Targets ParseTargets cannot represent are returned as typed rejections and
+// logged; err covers only map-write failures. Both may be non-empty at once.
 func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
-	return e.applyIps(pair, mapOpAdd)
+	rejected, err := e.applyIps(pair, mapOpAdd)
+	e.logRejected(rejected)
+	return rejected, err
 }
 
 // DeleteIps removes the allow and deny targets of pair from the BPF maps.
@@ -101,7 +101,6 @@ func (e *EgressFilter) applyIps(pair *compiler.AllowDenyPair, op mapOp) ([]Rejec
 	rejected := make([]RejectedTarget, 0, len(allowRejected)+len(denyRejected))
 	rejected = append(rejected, allowRejected...)
 	rejected = append(rejected, denyRejected...)
-	e.logRejected(rejected)
 
 	var allowedMap, bannedMap *ebpf.Map
 	if e.bpfObjs != nil {
@@ -158,8 +157,6 @@ func (e *EgressFilter) logRejected(rejected []RejectedTarget) {
 		return
 	}
 	for _, r := range rejected {
-		// V(0): an operator-authored target that cannot be honored must be
-		// visible by default. Callers additionally surface it on policy status.
 		e.logger.Info("rejected egress network target: it will NOT be enforced",
 			"target", r.Value, "reason", r.Reason)
 	}

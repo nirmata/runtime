@@ -71,8 +71,8 @@ func TestFullLifecycleLeavesNoDanglingState(t *testing.T) {
 	wantAttachedRps(t, e, "pod-api", "rp-1", "rp-2")
 	assertSharedPointer(t, e, "rp-1", "pod-api")
 
-	// 5. pod-web is relabelled in place. since #58 the update path refreshes the
-	// labels and re-evaluates every tracked selector, so no delete/create pair is
+	// 5. pod-web is relabelled in place. The update path refreshes the labels
+	// and re-evaluates every tracked selector, so no delete/create pair is
 	// needed for the pod to pick rp-1 up.
 	relabelPod(t, e, "pod-web", apiLabels, "/cg/web")
 	wantLiveIps(t, web, []string{"2.2.2.2", "3.3.3.3", "9.9.9.9"}, []string{})
@@ -123,7 +123,7 @@ func TestConcurrentPodAndPolicyEventsKeepStateConsistent(t *testing.T) {
 			if err := e.PodEvent(makePod(uid, webLabels), cgInfos("/cg/"+uid), events.EventTypeCreate); err != nil {
 				t.Errorf("pod create %s: %v", uid, err)
 			}
-			// relabelling exercises the #58 re-match path concurrently with the
+			// relabelling exercises the re-match path concurrently with the
 			// policy stream
 			if err := e.PodEvent(makePod(uid, apiLabels), cgInfos("/cg/"+uid), events.EventTypeUpdate); err != nil {
 				t.Errorf("pod update %s: %v", uid, err)

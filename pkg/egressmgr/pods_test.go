@@ -186,11 +186,10 @@ func TestPodDeletedDropsStateAndStopsFutureUpdates(t *testing.T) {
 	}
 }
 
-// TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors_Issue58 is the fix for
-// #58: an in-place relabel must both stop enforcement that no longer selects the
-// pod and start enforcement that now does. The delete/create pair that #57's
-// lifecycle test used to route relabelling through is no longer required.
-func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors_Issue58(t *testing.T) {
+// TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors: an in-place relabel
+// must both stop enforcement that no longer selects the pod and start
+// enforcement that now does, without routing through a delete/create pair.
+func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 	tests := []struct {
 		name string
 		// policies created before the relabel

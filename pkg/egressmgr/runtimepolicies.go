@@ -87,7 +87,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	defaultDenyRemoved := slices.Contains(toRemovePair.Deny, compiler.StarTarget)
 
 	// update the current runtime behavior's information to point to the new compiled behavior data.
-	// the shared pointer itself is never replaced: the pods hold it (#53).
+	// the shared pointer itself is never replaced: the pods hold it.
 	currentRp.IPs = compiledRp.IPs
 	currentRp.Selector = compiledRp.Selector
 	currentRp.Name = compiledRp.Name
@@ -147,7 +147,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 		if rpMatches {
 			e.logger.V(2).Info("updated runtime policy newly matches pod", "uid", compiledRp.UID, "podUid", podUid)
 			// attach through the shared pointer the manager tracks, never the
-			// incoming generation (#53)
+			// incoming generation
 			e.attachPolicy(podUid, pod, currentRp)
 		}
 	}

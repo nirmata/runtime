@@ -21,12 +21,12 @@ func mustRpEvent(t *testing.T, e *EgressManager, r *compiler.EvaluationResult, e
 	}
 }
 
-// TestRpUpdatedKeepsSharedRpPointerAcrossUpdates_Issue53 is the regression test
-// for #53 / 82acb1f. rpUpdated mutates the *shared* EvaluationResult in place; it
-// must not replace e.rps[uid] with the incoming object, otherwise the pods'
-// attachedFilters pointer freezes on a stale generation and the eventual detach
-// deletes the wrong IP set from the pod's BPF map.
-func TestRpUpdatedKeepsSharedRpPointerAcrossUpdates_Issue53(t *testing.T) {
+// TestRpUpdatedKeepsSharedRpPointerAcrossUpdates: rpUpdated mutates the
+// *shared* EvaluationResult in place; it must not replace e.rps[uid] with the
+// incoming object, otherwise the pods' attachedFilters pointer freezes on a
+// stale generation and the eventual detach deletes the wrong IP set from the
+// pod's BPF map.
+func TestRpUpdatedKeepsSharedRpPointerAcrossUpdates(t *testing.T) {
 	e, _, _ := newTestManager()
 	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 

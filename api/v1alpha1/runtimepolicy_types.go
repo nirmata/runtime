@@ -123,8 +123,8 @@ type NodePolicyStatus struct {
 // +kubebuilder:resource:shortName=rpol,scope=Cluster
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
-// +kubebuilder:printcolumn:name="ObservedPods",type=integer,JSONPath=`.status.observedPods`
-// +kubebuilder:printcolumn:name="ViolatingPods",type=integer,JSONPath=`.status.violatingPods`
+// +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 type RuntimePolicy struct {

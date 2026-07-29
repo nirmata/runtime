@@ -86,7 +86,7 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 		t.Fatalf("podWeb attachedLsms = %v, want empty", got)
 	}
 
-	// 6. podWeb is relabelled into rp1's new selector (#58): it must be picked up
+	// 6. podWeb is relabelled into rp1's new selector: it must be picked up
 	step("relabel podWeb to db", func() error {
 		return h.l.PodEvent(testPod("podWeb", map[string]string{"app": "db"}), cgs(11, 12), events.EventTypeUpdate)
 	})

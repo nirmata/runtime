@@ -1,5 +1,5 @@
-// Package monitor turns observed runtime events into findings (#42, #17
-// userspace half). It answers two distinct questions, one per policy mode:
+// Package monitor turns observed runtime events into findings — the userspace
+// half of observation. It answers two distinct questions, one per policy mode:
 //
 //   - Monitor mode is the "trial run" of a RuntimePolicy: the kernel programs
 //     nothing to block, the managers only count what happened, and this
@@ -75,7 +75,7 @@ type FindingSink interface {
 // Every field is immutable after construction: RuntimePolicyEvent replaces the
 // whole value rather than mutating it, so HandleEvent can read one outside the
 // lock. This also isolates monitor from egressmgr, which mutates the
-// EvaluationResult it was handed in place (#53) — the pairs are copied here.
+// EvaluationResult it was handed in place — the pairs are copied here.
 type trackedPolicy struct {
 	uid  string
 	name string

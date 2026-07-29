@@ -1,8 +1,7 @@
-// Package containers resolves the cgroup identity (path + inode) of the
-// containers of a pod. The cgroup inode is the key both BPF engines use to
-// attribute kernel events back to a workload, so resolution must be tolerant:
-// nothing in this package may panic on a pod object, a mountinfo line, or a
-// procfs file (see issues #36, #37, #38).
+// Package containers resolves the cgroup identity (path + inode) of a pod's
+// containers. The cgroup inode is the key both BPF engines use to attribute
+// kernel events back to a workload, so nothing in this package may panic on a
+// pod object, a mountinfo line, or a procfs file.
 package containers
 
 import (
@@ -48,7 +47,7 @@ type ContainerCgroupInfo struct {
 
 // detectedCgroup returns the host cgroup mount, detecting it at most once.
 // Detection is lazy on purpose: doing it in init() turned an unreadable or
-// cgroup-less mount table into a start-up panic (#37).
+// cgroup-less mount table into a start-up panic.
 func detectedCgroup() (*cgroupInfo, error) {
 	cgroupOnce.Do(func() {
 		cgroupMount, cgroupErr = detectCgroup()
@@ -132,9 +131,8 @@ func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Cont
 }
 
 // parseContainerID splits a CRI container reference ("<runtime>://<id>") into
-// its runtime and id parts. Containers that the runtime has not started yet
-// report an empty reference; indexing the split result unconditionally is what
-// crashed the daemon in #36.
+// runtime and id. Not-yet-started containers report an empty reference, so a
+// malformed value is an error, never an index panic.
 func parseContainerID(raw string) (runtime, id string, err error) {
 	parts := strings.SplitN(raw, "://", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -176,12 +174,10 @@ func cgroupfsLeaves(runtime, containerID string) []string {
 }
 
 // buildCandidatePaths enumerates, most-likely-first, the cgroup directories a
-// container may live in. runtime is the scheme of the CRI container id
-// ("containerd", "cri-o", "docker", or "" for unknown); podUID is the RAW pod
-// UID (systemd escaping is applied internally, because the cgroupfs driver does
-// NOT escape it - see #38); qos is the lowercased QoS class ("guaranteed",
-// "burstable", "besteffort", or "" when unknown, treated as guaranteed since
-// that is the only layout without a QoS level).
+// container may live in. runtime is the scheme of the CRI container id ("" for
+// unknown); podUID is the RAW pod UID — systemd escaping happens internally,
+// because the cgroupfs driver does NOT escape it; qos is the lowercased QoS
+// class, "" treated as guaranteed (the only layout without a QoS level).
 func buildCandidatePaths(root, runtime, podUID, containerID, qos string) []string {
 	// systemd escapes '-' in unit names, so the kubelet replaces it with '_'.
 	escapedUID := strings.ReplaceAll(podUID, "-", "_")
@@ -313,7 +309,7 @@ func detectCgroup() (*cgroupInfo, error) {
 // parseMountInfo finds the cgroup mount to use in mountinfo formatted content.
 // It is pure so it can be table tested without a procfs. Two passes: a unified
 // cgroup2 hierarchy always wins over a cgroup v1 controller mount, which may
-// appear earlier in mountinfo order on hybrid hosts (#37). Short or malformed
+// appear earlier in mountinfo order on hybrid hosts. Short or malformed
 // lines are skipped rather than indexed.
 func parseMountInfo(data []byte) (*cgroupInfo, error) {
 	lines := strings.Split(string(data), "\n")

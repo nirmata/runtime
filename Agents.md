@@ -58,7 +58,9 @@ Follow these rules when generating and updating code:
 - for runtime pipeline, collector, evaluator, or reporter changes, also run "make smoke-quickstart" before finishing.
 - when creating a PR, sign commits using "git commit -s...".
 - tests are table-driven, stdlib `testing` plus `github.com/google/go-cmp/cmp` for struct diffs. No
-  testify. Regression tests name their issue (`TestRequeueCapSurvivesPointerChange_Issue59`).
+  testify. Regression tests encode the pinned invariant in their name and doc comment
+  (`TestRequeueCapSurvivesPointerChange`), never an issue or PR number — see the comment rule in
+  [DEVELOPMENT.md](DEVELOPMENT.md).
 - inject time (`Clock func() time.Time`) and filesystem roots (`procRoot`) — never sleep in a test
   and never touch the real `/proc`. Kernel-touching code goes behind the managers' seam interfaces
   so its bookkeeping is testable off-kernel; "returns an error on darwin" is not a test.

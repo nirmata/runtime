@@ -110,7 +110,7 @@ func TestRpCreated_ProgTypeSelection(t *testing.T) {
 	}
 }
 
-// TestExecBehaviorReachesExecEnforcer closes #34: exec behaviors used to be
+// TestExecBehaviorReachesExecEnforcer pins a real gap: exec behaviors used to be
 // compiled into EvaluationResult.Exec and then dropped, with nothing attaching to
 // bprm_check_security. This asserts the compiled exec pair lands verbatim in the
 // exec enforcer's target maps, and that open and exec never cross over.
@@ -188,7 +188,7 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 	}
 }
 
-// TestRpCreated_ObserveModeProgramsNoDenyMaps is the monitor half of #42: an
+// TestRpCreated_ObserveModeProgramsNoDenyMaps asserts the monitor contract: an
 // observe-mode policy attaches and observes, but its banned/allowed maps stay
 // empty and default-deny is never set, so the loaded program cannot return -EPERM.
 func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
@@ -248,7 +248,7 @@ func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
 }
 
 // enforce mode observes as well: the counts are what feeds userspace deny
-// delivery (#17), so they must be enabled for every attached cgid.
+// delivery, so they must be enabled for every attached cgid.
 func TestRpCreated_EnforceModeAlsoEnablesObservation(t *testing.T) {
 	h := newHarness(t)
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {

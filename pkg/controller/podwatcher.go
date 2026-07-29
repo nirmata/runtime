@@ -25,7 +25,7 @@ import (
 )
 
 // maxRequeues bounds retries of a single logical queue item. Because both
-// queues key on a stable queueKey (#59) rather than on the object itself, the
+// queues key on a stable queueKey rather than on the object itself, the
 // cap counts retries of the item and no longer resets when the object the
 // lister hands back changes between attempts.
 const maxRequeues = 5
@@ -33,7 +33,7 @@ const maxRequeues = 5
 // queueKey identifies a logical work item. It deliberately carries no object
 // pointer: objects are fetched from the lister at processing time and deletes
 // are served from a key-to-UID map, so NumRequeues counts retries of the item
-// rather than retries of one particular revision of it (#59).
+// rather than retries of one particular revision of it.
 type queueKey struct {
 	// Type is one of events.EventTypeCreate|Update|Delete.
 	Type string
@@ -200,7 +200,7 @@ func (w *podWatcher) processNextWorkItem() bool {
 		requeues := w.queue.NumRequeues(key)
 		// don't try the same logical item more than maxRequeues times. the key
 		// is stable, so this cap holds even when the lister returns a
-		// different object between attempts (#59).
+		// different object between attempts.
 		if requeues >= maxRequeues {
 			w.log.Error(err, "giving up on event after max requeues", "pod", key.Key, "type", key.Type, "requeues", requeues)
 			w.forget(key)

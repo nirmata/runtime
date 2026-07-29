@@ -110,9 +110,9 @@ func (l *LsmEnforcer) DisableObservation(cgids []uint64) error {
 //
 // EVERY cgid in cgids is visited: a cgid with no inner map is skipped (not an
 // error) and a read failure for one cgid is recorded and joined at the end
-// rather than returned immediately. That structure is deliberate — the #52 bug
-// class was an early `break` that made the counts of every enforcer after the
-// first invisible.
+// rather than returned immediately. That structure is deliberate — an early
+// `break` here once made the counts of every enforcer after the first
+// invisible.
 func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]uint32, error) {
 	out := make(map[uint64]map[PathEventKey]uint32, len(cgids))
 	if len(cgids) == 0 {

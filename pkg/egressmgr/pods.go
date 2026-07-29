@@ -78,7 +78,7 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 }
 
 // podUpdated refreshes the cached labels and re-evaluates every tracked policy's
-// selector against them before reconciling the cgroup links (#58). Without the
+// selector against them before reconciling the cgroup links. Without the
 // label refresh a relabelled pod keeps enforcement from a policy that no longer
 // selects it, and is never picked up by one that now does.
 func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {

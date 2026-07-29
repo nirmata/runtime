@@ -711,7 +711,7 @@ func TestRuntimePolicyEvent_UpdateReplacesValues(t *testing.T) {
 }
 
 // A tracked policy snapshots the pair values: egressmgr mutates the
-// EvaluationResult it holds in place (#53), and monitor must not see that.
+// EvaluationResult it holds in place, and monitor must not see that.
 func TestRuntimePolicyEvent_SnapshotsBehaviorValues(t *testing.T) {
 	m, sink, _, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)

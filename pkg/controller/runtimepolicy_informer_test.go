@@ -122,11 +122,11 @@ func TestRpProcessNextWorkItemRequeuesThenDropsAfterMaxRequeues(t *testing.T) {
 	}
 }
 
-// TestRpRequeueCapSurvivesPointerChange_Issue59 is the #59 regression for the
+// TestRpRequeueCapSurvivesPointerChange pins the requeue cap for the
 // policy queue. The lister hands back a different object on every attempt; the
 // requeue cap must still bound retries because the queue key no longer contains
 // the object.
-func TestRpRequeueCapSurvivesPointerChange_Issue59(t *testing.T) {
+func TestRpRequeueCapSurvivesPointerChange(t *testing.T) {
 	c := &fakeCompiler{err: errors.New("compile boom")}
 	m, indexer := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}), rp("p", "uid-1", nil))
 

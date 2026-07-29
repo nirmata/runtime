@@ -39,7 +39,7 @@ func TestParseMountInfo(t *testing.T) {
 27 25 0:26 / /sys/fs/cgroup/net_cls rw,nosuid,nodev,noexec,relatime shared:12 - cgroup cgroup rw,net_cls
 `
 	// hybrid host: v1 controller mounts appear BEFORE the unified hierarchy.
-	// A single forward scan concluded version 1 here (#37 secondary issue).
+	// A single forward scan concluded version 1 here.
 	hybridHost := `26 25 0:23 / /sys/fs/cgroup/systemd rw,relatime shared:10 - cgroup cgroup rw,xattr,name=systemd
 27 25 0:26 / /sys/fs/cgroup/memory rw,relatime shared:12 - cgroup cgroup rw,memory
 31 25 0:30 / /sys/fs/cgroup/unified rw,relatime shared:14 - cgroup2 cgroup2 rw,nsdelegate
@@ -323,8 +323,8 @@ func TestParseContainerID(t *testing.T) {
 	}
 }
 
-// TestResolveCgInfosDoesNotPanicOnUnstartedContainers is the #36 regression:
-// a pod with an unstarted container must not crash the daemon.
+// TestResolveCgInfosDoesNotPanicOnUnstartedContainers pins that a pod with an
+// unstarted container must not crash the daemon.
 func TestResolveCgInfosDoesNotPanicOnUnstartedContainers(t *testing.T) {
 	setCgroupMount(t, t.TempDir(), 2)
 
@@ -358,8 +358,8 @@ func TestResolveCgInfosDoesNotPanicOnUnstartedContainers(t *testing.T) {
 	}
 }
 
-// TestResolveCgInfosPartialSuccess is the other half of #36: one waiting
-// container must not discard the cgroup info of its running siblings.
+// TestResolveCgInfosPartialSuccess pins that one waiting container must not
+// discard the cgroup info of its running siblings.
 func TestResolveCgInfosPartialSuccess(t *testing.T) {
 	root := t.TempDir()
 	setCgroupMount(t, root, 2)

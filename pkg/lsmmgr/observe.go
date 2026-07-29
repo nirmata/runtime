@@ -20,8 +20,8 @@ var progTypeOrder = []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC}
 //
 // It reads EVERY program type of EVERY attachment: the counters live in a map per
 // enforcer, so stopping after the first one silently discards everything the
-// other programs saw (that was #52 — an early `break` that made exec counts
-// invisible for any pod that also had an open enforcer).
+// other programs saw (an early `break` here once made exec counts invisible
+// for any pod that also had an open enforcer).
 //
 // Counts are deltas: the kernel maps are read-and-reset, so Count is the number
 // of occurrences since the previous call.

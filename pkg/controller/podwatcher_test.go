@@ -291,13 +291,13 @@ func TestPodProcessNextWorkItemRequeuesThenDrops(t *testing.T) {
 	}
 }
 
-// TestPodRequeueCapSurvivesPointerChange_Issue59 is the #59 regression for the
-// pod queue. The lister returns a DIFFERENT pod pointer on every attempt, which
+// TestPodRequeueCapSurvivesPointerChange pins the requeue cap for the pod
+// queue. The lister returns a DIFFERENT pod pointer on every attempt, which
 // is exactly what an informer resync or a genuine mid-retry update looks like.
 // The old code carried the object in the queue item and replaced it before
 // requeuing, so every attempt was a new key with a fresh requeue count and the
 // cap never fired.
-func TestPodRequeueCapSurvivesPointerChange_Issue59(t *testing.T) {
+func TestPodRequeueCapSurvivesPointerChange(t *testing.T) {
 	h := &recordingPodHandler{name: "h", podErr: errors.New("handler boom")}
 	w, indexer := newTestPodWatcher(t, podHandlers(h), pod("ns", "p", "uid-1"))
 

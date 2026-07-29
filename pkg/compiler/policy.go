@@ -17,9 +17,7 @@ import (
 const varsKey = "variables"
 
 type EvaluationResult struct {
-	UID string
-	// Name is the RuntimePolicy name, needed by consumers that report
-	// findings and conditions against the policy (monitor, reporter).
+	UID      string
 	Name     string
 	IPs      *AllowDenyPair
 	Open     *AllowDenyPair
@@ -61,7 +59,7 @@ func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
 // Evaluate runs the policy's compiled CEL programs. Evaluation executes
 // user-authored expressions (including third-party CEL library bindings), so
 // the whole body runs behind utils.Guard: a panicking binding becomes an
-// error instead of taking the daemon down (#40).
+// error instead of taking the daemon down.
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
 	var result *EvaluationResult
 	err := utils.Guard(fmt.Sprintf("evaluating RuntimePolicy %q", c.Name), func() error {

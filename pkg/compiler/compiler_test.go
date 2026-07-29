@@ -411,10 +411,10 @@ func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
 	})
 }
 
-// TestCompile_PanicIsConvertedToError_Issue40 pins the panic barrier around
+// TestCompile_PanicIsConvertedToError pins the panic barrier around
 // Compile: any panic raised while compiling a user-authored policy must become
 // an error instead of taking the privileged daemon down.
-func TestCompile_PanicIsConvertedToError_Issue40(t *testing.T) {
+func TestCompile_PanicIsConvertedToError(t *testing.T) {
 	// a compiler with no env panics with a nil pointer dereference as soon as
 	// it touches the CEL environment -- exactly the class of programming bug
 	// that must not reach the process boundary.

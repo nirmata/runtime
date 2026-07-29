@@ -20,12 +20,12 @@ spec:
     - jsonPath: .spec.mode
       name: Mode
       type: string
-    - jsonPath: .status.observedPods
-      name: ObservedPods
-      type: integer
-    - jsonPath: .status.violatingPods
-      name: ViolatingPods
-      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Applied")].status
+      name: Applied
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Applied")].reason
+      name: Reason
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

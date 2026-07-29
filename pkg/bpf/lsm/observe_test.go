@@ -102,11 +102,11 @@ func TestMergeCounts_NilDestinationDoesNotPanic(t *testing.T) {
 	mergeCounts(nil, map[PathEventKey]uint32{pk("/usr/bin/curl"): 1})
 }
 
-// TestMergeCounts_FoldsEveryEnforcer_Issue52 pins the bug class from #52: the
-// deleted LsmManager.Read broke out of its loop after the first enforcer, so
-// every later enforcer's observations were invisible. The fold must accumulate
-// all of them regardless of order or overlap.
-func TestMergeCounts_FoldsEveryEnforcer_Issue52(t *testing.T) {
+// TestMergeCounts_FoldsEveryEnforcer pins the bug class where a read loop
+// stops after the first enforcer, making every later enforcer's observations
+// invisible. The fold must accumulate all of them regardless of order or
+// overlap.
+func TestMergeCounts_FoldsEveryEnforcer(t *testing.T) {
 	perEnforcer := []map[PathEventKey]uint32{
 		{pk("/usr/bin/curl"): 1},                            // file_open enforcer
 		{pk("/usr/bin/curl"): 2, pk("/usr/bin/python3"): 5}, // exec enforcer

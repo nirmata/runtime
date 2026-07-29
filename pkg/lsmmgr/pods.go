@@ -36,7 +36,7 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 //   - a cgroup-id change is applied to every attachment the pod is already
 //     attached to (containers restarting inside a live pod);
 //   - a label change refreshes the cached label set and re-evaluates every
-//     attachment's selector (#58). Without this, enforcement outlived its
+//     attachment's selector. Without this, enforcement outlived its
 //     selector: a relabelled pod kept the deny maps of a policy that no longer
 //     selects it, and was invisible to policies that now do.
 func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {

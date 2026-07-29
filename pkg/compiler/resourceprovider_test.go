@@ -12,10 +12,9 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
-// TestResourceProviderToGVR_ReturnsErrorNotPanic_Issue40 pins the direct fix:
 // ToGVR is reachable from a user-authored CEL expression, so it must report an
 // error instead of panicking.
-func TestResourceProviderToGVR_ReturnsErrorNotPanic_Issue40(t *testing.T) {
+func TestResourceProviderToGVR_ReturnsErrorNotPanic(t *testing.T) {
 	tests := []struct {
 		name       string
 		apiVersion string
@@ -44,9 +43,10 @@ func TestResourceProviderToGVR_ReturnsErrorNotPanic_Issue40(t *testing.T) {
 	}
 }
 
-// TestEvaluate_ToGVRPolicyFailsWithoutCrashing_Issue40 is the end-to-end half:
-// the policy from issue #40 must fail evaluation, not take the process down.
-func TestEvaluate_ToGVRPolicyFailsWithoutCrashing_Issue40(t *testing.T) {
+// TestEvaluate_ToGVRPolicyFailsWithoutCrashing is the end-to-end half: a
+// policy whose expression calls resource.toGVR() must fail evaluation, not
+// take the process down.
+func TestEvaluate_ToGVRPolicyFailsWithoutCrashing(t *testing.T) {
 	c := newTestCompiler(t)
 
 	rp := v1alpha1.RuntimePolicy{

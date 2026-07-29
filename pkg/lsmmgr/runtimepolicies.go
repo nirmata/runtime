@@ -20,8 +20,8 @@ type progSpec struct {
 func progSpecs(compiledRp *compiler.EvaluationResult) []progSpec {
 	return []progSpec{
 		{progType: lsm.PROG_TYPE_LSM_OPEN, files: compiledRp.Open},
-		// exec behaviors are enforced through bprm_check_security; #34 was the
-		// gap of compiling EvaluationResult.Exec and never reaching this.
+		// exec behaviors are enforced through bprm_check_security; omitting
+		// this entry meant EvaluationResult.Exec was compiled but never enforced.
 		{progType: lsm.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec},
 	}
 }

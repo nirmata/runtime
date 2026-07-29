@@ -38,7 +38,7 @@ func ipKeyDeny(t *testing.T, s string) egressfilter.IPEventKey {
 	return egressfilter.IPEventKey{Addr: addr(t, s), Verdict: runtimeevent.VerdictDeny}
 }
 
-// #42: a monitor policy must observe, not enforce. Nothing may be
+// A monitor policy must observe, not enforce. Nothing may be
 // programmed into the allow/deny maps and the default-deny bit must stay clear,
 // otherwise the BPF program can return -EPERM for a policy the user believes is
 // only watching.
@@ -249,9 +249,9 @@ func TestCollectObservationsRespectsCancelledContext(t *testing.T) {
 	}
 }
 
-// #41's loud half: a target the runtime cannot honor must reach the policy's
-// status, not just a log line nobody sees.
-func TestUnsupportedTargetsAreReportedOnPolicyStatus_Issue41(t *testing.T) {
+// A target the runtime cannot honor must reach the policy's status, not just a
+// log line nobody sees.
+func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 	tests := []struct {
 		name       string
 		allow      []string
