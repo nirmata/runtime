@@ -20,6 +20,7 @@ var (
 type CompiledRuntimePolicy struct {
 	ReevalInterval *time.Duration
 	UID            string
+	Name           string
 	mode           string
 
 	variables map[string]cel.Program
@@ -73,9 +74,15 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 	for i, b := range rp.Spec.Behaviors {
 		if b.Network != nil {
+			errPath := path.Index(i).Child("network")
+			// hardcoded network targets are validated at compile time so an
+			// unsupported literal is rejected loudly instead of being dropped
+			// silently when it reaches the BPF maps.
+			if errs := validateNetworkBehavior(errPath, b.Network); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
 			compiledNet, err := c.compileBehavior(b.Network)
 			if err != nil {
-				errPath := path.Index(i).Child("network")
 				return nil, field.Invalid(errPath, b.Network, err.Error())
 			}
 
@@ -113,6 +120,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 	return &CompiledRuntimePolicy{
 		UID:            string(rp.UID),
+		Name:           rp.Name,
 		ReevalInterval: &evalIntval,
 		selector:       rp.Spec.PodSelector,
 		mode:           mode,

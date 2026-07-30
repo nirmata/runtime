@@ -8,9 +8,16 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type lsmFileOpenPathEventKey struct {
+	_        structs.HostLayout
+	Path     [128]int8
+	Decision uint32
+}
 
 // loadLsmFileOpen returns the embedded CollectionSpec for lsmFileOpen.
 func loadLsmFileOpen() (*ebpf.CollectionSpec, error) {

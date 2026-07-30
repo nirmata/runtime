@@ -13,8 +13,10 @@ import (
 	v1alpha1listers "github.com/nirmata/kyverno-runtime/pkg/client/listers/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
@@ -28,14 +30,18 @@ type rpWatch struct {
 }
 
 type RuntimePolicyMgr struct {
-	eventHandlers []events.EventIface
-	queue         workqueue.TypedRateLimitingInterface[events.Event[*v1alpha1.RuntimePolicy]]
+	eventHandlers []events.RuntimePolicyEventHandler
+	queue         workqueue.TypedRateLimitingInterface[queueKey]
 	factory       v1alpha1informers.SharedInformerFactory
 	rpInformer    cache.SharedIndexInformer
 	compiler      compiler.Compiler
-	rpThreadMap   map[string]*rpWatch
-	lister        v1alpha1listers.RuntimePolicyLister
-	log           logr.Logger
+
+	// threadMu guards rpThreadMap, read by every evaluateForInterval goroutine.
+	threadMu    sync.Mutex
+	rpThreadMap map[string]*rpWatch
+
+	lister v1alpha1listers.RuntimePolicyLister
+	log    logr.Logger
 }
 
 func (m *RuntimePolicyMgr) Start(ctx context.Context) error {
@@ -63,14 +69,14 @@ func (m *RuntimePolicyMgr) HasSynced() bool {
 }
 
 func NewRuntimePolicyMgr(cfg *rest.Config,
-	eventHandlers []events.EventIface,
+	eventHandlers []events.RuntimePolicyEventHandler,
 	client v1alpha1client.Interface,
 	rpCompiler compiler.Compiler) (*RuntimePolicyMgr, error) {
 	factory := v1alpha1informers.NewSharedInformerFactory(client, 0)
 	rpInformer := factory.Runtime().V1alpha1().RuntimePolicies().Informer()
 
 	queue := workqueue.NewTypedRateLimitingQueue(
-		workqueue.DefaultTypedControllerRateLimiter[events.Event[*v1alpha1.RuntimePolicy]](),
+		workqueue.DefaultTypedControllerRateLimiter[queueKey](),
 	)
 
 	m := &RuntimePolicyMgr{
@@ -84,37 +90,37 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 		log:           ctrl.Log.WithName("runtimepolicy"),
 	}
 
-	// AddEventHandler only errors if the informer has already stopped, which
-	// cannot happen here since it hasn't been started yet.
+	// AddEventHandler only errors once the informer has stopped, which cannot
+	// happen before Start.
 	_, _ = rpInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			rp, ok := obj.(*v1alpha1.RuntimePolicy)
 			if !ok {
 				return
 			}
-			queue.Add(events.Event[*v1alpha1.RuntimePolicy]{Obj: rp, Type: events.EventTypeCreate})
+			m.queue.Add(queueKey{Type: events.EventTypeCreate, Key: rp.Name})
 		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
+		UpdateFunc: func(_, newObj interface{}) {
 			rp, ok := newObj.(*v1alpha1.RuntimePolicy)
 			if !ok {
 				return
 			}
-			queue.Add(events.Event[*v1alpha1.RuntimePolicy]{Obj: rp, Type: events.EventTypeUpdate})
+			m.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: rp.Name})
 		},
 		DeleteFunc: func(obj interface{}) {
 			rp, ok := obj.(*v1alpha1.RuntimePolicy)
 			if !ok {
 				// handle cache.DeletedFinalStateUnknown
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				unknown, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
 					return
 				}
-				rp, ok = tombstone.Obj.(*v1alpha1.RuntimePolicy)
+				rp, ok = unknown.Obj.(*v1alpha1.RuntimePolicy)
 				if !ok {
 					return
 				}
 			}
-			queue.Add(events.Event[*v1alpha1.RuntimePolicy]{Obj: rp, Type: events.EventTypeDelete})
+			m.queue.Add(queueKey{Type: events.EventTypeDelete, Key: string(rp.UID)})
 		},
 	})
 
@@ -127,138 +133,166 @@ func (m *RuntimePolicyMgr) runWorker(ctx context.Context) {
 }
 
 func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
-	ev, quit := m.queue.Get()
+	key, quit := m.queue.Get()
 	if quit {
 		return false
 	}
-	defer m.queue.Done(ev)
+	defer m.queue.Done(key)
 
 	var err error
-	switch ev.Type {
-	case events.EventTypeCreate:
-		err = m.handleCreate(ctx, ev)
-	case events.EventTypeUpdate:
-		err = m.handleUpdate(ctx, ev)
+	switch key.Type {
+	case events.EventTypeCreate, events.EventTypeUpdate:
+		// the policy is read at processing time so a retry programs the current
+		// spec rather than the revision that was queued
+		rp, getErr := m.lister.Get(key.Key)
+		if apierrors.IsNotFound(getErr) {
+			m.log.V(2).Info("policy missing from the lister, dropping event", "policy", key.Key, "type", key.Type)
+			break
+		}
+		if getErr != nil {
+			err = fmt.Errorf("fetching RuntimePolicy %s from lister: %w", key.Key, getErr)
+			break
+		}
+		if key.Type == events.EventTypeCreate {
+			err = m.handleCreate(ctx, rp)
+		} else {
+			err = m.handleUpdate(ctx, rp)
+		}
 	case events.EventTypeDelete:
-		err = m.handleDelete(ev)
+		err = m.handleDelete(key.Key)
 	}
 
 	if err != nil {
-		requeues := m.queue.NumRequeues(ev)
-		if requeues >= 5 {
-			m.log.Error(err, "giving up on event after max requeues", "policy", ev.Obj.Name, "type", ev.Type, "requeues", requeues)
-			m.queue.Forget(ev)
+		requeues := m.queue.NumRequeues(key)
+		if requeues >= maxRequeues {
+			m.log.Error(err, "giving up on event after max requeues", "policy", key.Key, "type", key.Type, "requeues", requeues)
+			m.queue.Forget(key)
 			return true
 		}
-
-		// for failed update events, we need to ensure that when we requeue
-		// an event it contains the latest object from the cluster to avoid
-		// having the bpf maps reflecting a stale state
-		if ev.Type == events.EventTypeUpdate {
-			current, fetchErr := m.lister.Get(ev.Obj.Name)
-			if fetchErr != nil {
-				m.log.Error(fetchErr, "failed to fetch latest policy from lister, giving up on update", "policy", ev.Obj.Name)
-				m.queue.Forget(ev)
-				return true
-			}
-			ev.Obj = current
-			m.queue.AddRateLimited(ev)
-			return true
-		} else {
-			m.queue.AddRateLimited(ev)
-			return true
-		}
+		m.queue.AddRateLimited(key)
+		return true
 	}
 
-	m.queue.Forget(ev)
+	m.queue.Forget(key)
 	return true
 }
 
-func (r *RuntimePolicyMgr) handleCreate(ctx context.Context, ev events.Event[*v1alpha1.RuntimePolicy]) error {
-	rp := ev.Obj
-
+func (r *RuntimePolicyMgr) handleCreate(ctx context.Context, rp *v1alpha1.RuntimePolicy) error {
 	compiledRb, err := r.compiler.Compile(*rp)
 	if err != nil {
 		return err
 	}
 
+	r.syncIntervalThread(ctx, rp, compiledRb)
+
+	evalRes, err := compiledRb.Evaluate(ctx)
+	if err != nil {
+		return err
+	}
+
+	return r.fanOut(evalRes, events.EventTypeCreate)
+}
+
+// syncIntervalThread reconciles the periodic re-evaluation goroutine with the
+// interval the policy asks for. A missing interval on either side counts as zero.
+func (r *RuntimePolicyMgr) syncIntervalThread(ctx context.Context, rp *v1alpha1.RuntimePolicy, compiledRb *compiler.CompiledRuntimePolicy) {
+	uid := string(rp.UID)
+
+	var newInterval time.Duration
 	if rp.Spec.EvaluationInterval != nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		go r.evaluateForInterval(ctx, rp.Spec.EvaluationInterval.Duration, string(rp.UID))
-		r.rpThreadMap[string(rp.UID)] = &rpWatch{
-			compiled: compiledRb,
-			cancel:   cancel,
-		}
+		newInterval = rp.Spec.EvaluationInterval.Duration
 	}
 
-	evalRes, err := compiledRb.Evaluate(ctx)
-	if err != nil {
-		return err
+	r.threadMu.Lock()
+	defer r.threadMu.Unlock()
+
+	current, tracked := r.rpThreadMap[uid]
+
+	var currentInterval time.Duration
+	if tracked && current.compiled != nil && current.compiled.ReevalInterval != nil {
+		currentInterval = *current.compiled.ReevalInterval
 	}
 
-	errChan := make(chan error, len(r.eventHandlers))
-	var wg sync.WaitGroup
-	wg.Add(len(r.eventHandlers))
-
-	for _, handler := range r.eventHandlers {
-		go func() {
-			defer wg.Done()
-			if err := handler.RuntimePolicyEvent(evalRes, events.EventTypeCreate); err != nil {
-				errChan <- err
-			}
-		}()
+	// nothing tracked and nothing asked for
+	if !tracked && newInterval <= 0 {
+		return
 	}
 
-	wg.Wait()
-	close(errChan)
-
-	var errs []error
-	for err := range errChan {
-		errs = append(errs, err)
+	// the goroutine stays, but evaluateForInterval reads compiled on every tick
+	// so it has to be handed the freshly compiled policy
+	if tracked && currentInterval == newInterval {
+		current.compiled = compiledRb
+		return
 	}
-	return errors.Join(errs...)
+
+	if tracked && current.cancel != nil {
+		current.cancel()
+	}
+
+	// no periodic re-evaluation is asked for
+	if newInterval <= 0 {
+		delete(r.rpThreadMap, uid)
+		return
+	}
+
+	// the goroutine outlives the work item's context, and is torn down by its
+	// own cancel func or on delete
+	threadCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	go r.evaluateForInterval(threadCtx, newInterval, uid)
+	r.rpThreadMap[uid] = &rpWatch{
+		compiled: compiledRb,
+		cancel:   cancel,
+	}
 }
 
-func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1alpha1.RuntimePolicy]) error {
-	rp := ev.Obj
+func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, rp *v1alpha1.RuntimePolicy) error {
 	compiledRb, err := r.compiler.Compile(*rp)
 	if err != nil {
 		return err
 	}
 
-	if currentRb, ok := r.rpThreadMap[string(rp.UID)]; ok {
-		// if no re-eval interval previously existed or not equal to the one in the incoming runtime behavior
-		if *currentRb.compiled.ReevalInterval != rp.Spec.EvaluationInterval.Duration {
-			// there was a previously existing cancel function (different interval). cancel the re-evalutation
-			// thread that runs on that interval
-			if currentRb.cancel != nil {
-				currentRb.cancel()
-			}
-			ctx, cancel := context.WithCancel(ctx)
-			go r.evaluateForInterval(ctx, rp.Spec.EvaluationInterval.Duration, string(rp.UID))
-			r.rpThreadMap[string(rp.UID)] = &rpWatch{
-				compiled: compiledRb,
-				cancel:   cancel,
-			}
-		}
-	}
+	r.syncIntervalThread(ctx, rp, compiledRb)
 
 	evalRes, err := compiledRb.Evaluate(ctx)
 	if err != nil {
 		return err
 	}
 
+	return r.fanOut(evalRes, events.EventTypeUpdate)
+}
+
+func (r *RuntimePolicyMgr) handleDelete(uid string) error {
+	// if there was a re-eval thread running, stop it
+	r.threadMu.Lock()
+	if rpwatch, ok := r.rpThreadMap[uid]; ok {
+		delete(r.rpThreadMap, uid)
+		if rpwatch.cancel != nil {
+			rpwatch.cancel()
+		}
+	}
+	r.threadMu.Unlock()
+
+	// the UID is the whole identity a handler needs to drop its state
+	return r.fanOut(&compiler.EvaluationResult{UID: uid}, events.EventTypeDelete)
+}
+
+// utils.Guard turns a panicking handler into an error on this item instead of
+// taking the worker down
+func (r *RuntimePolicyMgr) fanOut(evalRes *compiler.EvaluationResult, evType string) error {
 	errChan := make(chan error, len(r.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(r.eventHandlers))
 
 	for _, handler := range r.eventHandlers {
-		go func() {
+		go func(handler events.RuntimePolicyEventHandler) {
 			defer wg.Done()
-			if err := handler.RuntimePolicyEvent(evalRes, events.EventTypeUpdate); err != nil {
+			op := fmt.Sprintf("%T.RuntimePolicyEvent(%s, %s)", handler, policyRef(evalRes), evType)
+			if err := utils.Guard(op, func() error {
+				return handler.RuntimePolicyEvent(evalRes, evType)
+			}); err != nil {
 				errChan <- err
 			}
-		}()
+		}(handler)
 	}
 
 	wg.Wait()
@@ -271,73 +305,47 @@ func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, ev events.Event[*v1
 	return errors.Join(errs...)
 }
 
-func (r *RuntimePolicyMgr) handleDelete(ev events.Event[*v1alpha1.RuntimePolicy]) error {
-	rp := ev.Obj
-	// if there was a re-eval thread running, stop it
-	if rpwatch, ok := r.rpThreadMap[string(rp.UID)]; ok {
-		delete(r.rpThreadMap, string(rp.UID))
-		rpwatch.cancel()
+func policyRef(res *compiler.EvaluationResult) string {
+	if res == nil {
+		return "<nil>"
 	}
-
-	errChan := make(chan error, len(r.eventHandlers))
-	var wg sync.WaitGroup
-	wg.Add(len(r.eventHandlers))
-
-	for _, handler := range r.eventHandlers {
-		go func() {
-			defer wg.Done()
-
-			// deletion events should not depend on runtime behavior data. given the UID, mark it for removal from any
-			// internal data structures
-			if err := handler.RuntimePolicyEvent(&compiler.EvaluationResult{UID: string(rp.UID)}, events.EventTypeDelete); err != nil {
-				errChan <- err
-			}
-		}()
+	if res.Name != "" {
+		return res.Name
 	}
-
-	wg.Wait()
-	close(errChan)
-
-	var errs []error
-	for err := range errChan {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+	return res.UID
 }
 
 // if there was an object variable, this function would need to be pod aware
 func (r *RuntimePolicyMgr) evaluateForInterval(ctx context.Context, interval time.Duration, rpUid string) {
 	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			rp, ok := r.rpThreadMap[rpUid]
-			if !ok {
+			r.threadMu.Lock()
+			watch, ok := r.rpThreadMap[rpUid]
+			var compiled *compiler.CompiledRuntimePolicy
+			if ok {
+				compiled = watch.compiled
+			}
+			r.threadMu.Unlock()
+			if !ok || compiled == nil {
 				return
 			}
 
-			evalRes, err := rp.compiled.Evaluate(ctx)
+			evalRes, err := compiled.Evaluate(ctx)
 			if err != nil {
 				r.log.Error(err, "evaluation failed in interval loop", "policy", rpUid)
 				continue
 			}
 
-			var wg sync.WaitGroup
-			wg.Add(len(r.eventHandlers))
-
-			// and the event handlers would need to be able to receive an event for the combined evaluation result of a pod and a policy
-			for _, handler := range r.eventHandlers {
-				go func() {
-					defer wg.Done()
-					if err := handler.RuntimePolicyEvent(evalRes, events.EventTypeUpdate); err != nil {
-						r.log.Error(err, "interval re-evaluation handler failed", "policy", rpUid)
-					}
-				}()
+			// and the event handlers would need to be able to receive an event
+			// for the combined evaluation result of a pod and a policy
+			if err := r.fanOut(evalRes, events.EventTypeUpdate); err != nil {
+				r.log.Error(err, "interval re-evaluation handler failed", "policy", rpUid)
 			}
-
-			wg.Wait()
 		}
 	}
 }

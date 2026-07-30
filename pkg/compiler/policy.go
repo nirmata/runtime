@@ -18,6 +18,7 @@ const varsKey = "variables"
 
 type EvaluationResult struct {
 	UID      string
+	Name     string
 	IPs      *AllowDenyPair
 	Open     *AllowDenyPair
 	Exec     *AllowDenyPair
@@ -55,6 +56,7 @@ func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
 	return &AllowDenyPair{Allow: newAllowInTarget, Deny: newDenyInTarget}
 }
 
+// Evaluate runs the policy's compiled CEL programs.
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
 	selector, err := metav1.LabelSelectorAsSelector(c.selector)
 	if err != nil {
@@ -107,6 +109,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 
 	return &EvaluationResult{
 		UID:      c.UID,
+		Name:     c.Name,
 		IPs:      net,
 		Open:     open,
 		Exec:     exec,

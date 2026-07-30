@@ -33,6 +33,13 @@ spec:
           runAsUser: 0
         args:
         - daemon
+        - --metrics-addr=:{{ .Values.daemon.metrics.port }}
+        {{- with .Values.daemon.observeInterval }}
+        - --observe-interval={{ . }}
+        {{- end }}
+        {{- with .Values.daemon.eventBufferSize }}
+        - --event-buffer-size={{ . }}
+        {{- end }}
         env:
         - name: HOST_ROOT
           value: /host
@@ -40,6 +47,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        ports:
+        - name: metrics
+          containerPort: {{ .Values.daemon.metrics.port }}
+          protocol: TCP
         volumeMounts:
         - name: host-root
           mountPath: /host

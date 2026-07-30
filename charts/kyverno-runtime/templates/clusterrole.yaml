@@ -13,6 +13,13 @@ rules:
 - apiGroups: ["runtime.kyverno.io"]
   resources: ["runtimepolicies"]
   verbs: ["get", "list", "watch"]
+- apiGroups: ["runtime.kyverno.io"]
+  resources: ["runtimepolicies/status"]
+  verbs: ["get", "update", "patch"]
+# daemon: writes OpenReports for observed/violating behaviors (#29)
+- apiGroups: ["openreports.io"]
+  resources: ["reports", "clusterreports"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 {{- with .Values.daemon.rbac.extraRules }}
 # daemon: user-supplied extra rules, e.g. access to CRDs referenced by
 # the resource library in policy expressions

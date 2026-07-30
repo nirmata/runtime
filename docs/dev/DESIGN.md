@@ -29,6 +29,10 @@ rather than glossed over.
 - [Compilation and evaluation pipeline](#compilation-and-evaluation-pipeline)
 - [CEL extension libraries](#cel-extension-libraries)
 - [Enforcement: eBPF LSM hooks and egress filtering](#enforcement-ebpf-lsm-hooks-and-egress-filtering)
+- [The event plane](#the-event-plane)
+- [Redaction chokepoint](#redaction-chokepoint)
+- [Status reporting](#status-reporting)
+- [Metrics](#metrics)
 - [Helm chart / deployment shape](#helm-chart--deployment-shape)
 - [Known Gaps / Future Work](#known-gaps--future-work)
 
@@ -63,9 +67,35 @@ On startup it wires together:
 - `pkg/controller.NewPodWatcher`: watches `Pod` objects filtered to `spec.nodeName=<NODE_NAME>`
   and `status.phase=Running`, resolving each pod's container cgroup info
   (`pkg/containers.ResolveCgInfos`).
-- `pkg/lsmmgr.LsmManager` and `pkg/egressmgr.EgressManager`: the two `events.EventIface`
-  implementations that receive `PodEvent` and `RuntimePolicyEvent` callbacks and drive the actual
-  eBPF attachments (see [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
+- `pkg/lsmmgr.LsmManager` and `pkg/egressmgr.EgressManager`: both an `events.PodEventHandler` and
+  an `events.RuntimePolicyEventHandler`; they drive the actual eBPF attachments (see
+  [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
+- `pkg/attribution.Index` is a `PodEventHandler`; `pkg/controller.StatusWriter` and
+  `pkg/monitor.Monitor` are `RuntimePolicyEventHandler`s — the cgroup→pod index, the status writer,
+  and the monitor-mode evaluator (see [The event plane](#the-event-plane)).
+- `pkg/metrics`, `pkg/collector`, `pkg/reporter`: the Prometheus registry and `/metrics` server,
+  the observation pipeline, and the OpenReports writer.
+
+`runDaemon` is the single wiring site; the two typed handler slices are what the compiler checks:
+
+```text
+metrics registry + Serve(--metrics-addr)    -> errgroup
+attribution.NewIndex(WithMetrics)
+reporter.New(controller-runtime client)     -> Run in errgroup
+controller.NewStatusWriter(nodeName, 30s)   -> Run in errgroup
+egressmgr.NewEgressManager(log, statusWriter)
+lsmmgr.NewLsmManager(log, statusWriter)
+monitor.New(log, reporter, metrics)
+podHandlers    = [em, lsmm, attrIdx]
+policyHandlers = [em, lsmm, statusWriter, monitor]
+collector: PollSource(egress-observe, 10s) + PollSource(lsm-observe, 10s)
+           -> Stage(attrIdx) -> Sink(monitor)                -> Run in errgroup
+RuntimePolicy informer -> wait for cache sync -> pod watcher  -> both in errgroup
+```
+
+Handler fan-out is ordered, so `attribution.Index` learns a pod's cgroups before `Monitor` can
+be asked about that pod's events. Every long-running component joins one `errgroup` rooted at
+the signal-handler context, so a fatal error in any of them shuts the daemon down.
 
 The daemon waits for the `RuntimePolicy` informer cache to sync before starting the pod watcher,
 so newly-observed pods are evaluated against the full set of currently-known policies.
@@ -80,7 +110,7 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 | `evaluationInterval` | `*metav1.Duration` | If set, the policy is periodically re-evaluated (`controller.evaluateForInterval`) instead of only on create/update. |
 | `variables` | `[]admissionregistrationv1.Variable` | Named CEL expressions reusable across behaviors via `variables.<name>`. |
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
-| `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. Added in `4a8bcb1`. Optional with no default, and both managers act only on `enforce`, so a policy that omits `mode` (or sets `monitor`) enforces nothing — see [Known Gaps](#known-gaps--future-work). |
+| `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. `enforce` programs the deny/allow maps; `monitor` attaches the same programs with empty maps and evaluates observations in userspace (see [The event plane](#the-event-plane)). Optional with no default: a policy that omits `mode` is inert — see [Known Gaps](#known-gaps--future-work). |
 
 Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, or `open`, enforced by
 an `XValidation` rule: `(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1`.
@@ -120,15 +150,27 @@ Semantics (see `docs/runtimepolicy.md` for the full reference with examples):
    `podSelector` and `evaluationInterval`.
 3. `CompiledRuntimePolicy.Evaluate(ctx)` (`pkg/compiler/policy.go`) evaluates the variables (lazily,
    via `k8s.io/apiserver/pkg/cel/lazy.MapValue`) and each compiled behavior, unions literal
-   `values` with the CEL expression's result, and returns an `EvaluationResult{UID, IPs, Open, Exec,
-   Selector}` where `IPs`/`Open`/`Exec` are each an `AllowDenyPair{Allow, Deny []string}`.
+   `values` with the CEL expression's result, and returns an `EvaluationResult{UID, Name, Mode, IPs,
+   Open, Exec, Selector}` where `IPs`/`Open`/`Exec` are each an `AllowDenyPair{Allow, Deny []string}`.
+
+Both compile and evaluate run inside `utils.Guard`, which converts a panic from user-authored CEL
+(or from a library binding reached through it) into an ordinary error carrying the operation name. `resource.toGVR` returns an error instead of panicking on an unparsable `apiVersion`, and
+`compiler.ValidateNetworkValues` reports unusable `network` values with their field path. Nothing
+reachable from a `RuntimePolicy` field, a pod object, or kernel-supplied bytes is allowed to panic
+the daemon.
 
 `pkg/controller.RuntimePolicyMgr` (`runtimepolicy_informer.go`) drives this: on `RuntimePolicy`
 create/update/delete informer events it compiles/evaluates the policy and fans the resulting
-`EvaluationResult` out to every registered `events.EventIface` (currently `LsmManager` and
-`EgressManager`) via `RuntimePolicyEvent`. If `evaluationInterval` is set, a background goroutine
+`EvaluationResult` out to every registered `events.RuntimePolicyEventHandler` — `EgressManager`,
+`LsmManager`, `StatusWriter`, `Monitor` — via `RuntimePolicyEvent`, each call wrapped in
+`utils.Guard` so one handler's panic cannot take the informer down. If `evaluationInterval` is set, a background goroutine
 re-evaluates and re-dispatches on that interval until the policy is deleted or the interval
 changes.
+
+Both informers queue a typed `queueKey{Type, Key}` rather than the object itself and re-fetch from
+the lister at process time, so a requeue cap cannot be defeated by the lister returning a different
+pointer for the same object between retries (#59); deletes are served from a tombstone map. Items
+are dropped after five requeues.
 
 `pkg/controller.podWatcher` similarly watches `Pod` objects on the local node and fans
 `PodEvent(pod, cgInfos, eventType)` out to the same handlers, so pod lifecycle and policy
@@ -165,10 +207,11 @@ up changes.
 
 ### File open and exec (`pkg/lsmmgr`, `pkg/bpf/lsm`)
 
-`LsmManager` (`pkg/lsmmgr/lsmmgr.go`) is the `events.EventIface` responsible for both the `open` and
+`LsmManager` (`pkg/lsmmgr/lsmmgr.go`) is the pod and policy handler responsible for both the `open` and
 the `exec` behavior. On `RuntimePolicyEvent` create, `rpCreated` (`pkg/lsmmgr/runtimepolicies.go`)
-returns early unless the policy's mode is `enforce`, then instantiates **one LSM enforcer per
-behavior type that has entries** via `createForProgType`:
+returns early unless the policy's mode is `enforce` or an observe mode
+(`compiler.IsObserveMode`), then instantiates **one LSM enforcer per behavior type that has
+entries** via `createForProgType`:
 
 | Behavior | `lsm.NewForAttachTarget` target | LSM hook |
 | --- | --- | --- |
@@ -185,7 +228,8 @@ hides the two object types behind generic `prog`/`cgids`/`banned`/`allowed`/`def
 plus an `io.Closer`, so `pkg/lsmmgr` is program-type agnostic.
 
 Per enforcer, `createForProgType` populates the `banned`/`allowed` path maps from that behavior's
-`AllowDenyPair`, sets the `default_deny` map entry if the deny list contains `"*"`, and attaches
+`AllowDenyPair` — **unless the mode is an observe mode, in which case both maps are left empty and
+`default_deny` is never set** — sets the `default_deny` map entry if the deny list contains `"*"`, and attaches
 with `link.AttachLSM` (`ebpf.AttachLSMMac`); on any failure the partially-built enforcer is closed.
 Matched pods' cgroup IDs (resolved by `pkg/containers`) go into that enforcer's `cgids` map, and the
 BPF program returns 0 immediately for any cgroup not in it. In the kernel the decision is a pure map
@@ -193,8 +237,10 @@ lookup: if `default_deny` is set, allow only paths present in `allowed`, otherwi
 present in `banned`; `-EPERM` otherwise.
 
 State per policy lives in `lsmAttachment{progs map[string]*progState, selector, attachedPods}`,
-where `progState` pairs an enforcer with the `AllowDenyPair` it was last programmed with. `rpUpdated`
-treats a non-`enforce` mode as a delete, runs `syncProgType` for each behavior type — creating an
+where `progState` pairs an enforcer with the `AllowDenyPair` it was last programmed with, and
+`observe` records which side of the observe/enforce line the attachment was built for. `rpUpdated`
+treats a mode that is neither `enforce` nor an observe mode as a delete, rebuilds the whole
+attachment if the mode crossed the observe/enforce line, otherwise runs `syncProgType` for each behavior type — creating an
 enforcer that didn't exist, closing one whose behavior no longer has entries, or applying the
 `DiffPair` of added/removed paths and re-setting default-deny — and then `syncPodAttachment`
 reconciles cgids against the (possibly changed) selector. `rpDeleted` closes every enforcer for the
@@ -208,19 +254,206 @@ programs to the same hook, each with its own map set. The kernel denies if any o
 
 ### Network egress (`pkg/egressmgr`, `pkg/bpf/egressfilter`)
 
-`EgressManager` (`pkg/egressmgr/egressmgr.go`) is the `events.EventIface` for the `network`
+`EgressManager` (`pkg/egressmgr/egressmgr.go`) is the pod and policy handler for the `network`
 behavior. Where `LsmManager` keys its BPF state by policy, `EgressManager` keys it by pod: each
 matched pod gets one `egressfilter.EgressFilter` (`pkg/bpf/egressfilter/egressfilter.go`), a
 `cgroup/skb egress` BPF program (`pkg/bpf/egressfilter/_cprog/probe.c`) attached per-container
 cgroup path via `link.AttachCgroup(..., Attach: ebpf.AttachCGroupInetEgress)`. `AddIps`/`DeleteIps`
-populate that pod's `AllowedIps`/`BannedIps` maps (parsed as IPv4 only —
-`egressfilter.normalizeIP`), and `SetFlagIdx(egressfilter.DEFAULT_DENY, ...)` toggles default-deny
+populate that pod's `AllowedIps`/`BannedIps` maps (parsed by `egressfilter.ParseTargets`, which
+expands `/24`-or-narrower CIDRs and returns IPv6/wider-CIDR/hostname values as typed
+`RejectedTarget`s), and `SetFlagIdx(egressfilter.DEFAULT_DENY, ...)` toggles default-deny
 for that pod's filter. `rpCreated`/`rpUpdated`/`rpDeleted` (`pkg/egressmgr/runtimepolicies.go`)
 implement the default-deny-union-across-policies bookkeeping described above, per pod
-(`podAttachment.defaultDeny`), and gate on `Mode == "enforce"` exactly as `LsmManager` does.
+(`podAttachment.defaultDeny`), and gate on `enforce`-or-observe exactly as `LsmManager` does; an
+observe-mode policy programs no IPs and only sets the refcounted `OBSERVE` flag on its matched
+pods' filters. Both managers also refresh a pod's labels on `PodEvent` update and re-match
+selectors, so relabeling a pod attaches or detaches it (#58) with the default-deny refcount kept
+correct.
 `rpUpdated` mutates the stored `EvaluationResult`'s `IPs`/`Selector` in place rather than replacing
 the pointer that pods' `attachedFilters` entries share (`82acb1f`), so a policy update does not leave
 pods pointing at stale IP data.
+
+## The event plane
+
+Enforcement is a kernel-side map lookup and produces no userspace output. Monitor mode needs the
+opposite: a stream of what a workload actually did, attributed to a pod, matched against policy
+in userspace. That is the event plane. It is built on the counters the **existing** BPF objects
+already keep — no new kernel programs, no ring buffers, no new `.o` files.
+
+### Normalized events (`pkg/runtimeevent`)
+
+`runtimeevent.Event` is the single currency of the plane: a `Kind`
+(`net|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
+(observations are deltas, not individual occurrences), two deliberately distinct deny flags —
+`KernelDenied`, the kernel's actual enforcement decision, set only by the BPF poll sources from
+the decision dimension of the observation maps, and `WouldDeny`, monitor mode's counterfactual,
+set only by `pkg/monitor` on its per-policy copy — one non-nil facts struct
+per kind, and a `PodIdentity`.
+
+Three interfaces define the plumbing, all in `pkg/runtimeevent/iface.go`:
+
+| Interface | Implemented by | Role |
+| --- | --- | --- |
+| `Source` | `collector.NewPollSource` | Produces events until its context ends. |
+| `Sink` | `monitor.Monitor` | Consumes fully-annotated events; must be fast and must not panic outward. |
+| `PolicyStatusRecorder` | `controller.StatusWriter` | Receives status conditions from anywhere in the plane. |
+
+### Observation: draining the existing maps
+
+Both managers grew a `CollectObservations(ctx) ([]runtimeevent.Event, error)` method:
+
+- `pkg/egressmgr/observe.go` walks the pods that have at least one observe-mode policy attached
+  (the `OBSERVE` flag is refcounted per pod, so a pod with an empty observe set is not counting)
+  and drains that pod's `ip_events` counters via `egressfilter.ReadIPEvents`. Reads are
+  destructive, so `Count` is the delta since the previous poll. The pod UID and labels are
+  pre-filled, since the poll source knows the pod but not the cgroup.
+- `pkg/lsmmgr/observe.go` walks **every** program type of **every** attachment and drains each
+  enforcer's `open_events` hash-of-maps via `lsm.ReadEvents`. Reading only the first enforcer was
+  the #52 bug class — it made exec counts invisible for any pod that also had an open enforcer —
+  so the traversal is exhaustive by construction and covered by
+  `TestCollectObservationsReadsAllEnforcers`.
+
+Both sweeps are all-or-something rather than all-or-nothing: a per-pod or per-enforcer read
+failure is joined into the returned error but never aborts the sweep, because a partial map read
+still carries real observations. An `lsm.ErrObservationUnavailable` is special-cased: it is not
+returned as a poll error (every subsequent poll would repeat it) but raised as an
+`ObservationAvailable=False` condition on the policy, because a policy whose observation could
+not be turned on produces no findings and must not look healthy.
+
+In observe mode `createForProgType` leaves the `banned`/`allowed` maps **empty** and never sets
+`default_deny`, and `egressmgr` programs no IPs at all — the only thing an observe-mode policy
+changes in the kernel is that the pod's cgroup ID is in the `cgids` map (LSM) or that the pod has
+a filter with `OBSERVE` set (egress). Crossing the observe/enforce line rebuilds the attachment
+rather than mutating it, so an observing enforcer can never inherit deny entries and an enforcing
+one never starts from an observer's empty maps.
+
+### Collector (`pkg/collector`)
+
+`Collector` is a small fan-in/fan-out pipeline: N `Source`s → a buffered channel → an ordered
+list of `Stage`s → N `Sink`s, all driven by `Run(ctx)`.
+
+- `NewPollSource(name, interval, poll)` adapts the managers' `CollectObservations` into a
+  `Source`. Poll-based collection is a deliberate consequence of decision 2 above: the existing
+  programs expose counters, not a stream.
+- A `Stage` (`Name() string; Process(*Event) bool`) may annotate an event and returns false to
+  drop it. Stages run in insertion order; the daemon installs exactly one, `attribution.Index`.
+- Drops are always counted, labeled by source and reason (`buffer_full`, `unattributed`), and
+  exposed via `Dropped()` and `kyverno_runtime_events_dropped_total`. A full buffer drops the
+  newest event rather than blocking a source.
+- Sources are restarted with backoff if they fail.
+
+### Attribution (`pkg/attribution`)
+
+`attribution.Index` is the only component that appears twice in the wiring, because it is both:
+
+- an `events.PodEventHandler`: `PodEvent` upserts (create/update are idempotent) the pod's labels,
+  owner, and cgroup set from `containers.ResolveCgInfos`, evicting cgroups the pod no longer owns;
+  delete evicts the pod and everything it owned. Label refresh on update is what lets a
+  relabeled pod be re-matched.
+- a `collector.Stage`: `Process`/`Annotate` resolves an event to a `PodIdentity` by cgroup ID,
+  then by pod UID (the egress source pre-fills it), then by PID (parsing
+  `<procRoot>/<pid>/cgroup`), and **drops** the event if none of those hit, counting
+  `kyverno_runtime_attribution_misses_total`. Dropping unattributed events is only defensible
+  because the miss is counted — a silent drop would hide an attribution regression, which is
+  exactly what #38 was.
+
+Owner derivation needs no extra RBAC: it reads `pod.OwnerReferences[0]`, and when the owner is a
+`ReplicaSet` whose name ends in the pod's `pod-template-hash`, reports the `Deployment` instead.
+
+`PodIdentity.Labels` is the index's own map — replaced, never mutated — and is documented
+read-only so the plane does not copy a label map per event. Sinks must not mutate it.
+
+### Monitor (`pkg/monitor`)
+
+`Monitor` is the `Sink` that turns observations into findings. It tracks monitor- AND
+enforce-mode policies in a per-event-ready form (`trackedPolicy`: mode, compiled selector plus
+`netBehavior`/`pathBehavior` matchers), replacing the whole value on every `RuntimePolicyEvent`
+rather than mutating it — both so `HandleEvent` can read one outside the lock and so it is immune
+to `egressmgr` mutating the `EvaluationResult` it shares (#53).
+
+Per event it gates on `Kind`, then on the policy's selector against `ev.Pod.Labels`, then
+evaluates the matching behavior with the same semantics the kernel would apply: an explicit deny
+entry matches; under default-deny anything absent from `allow` matches. A match records a
+violation through the `PolicyStatusRecorder` **first and unconditionally** (the violation
+happened whether or not it can be reported) and then emits a `reporter.Finding`.
+
+What a match means depends on the policy's mode. For a monitor-mode policy it is the
+counterfactual: the finding says the operation *would have been* denied (`Finding.Enforced` is
+false, the event copy carries `WouldDeny`), independent of `KernelDenied`. For an enforce-mode
+policy a match only matters when `ev.KernelDenied` is set: the kernel already denied, and the
+userspace re-evaluation is what attributes that deny to the policy whose lists produced it — the
+kernel maps are per-pod flat sets with no policy dimension, so policy identity cannot come from
+the kernel. Those findings say the operation *was* denied (`Finding.Enforced` is true). A kernel
+deny that no tracked enforce-mode policy explains bumps
+`kyverno_runtime_events_dropped_total{source="monitor",reason="unattributed_kernel_deny"}` and is
+logged at V(2): a kernel deny must never vanish silently.
+
+### Reporter (`pkg/reporter`)
+
+`Reporter` buffers findings, deduplicates them by `Finding.Fingerprint()` (a SHA-256 over policy,
+behavior, pod, and target), and flushes every 10 seconds into one namespaced OpenReports `Report`
+per (namespace, node) named `kyverno-runtime-<nodeName>`. Merging preserves `count`,
+`firstTimestamp`, and `lastTimestamp`; results are capped at 500 with a
+`runtime.kyverno.io/truncated-results` annotation; a flush whose results are byte-identical to
+what is already stored is skipped rather than written. `Run(ctx)` flushes once more after
+cancellation, on a fresh bounded context, so the last window is not lost on shutdown. It writes
+through a `sigs.k8s.io/controller-runtime/pkg/client.Client` built from the daemon's `rest.Config`
+with the OpenReports types installed in the scheme.
+
+## Redaction chokepoint
+
+Secret material must be structurally incapable of reaching a `Report` or a log line, not merely
+filtered out by policy. One chokepoint, not configurable:
+
+**`reporter.Finding`.** `Finding` is a *closed* struct of typed scalars: no header
+map, no body field, no free-form properties passthrough. An unredacted payload is not
+representable at the boundary. `buildResult` emits a fixed property key set and every value
+passes `sanitize`. Pod labels — arbitrary user-controlled key/values — are deliberately never
+emitted.
+
+The argument is structural rather than procedural: there is no option, flag, or field that
+weakens the mechanism, and adding one is a reason to reject a PR
+([Agents.md](../../Agents.md)). It is also tested: `reporter.TestRedactionChokepoint` fails if a
+new `Finding` field or property key escapes sanitization. The logging rule that completes it: only
+redacted accessor output may be logged — never a raw header map, body, or CEL variable value.
+
+## Status reporting
+
+`pkg/controller.StatusWriter` is the single writer of `RuntimePolicyStatus` and the single
+implementation of `runtimeevent.PolicyStatusRecorder`. It consumes the policy event stream only;
+pod-level detail belongs to the Reports and the Prometheus counters, not to the status.
+
+Because every node runs a daemon and `RuntimePolicy` is cluster-scoped, status is **sharded**:
+`status.nodes` holds one `NodePolicyStatus` per node and each daemon replaces only its own entry,
+then lifts the newest `lastEvaluatedTime` across all shards to the top level. Updates flush every 30 seconds (and once on shutdown) via
+`retry.RetryOnConflict` against the `status` subresource, so concurrent per-node writes converge
+instead of clobbering each other.
+
+Conditions are merged by type: `Applied` is written by the `StatusWriter` itself with the reason
+naming the mode (`Enforcing`/`Monitoring`); `TargetsValid` comes from `egressmgr`
+and `ObservationAvailable` from `lsmmgr`, and are merged verbatim. This is the mechanism behind
+the "fail loud, not silent" rule: a network target the runtime cannot program (IPv6, a CIDR wider
+than `/24`, a hostname) is reported as a typed `egressfilter.RejectedTarget`, logged at `V(0)`,
+**and** surfaced as `TargetsValid=False` with the per-value reason. Silently skipping it is the
+forbidden failure mode.
+
+## Metrics
+
+`pkg/metrics.New(reg)` registers every collector against a caller-supplied `prometheus.Registerer`
+— the daemon passes a fresh private `prometheus.Registry` rather than the global default, so
+repeated wiring (and tests) cannot panic on duplicate registration. `metrics.Serve(ctx, addr, reg,
+log)` exposes `/metrics` and returns cleanly on context cancellation.
+
+`--metrics-addr` (default `:9090`) selects the bind address; the chart passes
+`--metrics-addr=:{{ .Values.daemon.metrics.port }}` and declares the matching `containerPort`.
+An empty value disables the endpoint without disabling the counters.
+
+Populated today, all under the `kyverno_runtime` namespace:
+`events_ingested_total{source,kind}`, `events_dropped_total{source,reason}`,
+`attribution_misses_total`, `findings_emitted_total{policy,behavior,severity}`, and
+`report_writes_total{result}`. `policy_eval_errors_total{policy,stage}`, `ai_classified_total`, and
+`inventory_syncs_total` are registered so that the code paths that will feed them add no new metrics
+file, but nothing increments them yet.
 
 ## Helm chart / deployment shape
 
@@ -228,48 +461,42 @@ pods pointing at stale IP data.
 
 - A `DaemonSet` (`templates/daemonset.yaml`) running `kyverno-runtime daemon`, always installed,
   privileged, `hostPID: true`, with host mounts for `/`, `/run`, `/var/run`, `/sys/fs/bpf`,
-  `/sys/kernel/debug`, and `/sys/kernel/tracing`, and `NODE_NAME` injected from
-  `spec.nodeName`.
+  `/sys/kernel/debug`, and `/sys/kernel/tracing`, `NODE_NAME` injected from `spec.nodeName`, and
+  `--metrics-addr=:{{ .Values.daemon.metrics.port }}` (default 9090) with a matching
+  `containerPort` named `metrics`.
 - A shared `ClusterRole`/`ClusterRoleBinding`/`ServiceAccount`
-  (`templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml`, `templates/serviceaccount.yaml`),
-  with `values.daemon.rbac.extraRules` as an escape hatch for granting the daemon access to
+  (`templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml`, `templates/serviceaccount.yaml`)
+  granting pod/policy reads, `runtimepolicies/status` `[get,update,patch]` for the status writer,
+  and full CRUD on `openreports.io` `reports` for the reporter, with
+  `values.daemon.rbac.extraRules` as an escape hatch for granting the daemon access to
   additional resource types referenced by the `resource` CEL library.
-- The `RuntimePolicy` CRD (`charts/kyverno-runtime/crds/`), plus the
-  vendored OpenReports CRDs (`openreports.io_*`) — the OpenReports API is registered into the
-  daemon's scheme (`openreportsv1alpha1.Install(scheme)`) but is not otherwise used by any code
-  path described above; no component in this repo currently creates or reconciles `Report`/`ClusterReport`
-  objects.
+- The `RuntimePolicy` CRD (`charts/kyverno-runtime/crds/`), plus the vendored OpenReports CRDs
+  (`openreports.io_*`), which `pkg/reporter` now writes to; the OpenReports API is registered into
+  both the daemon's scheme and the controller-runtime client used for those writes.
 
 ## Known Gaps / Future Work
 
 These are verified, current limitations — not planned features to build toward, which belong in a
-future `PLAN.md`. They were re-verified against `51d1320`.
+future `PLAN.md`.
 
-> One item that used to be listed here is gone: `exec` enforcement landed in #51 (`3568f42`) and is
-> described under [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering). Issue #34
-> ("exec behaviors are compiled/evaluated but never enforced") is still open but no longer
-> reflects the code and can be closed.
-
-- **`spec.mode: monitor` — and an omitted `spec.mode` — silently disable a policy.** The `Mode` field
-  was added to `RuntimePolicySpec` in `4a8bcb1` and is threaded through `pkg/compiler`
-  (`CompiledRuntimePolicy.mode` → `EvaluationResult.Mode`), so the field and its print column now
-  work. But both managers treat it purely as an on/off gate: `rpCreated` returns early unless
-  `compiledRp.Mode == "enforce"` (`pkg/egressmgr/runtimepolicies.go`,
-  `pkg/lsmmgr/runtimepolicies.go`), and `rpUpdated` treats any other value as a *delete*. Nothing
-  else in the tree reads `Mode`. A `monitor`-mode policy therefore enforces nothing, reports nothing,
-  and writes no status — it is indistinguishable from having no policy at all, which is the opposite
-  of what a user trialling a policy before enforcing it would expect.
-
-  The same gate makes `mode` effectively required: it is `+optional` with no `+kubebuilder:default`
-  (`api/v1alpha1/runtimepolicy_types.go`), so `Mode` compiles to `""`, which is not `enforce`, and a
-  policy that simply omits the field is inert. None of the 11 `RuntimePolicy` examples in
-  `docs/runtimepolicy.md` set `mode`, so as written every documented example enforces nothing.
-
-  Monitor mode is not implementable without three pieces that do not exist yet: a kernel→userspace
-  event channel (both BPF programs are map-lookup enforcers with no ring buffer, and
-  `events.EventIface` carries only pod and policy lifecycle callbacks), a finding sink
-  (`openreportsv1alpha1.Install(scheme)` is called but no code ever writes a `Report`), and status
-  reporting. Tracked in #42; the pipeline it needs overlaps #17 and #29.
+- **An omitted `spec.mode` still leaves a policy inert.** `mode` is `+optional` with no
+  `+kubebuilder:default` (`api/v1alpha1/runtimepolicy_types.go`), so it compiles to `""`, which is
+  neither `enforce` nor an observe mode, and both managers return early. `monitor` now works (see
+  [The event plane](#the-event-plane)), but a policy that omits the field enforces nothing and
+  reports nothing. Every example in `docs/runtimepolicy.md` other than the monitor-mode one still
+  omits `mode`. Untracked; a `+kubebuilder:default=enforce` or an admission-time requirement is the
+  obvious fix and is a breaking change either way.
+- **Monitor-mode observation is poll-based and lossy at the edges.** This is a deliberate
+  consequence of shipping monitor mode on the already-compiled `.o` files rather than new kernel
+  programs:
+  - Counters are drained every 10 seconds, so findings lag behavior by up to that interval and
+    only counts survive — not per-occurrence ordering or timing.
+  - The per-cgroup `open_events` inner map holds 2048 `(path, decision)` keys; a workload touching
+    more than that within one interval loses the excess (read-and-reset mitigates, does not
+    eliminate).
+  - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
+  - No DNS, TLS SNI, or HTTP visibility exists, and no new kernel programs are loaded by this
+    code.
 - **`open`/`exec` rules from separate policies intersect instead of unioning.**
   `docs/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
   policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each
@@ -278,28 +505,37 @@ future `PLAN.md`. They were re-verified against `51d1320`.
   `-EPERM`, a policy that default-denies `open` cannot be relaxed by a second policy's `allow` list:
   paths that policy A does not allow stay blocked no matter what policy B says. Untracked — no
   issue filed yet.
-- **Learning-mode residue in the BPF programs.** #32 removed the userspace side of learning mode,
-  but both LSM variants still increment per-path counters in the `open_events` hash-of-maps on every
-  hook invocation, and `maps.h` still defines its inner map while `lsm.bpf.c` still defines a
-  `LEARNING_MODE` flag constant. Nothing populates the outer map (`spec.Maps["open_events"].Contents`
-  is explicitly nil'd at load) and nothing reads it, so every lookup misses and the counters are dead
-  weight on the hot path. Untracked; #52 describes a bug in the userspace reader that no longer
-  exists.
-- **Container attribution only covers containerd with the systemd cgroup driver.**
-  `pkg/containers.buildCandidatePaths` only ever generates `cri-containerd-<id>.scope` leaf names,
-  so on CRI-O or Docker nodes no candidate path resolves, no cgroup ID reaches the `cgids` maps
-  both engines gate on, and **no policy is enforced on that node** — silently, with the policy
-  still appearing healthy. cgroup v1 is likewise unhandled. Tracked in #38.
-- **Non-IPv4 network targets are silently dropped.** `egressfilter.normalizeIP` accepts only bare
-  IPv4 literals; IPv6 addresses, CIDR blocks, and hostnames fail to parse, are logged at `V(2)`,
-  and are skipped. The BPF program is IPv4-only by construction (`u32` map key, reads only
-  `ip->daddr`, no L4 parsing). Tracked in #41.
-- **No reporting, metrics, or status.** Nothing writes `Report`/`ClusterReport` objects, no metrics
-  are registered, and `RuntimePolicyStatus`'s `ObservedPods`/`ViolatingPods`/`LastEvaluatedTime`
-  are declared and print-columned but never populated (#44). The only observable output today is
-  `logger.V(2)` lines and the `-EPERM`/packet-drop side effects themselves. Tracked in #29 and #17.
-- **No tests.** `go test ./...` reports `[no test files]` for every package, and eBPF paths are not
-  exercised in CI at all. Tracked in #15.
+- **The kernel-side counters are always on, even for enforce-only nodes.** What used to be
+  learning-mode residue is now the substrate of monitor mode: both LSM variants increment per-path
+  counters in the `open_events` hash-of-maps on every hook invocation regardless of mode, and
+  `probe.c` counts destination addresses whenever the `OBSERVE`/`LEARNING_MODE` flag bit is set.
+  Userspace only enables the egress flag for pods with an observe-mode policy, but the LSM path
+  counting is unconditional in the C, so an enforce-only deployment still pays for it (and the outer
+  map is only populated for cgroups an observing enforcer knows about, so most lookups miss).
+  Removing the cost requires a `#ifdef`-gated build or a mode flag in the C — i.e. recompiling the
+  BPF objects, which this repository cannot do on the current toolchain.
+- **Container attribution is best-effort per runtime.** `pkg/containers.buildCandidatePaths` now
+  generates candidates for `cri-containerd`/`crio`/`docker` scopes across systemd and cgroupfs
+  layouts with a cgroup v1 fallback, and `ResolveCgInfos` returns partial results plus a joined
+  error instead of failing or panicking on the first bad container. It is still a path-shape
+  heuristic: an unrecognized layout yields no cgroup ID, no enforcement, and no observation for that
+  container. The failure is now logged and requeued rather than silent, but there is no positive
+  confirmation that a pod is covered.
+- **Unsupported network targets are rejected, not programmed.** The egress maps are IPv4 `/32`
+  hashes by construction (`u32` key, `ip->daddr` only, no L4 parsing). `egressfilter.ParseTargets`
+  expands CIDRs of `/24` or narrower and rejects IPv6, wider CIDRs, and hostnames as typed
+  `RejectedTarget` values that reach a `V(0)` log and a `TargetsValid=False` condition. They are no
+  longer dropped silently, but they are still not enforceable. An LPM-trie/IPv6 map redesign is the
+  follow-up (#41).
+- **Enforcement findings are counter-grained.** The observation maps count `(target, decision)`
+  pairs, so an enforce-mode deny surfaces as a finding with `enforced=true` — but only counts
+  survive, not per-occurrence ordering, PIDs, or timing, and only for pods some policy has in
+  observe scope (egress counting still requires the pod's `OBSERVE` flag).
+- **eBPF behavior is only partly exercised in CI.** Unit tests cover the pure logic (parsing,
+  matching, attribution, status sharding, reporting) and the manager bookkeeping through seam
+  interfaces, and a kind-based lane covers egress enforcement and program load. LSM-behavioral
+  tests need `lsm=bpf` in the kernel command line, which hosted runners do not provide, so that job
+  is `workflow_dispatch`-gated (#60).
 - **No promotion workflow.** There is no code path that turns observed behavior into a proposed
   `RuntimePolicy` allow/deny list. The intent is for that promotion step to become a separate,
   LLM-assisted project rather than a CLI command added to this repository.

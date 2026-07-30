@@ -1,5 +1,8 @@
 # Instructions for coding agents
 
+Read [CLAUDE.md](CLAUDE.md) first: it holds the conventions review keeps
+catching, and every rule in it is there because a real PR broke it.
+
 Read the [DESIGN](docs/dev/DESIGN.md) before making any significant change.
 
 ## Documentation Guidelines
@@ -13,6 +16,10 @@ Read the [DESIGN](docs/dev/DESIGN.md) before making any significant change.
 - Design decisions and rationale
 - Integration patterns and workflows
 - **Keep this synchronized with the actual codebase** (what's deployed on `main`)
+
+**[docs/runtimepolicy.md](docs/runtimepolicy.md)** is the user-facing reference: the spec, `mode`
+semantics, status and conditions, Reports, metrics, and the honest limits of monitor mode. Keep the
+limits section truthful — it is the part reviewers check first.
 
 **PLAN.md** would describe *planned* work and future enhancements (development roadmap by
 phase, deliverables/status/acceptance criteria, known issues and open design questions), but it
@@ -53,27 +60,81 @@ Follow these rules when generating and updating code:
 - after any significant code change, always validate on a kind cluster before finishing (at minimum: `make kind-install` and a targeted behavioral check such as `make smoke-quickstart` when relevant).
 - for runtime pipeline, collector, evaluator, or reporter changes, also run "make smoke-quickstart" before finishing.
 - when creating a PR, sign commits using "git commit -s...".
+- tests are table-driven, stdlib `testing` plus `github.com/google/go-cmp/cmp` for struct diffs. No
+  testify. Regression tests encode the pinned invariant in their name and doc comment
+  (`TestRequeueCapSurvivesPointerChange`), never an issue or PR number — see the comment rule in
+  [DEVELOPMENT.md](DEVELOPMENT.md).
+- inject time (`Clock func() time.Time`) and filesystem roots (`procRoot`) — never sleep in a test
+  and never touch the real `/proc`. Kernel-touching code goes behind the managers' seam interfaces
+  so its bookkeeping is testable off-kernel; "returns an error on darwin" is not a test.
+- malformed user input must be rejected or reported, never crash: no unchecked index, no `[1]` after
+  `Split`, no `panic("not implemented")` in a CEL binding or decoder. But do not add a `recover()`
+  barrier around library or internal calls — a panic there is a bug and should surface. `utils.Guard`
+  belongs at the fan-out boundaries only (collector stages/sinks, informer handler fan-out). See the
+  panic rule in [CLAUDE.md](CLAUDE.md).
+- anything a user authored that cannot be honored must reach a `V(0)` log **and** a status
+  condition. "Silently skipped" is the forbidden failure mode.
+- never regenerate or edit `*_bpfel.go`, `*_bpfeb.go`, or `.o` files unless you have the full BPF
+  toolchain; new `_cprog/*.c` with a commented `go:generate` line is fine.
+
+## Package map
+
+Read this before deciding where new code goes. `docs/dev/DESIGN.md` has the full architecture; this
+is the one-line-per-package index.
+
+| Package | Role |
+| --- | --- |
+| `api/v1alpha1` | The `RuntimePolicy` CRD: spec, `mode`, and the node-sharded status + conditions. |
+| `pkg/compiler` | Compiles a `RuntimePolicy` into CEL programs and evaluates it into an `EvaluationResult`. Policy-time, not per event. |
+| `pkg/utils` | `Guard(op, fn)` — the panic barrier used at handler fan-out boundaries so one bad handler cannot take out its siblings. |
+| `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID) plus `StatusWriter`. |
+| `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
+| `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The two eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/lsmmgr`, `pkg/egressmgr` | The managers that attach those programs per matched pod and drain their observation counters (`CollectObservations`). |
+| `pkg/runtimeevent` | The normalized `Event` type, its `KernelDecision`, and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. |
+| `pkg/collector` | Sources → stages → sinks pipeline, with drop accounting and source restart. |
+| `pkg/attribution` | cgroup/pod-UID/PID → pod identity index. Both an `events.PodEventHandler` and a `collector.Stage`. |
+| `pkg/monitor` | The sink that evaluates observations against monitor-mode policies and emits findings. |
+| `pkg/reporter` | Writes findings into namespaced OpenReports `Report`s. The redaction chokepoint. |
+| `pkg/metrics` | Prometheus collectors and the `/metrics` server (`--metrics-addr`). |
+| `cmd/kyverno-runtime` | The `daemon` subcommand; `daemon.go` is the single wiring site. |
 
 ## Runtime event filtering policy
 
-There is currently **no runtime event pipeline** in this repository. The `connect`/`tcpconnect`
-event filtering rules that used to live here described the Inspektor Gadget-based collector that
-was removed in `f806f25`; both eBPF programs today are map-lookup enforcers with no
-kernel-to-userspace event channel, so there are no events to filter.
+There is one event pipeline: `pkg/collector`, fed by poll sources over the observation counters the
+two existing eBPF programs keep, annotated by `pkg/attribution`, consumed by `pkg/monitor`. There is
+no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency.
 
-When an event pipeline is (re)introduced, the rules that applied before and should apply again:
+The filtering rules that apply to that pipeline:
 
-- Network events without Kubernetes namespace + pod metadata must be treated as node/system noise
-  and filtered out of pod-specific reporting.
-- `open`/`exec` events may be retained even when metadata is sparse, to preserve valid workload
-  detections.
+- Events that cannot be attributed to a pod are dropped by the `pkg/attribution` stage, and every
+  drop increments `kyverno_runtime_attribution_misses_total`. Dropping is only acceptable *because*
+  it is counted: a silent drop hides an attribution regression.
+- Buffer-full drops are likewise counted, labeled by source and reason. Never add a drop path
+  without a counter.
+- `open`/`exec` observations are kept even when metadata is sparse, so long as the pod is known.
+- Egress observation is destination-IPv4 only. It does see flows a default-deny drops: the BPF
+  program computes its decision, records it, and only then returns, and the decision is part of the
+  observation counter key. Never move an enforcement return ahead of the counting branch.
 
-Note that "filter out unattributed events" only holds if attribution actually works — see the
-container attribution gap in [DESIGN.md](docs/dev/DESIGN.md), where whole runtimes currently
-resolve no cgroup at all. Silently dropping unattributed events would hide that.
+## Redaction (non-negotiable)
 
-Keep this behavior aligned with docs/dev/DESIGN.md when making datasource or
-collection-path changes.
+`docs/dev/DESIGN.md` describes one chokepoint: the closed `reporter.Finding` struct on the way
+out. It is not configurable, and that is the point.
+
+- Never add an option, flag, values key, or field that disables, bypasses, or narrows it.
+  A PR that does is to be rejected, not merged with a warning.
+- Never add a free-form map to `reporter.Finding` or a new key to the fixed property set without
+  routing it through `sanitize`.
+- Never log a raw header map, request body, or CEL variable value. Only redacted accessor output may
+  be logged. `V(0)` is operator-must-see, `V(2)` lifecycle, `V(4)` per-event trace.
+
+## Modes
+
+`spec.mode` is `enforce` or `monitor`. `enforce` programs the deny/allow maps; `monitor` attaches
+the same programs with **empty** maps and matches in userspace over polled observations. Use
+`compiler.IsObserveMode(mode)` rather than comparing strings, and never let an observe-mode policy
+program a deny entry.
 
 ## Markdown generation and changes
 

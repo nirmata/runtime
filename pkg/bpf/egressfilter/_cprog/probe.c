@@ -18,6 +18,32 @@ struct iphdr {
     __be32 daddr;
 };
 
+// The counter is __u32: a narrower lookup would only bump its low byte on
+// little-endian and wrap at 255.
+static __always_inline void record_ip_event(__u32 daddr, __u32 decision)
+{
+    struct ip_event_key key = {};
+    key.daddr = daddr;
+    key.decision = decision;
+
+    __u32 *val = bpf_map_lookup_elem(&ip_events, &key);
+    if (val) {
+        __sync_fetch_and_add(val, 1);
+        return;
+    }
+
+    __u32 init_count = 1;
+    if (bpf_map_update_elem(&ip_events, &key, &init_count, BPF_NOEXIST) != 0) {
+        // lost the create race with another CPU: the entry exists now, add to it
+        val = bpf_map_lookup_elem(&ip_events, &key);
+        if (val) {
+            __sync_fetch_and_add(val, 1);
+        }
+    }
+}
+
+// Ordered decision -> record -> return, so no enforcement return can skip the
+// observation branch.
 SEC("cgroup_skb/egress")
 int cgroup_egress(struct __sk_buff *skb)
 {
@@ -38,32 +64,23 @@ int cgroup_egress(struct __sk_buff *skb)
         return 3;
     };
 
-    // check default deny
+    __u32 decision = DECISION_ALLOW;
     if (*f & (1 << DEFAULT_DENY)) {
-        __u8 *val = bpf_map_lookup_elem(&allowed_ips, &daddr);
-        if (val) {
-            return 1;
-        }  
-
-        return 0;
-    };
-
-    // check learning mode
-    if (*f & (1 << LEARNING_MODE)) {
-        __u8 *val = bpf_map_lookup_elem(&ip_events, &daddr);
-        if (val) {
-            (*val)++;     
-        } else {
-            __u32 init_count = 1;
-            bpf_map_update_elem(&ip_events, &daddr, &init_count, BPF_ANY);
+        if (bpf_map_lookup_elem(&allowed_ips, &daddr) == NULL) {
+            decision = DECISION_DENY;
         }
+    } else if (bpf_map_lookup_elem(&banned_ips, &daddr) != NULL) {
+        decision = DECISION_DENY;
     }
 
-    __u8 *val = bpf_map_lookup_elem(&banned_ips, &daddr);
-    if (val) {
-        return 0;
-    };
+    if (*f & (1 << LEARNING_MODE)) {
+        record_ip_event(daddr, decision);
+    }
 
+    // 1 = pass, 0 = drop
+    if (decision == DECISION_DENY) {
+        return 0;
+    }
     return 1;
 }
 

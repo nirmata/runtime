@@ -17,6 +17,50 @@
 #error "must build lsm.bpf.c with exactly one of -DLSM_FILE_OPEN or -DLSM_EXEC_CHECK defined"
 #endif
 
+// The policy maps are keyed by char[MAX_PATH_LEN], hence key->path rather than
+// the whole event key.
+static __always_inline __u32 path_decision(struct path_event_key *key) {
+    __u32 dd_key = 0;
+    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
+
+    if (dd) {
+        if (bpf_map_lookup_elem(&allowed, key->path) == NULL) {
+            return DECISION_DENY;
+        }
+        return DECISION_ALLOW;
+    }
+
+    if (bpf_map_lookup_elem(&banned, key->path) != NULL) {
+        return DECISION_DENY;
+    }
+    return DECISION_ALLOW;
+}
+
+static __always_inline void record_path_event(__u64 *cgid, struct path_event_key *key) {
+    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
+    if (!count_map) {
+        return;
+    }
+
+    __u32 *count = bpf_map_lookup_elem(count_map, key);
+    if (count) {
+        __sync_fetch_and_add(count, 1);
+        return;
+    }
+
+    __u32 init_count = 1;
+    if (bpf_map_update_elem(count_map, key, &init_count, BPF_NOEXIST) != 0) {
+        // lost the create race with another CPU: the entry exists now, add to it
+        count = bpf_map_lookup_elem(count_map, key);
+        if (count) {
+            __sync_fetch_and_add(count, 1);
+        }
+    }
+}
+
+// Both handlers are ordered decision -> record -> return, so no enforcement
+// return can skip the observation call.
+
 #if defined(LSM_FILE_OPEN)
 static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     __u64 arg0 = args[0];
@@ -24,34 +68,14 @@ static __always_inline int handle_open(__u64 *args, __u64 *cgid) {
     char buf[MAX_PATH_LEN] = {};
     bpf_d_path(&f->f_path, buf, sizeof(buf));
 
-    char key[MAX_PATH_LEN] = {};
-    bpf_probe_read_kernel_str(key, sizeof(key), buf);
+    struct path_event_key key = {};
+    bpf_probe_read_kernel_str(key.path, sizeof(key.path), buf);
 
-    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
-    if (count_map) {
-        __u32 *open_count = bpf_map_lookup_elem(count_map, &key);
-        if (open_count) {
-            (*open_count)++;
-        } else {
-            __u32 init_count = 1;
-            bpf_map_update_elem(count_map, &key, &init_count, BPF_ANY);
-        };
-    }
+    key.decision = path_decision(&key);
 
-    __u32 dd_key = 0;
-    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
+    record_path_event(cgid, &key);
 
-    // there's a default deny. consult the allow list
-    if (dd) {
-        __u8 *val = bpf_map_lookup_elem(&allowed, &key);
-        if (val) {
-            return 0;
-        }
-        return -EPERM;
-    }
-
-    __u8 *val = bpf_map_lookup_elem(&banned, &key);
-    if (val) {
+    if (key.decision == DECISION_DENY) {
         return -EPERM;
     }
     return 0;
@@ -65,35 +89,14 @@ static __always_inline int handle_exec(__u64 *args, __u64 *cgid) {
     char buf[MAX_PATH_LEN] = {};
     bpf_d_path(&bprm->file->f_path, buf, sizeof(buf));
 
-    char key[MAX_PATH_LEN] = {};
-    bpf_probe_read_kernel_str(key, sizeof(key), buf);
+    struct path_event_key key = {};
+    bpf_probe_read_kernel_str(key.path, sizeof(key.path), buf);
 
-    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
-    if (count_map) {
-        __u32 *open_count = bpf_map_lookup_elem(count_map, &key);
-        if (open_count) {
-            (*open_count)++;
-        } else {
-            __u32 init_count = 1;
-            bpf_map_update_elem(count_map, &key, &init_count, BPF_ANY);
-        };
-    }
+    key.decision = path_decision(&key);
 
-    // should be if there was a value in the open events map
-    __u32 dd_key = 0;
-    __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
+    record_path_event(cgid, &key);
 
-    // there's a default deny. consult the allow list
-    if (dd) {
-        __u8 *val = bpf_map_lookup_elem(&allowed, &key);
-        if (val) {
-            return 0;
-        }
-        return -EPERM;
-    }
-
-    __u8 *val = bpf_map_lookup_elem(&banned, &key);
-    if (val) {
+    if (key.decision == DECISION_DENY) {
         return -EPERM;
     }
     return 0;

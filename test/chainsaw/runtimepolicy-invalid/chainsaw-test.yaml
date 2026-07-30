@@ -1,0 +1,100 @@
+# CRD conformance: invalid RuntimePolicy shapes must be REJECTED at admission.
+#
+# Each case asserts both that the apply fails AND that it failed for the right
+# reason (the error message is matched), so a policy rejected by an unrelated
+# schema change does not silently keep this test green.
+#
+# Requires: charts/kyverno-runtime/crds applied. No daemon, no eBPF.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: runtimepolicy-invalid
+spec:
+  steps:
+  - name: bad-mode-enum-is-rejected
+    # spec.mode is +kubebuilder:validation:Enum=monitor;enforce.
+    # "audit" is a plausible typo and must not be accepted.
+    try:
+    - apply:
+        file: bad-mode.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'spec.mode'))": true
+            "(contains($error, 'Unsupported value'))": true
+            "(contains($error, 'audit'))": true
+
+  - name: two-behavior-kinds-in-one-item-is-rejected
+    # PolicyBehavior carries the XValidation rule
+    #   (has(self.network)?1:0)+(has(self.exec)?1:0)+(has(self.open)?1:0) == 1
+    # Without it, a single item with both network and open would compile to an
+    # ambiguous behavior and one of the two would be silently dropped.
+    try:
+    - apply:
+        file: bad-two-kinds.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'exactly one of network, exec, or open must be specified'))": true
+
+  - name: zero-behavior-kinds-in-one-item-is-rejected
+    # Same rule, other side: an empty behavior item is also invalid. Asserting
+    # both directions stops a rule that only ever rejects (or only ever allows).
+    try:
+    - apply:
+        file: bad-zero-kinds.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'exactly one of network, exec, or open must be specified'))": true
+
+  - name: unknown-spec-field-is-rejected
+    # The CRD is structural with pruning; an unknown field submitted by a client
+    # that sends --validate=strict must be rejected rather than dropped. This
+    # pins that a renamed API field surfaces to users instead of vanishing.
+    try:
+    - script:
+        content: |
+          set -eu
+          if kubectl apply --validate=strict -f bad-unknown-field.yaml 2>/tmp/a15-unknown.err; then
+            echo "expected strict apply to be rejected, but it succeeded"
+            kubectl delete runtimepolicy chainsaw-invalid-unknown-field --ignore-not-found
+            exit 1
+          fi
+          grep -q 'namespaceSelector' /tmp/a15-unknown.err
+          echo "rejected as expected: $(cat /tmp/a15-unknown.err)"
+
+  - name: malformed-cel-is-NOT-rejected-at-admission
+    # HONEST GAP, deliberately pinned as a positive test.
+    #
+    # spec.behaviors[*].<kind>.{allow,deny}.expression and spec.variables[*].
+    # expression are plain strings in the CRD schema. There is no admission
+    # webhook and no x-kubernetes-validations rule that can type-check a
+    # user-authored CEL program, so a syntactically broken expression IS
+    # ACCEPTED by the apiserver. It fails later, in the daemon's compiler, and
+    # is surfaced via a log at V(0) and a status condition -- NOT at kubectl
+    # apply time.
+    #
+    # This step asserts the current, real behavior so that:
+    #   a) nobody reads the suite and concludes CEL is validated at admission;
+    #   b) if admission-time CEL validation is ever added, this test goes red
+    #      and must be converted into a rejection case.
+    # The daemon-side rejection assertion belongs in test/e2e (needs a running
+    # daemon and the status writer), not here.
+    try:
+    - apply:
+        file: malformed-cel.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-invalid-malformed-cel
+          spec:
+            (behaviors[0].open.deny.expression): 'this is not ( valid CEL'
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-invalid-malformed-cel

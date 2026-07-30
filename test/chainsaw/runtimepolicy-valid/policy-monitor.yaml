@@ -1,0 +1,17 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-valid-monitor
+spec:
+  mode: monitor
+  evaluationInterval: 30s
+  podSelector:
+    matchLabels:
+      app: chainsaw-target
+  variables:
+  - name: blockedPaths
+    expression: '["/etc/shadow", "/etc/gshadow"]'
+  behaviors:
+  - open:
+      deny:
+        expression: variables.blockedPaths

@@ -19,6 +19,15 @@ daemon:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  metrics:
+    # port the daemon serves /metrics on, passed through --metrics-addr
+    port: 9090
+  # observeInterval: how often the BPF observation maps are drained. Bounds
+  # monitor-mode detection latency. Empty uses the daemon default (10s).
+  observeInterval: ""
+  # eventBufferSize: depth of the collector's fan-in buffer. Events arriving when
+  # it is full are dropped and counted. Empty uses the daemon default (4096).
+  eventBufferSize: ""
   rbac:
     # extraRules: additional PolicyRule entries appended to the shared ClusterRole,
     # e.g. to grant the daemon read access to CRDs referenced by the resource library

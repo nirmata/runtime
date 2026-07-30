@@ -312,8 +312,17 @@ kyverno-runtime/
 
 ### Documentation
 
-- Exported functions/types have comments describing purpose
-- Complex logic includes comments explaining why, not just what
+- The default is no comment. Write one where a competent reader of the code would
+  still get it wrong — a non-blocking handoff, a padding-free BPF map key, a
+  parameter that takes a raw value and escapes it internally.
+- Never narrate history: no "no longer", "used to", "previously", no changelog
+  prose, no GitHub issue or PR numbers. Git blame and the tracker hold that.
+- No package doc comments. No error-handling narration. No ALL-CAPS
+  MUST/NEVER/ALWAYS. A comment must carry more than the signature below it, and a
+  comment block longer than the body it explains is a smell.
+- When a test pins a regression, encode the *invariant* in the test name and doc
+  comment, not the ticket number — the invariant outlives the tracker.
+- Full rules and the review history behind them: [CLAUDE.md](CLAUDE.md).
 - See [DESIGN.md](docs/dev/DESIGN.md) for architecture details
 
 ## Important Behaviors

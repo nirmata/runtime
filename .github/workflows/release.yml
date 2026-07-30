@@ -92,7 +92,7 @@ jobs:
           ko build ./cmd/kyverno-runtime \
             --push=true \
             --bare \
-            --tags=${GITHUB_REF_NAME} \
+            --tags="${GITHUB_REF_NAME}" \
             --platform=linux/amd64
 
   publish-chart:
