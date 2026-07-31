@@ -1,0 +1,19 @@
+# ALLOWED_IP is replaced with the allow-listed target pod's IP before this is
+# applied; see README.md.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: default-deny-egress
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: egress-client
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - ALLOWED_IP

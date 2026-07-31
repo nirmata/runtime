@@ -72,7 +72,7 @@ func TestServe_ServesMetricsEndpointThenStopsOnCancel(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 
-	const want = "kyverno_runtime_attribution_misses_total 1"
+	const want = "nirmata_runtime_attribution_misses_total 1"
 	if !strings.Contains(string(body), want) {
 		t.Errorf("metrics response missing %q; got:\n%s", want, body)
 	}

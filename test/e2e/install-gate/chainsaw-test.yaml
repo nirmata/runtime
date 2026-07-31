@@ -55,25 +55,25 @@ spec:
         file: policies.yaml
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-gate-enforce
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-gate-monitor
     finally:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-gate-enforce
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-gate-monitor
 

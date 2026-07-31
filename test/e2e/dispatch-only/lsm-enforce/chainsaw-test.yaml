@@ -62,7 +62,7 @@ spec:
         file: policy.yaml
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-lsm-enforce
@@ -129,6 +129,6 @@ spec:
             --all-containers --tail=200 || true
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-lsm-enforce

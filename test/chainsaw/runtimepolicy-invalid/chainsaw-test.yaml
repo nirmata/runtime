@@ -86,7 +86,7 @@ spec:
         file: malformed-cel.yaml
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: chainsaw-invalid-malformed-cel
@@ -95,6 +95,6 @@ spec:
     finally:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: chainsaw-invalid-malformed-cel

@@ -8,7 +8,7 @@ import (
 // TODO: this code also exists in authz. need to centralize it
 
 var (
-	VariablesType     = types.NewObjectType("kyverno.variables")
+	VariablesType     = types.NewObjectType("nirmata.variables")
 	variablesTypeType = types.NewTypeTypeWithParam(VariablesType)
 )
 

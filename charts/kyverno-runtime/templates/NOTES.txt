@@ -9,6 +9,6 @@ The chart installs:
 To verify the installation:
   kubectl get pods -n {{ .Release.Namespace }}
   kubectl get ds -n {{ .Release.Namespace }}
-  kubectl get crd runtimepolicies.runtime.kyverno.io
+  kubectl get crd runtimepolicies.runtime.nirmata.io
   kubectl get crd reports.openreports.io
   kubectl get crd clusterreports.openreports.io

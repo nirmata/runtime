@@ -17,7 +17,7 @@ Read the [DESIGN](docs/dev/DESIGN.md) before making any significant change.
 - Integration patterns and workflows
 - **Keep this synchronized with the actual codebase** (what's deployed on `main`)
 
-**[docs/runtimepolicy.md](docs/runtimepolicy.md)** is the user-facing reference: the spec, `mode`
+**[docs/users/reference/runtimepolicy.md](docs/users/reference/runtimepolicy.md)** is the user-facing reference: the spec, `mode`
 semantics, status and conditions, Reports, metrics, and the honest limits of monitor mode. Keep the
 limits section truthful — it is the part reviewers check first.
 
@@ -35,7 +35,7 @@ below.
    - Add new sections or expand existing ones to document the feature
    - Include code examples, configuration, and operational guidance
    - Update diagrams if architecture changed
-3. Verify [DEVELOPMENT.md](DEVELOPMENT.md) is current:
+3. Verify [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md) is current:
    - Add new build targets or workflows if needed
    - Update common development tasks section
    - Document any new operational behaviors
@@ -45,7 +45,7 @@ below.
 
 1. Update [DESIGN.md](docs/dev/DESIGN.md) first to describe the new design
 2. Update this file ([Agents.md](Agents.md)) if runtime policies or development guidelines change
-3. Update [DEVELOPMENT.md](DEVELOPMENT.md) for new workflows or behaviors
+3. Update [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md) for new workflows or behaviors
 4. If a `docs/dev/PLAN.md` exists at the time, review it for any affected planned items
 
 ## Dev Documents
@@ -63,7 +63,7 @@ Follow these rules when generating and updating code:
 - tests are table-driven, stdlib `testing` plus `github.com/google/go-cmp/cmp` for struct diffs. No
   testify. Regression tests encode the pinned invariant in their name and doc comment
   (`TestRequeueCapSurvivesPointerChange`), never an issue or PR number — see the comment rule in
-  [DEVELOPMENT.md](DEVELOPMENT.md).
+  [docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md).
 - inject time (`Clock func() time.Time`) and filesystem roots (`procRoot`) — never sleep in a test
   and never touch the real `/proc`. Kernel-touching code goes behind the managers' seam interfaces
   so its bookkeeping is testable off-kernel; "returns an error on darwin" is not a test.
@@ -108,7 +108,7 @@ no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency.
 The filtering rules that apply to that pipeline:
 
 - Events that cannot be attributed to a pod are dropped by the `pkg/attribution` stage, and every
-  drop increments `kyverno_runtime_attribution_misses_total`. Dropping is only acceptable *because*
+  drop increments `nirmata_runtime_attribution_misses_total`. Dropping is only acceptable *because*
   it is counted: a silent drop hides an attribution regression.
 - Buffer-full drops are likewise counted, labeled by source and reason. Never add a drop path
   without a counter.
@@ -159,7 +159,7 @@ uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 To update an action to a new version:
 
 1. Find the latest commit hash for the desired version tag on the action's GitHub release page
-2. Replace the old hash with the new hash in all three workflows (ci.yml, e2e.yml, release.yml)
+2. Replace the old hash with the new hash in every workflow that pins it (ci.yml, release.yml, ghcr-candidate-cleanup.yml)
 3. Include the semantic version as a comment for clarity
 4. Test workflows locally with `act` if possible before merging
 

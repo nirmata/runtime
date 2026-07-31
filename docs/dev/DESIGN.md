@@ -118,14 +118,14 @@ Each behavior (`Behavior` type) has an optional `allow` and/or `deny` (`Behavior
 rule has a literal `values []string` and/or a CEL `expression string` — the compiler unions the
 two (`pkg/compiler/compiler.go: compileBehavior`, `pkg/compiler/policy.go: evalCompiledBehavior`).
 
-Semantics (see `docs/runtimepolicy.md` for the full reference with examples):
+Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference with examples):
 
 - `network` values are IPv4 addresses (egress), `exec` values are command names/paths, `open`
   values are file paths.
 - `deny.values: ["*"]` (or an expression producing `["*"]`) is a **default-deny** sentinel for that
   behavior type: that behavior becomes deny-all-except-allowed for matched pods, instead of the
   default allow-all-except-denied.
-- `docs/runtimepolicy.md` specifies the multi-policy case as a **union across all `RuntimePolicy`
+- `docs/users/reference/runtimepolicy.md` specifies the multi-policy case as a **union across all `RuntimePolicy`
   objects matching a pod** — any matching policy asserting default-deny flips the behavior, and the
   effective allow (or deny) list is the union of every matching policy's entries. **That is only
   implemented for `network`.** `pkg/egressmgr` attaches one filter per pod and merges every matching
@@ -196,7 +196,7 @@ extension libraries (`ext.Bindings`, `ext.Encoders`, `ext.Lists`, `ext.Math`, `e
 
 Because `http.get(...).body` and `json.unmarshal(...)` return `dyn`, an expression using them
 needs an explicit coercion (e.g. `.map(x, string(x))`) since the checker can't infer the
-`list(string)` element type from `dyn`. See `docs/runtimepolicy.md` for worked examples of all
+`list(string)` element type from `dyn`. See `docs/users/reference/runtimepolicy.md` for worked examples of all
 three libraries, including composing `json.unmarshal` with `resource.get`/`http.get` output.
 
 Because `resource.get`/`http.get` results are only refreshed when the policy is (re-)evaluated,
@@ -338,7 +338,7 @@ list of `Stage`s → N `Sink`s, all driven by `Run(ctx)`.
 - A `Stage` (`Name() string; Process(*Event) bool`) may annotate an event and returns false to
   drop it. Stages run in insertion order; the daemon installs exactly one, `attribution.Index`.
 - Drops are always counted, labeled by source and reason (`buffer_full`, `unattributed`), and
-  exposed via `Dropped()` and `kyverno_runtime_events_dropped_total`. A full buffer drops the
+  exposed via `Dropped()` and `nirmata_runtime_events_dropped_total`. A full buffer drops the
   newest event rather than blocking a source.
 - Sources are restarted with backoff if they fail.
 
@@ -353,7 +353,7 @@ list of `Stage`s → N `Sink`s, all driven by `Run(ctx)`.
 - a `collector.Stage`: `Process`/`Annotate` resolves an event to a `PodIdentity` by cgroup ID,
   then by pod UID (the egress source pre-fills it), then by PID (parsing
   `<procRoot>/<pid>/cgroup`), and **drops** the event if none of those hit, counting
-  `kyverno_runtime_attribution_misses_total`. Dropping unattributed events is only defensible
+  `nirmata_runtime_attribution_misses_total`. Dropping unattributed events is only defensible
   because the miss is counted — a silent drop would hide an attribution regression, which is
   exactly what #38 was.
 
@@ -385,7 +385,7 @@ userspace re-evaluation is what attributes that deny to the policy whose lists p
 kernel maps are per-pod flat sets with no policy dimension, so policy identity cannot come from
 the kernel. Those findings say the operation *was* denied (`Finding.Enforced` is true). A kernel
 deny that no tracked enforce-mode policy explains bumps
-`kyverno_runtime_events_dropped_total{source="monitor",reason="unattributed_kernel_deny"}` and is
+`nirmata_runtime_events_dropped_total{source="monitor",reason="unattributed_kernel_deny"}` and is
 logged at V(2): a kernel deny must never vanish silently.
 
 ### Reporter (`pkg/reporter`)
@@ -394,7 +394,7 @@ logged at V(2): a kernel deny must never vanish silently.
 behavior, pod, and target), and flushes every 10 seconds into one namespaced OpenReports `Report`
 per (namespace, node) named `kyverno-runtime-<nodeName>`. Merging preserves `count`,
 `firstTimestamp`, and `lastTimestamp`; results are capped at 500 with a
-`runtime.kyverno.io/truncated-results` annotation; a flush whose results are byte-identical to
+`runtime.nirmata.io/truncated-results` annotation; a flush whose results are byte-identical to
 what is already stored is skipped rather than written. `Run(ctx)` flushes once more after
 cancellation, on a fresh bounded context, so the last window is not lost on shutdown. It writes
 through a `sigs.k8s.io/controller-runtime/pkg/client.Client` built from the daemon's `rest.Config`
@@ -448,12 +448,12 @@ log)` exposes `/metrics` and returns cleanly on context cancellation.
 `--metrics-addr=:{{ .Values.daemon.metrics.port }}` and declares the matching `containerPort`.
 An empty value disables the endpoint without disabling the counters.
 
-Populated today, all under the `kyverno_runtime` namespace:
-`events_ingested_total{source,kind}`, `events_dropped_total{source,reason}`,
+`pkg/metrics/metrics.go` registers exactly five collectors, all under the `nirmata_runtime`
+namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,reason}`,
 `attribution_misses_total`, `findings_emitted_total{policy,behavior,severity}`, and
-`report_writes_total{result}`. `policy_eval_errors_total{policy,stage}`, `ai_classified_total`, and
-`inventory_syncs_total` are registered so that the code paths that will feed them add no new metrics
-file, but nothing increments them yet.
+`report_writes_total{result}`. The `reason` values something produces are `buffer_full`
+(`pkg/collector`), `unattributed` (`pkg/monitor`, `pkg/reporter`), and
+`unattributed_kernel_deny` (`pkg/monitor`).
 
 ## Helm chart / deployment shape
 
@@ -483,9 +483,8 @@ future `PLAN.md`.
   `+kubebuilder:default` (`api/v1alpha1/runtimepolicy_types.go`), so it compiles to `""`, which is
   neither `enforce` nor an observe mode, and both managers return early. `monitor` now works (see
   [The event plane](#the-event-plane)), but a policy that omits the field enforces nothing and
-  reports nothing. Every example in `docs/runtimepolicy.md` other than the monitor-mode one still
-  omits `mode`. Untracked; a `+kubebuilder:default=enforce` or an admission-time requirement is the
-  obvious fix and is a breaking change either way.
+  reports nothing. Untracked; a `+kubebuilder:default=enforce` or an admission-time requirement is
+  the obvious fix and is a breaking change either way.
 - **Monitor-mode observation is poll-based and lossy at the edges.** This is a deliberate
   consequence of shipping monitor mode on the already-compiled `.o` files rather than new kernel
   programs:
@@ -498,7 +497,7 @@ future `PLAN.md`.
   - No DNS, TLS SNI, or HTTP visibility exists, and no new kernel programs are loaded by this
     code.
 - **`open`/`exec` rules from separate policies intersect instead of unioning.**
-  `docs/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
+  `docs/users/reference/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
   policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each
   policy its own LSM program with its own `allowed`/`banned`/`default_deny` maps and has no
   cross-policy default-deny tracking. Since the kernel denies when any attached LSM program returns
