@@ -4,6 +4,7 @@ Kyverno policies for eBPF runtime enforcement.
 
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.29+-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://golang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## 🚀 What is Nirmata Runtime?
 
@@ -157,6 +158,10 @@ Contributions are welcome. See **[docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.
 build and test mechanics, the test layout, and how generated artifacts are regenerated.
 Sign your commits (`git commit -s`). Bugs and feature requests go to
 [GitHub issues](https://github.com/nirmata/kyverno-runtime/issues).
+
+## 📄 License
+
+Nirmata Runtime is licensed under the [Apache License 2.0](LICENSE).
 
 ## 🔗 References
 

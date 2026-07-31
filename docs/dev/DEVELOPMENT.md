@@ -334,3 +334,7 @@ issue rather than a product regression.
 - [DESIGN.md](DESIGN.md) for architectural context.
 - [Agents.md](../../Agents.md) for the package map and task workflow.
 - [GitHub Issues](https://github.com/nirmata/kyverno-runtime/issues).
+
+## License
+
+[Apache License 2.0](../../LICENSE). Contributions are accepted under the same terms.
