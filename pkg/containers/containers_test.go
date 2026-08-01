@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // setCgroupMount points the package level cgroup detection result at a test
@@ -487,6 +489,57 @@ func TestResolveCgInfosNilAndEmptyPod(t *testing.T) {
 	got, err = ResolveCgInfos(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "1-2-3"}})
 	if err != nil || len(got) != 0 {
 		t.Errorf("ResolveCgInfos(pod without statuses) = (%+v, %v), want (empty, nil)", got, err)
+	}
+}
+
+func TestCgroupPodUIDPrefersStaticPodConfigHash(t *testing.T) {
+	mirrorUID := "730e610d-5d39-4125-b7f9-420afead9035"
+	configHash := "129636dd4b80c88d09e934b98c18d4f4"
+
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		want string
+	}{{
+		name: "static pod uses the config hash the kubelet named the cgroup with",
+		pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			UID:         types.UID(mirrorUID),
+			Annotations: map[string]string{configHashAnnotation: configHash},
+		}},
+		want: configHash,
+	}, {
+		name: "ordinary pod uses its own uid",
+		pod:  &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: types.UID(mirrorUID)}},
+		want: mirrorUID,
+	}, {
+		name: "empty annotation is not a hash",
+		pod: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			UID:         types.UID(mirrorUID),
+			Annotations: map[string]string{configHashAnnotation: ""},
+		}},
+		want: mirrorUID,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cgroupPodUID(tt.pod); got != tt.want {
+				t.Errorf("cgroupPodUID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The kubelet does not escape the config hash, and it contains no '-' to
+// escape, so the static pod slice name must carry it verbatim.
+func TestBuildCandidatePathsAcceptsConfigHashVerbatim(t *testing.T) {
+	configHash := "129636dd4b80c88d09e934b98c18d4f4"
+	want := "/sys/fs/cgroup/kubelet.slice/kubelet-kubepods.slice/" +
+		"kubelet-kubepods-burstable.slice/kubelet-kubepods-burstable-pod" + configHash +
+		".slice/cri-containerd-abc.scope"
+
+	paths := buildCandidatePaths("/sys/fs/cgroup", "containerd", configHash, "abc", "burstable")
+	if !slices.Contains(paths, want) {
+		t.Errorf("buildCandidatePaths() did not offer %q; got %v", want, paths)
 	}
 }
 

@@ -118,7 +118,7 @@ func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Cont
 	}
 	qos := strings.ToLower(string(pod.Status.QOSClass))
 
-	paths := buildCandidatePaths(cg.mountPoint, runtime, string(pod.UID), containerID, qos)
+	paths := buildCandidatePaths(cg.mountPoint, runtime, cgroupPodUID(pod), containerID, qos)
 	for _, path := range paths {
 		var stat syscall.Stat_t
 		if err := syscall.Stat(path, &stat); err == nil {
@@ -128,6 +128,21 @@ func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Cont
 
 	return nil, fmt.Errorf("cgroup path not found for container %s (id %s, runtime %s, %d candidates tried)",
 		cs.Name, containerID, runtime, len(paths))
+}
+
+// configHashAnnotation is set by the kubelet on the mirror pod it publishes for
+// a static pod.
+const configHashAnnotation = "kubernetes.io/config.hash"
+
+// cgroupPodUID returns the identifier the kubelet used to name the pod's cgroup
+// directory. For a static pod that is the config hash, not .metadata.uid: the
+// API object is a mirror pod whose UID the kubelet generates separately, so
+// searching by it finds nothing on any node.
+func cgroupPodUID(pod *corev1.Pod) string {
+	if hash := pod.Annotations[configHashAnnotation]; hash != "" {
+		return hash
+	}
+	return string(pod.UID)
 }
 
 // parseContainerID splits a CRI container reference ("<runtime>://<id>") into
