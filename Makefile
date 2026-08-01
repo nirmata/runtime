@@ -157,7 +157,7 @@ ko-push:
 
 # Create a kind cluster and install all components
 kind:
-	kind create cluster --name $(KIND_CLUSTER_NAME) || true
+	kind create cluster --name $(KIND_CLUSTER_NAME) --config test/e2e/kind-config.yaml || true
 	$(MAKE) kind-install
 
 # Load the locally built image into a kind cluster

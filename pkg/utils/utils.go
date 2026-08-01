@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
@@ -21,8 +24,16 @@ func DiffSlice[T comparable](a, b []T) []T {
 	return out
 }
 
+// BpfLSMEnabled reports whether "bpf" is in the kernel's active LSM list. A
+// non-nil error means the list could not be read at all, which callers must not
+// treat as "disabled": the usual cause is securityfs being unmounted in the
+// current mount namespace, and the kernel underneath may well have BPF-LSM on.
 func BpfLSMEnabled() (bool, error) {
-	data, err := os.ReadFile("/sys/kernel/security/lsm")
+	const lsmList = "/sys/kernel/security/lsm"
+	data, err := os.ReadFile(lsmList)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("%s is absent; securityfs is probably not mounted here: %w", lsmList, err)
+	}
 	if err != nil {
 		return false, err
 	}
