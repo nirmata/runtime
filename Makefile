@@ -211,6 +211,11 @@ test-e2e-gate:
 test-e2e-egress:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-enforce/
 
+# Application-protocol enforcement behavior. Same kernel requirements as
+# test-e2e-egress: cgroup v2 + CAP_BPF, no BPF-LSM.
+test-e2e-protocol:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/protocol-enforce/
+
 # BPF-LSM open/exec enforcement behavior. REQUIRES a host booted with BPF-LSM
 # ('bpf' in /sys/kernel/security/lsm). Not part of test-e2e; see issue #60.
 test-e2e-lsm:
@@ -242,4 +247,4 @@ helm-verify:
 		| grep -q -- '--metrics-addr=:19090'
 	@echo "helm chart renders"
 
-.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-chainsaw fmt lint lint-docs helm-verify run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-chainsaw fmt lint lint-docs helm-verify run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

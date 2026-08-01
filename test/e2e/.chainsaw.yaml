@@ -10,6 +10,9 @@
 #                      and the daemon does not crash. Proves nothing about eBPF.
 #   egress-enforce/ -- a real behavioral assertion: cgroup egress allow/deny.
 #                      Needs cgroup v2 + BPF; does NOT need BPF-LSM.
+#   protocol-enforce/ -- behavioral assertion for the application-protocol
+#                      classifier: per-protocol verdicts on one destination
+#                      and port. Same kernel requirements as egress-enforce.
 #   dispatch-only/  -- excluded from the default run. Requires `lsm=bpf` in
 #                      /sys/kernel/security/lsm, which GitHub hosted runners do
 #                      not have (issue #60). Run via the workflow_dispatch lane
