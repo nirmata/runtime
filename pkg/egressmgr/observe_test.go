@@ -99,7 +99,7 @@ func TestModeTransitionsRebuildProgramming(t *testing.T) {
 
 		mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeUpdate)
 
-		wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, []string{"*"})})
+		wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
 		wantPairs(t, "AddIps", f.adds, nil)
 		wantLiveIps(t, f, []string{}, []string{})
 		wantDefaultDeny(t, f, false)

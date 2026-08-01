@@ -2,6 +2,7 @@ package egressmgr
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -58,6 +59,10 @@ type podAttachment struct {
 	cgs             map[containers.ContainerCgroupInfo]link.Link
 	filter          egressFilter
 	attachedFilters map[string]*compiler.EvaluationResult
+
+	// the policy uids that asked for each programmed address, per side
+	allowOwners map[netip.Addr]map[string]struct{}
+	denyOwners  map[netip.Addr]map[string]struct{}
 }
 
 func NewEgressManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder) *EgressManager {
@@ -124,7 +129,7 @@ func (e *EgressManager) attachPolicy(podUid string, pa *podAttachment, rp *compi
 		return
 	}
 
-	e.addIps(podUid, rp.UID, pa.filter, rp.IPs)
+	e.addIps(podUid, rp.UID, pa, rp.IPs)
 	if denyHasStar(rp.IPs) {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 		pa.defaultDeny[rp.UID] = struct{}{}
@@ -148,7 +153,7 @@ func (e *EgressManager) detachPolicy(podUid string, pa *podAttachment, uid strin
 		return
 	}
 
-	e.deleteIps(podUid, uid, pa.filter, programmed)
+	e.deleteIps(podUid, uid, pa, programmed)
 	delete(pa.defaultDeny, uid)
 	if len(pa.defaultDeny) == 0 {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
@@ -156,18 +161,21 @@ func (e *EgressManager) detachPolicy(podUid string, pa *podAttachment, uid strin
 }
 
 // addIps programs a pair and surfaces anything the kernel maps could not hold.
-// uid is empty when the pair aggregates several policies (pod creation), and the
-// rejections are then logged without a policy status to attribute them to.
-func (e *EgressManager) addIps(podUid, uid string, f egressFilter, pair *compiler.AllowDenyPair) {
-	rejected, err := f.AddIps(pair)
+func (e *EgressManager) addIps(podUid, uid string, pa *podAttachment, pair *compiler.AllowDenyPair) {
+	pa.claim(uid, pair)
+	rejected, err := pa.filter.AddIps(pair)
 	if err != nil {
 		e.logger.Error(err, "failed to program egress targets", "podUid", podUid, "policy", uid)
 	}
 	e.surfaceRejected(podUid, uid, rejected)
 }
 
-func (e *EgressManager) deleteIps(podUid, uid string, f egressFilter, pair *compiler.AllowDenyPair) {
-	rejected, err := f.DeleteIps(pair)
+func (e *EgressManager) deleteIps(podUid, uid string, pa *podAttachment, pair *compiler.AllowDenyPair) {
+	orphaned := pa.release(uid, pair)
+	if !orphaned.HasEntries() {
+		return
+	}
+	rejected, err := pa.filter.DeleteIps(orphaned)
 	if err != nil {
 		e.logger.Error(err, "failed to remove egress targets", "podUid", podUid, "policy", uid)
 	}

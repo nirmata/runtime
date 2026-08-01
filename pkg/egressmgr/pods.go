@@ -34,7 +34,6 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		pa.cgs[*cg] = l
 	}
 
-	ips := &compiler.AllowDenyPair{}
 	for rpName, rp := range e.rps {
 		if !selectorMatches(rp.Selector, pod.Labels) {
 			continue
@@ -47,9 +46,10 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 			continue
 		}
 
-		if rp.IPs != nil {
-			ips.Allow = append(ips.Allow, rp.IPs.Allow...)
-			ips.Deny = append(ips.Deny, rp.IPs.Deny...)
+		// programmed per policy rather than as one aggregate pair so each
+		// address records the policy that wants it
+		if rp.IPs.HasEntries() {
+			e.addIps(string(pod.UID), rp.UID, pa, rp.IPs)
 		}
 
 		if denyHasStar(rp.IPs) {
@@ -63,11 +63,6 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	// every pod with an attached policy is observed, whatever mode it is in
 	if len(pa.attachedFilters) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
-	}
-
-	// ban ips in case there was a rp that matched
-	if ips.HasEntries() {
-		e.addIps(string(pod.UID), "", pa.filter, ips)
 	}
 
 	e.pods[string(pod.UID)] = pa

@@ -138,7 +138,7 @@ func TestRpUpdatedLeavingTrackedModeTearsDown(t *testing.T) {
 	if _, ok := e.rps["rp-1"]; ok {
 		t.Error("policy still tracked after leaving every supported mode")
 	}
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, []string{"*"})})
+	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
 	wantLiveIps(t, f, []string{}, []string{})
 	wantDefaultDeny(t, f, false)
 	wantDefaultDenyOwners(t, e, "pod-1")
@@ -215,7 +215,7 @@ func TestRpUpdatedWildcardAddedThenRemoved(t *testing.T) {
 
 	// "*" leaves the deny list
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil), events.EventTypeUpdate)
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair(nil, []string{"*"})})
+	wantPairs(t, "DeleteIps", f.deletes, nil)
 	wantDefaultDeny(t, f, false)
 	wantDefaultDenyOwners(t, e, "pod-1")
 	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
@@ -306,7 +306,7 @@ func TestRpDeletedRemovesAttachedIpsPerPod(t *testing.T) {
 
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 
-	wantPairs(t, "DeleteIps(web)", web.deletes, []ipPair{pair([]string{"1.1.1.1"}, []string{"*"})})
+	wantPairs(t, "DeleteIps(web)", web.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
 	wantLiveIps(t, web, []string{}, []string{})
 	wantDefaultDeny(t, web, false)
 	wantAttachedRps(t, e, "pod-web")
