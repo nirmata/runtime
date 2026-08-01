@@ -11,8 +11,9 @@
 # so test/e2e/kind-config.yaml binds it in. The precondition below reports the
 # two failures differently because they have different fixes.
 #
-# To run it, you need a host booted with BPF-LSM (bare metal, a VM you control,
-# or a self-hosted runner):
+# To run it, you need a host booted with BPF-LSM: bare metal, a self-hosted
+# runner, or a VM you control. Docker Desktop's LinuxKit VM qualifies as shipped,
+# so a kind cluster on macOS runs this suite:
 #   make kind-install && make test-e2e-lsm
 # or trigger the `lsm-behavior` job of .github/workflows/ci.yml via
 # workflow_dispatch on a runner that satisfies the precondition step below.

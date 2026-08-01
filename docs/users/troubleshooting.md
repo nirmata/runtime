@@ -19,8 +19,12 @@ Work through these in order.
    enforcement.
 
    ```bash
-   kubectl -n kyverno-runtime exec <daemon-pod> -- cat /host/sys/kernel/security/lsm
+   kubectl debug node/<node> -it --image=busybox:1.36 -- cat /host/sys/kernel/security/lsm
    ```
+
+   Read it from the node, not from the daemon pod: that image is distroless and has
+   neither a shell nor `cat`. If the file is missing entirely, securityfs is not
+   mounted where you are looking — that is not evidence BPF-LSM is off.
 
 3. **For `network` policies: is the node on cgroup v2?** Network egress enforcement
    and observation require only a cgroup v2 host and BPF support; a stock kind cluster

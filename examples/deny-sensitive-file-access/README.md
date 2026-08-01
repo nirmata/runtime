@@ -17,17 +17,18 @@ Path matching is exact. The kernel maps are keyed on the resolved path string, s
 
 File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active:
 `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot
-parameter). Stock distributions and hosted CI runners are typically not booted with it.
+parameter). Stock distributions and hosted CI runners are typically not booted with it;
+Docker Desktop's LinuxKit VM is, so a kind cluster on macOS runs these examples.
 
 Check before you start — if `bpf` is missing, the LSM programs cannot even be loaded and
 nothing below will be blocked:
 
 ```bash
-kubectl -n kyverno-runtime exec \
-  "$(kubectl -n kyverno-runtime get pod -l app.kubernetes.io/name=kyverno-runtime \
-       -o jsonpath='{.items[0].metadata.name}')" \
-  -- cat /host/sys/kernel/security/lsm
+kubectl debug node/<node> -it --image=busybox:1.36 -- cat /host/sys/kernel/security/lsm
 ```
+
+Read it from the node, not from the agent pod: that image is distroless and has neither
+a shell nor `cat`.
 
 Nirmata Runtime must be installed — see [installation](../../docs/users/installation.md).
 The policy runs in `mode: enforce`.

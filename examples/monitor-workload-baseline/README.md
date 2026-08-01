@@ -19,7 +19,8 @@ entries the report showed, then switching `mode` to `enforce`. Compare
 
 File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active:
 `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot
-parameter). Stock distributions and hosted CI runners are typically not booted with it.
+parameter). Stock distributions and hosted CI runners are typically not booted with it;
+Docker Desktop's LinuxKit VM is, so a kind cluster on macOS runs these examples.
 
 Network egress enforcement and observation require only a cgroup v2 host and BPF support;
 a stock kind cluster on a Linux host qualifies.
