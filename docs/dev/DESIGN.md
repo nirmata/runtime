@@ -112,8 +112,8 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
 | `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. `enforce` programs the deny/allow maps; `monitor` attaches the same programs with empty maps and evaluates observations in userspace (see [The event plane](#the-event-plane)). Optional with no default: a policy that omits `mode` is inert — see [Known Gaps](#known-gaps--future-work). |
 
-Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, or `open`, enforced by
-an `XValidation` rule: `(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1`.
+Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, `open`, or `protocol`,
+enforced by an `XValidation` rule counting the four `has(self.*)` results.
 Each behavior (`Behavior` type) has an optional `allow` and/or `deny` (`BehaviorRule`), and each
 rule has a literal `values []string` and/or a CEL `expression string` — the compiler unions the
 two (`pkg/compiler/compiler.go: compileBehavior`, `pkg/compiler/policy.go: evalCompiledBehavior`).
@@ -122,6 +122,11 @@ Semantics (see `docs/runtimepolicy.md` for the full reference with examples):
 
 - `network` values are IPv4 addresses (egress), `exec` values are command names/paths, `open`
   values are file paths.
+- `protocol` values are application-protocol tokens for egress flows, classified from the first
+  data segment of a connection: `ssh`, `tls`, `tls/<alpn>`, `http1`, `h2c`, `quic`, and `unknown`
+  (traffic the classifier could not label). The grammar is defined once, in
+  `pkg/compiler/protocolvalue.go: ParseProtocolValue`, and consumed by admission validation,
+  program-time map filling (`protofilter.ParseTargets`) and monitor-mode matching.
 - `deny.values: ["*"]` (or an expression producing `["*"]`) is a **default-deny** sentinel for that
   behavior type: that behavior becomes deny-all-except-allowed for matched pods, instead of the
   default allow-all-except-denied.
@@ -273,17 +278,48 @@ correct.
 the pointer that pods' `attachedFilters` entries share (`82acb1f`), so a policy update does not leave
 pods pointing at stale IP data.
 
+### Application protocol (`pkg/egressmgr`, `pkg/bpf/protofilter`)
+
+The `protocol` behavior is enforced by a second `cgroup_skb/egress` program,
+`pkg/bpf/protofilter/_cprog/probe.c`, attached by `EgressManager` to the same per-container cgroup
+paths as the IP filter (both programs run on every egress packet; the effective verdict is the AND
+of their return values). Where the IP filter decides at `connect` time from `ip->daddr`, the
+classifier's verdict is deferred to the **first data segment** of a flow, which is where the
+protocol evidence lives:
+
+- The IP family comes from `skb->protocol`, never from payload bytes, so IPv4 and IPv6 cannot be
+  misread as each other. An IPv6 extension-header chain, ICMP, and every other unparseable L4 are
+  classified `unknown` rather than skipped.
+- TCP packets with no payload pass (the verdict is deferred); the first data segment is matched
+  against the SSH banner, the 24-byte h2c preface, the TLS record header (then a bounded walk of
+  the ClientHello for the first offered ALPN entry), and the HTTP/1 method tokens. UDP classifies
+  on the first packet: a QUIC v1 long header or `unknown`. A ClientHello that does not fit in one
+  segment classifies `unknown`, deliberately: folding it into `tls` or the default would make the
+  control untrustworthy.
+- The decision comes from `allowed_protos`/`banned_protos` maps keyed by the padding-free
+  `{proto id, alpn[16]}` pair — an empty ALPN key means "this protocol with any ALPN" — plus the
+  same `flags` default-deny/observe bits the IP filter uses. Compute decision → record it in
+  `proto_events` (decision in the key, once per flow) → cache the verdict in an LRU flow map →
+  enforce, in that order.
+- `EgressManager` tracks the protocol default-deny refcount per pod (`podAttachment.protoDefaultDeny`)
+  independently of the network one, diffs the `Protocols` pair on policy update exactly as it diffs
+  `IPs`, and drains `proto_events` in `CollectObservations` into `KindProtocol` events.
+
+A denial is therefore a mid-connection drop of the first data segment (the client sees a stalled
+connection), not `-EPERM` at `sendmsg` — which is exactly why `protocol` is a separate behavior
+kind rather than another value shape in `network`.
+
 ## The event plane
 
 Enforcement is a kernel-side map lookup and produces no userspace output. Monitor mode needs the
 opposite: a stream of what a workload actually did, attributed to a pod, matched against policy
-in userspace. That is the event plane. It is built on the counters the **existing** BPF objects
-already keep — no new kernel programs, no ring buffers, no new `.o` files.
+in userspace. That is the event plane. It is built on per-cgroup counters the BPF objects keep —
+no ring buffers, no per-event kernel-to-user traffic.
 
 ### Normalized events (`pkg/runtimeevent`)
 
 `runtimeevent.Event` is the single currency of the plane: a `Kind`
-(`net|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
+(`net|exec|open|protocol`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
 (observations are deltas, not individual occurrences), two deliberately distinct deny flags —
 `KernelDenied`, the kernel's actual enforcement decision, set only by the BPF poll sources from
 the decision dimension of the observation maps, and `WouldDeny`, monitor mode's counterfactual,
@@ -304,7 +340,8 @@ Both managers grew a `CollectObservations(ctx) ([]runtimeevent.Event, error)` me
 
 - `pkg/egressmgr/observe.go` walks the pods that have at least one observe-mode policy attached
   (the `OBSERVE` flag is refcounted per pod, so a pod with an empty observe set is not counting)
-  and drains that pod's `ip_events` counters via `egressfilter.ReadIPEvents`. Reads are
+  and drains that pod's `ip_events` counters via `egressfilter.ReadIPEvents` and its
+  `proto_events` counters via `protofilter.ReadProtoEvents`. Reads are
   destructive, so `Count` is the delta since the previous poll. The pod UID and labels are
   pre-filled, since the poll source knows the pod but not the cgroup.
 - `pkg/lsmmgr/observe.go` walks **every** program type of **every** attachment and drains each

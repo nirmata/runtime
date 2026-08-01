@@ -8,7 +8,9 @@
 - [Findings and Reports](#findings-and-reports)
 - [Metrics](#metrics)
 - [Limits of monitor mode](#limits-of-monitor-mode)
+- [Limits of protocol classification](#limits-of-protocol-classification)
 - [Example: RuntimePolicy](#example-runtimepolicy)
+- [Example: application-protocol default deny](#example-application-protocol-default-deny)
 - [Example: deny using a CEL expression](#example-deny-using-a-cel-expression)
 - [Example: allow using values and expressions](#example-allow-using-values-and-expressions)
 - [Example: default deny with an allow list](#example-default-deny-with-an-allow-list)
@@ -19,15 +21,15 @@
 
 ## Spec reference
 
-Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, or `open`.
-Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
+Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, `open`, or
+`protocol`. Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
 `values` list, a CEL `expression` that evaluates to `list(string)`, or both (the two
 are unioned):
 
 ```yaml
 spec:
   behaviors:
-  - network:            # exactly one of network | exec | open per list item
+  - network:            # exactly one of network | exec | open | protocol per list item
       allow:
         values: [...]        # literal list of allowed items
         expression: "..."    # CEL expression returning list(string), unioned with values
@@ -39,8 +41,14 @@ spec:
 - `network`: IPv4 addresses for egress.
 - `exec`: command names/paths.
 - `open`: file paths.
+- `protocol`: application protocols for egress, classified from the first data segment of each
+  flow. Values are `ssh`, `tls`, `tls/<alpn>` (e.g. `tls/h2`, `tls/http/1.1`), `http1`, `h2c`,
+  `quic`, and `unknown`. `unknown` is traffic the classifier could not label — a deliberate,
+  separate token, never folded into `*`, so a policy has to say which way unclassifiable traffic
+  goes. `network` and `protocol` evaluate independently and AND together: a connection must pass
+  both. See [Limits of protocol classification](#limits-of-protocol-classification).
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a
-  **default deny** for that behavior (`network`, `exec`, or `open`). This is
+  **default deny** for that behavior (`network`, `exec`, `open`, or `protocol`). This is
   evaluated across all `RuntimePolicy` objects matching a pod: if any one of
   them sets a default deny for a behavior, that behavior becomes
   deny-all-except-allowed, and the allow list is the union of `allow` entries
@@ -92,7 +100,8 @@ In `monitor` mode the same eBPF programs are attached to the same matched pods, 
 the programs do is *count* what the workload touched:
 
 - the LSM programs count every `file_open` / `bprm_check_security` path per cgroup;
-- the egress program counts every destination IPv4 address per pod.
+- the egress program counts every destination IPv4 address per pod;
+- the protocol classifier counts every classified `(protocol, decision)` per pod, once per flow.
 
 The daemon polls those counters every 10 seconds, attributes each observation to a pod (via the
 cgroup ID → pod index built from the local pod watch), and evaluates the policy's `allow`/`deny`
@@ -131,7 +140,7 @@ status:
   - type: TargetsValid
     status: "False"
     reason: UnsupportedTargets
-    message: '2 network target(s) cannot be programmed: "example.com": not an IPv4 ...'
+    message: '2 egress target(s) are not enforced: "example.com": not an IPv4 ...'
 ```
 
 Conditions:
@@ -139,7 +148,7 @@ Conditions:
 | Type | Reasons | Meaning |
 | --- | --- | --- |
 | `Applied` | `Enforcing`, `Monitoring` | The daemon has the policy loaded, and in which mode. |
-| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why. |
+| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets` | Whether every `network` and `protocol` target could be programmed. `UnsupportedTargets` lists the rejected values and why. |
 | `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy would silently produce no findings. |
 
 A target the runtime cannot program is never silently skipped: it always reaches both an
@@ -157,7 +166,7 @@ kubectl get report kyverno-runtime-node-1 -n default -o yaml
 ```
 
 Each result carries `policy` (the RuntimePolicy name), `rule` (the behavior: `network`,
-`open`, `exec`), `result: fail`, `severity: medium` (`RuntimePolicy` has no severity field yet),
+`open`, `exec`, `protocol`), `result: fail`, `severity: medium` (`RuntimePolicy` has no severity field yet),
 `source: kyverno-runtime`, `category: Runtime Security`, the offending pod as
 `subjects[0]`, and a fixed set of `properties`: `fingerprint`, `count`, `firstTimestamp`,
 `lastTimestamp`, `behavior`, `node`, `container`, `owner`, `serviceAccount`, and — where
@@ -212,6 +221,35 @@ current limits, not rounding errors:
   `kyverno_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.
 
+## Limits of protocol classification
+
+The `protocol` behavior classifies each flow from its **first data segment**, in the kernel, and
+nothing else. Its verdict is deferred until that segment exists, so a denial is a mid-connection
+drop (the client sees a stalled connection and a timeout), not a `connect`-time error. These are
+the honest boundaries of that design:
+
+- **Only client-speaks-first protocols are classifiable.** MySQL, SMTP, IMAP, POP3 and FTP start
+  with a server banner the egress hook never sees; the client's first segment carries no usable
+  signature, so those flows classify as `unknown`.
+- **gRPC over TLS is indistinguishable from HTTPS.** Both negotiate ALPN `h2`; the header that
+  separates them is inside the encryption. There is deliberately no `grpc` token — it would be a
+  control that silently does nothing.
+- **QUIC is identifiable as QUIC and nothing finer.** The Initial packet's ClientHello is
+  encrypted under derived keys, so no SNI or ALPN survives. An HTTP/3 client is `quic`, never
+  `tls/h3` — which is why `quic` is a first-class token: an `allow: [tls]` rule does not cover it.
+- **`tls/<alpn>` matches the client's first (most-preferred) offered ALPN entry**, byte-exact. A
+  ClientHello without an ALPN extension matches only the bare `tls` token. An Encrypted
+  ClientHello hides SNI but not the outer ALPN.
+- **A ClientHello that spans TCP segments classifies as `unknown`**, not `tls` — post-quantum key
+  shares routinely push it past one MTU. This is visible by design: say what `unknown` should do
+  rather than letting truncated handshakes take the default.
+- **Every flow gets a classification, including UDP and ICMP.** DNS over UDP, for example, is
+  `unknown`. A `protocol` default deny (`deny: ["*"]`) therefore blocks DNS unless the policy
+  allows `unknown` or the workload resolves elsewhere — scope the policy accordingly.
+- **Classification happens once per flow** and the verdict is cached (an LRU map of 8192 flows per
+  pod). Traffic that predates the policy or an evicted entry re-classifies on the next data
+  segment, which for a mid-stream segment means `unknown`.
+
 ## Example: RuntimePolicy
 
 Deny loopback egress by literal value:
@@ -235,6 +273,35 @@ spec:
 ```bash
 kubectl apply -f loopback-egress.yaml
 kubectl get runtimepolicy detect-loopback-egress
+```
+
+## Example: application-protocol default deny
+
+Allow only HTTPS-shaped egress; deny SSH (even on port 443), any other protocol, and anything the
+classifier cannot label. Destination scoping stays in `network`, and the two behaviors AND
+together:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: web-egress-protocols
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: web
+  behaviors:
+  - protocol:
+      allow:
+        values: ["tls/h2", "tls/http/1.1"]
+      deny:
+        values: ["*", "unknown"]
+  - network:
+      allow:
+        values: ["10.0.0.0/24"]
+      deny:
+        values: ["*"]
 ```
 
 ## Example: deny using a CEL expression
