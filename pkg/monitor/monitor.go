@@ -19,9 +19,10 @@ import (
 
 // Behavior names emitted on findings; they match reporter.Finding.Behavior.
 const (
-	BehaviorNetwork = "network"
-	BehaviorOpen    = "open"
-	BehaviorExec    = "exec"
+	BehaviorNetwork  = "network"
+	BehaviorOpen     = "open"
+	BehaviorExec     = "exec"
+	BehaviorProtocol = "protocol"
 )
 
 // sinkName is the runtimeevent.Sink name, also used as the metric source label.
@@ -53,11 +54,12 @@ type trackedPolicy struct {
 	// attributes the kernel's actual denies.
 	mode     string
 	selector labels.Selector
-	// net, open and exec are nil when the policy lists nothing for that
-	// behavior.
-	net  *netBehavior
-	open *pathBehavior
-	exec *pathBehavior
+	// net, open, exec and protocol are nil when the policy lists nothing for
+	// that behavior.
+	net      *netBehavior
+	open     *pathBehavior
+	exec     *pathBehavior
+	protocol *protoBehavior
 }
 
 // Monitor implements events.RuntimePolicyEventHandler (policy tracking) and
@@ -124,9 +126,10 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 		net:      compileNetBehavior(rp.IPs),
 		open:     compilePathBehavior(rp.Open),
 		exec:     compilePathBehavior(rp.Exec),
+		protocol: compileProtocolBehavior(rp.Protocols),
 	}
-	if tp.net == nil && tp.open == nil && tp.exec == nil {
-		m.untrack(rp.UID, "policy has no network, open or exec entries")
+	if tp.net == nil && tp.open == nil && tp.exec == nil && tp.protocol == nil {
+		m.untrack(rp.UID, "policy has no network, open, exec or protocol entries")
 		return nil
 	}
 	if tp.selector == nil {
@@ -141,7 +144,7 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 	m.mu.Unlock()
 
 	m.log.V(2).Info("tracking policy", "policy", tp.name, "uid", tp.uid, "mode", tp.mode,
-		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil)
+		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil, "protocol", tp.protocol != nil)
 	return nil
 }
 
@@ -260,6 +263,8 @@ func (tp *trackedPolicy) eval(behavior string, ev runtimeevent.Event) decision {
 		return tp.open.eval(ev.Open.Path)
 	case BehaviorExec:
 		return tp.exec.eval(ev.Exec.Filename)
+	case BehaviorProtocol:
+		return tp.protocol.eval(ev.Protocol.Protocol, ev.Protocol.ALPN)
 	}
 	return decision{}
 }
@@ -333,6 +338,15 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 			return "", ""
 		}
 		return BehaviorExec, ev.Exec.Filename
+	case runtimeevent.KindProtocol:
+		if ev.Protocol == nil || ev.Protocol.Protocol == "" {
+			return "", ""
+		}
+		target := ev.Protocol.Protocol
+		if ev.Protocol.ALPN != "" {
+			target += "/" + ev.Protocol.ALPN
+		}
+		return BehaviorProtocol, target
 	}
 	return "", ""
 }
@@ -356,6 +370,8 @@ func message(policy, behavior, target string, d decision, count uint32, enforced
 		b.WriteString("open of ")
 	case BehaviorExec:
 		b.WriteString("exec of ")
+	case BehaviorProtocol:
+		b.WriteString("egress protocol ")
 	}
 	b.WriteString(target)
 	if count > 1 {

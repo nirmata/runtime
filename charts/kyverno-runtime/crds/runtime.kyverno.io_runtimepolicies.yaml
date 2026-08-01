@@ -156,11 +156,47 @@ spec:
                               type: array
                           type: object
                       type: object
+                    protocol:
+                      description: |-
+                        Protocol defines application protocol behavior rules, evaluated
+                        against the first data segment of a connection.
+                      properties:
+                        allow:
+                          description: Allow specifies allowed network access.
+                          properties:
+                            expression:
+                              description: Expression is a CEL expression that evaluates
+                                to a list of items.
+                              type: string
+                            values:
+                              description: Values is a list of allowed or denied items
+                                (IPs, commands, files, etc.).
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        deny:
+                          description: Deny specifies denied network access.
+                          properties:
+                            expression:
+                              description: Expression is a CEL expression that evaluates
+                                to a list of items.
+                              type: string
+                            values:
+                              description: Values is a list of allowed or denied items
+                                (IPs, commands, files, etc.).
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                      type: object
                   type: object
                   x-kubernetes-validations:
-                  - message: exactly one of network, exec, or open must be specified
+                  - message: exactly one of network, exec, open, or protocol must
+                      be specified
                     rule: '(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0)
-                      + (has(self.open) ? 1 : 0) == 1'
+                      + (has(self.open) ? 1 : 0) + (has(self.protocol) ? 1 : 0) ==
+                      1'
                 type: array
               evaluationInterval:
                 description: EvaluationInterval specifies how frequently the policy

@@ -48,3 +48,28 @@ func validateNetworkBehavior(path *field.Path, b *v1alpha1.Behavior) field.Error
 	}
 	return errs
 }
+
+// validateProtocolBehavior validates the hardcoded allow/deny values of a
+// protocol behavior against ParseProtocolValue, reporting each offender as
+// field.Invalid at the exact value's field path. Every value the grammar
+// accepts is programmable, so there is no narrower program-time check.
+func validateProtocolBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
+	if b == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	check := func(path *field.Path, values []string) {
+		for i, v := range values {
+			if _, err := ParseProtocolValue(v); err != nil {
+				errs = append(errs, field.Invalid(path.Index(i), v, err.Error()))
+			}
+		}
+	}
+	if b.Allow != nil {
+		check(path.Child("allow").Child("values"), b.Allow.Values)
+	}
+	if b.Deny != nil {
+		check(path.Child("deny").Child("values"), b.Deny.Values)
+	}
+	return errs
+}

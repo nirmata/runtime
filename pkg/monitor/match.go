@@ -108,6 +108,59 @@ func (m pathMatcher) matches(path string) bool {
 	return ok
 }
 
+// protoMatcher is the compiled form of one side of a protocol behavior. A bare
+// token matches any event with that protocol, whatever its ALPN; a tls/<alpn>
+// value matches only tls with exactly that ALPN (case-sensitive, mirroring the
+// kernel classifier's byte comparison).
+type protoMatcher struct {
+	star   bool
+	tokens map[string]struct{}
+	alpns  map[string]struct{}
+}
+
+func newProtoMatcher(values []string) protoMatcher {
+	m := protoMatcher{}
+	for _, raw := range values {
+		v, err := compiler.ParseProtocolValue(raw)
+		if err != nil {
+			continue
+		}
+		switch {
+		case v.Star:
+			m.star = true
+		case v.ALPN != "":
+			if m.alpns == nil {
+				m.alpns = make(map[string]struct{}, len(values))
+			}
+			m.alpns[v.ALPN] = struct{}{}
+		default:
+			if m.tokens == nil {
+				m.tokens = make(map[string]struct{}, len(values))
+			}
+			m.tokens[v.Protocol] = struct{}{}
+		}
+	}
+	return m
+}
+
+// matches reports whether an explicit value covers the observed protocol. The
+// "*" sentinel is deliberately NOT a match here: it is the default-deny
+// marker, handled separately by eval. "unknown" is an ordinary token, never
+// folded into "*".
+func (m protoMatcher) matches(protocol, alpn string) bool {
+	if protocol == "" {
+		return false
+	}
+	if _, ok := m.tokens[protocol]; ok {
+		return true
+	}
+	if protocol == compiler.ProtocolTLS && alpn != "" {
+		_, ok := m.alpns[alpn]
+		return ok
+	}
+	return false
+}
+
 // netBehavior is a compiled network allow/deny pair.
 type netBehavior struct {
 	allow, deny netMatcher
@@ -116,6 +169,11 @@ type netBehavior struct {
 // pathBehavior is a compiled open or exec allow/deny pair.
 type pathBehavior struct {
 	allow, deny pathMatcher
+}
+
+// protoBehavior is a compiled protocol allow/deny pair.
+type protoBehavior struct {
+	allow, deny protoMatcher
 }
 
 // compileNetBehavior returns nil for a pair with no entries: the behavior is
@@ -132,6 +190,13 @@ func compilePathBehavior(p *compiler.AllowDenyPair) *pathBehavior {
 		return nil
 	}
 	return &pathBehavior{allow: newPathMatcher(p.Allow), deny: newPathMatcher(p.Deny)}
+}
+
+func compileProtocolBehavior(p *compiler.AllowDenyPair) *protoBehavior {
+	if !p.HasEntries() {
+		return nil
+	}
+	return &protoBehavior{allow: newProtoMatcher(p.Allow), deny: newProtoMatcher(p.Deny)}
 }
 
 // eval implements the network half of DESIGN §2.10: the destination violates
@@ -160,6 +225,21 @@ func (b *pathBehavior) eval(path string) decision {
 		return decision{violation: true}
 	}
 	if b.deny.star && !b.allow.matches(path) {
+		return decision{violation: true, defaultDeny: true}
+	}
+	return decision{}
+}
+
+// eval is the protocol form of netBehavior.eval, over the classified protocol
+// and its ALPN.
+func (b *protoBehavior) eval(protocol, alpn string) decision {
+	if b == nil || protocol == "" {
+		return decision{}
+	}
+	if b.deny.matches(protocol, alpn) {
+		return decision{violation: true}
+	}
+	if b.deny.star && !b.allow.matches(protocol, alpn) {
 		return decision{violation: true, defaultDeny: true}
 	}
 	return decision{}

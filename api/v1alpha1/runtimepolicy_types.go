@@ -52,7 +52,7 @@ type BehaviorRule struct {
 }
 
 // PolicyBehavior defines allow/deny rules for a specific behavior type.
-// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1",message="exactly one of network, exec, or open must be specified"
+// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) + (has(self.protocol) ? 1 : 0) == 1",message="exactly one of network, exec, open, or protocol must be specified"
 type PolicyBehavior struct {
 	// Network defines network behavior rules.
 	// +optional
@@ -65,6 +65,11 @@ type PolicyBehavior struct {
 	// Open defines file open behavior rules.
 	// +optional
 	Open *Behavior `json:"open,omitempty"`
+
+	// Protocol defines application protocol behavior rules, evaluated
+	// against the first data segment of a connection.
+	// +optional
+	Protocol *Behavior `json:"protocol,omitempty"`
 }
 
 // Behavoior defines the allowed and denied entries of a given type.

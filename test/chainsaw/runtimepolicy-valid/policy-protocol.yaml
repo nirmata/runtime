@@ -1,0 +1,19 @@
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-valid-protocol
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: chainsaw-target
+  behaviors:
+  - protocol:
+      allow:
+        values:
+        - tls/h2
+        - tls/http/1.1
+      deny:
+        values:
+        - "*"
+        - unknown

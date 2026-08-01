@@ -140,6 +140,10 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 					Exec: &v1alpha1.Behavior{
 						Deny: behaviorRule([]string{"exec-deny-hardcoded"}, ""),
 					},
+					Protocol: &v1alpha1.Behavior{
+						Allow: behaviorRule([]string{"tls/h2"}, `["quic"]`),
+						Deny:  behaviorRule([]string{"*"}, `["unknown"]`),
+					},
 				},
 			},
 		},
@@ -156,7 +160,7 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 	}
 
 	// expression results are accumulated before the hardcoded values, and the
-	// three behavior kinds stay independent accumulators.
+	// behavior kinds stay independent accumulators.
 	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"2.2.2.2", "1.1.1.1"}, Deny: []string{"4.4.4.4", "3.3.3.3"}}, res.IPs); diff != "" {
 		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
 	}
@@ -165,6 +169,9 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 	}
 	if diff := cmp.Diff(&AllowDenyPair{Deny: []string{"exec-deny-hardcoded"}}, res.Exec); diff != "" {
 		t.Errorf("Exec mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"quic", "tls/h2"}, Deny: []string{"unknown", "*"}}, res.Protocols); diff != "" {
+		t.Errorf("Protocols mismatch (-want +got):\n%s", diff)
 	}
 }
 
