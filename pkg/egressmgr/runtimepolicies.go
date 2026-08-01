@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -72,47 +73,60 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 		return
 	}
 
-	// store the old ips because we may need to delete them from a pod's attachment
-	// when the policy stops matching, whether or not the ips themselves changed
+	// store the old pairs because we may need to delete them from a pod's
+	// attachment when the policy stops matching, whether or not they changed
 	oldIps := clonePair(currentRp.IPs)
+	oldProtos := clonePair(currentRp.Protocols)
 
 	toAddPair := currentRp.IPs.DiffPair(compiledRp.IPs)
 	toRemovePair := compiledRp.IPs.DiffPair(currentRp.IPs)
+	toAddProtoPair := currentRp.Protocols.DiffPair(compiledRp.Protocols)
+	toRemoveProtoPair := compiledRp.Protocols.DiffPair(currentRp.Protocols)
 
 	// the incoming policy update contains a deny "*"
 	hasDefaultDeny := slices.Contains(toAddPair.Deny, compiler.StarTarget)
 	// had default deny before, but doesn't anymore
 	defaultDenyRemoved := slices.Contains(toRemovePair.Deny, compiler.StarTarget)
+	hasProtoDefaultDeny := slices.Contains(toAddProtoPair.Deny, compiler.StarTarget)
+	protoDefaultDenyRemoved := slices.Contains(toRemoveProtoPair.Deny, compiler.StarTarget)
 
 	// update the current runtime behavior's information to point to the new compiled behavior data.
 	// the shared pointer itself is never replaced: the pods hold it.
 	currentRp.IPs = compiledRp.IPs
+	currentRp.Protocols = compiledRp.Protocols
 	currentRp.Selector = compiledRp.Selector
 	currentRp.Name = compiledRp.Name
 	currentRp.Mode = compiledRp.Mode
+
+	hasDiff := toAddPair.HasEntries() || toRemovePair.HasEntries() ||
+		toAddProtoPair.HasEntries() || toRemoveProtoPair.HasEntries()
 
 	for podUid, pod := range e.pods {
 		rpMatches := selectorMatches(compiledRp.Selector, pod.labels)
 		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
 			// there is no diff and rp still matches, do nothing
-			if !toAddPair.HasEntries() && !toRemovePair.HasEntries() && rpMatches {
+			if !hasDiff && rpMatches {
 				continue
 			}
 
 			if !rpMatches {
 				e.logger.V(2).Info("runtime policy stopped matching pod, detaching", "uid", compiledRp.UID, "podUid", podUid)
-				// the ips to remove are the ones this pod actually got programmed
-				// with, not the incoming generation's
-				e.detachPolicy(podUid, pod, compiledRp.UID, oldIps)
+				// the targets to remove are the ones this pod actually got
+				// programmed with, not the incoming generation's
+				e.detachPolicy(podUid, pod, compiledRp.UID, oldIps, oldProtos)
 				continue
 			}
 
-			// rp matches and there is a diff. add the new ips, delete the old
-			// and update our tracking data structures
-			e.logger.V(2).Info("applying ip diff for updated runtime policy", "uid", compiledRp.UID, "podUid", podUid,
-				"toAddAllow", toAddPair.Allow, "toRemoveAllow", toRemovePair.Allow, "toAddDeny", toAddPair.Deny, "toRemoveDeny", toRemovePair.Deny)
+			// rp matches and there is a diff. add the new targets, delete the
+			// old and update our tracking data structures
+			e.logger.V(2).Info("applying target diff for updated runtime policy", "uid", compiledRp.UID, "podUid", podUid,
+				"toAddAllow", toAddPair.Allow, "toRemoveAllow", toRemovePair.Allow, "toAddDeny", toAddPair.Deny, "toRemoveDeny", toRemovePair.Deny,
+				"toAddProtoAllow", toAddProtoPair.Allow, "toRemoveProtoAllow", toRemoveProtoPair.Allow,
+				"toAddProtoDeny", toAddProtoPair.Deny, "toRemoveProtoDeny", toRemoveProtoPair.Deny)
 			e.addIps(podUid, compiledRp.UID, pod.filter, toAddPair)
 			e.deleteIps(podUid, compiledRp.UID, pod.filter, toRemovePair)
+			e.addProtos(podUid, compiledRp.UID, pod.protoFilter, toAddProtoPair)
+			e.deleteProtos(podUid, compiledRp.UID, pod.protoFilter, toRemoveProtoPair)
 
 			// both operations are idempotent, so repeating them is harmless
 			if hasDefaultDeny {
@@ -122,6 +136,15 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 				delete(pod.defaultDeny, compiledRp.UID)
 				if len(pod.defaultDeny) == 0 {
 					pod.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
+				}
+			}
+			if hasProtoDefaultDeny {
+				pod.protoFilter.SetFlagIdx(protofilter.DEFAULT_DENY, true)
+				pod.protoDefaultDeny[compiledRp.UID] = struct{}{}
+			} else if protoDefaultDenyRemoved {
+				delete(pod.protoDefaultDeny, compiledRp.UID)
+				if len(pod.protoDefaultDeny) == 0 {
+					pod.protoFilter.SetFlagIdx(protofilter.DEFAULT_DENY, false)
 				}
 			}
 			continue
@@ -142,6 +165,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 // the selector.
 func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.EvaluationResult) {
 	currentRp.IPs = compiledRp.IPs
+	currentRp.Protocols = compiledRp.Protocols
 	currentRp.Selector = compiledRp.Selector
 	currentRp.Name = compiledRp.Name
 	currentRp.Mode = compiledRp.Mode
@@ -155,7 +179,7 @@ func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.Evaluat
 			e.attachPolicy(podUid, pod, currentRp)
 		case !matches && attached:
 			e.logger.V(2).Info("observe-mode policy stopped matching pod, detaching", "uid", compiledRp.UID, "podUid", podUid)
-			e.detachPolicy(podUid, pod, compiledRp.UID, nil)
+			e.detachPolicy(podUid, pod, compiledRp.UID, nil, nil)
 		}
 	}
 }
@@ -169,6 +193,6 @@ func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 			continue
 		}
 		e.logger.V(2).Info("removing deleted runtime policy from pod", "uid", compiledRp.UID, "podUid", podUid)
-		e.detachPolicy(podUid, pod, compiledRp.UID, att.IPs)
+		e.detachPolicy(podUid, pod, compiledRp.UID, att.IPs, att.Protocols)
 	}
 }

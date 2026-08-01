@@ -370,8 +370,10 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 // a nil status recorder does not stop the manager: the daemon may run without one.
 func TestNilStatusRecorderIsTolerated(t *testing.T) {
 	ff := &fakeFactory{}
+	pff := &fakeProtoFactory{}
 	e := NewEgressManager(logr.Discard(), nil)
 	e.newFilter = ff.new
+	e.newProtoFilter = pff.new
 	e.clock = func() time.Time { return testTime }
 	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"2001:db8::1"}, nil), events.EventTypeCreate)

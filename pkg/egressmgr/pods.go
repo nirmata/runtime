@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 
@@ -17,13 +18,20 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	if err != nil {
 		return err
 	}
+	pf, err := e.newProtoFilter(&e.logger)
+	if err != nil {
+		return err
+	}
 
 	pa := &podAttachment{
-		cgs:             make(map[containers.ContainerCgroupInfo]link.Link),
-		attachedFilters: make(map[string]*compiler.EvaluationResult),
-		defaultDeny:     make(map[string]struct{}),
-		labels:          pod.Labels,
-		filter:          filter,
+		cgs:              make(map[containers.ContainerCgroupInfo]link.Link),
+		protoCgs:         make(map[containers.ContainerCgroupInfo]link.Link),
+		attachedFilters:  make(map[string]*compiler.EvaluationResult),
+		defaultDeny:      make(map[string]struct{}),
+		protoDefaultDeny: make(map[string]struct{}),
+		labels:           pod.Labels,
+		filter:           filter,
+		protoFilter:      pf,
 	}
 
 	for _, cg := range cgInfos {
@@ -32,9 +40,15 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 			return err
 		}
 		pa.cgs[*cg] = l
+		pl, err := pf.Attach(cg.Path)
+		if err != nil {
+			return err
+		}
+		pa.protoCgs[*cg] = pl
 	}
 
 	ips := &compiler.AllowDenyPair{}
+	protos := &compiler.AllowDenyPair{}
 	for rpName, rp := range e.rps {
 		if !selectorMatches(rp.Selector, pod.Labels) {
 			continue
@@ -51,23 +65,37 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 			ips.Allow = append(ips.Allow, rp.IPs.Allow...)
 			ips.Deny = append(ips.Deny, rp.IPs.Deny...)
 		}
+		if rp.Protocols != nil {
+			protos.Allow = append(protos.Allow, rp.Protocols.Allow...)
+			protos.Deny = append(protos.Deny, rp.Protocols.Deny...)
+		}
 
 		if denyHasStar(rp.IPs) {
 			pa.defaultDeny[rp.UID] = struct{}{}
+		}
+		if denyHasStar(rp.Protocols) {
+			pa.protoDefaultDeny[rp.UID] = struct{}{}
 		}
 	}
 
 	if len(pa.defaultDeny) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 	}
+	if len(pa.protoDefaultDeny) > 0 {
+		pa.protoFilter.SetFlagIdx(protofilter.DEFAULT_DENY, true)
+	}
 	// every pod with an attached policy is observed, whatever mode it is in
 	if len(pa.attachedFilters) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
+		pa.protoFilter.SetFlagIdx(protofilter.OBSERVE, true)
 	}
 
-	// ban ips in case there was a rp that matched
+	// program the targets in case there was a rp that matched
 	if ips.HasEntries() {
 		e.addIps(string(pod.UID), "", pa.filter, ips)
+	}
+	if protos.HasEntries() {
+		e.addProtos(string(pod.UID), "", pa.protoFilter, protos)
 	}
 
 	e.pods[string(pod.UID)] = pa
@@ -90,6 +118,7 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	// check if there are new cgroup infos. if there is, create links for them.
 	// for the ones that are gone the attachment would be already deleted by the kernel
 	newCgs := make(map[containers.ContainerCgroupInfo]link.Link)
+	newProtoCgs := make(map[containers.ContainerCgroupInfo]link.Link)
 	for _, cgInfo := range cgInfos {
 		l, exists := pa.cgs[*cgInfo]
 		if !exists {
@@ -101,8 +130,19 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 			l = newLink
 		}
 		newCgs[*cgInfo] = l
+
+		pl, exists := pa.protoCgs[*cgInfo]
+		if !exists {
+			newLink, err := pa.protoFilter.Attach(cgInfo.Path)
+			if err != nil {
+				return err
+			}
+			pl = newLink
+		}
+		newProtoCgs[*cgInfo] = pl
 	}
 	pa.cgs = newCgs
+	pa.protoCgs = newProtoCgs
 	return nil
 }
 
@@ -121,7 +161,7 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabel
 			e.attachPolicy(podUid, pa, rp)
 		case !matches && attached:
 			e.logger.V(2).Info("relabelled pod stopped matching runtime policy, detaching", "podUid", podUid, "uid", uid)
-			e.detachPolicy(podUid, pa, uid, att.IPs)
+			e.detachPolicy(podUid, pa, uid, att.IPs, att.Protocols)
 		}
 	}
 }
