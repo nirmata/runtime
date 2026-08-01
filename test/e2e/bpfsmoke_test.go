@@ -22,6 +22,7 @@ import (
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
@@ -113,6 +114,85 @@ func TestBPFEgressProgramLoadsAndVerifies(t *testing.T) {
 	}
 
 	if _, err := f.DeleteIps(&compiler.AllowDenyPair{Allow: []string{"10.0.0.1"}}); err != nil {
+		t.Errorf("removing an allow target: %v", err)
+	}
+}
+
+// TestBPFProtocolClassifierLoadsAndVerifies loads the committed
+// protoclassifier object into the running kernel, which exercises BTF
+// relocation and the full verifier pass, and prints the verifier log on
+// failure. It does not need BPF-LSM, so it runs on ordinary Linux CI.
+func TestBPFProtocolClassifierLoadsAndVerifies(t *testing.T) {
+	requireBPFCapableHost(t)
+
+	logger := logr.Discard()
+	f, err := protofilter.New(&logger)
+	if err != nil {
+		// %+v renders *ebpf.VerifierError's full log, which is the whole point
+		// of this test.
+		t.Fatalf("loading protoclassifier objects: %+v", err)
+	}
+
+	// Load alone does not prove the maps are usable. Program allow and deny
+	// targets and read the flag back: this is the same path a manager takes.
+	rejected, err := f.AddProtocols(&compiler.AllowDenyPair{
+		Allow: []string{"tls/h2", "ssh"},
+		Deny:  []string{"*", "unknown"},
+	})
+	if err != nil {
+		t.Fatalf("programming protocol maps: %v", err)
+	}
+	if len(rejected) != 0 {
+		t.Errorf("unexpected rejected targets for valid protocol tokens: %v", rejected)
+	}
+
+	f.SetFlagIdx(protofilter.DEFAULT_DENY, true)
+	on, err := f.FlagIdx(protofilter.DEFAULT_DENY)
+	if err != nil {
+		t.Fatalf("reading DEFAULT_DENY flag: %v", err)
+	}
+	if !on {
+		t.Error("DEFAULT_DENY flag did not stick after SetFlagIdx(true)")
+	}
+
+	f.SetFlagIdx(protofilter.OBSERVE, true)
+	if _, err := f.ReadProtoEvents(); err != nil {
+		t.Errorf("reading proto_events with OBSERVE set: %v", err)
+	}
+
+	// The observation round trip pins the Go<->BTF key layout: a synthetic
+	// {tls, h2, deny} entry is written through the map handle and must come
+	// back from ReadProtoEvents with the ALPN and decision intact. cilium/ebpf
+	// rejects a Put or Iterate whose Go key size does not match the loaded
+	// map's BTF key, so this is exactly the seam a key-struct marshaling bug
+	// hides in. It cannot prove packet-driven counting — no packet traverses
+	// the program here.
+	seed := protofilter.Target{Protocol: compiler.ProtocolTLS, ALPN: "h2"}
+	if err := f.SeedProtoEvent(seed, runtimeevent.DecisionDeny, 4); err != nil {
+		t.Fatalf("seeding a synthetic deny observation: %v", err)
+	}
+	events, err := f.ReadProtoEvents()
+	if err != nil {
+		t.Fatalf("reading back the seeded observation: %v", err)
+	}
+	key := protofilter.ProtoEventKey{
+		Protocol: compiler.ProtocolTLS,
+		ALPN:     "h2",
+		Decision: runtimeevent.DecisionDeny,
+	}
+	if got := events[key]; got != 4 {
+		t.Errorf("ReadProtoEvents()[%v] = %d, want 4 (full map: %v)", key, got, events)
+	}
+	// the read resets: the entry must not be reported twice
+	again, err := f.ReadProtoEvents()
+	if err != nil {
+		t.Fatalf("second ReadProtoEvents: %v", err)
+	}
+	if got, ok := again[key]; ok {
+		t.Errorf("seeded entry survived the destructive read with count %d", got)
+	}
+
+	if _, err := f.DeleteProtocols(&compiler.AllowDenyPair{Allow: []string{"tls/h2"}}); err != nil {
 		t.Errorf("removing an allow target: %v", err)
 	}
 }
