@@ -23,14 +23,23 @@ var (
 	// ErrIPv6NetworkValue reports an IPv6 literal or CIDR (IPv4-mapped IPv6
 	// forms are unmapped and accepted, not reported).
 	ErrIPv6NetworkValue = errors.New("IPv6 addresses and CIDRs are not supported")
-	// ErrNotAnIPNetworkValue reports anything else: hostnames, URLs,
-	// truncated addresses, globs other than the bare "*" sentinel.
-	ErrNotAnIPNetworkValue = errors.New(`not an IPv4 address, IPv4 CIDR or "*"`)
+	// ErrWildcardNetworkValue reports a wildcard such as "*.example.com",
+	// distinct from the bare "*" sentinel.
+	ErrWildcardNetworkValue = errors.New(`wildcards are not supported: list each address or fully qualified hostname, or use "*" to match everything`)
+	// ErrNotAnIPNetworkValue reports anything else: URLs, truncated
+	// addresses, and strings that are not a usable hostname either (a single
+	// label, an over-long or malformed label, a numeric last label).
+	ErrNotAnIPNetworkValue = errors.New(`not an IPv4 address, IPv4 CIDR, hostname or "*"`)
+)
+
+const (
+	maxHostnameLen = 253
+	maxLabelLen    = 63
 )
 
 // NetworkValue is the parsed form of one network target string. Exactly one
 // of the fields is meaningful: Star for the "*" sentinel, Addr for a single
-// address, Prefix for a CIDR.
+// address, Prefix for a CIDR, Host for a hostname.
 type NetworkValue struct {
 	// Star is true when the value is the StarTarget sentinel.
 	Star bool
@@ -42,6 +51,9 @@ type NetworkValue struct {
 	// defines what a value IS, and each consumer applies its own width
 	// policy (see egressfilter.ParseTargets, the single narrowing point).
 	Prefix netip.Prefix
+	// Host is set for a hostname value, lowercased and without the root dot,
+	// so "API.Example.COM." and "api.example.com" are the same value.
+	Host string
 }
 
 // ParseNetworkValue parses one policy-authored network target string. This is
@@ -57,8 +69,11 @@ type NetworkValue struct {
 //   - an IPv4 literal (or IPv4-mapped IPv6 literal) yields Addr, unmapped
 //   - an IPv4 CIDR (or IPv4-mapped IPv6 CIDR) of any width yields Prefix,
 //     unmapped and masked
+//   - a multi-label DNS name yields Host, lowercased and stripped of its
+//     root dot
 //   - everything else is an error: ErrEmptyNetworkValue,
-//     ErrIPv6NetworkValue, or ErrNotAnIPNetworkValue
+//     ErrIPv6NetworkValue, ErrWildcardNetworkValue, or
+//     ErrNotAnIPNetworkValue
 func ParseNetworkValue(raw string) (NetworkValue, error) {
 	cleaned := strings.Trim(raw, " \t\r\n\"'[]")
 
@@ -68,6 +83,9 @@ func ParseNetworkValue(raw string) (NetworkValue, error) {
 
 	case cleaned == StarTarget:
 		return NetworkValue{Star: true}, nil
+
+	case strings.Contains(cleaned, "*"):
+		return NetworkValue{}, ErrWildcardNetworkValue
 
 	case strings.Contains(cleaned, "/"):
 		prefix, err := netip.ParsePrefix(cleaned)
@@ -82,16 +100,59 @@ func ParseNetworkValue(raw string) (NetworkValue, error) {
 		return NetworkValue{Prefix: prefix.Masked()}, nil
 
 	default:
-		addr, err := netip.ParseAddr(cleaned)
+		if addr, err := netip.ParseAddr(cleaned); err == nil {
+			addr = addr.Unmap()
+			if !addr.Is4() {
+				return NetworkValue{}, ErrIPv6NetworkValue
+			}
+			return NetworkValue{Addr: addr}, nil
+		}
+		host, err := parseHostname(cleaned)
 		if err != nil {
-			return NetworkValue{}, ErrNotAnIPNetworkValue
+			return NetworkValue{}, err
 		}
-		addr = addr.Unmap()
-		if !addr.Is4() {
-			return NetworkValue{}, ErrIPv6NetworkValue
-		}
-		return NetworkValue{Addr: addr}, nil
+		return NetworkValue{Host: host}, nil
 	}
+}
+
+func parseHostname(cleaned string) (string, error) {
+	host := strings.ToLower(strings.TrimSuffix(cleaned, "."))
+	if host == "" || len(host) > maxHostnameLen {
+		return "", ErrNotAnIPNetworkValue
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return "", ErrNotAnIPNetworkValue
+	}
+	for _, label := range labels {
+		if !validLabel(label) {
+			return "", ErrNotAnIPNetworkValue
+		}
+	}
+	// A numeric last label means a truncated or over-long address ("10.0.0",
+	// "1.2.3.4.5"), which must stay an error rather than becoming a name.
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+		return "", ErrNotAnIPNetworkValue
+	}
+	return host, nil
+}
+
+func validLabel(label string) bool {
+	if len(label) == 0 || len(label) > maxLabelLen {
+		return false
+	}
+	if label[0] == '-' || label[len(label)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(label); i++ {
+		c := label[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // unmapPrefix converts an IPv4-mapped IPv6 prefix (::ffff:a.b.c.d/N, N >= 96)

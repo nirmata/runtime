@@ -2,7 +2,6 @@ package egressmgr
 
 import (
 	"fmt"
-	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -56,13 +55,13 @@ type podAttachment struct {
 	defaultDeny map[string]struct{} // the group of runtime policy uids that contained a default deny
 
 	labels          map[string]string
-	cgs             map[containers.ContainerCgroupInfo]link.Link
+	cgs             map[containers.ContainerCgroupInfo][]link.Link
 	filter          egressFilter
 	attachedFilters map[string]*compiler.EvaluationResult
 
-	// the policy uids that asked for each programmed address, per side
-	allowOwners map[netip.Addr]map[string]struct{}
-	denyOwners  map[netip.Addr]map[string]struct{}
+	// the policy uids that asked for each programmed target, per side
+	allowOwners sideOwners
+	denyOwners  sideOwners
 }
 
 func NewEgressManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder) *EgressManager {
@@ -229,7 +228,7 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 		return
 	}
 
-	_, _, rejected := egressfilter.ParseTargets(values)
+	_, _, _, rejected := egressfilter.ParseTargets(values)
 	if len(rejected) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
 			Type:               ConditionTargetsValid,

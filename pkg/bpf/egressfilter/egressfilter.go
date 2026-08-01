@@ -32,6 +32,9 @@ var ErrNotLoaded = errors.New("egressfilter: bpf objects not loaded")
 type EgressFilter struct {
 	logger  *logr.Logger
 	bpfObjs *egressBlockObjects
+
+	domainIDs    map[string]uint32
+	nextDomainID uint32
 }
 
 func New(l *logr.Logger) (*EgressFilter, error) {
@@ -63,20 +66,30 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 }
 
 // AddIps programs the allow and deny targets of pair into the BPF maps.
-// Targets ParseTargets cannot represent are returned as typed rejections and
-// logged; err covers only map-write failures. Both may be non-empty at once.
+// Targets ParseTargets cannot represent, and DNS names that no longer fit the
+// pod's domain table, are returned as typed rejections and logged; err covers
+// only map-write failures. Both may be non-empty at once.
 func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
 	if pair == nil {
 		return nil, nil
 	}
 
-	allowAddrs, denyAddrs, rejected := parsePair(pair)
+	allow, deny, rejected := parsePair(pair)
+
+	allowedIPs, bannedIPs := e.ipMaps()
+	allowedDomains, bannedDomains := e.domainMaps()
+
+	allowRejected, allowErr := e.putDomains(allowedDomains, "allowed_domains", allow.hosts)
+	denyRejected, denyErr := e.putDomains(bannedDomains, "banned_domains", deny.hosts)
+	rejected = append(rejected, allowRejected...)
+	rejected = append(rejected, denyRejected...)
 	e.logRejected(rejected)
 
-	allowedMap, bannedMap := e.ipMaps()
 	return rejected, errors.Join(
-		putAddrs(allowedMap, "allowed_ips", allowAddrs),
-		putAddrs(bannedMap, "banned_ips", denyAddrs),
+		putAddrs(allowedIPs, "allowed_ips", allow.addrs),
+		putAddrs(bannedIPs, "banned_ips", deny.addrs),
+		allowErr,
+		denyErr,
 	)
 }
 
@@ -88,20 +101,31 @@ func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]RejectedTarget
 		return nil, nil
 	}
 
-	allowAddrs, denyAddrs, rejected := parsePair(pair)
+	allow, deny, rejected := parsePair(pair)
 
-	allowedMap, bannedMap := e.ipMaps()
+	allowedIPs, bannedIPs := e.ipMaps()
+	allowedDomains, bannedDomains := e.domainMaps()
+
 	return rejected, errors.Join(
-		deleteAddrs(allowedMap, "allowed_ips", allowAddrs),
-		deleteAddrs(bannedMap, "banned_ips", denyAddrs),
+		deleteAddrs(allowedIPs, "allowed_ips", allow.addrs),
+		deleteAddrs(bannedIPs, "banned_ips", deny.addrs),
+		e.deleteDomains(allowedDomains, "allowed_domains", allow.hosts),
+		e.deleteDomains(bannedDomains, "banned_domains", deny.hosts),
 	)
+}
+
+type sideTargets struct {
+	addrs []netip.Addr
+	hosts []string
 }
 
 // parsePair resolves both target lists of pair through the single target
 // grammar. rejected is nil when nothing was rejected.
-func parsePair(pair *compiler.AllowDenyPair) (allow, deny []netip.Addr, rejected []RejectedTarget) {
-	allow, _, allowRejected := ParseTargets(pair.Allow)
-	deny, _, denyRejected := ParseTargets(pair.Deny)
+func parsePair(pair *compiler.AllowDenyPair) (allow, deny sideTargets, rejected []RejectedTarget) {
+	allowAddrs, allowHosts, _, allowRejected := ParseTargets(pair.Allow)
+	denyAddrs, denyHosts, _, denyRejected := ParseTargets(pair.Deny)
+	allow = sideTargets{addrs: allowAddrs, hosts: allowHosts}
+	deny = sideTargets{addrs: denyAddrs, hosts: denyHosts}
 	if len(allowRejected)+len(denyRejected) == 0 {
 		return allow, deny, nil
 	}
@@ -227,11 +251,15 @@ func (e *EgressFilter) logError(err error, msg string) {
 	e.logger.Error(err, msg)
 }
 
-func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
+// Attach hooks both programs onto one cgroup: the egress filter that decides,
+// and the DNS snooper that reads answers off the ingress path so the filter can
+// tell which addresses belong to a named domain. A half-completed attach closes
+// what it opened, because a link the caller never receives can never be closed.
+func (e *EgressFilter) Attach(cgPath string) ([]link.Link, error) {
 	if e.bpfObjs == nil {
 		return nil, ErrNotLoaded
 	}
-	link, err := link.AttachCgroup(link.CgroupOptions{
+	egress, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgPath,
 		Attach:  ebpf.AttachCGroupInetEgress,
 		Program: e.bpfObjs.CgroupEgress,
@@ -239,5 +267,13 @@ func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
 	if err != nil {
 		return nil, err
 	}
-	return link, nil
+	dns, err := link.AttachCgroup(link.CgroupOptions{
+		Path:    cgPath,
+		Attach:  ebpf.AttachCGroupInetIngress,
+		Program: e.bpfObjs.CgroupDnsIngress,
+	})
+	if err != nil {
+		return nil, errors.Join(err, egress.Close())
+	}
+	return []link.Link{egress, dns}, nil
 }

@@ -45,10 +45,10 @@ func TestTargetsConditionReportsUnresolvedServiceRefs(t *testing.T) {
 		},
 		{
 			name:       "an unresolved ref and a rejected literal are both reported",
-			res:        rpWithUnresolved("rp-1", []string{"api.example.com"}, nil, svcRef("prod", "api")),
+			res:        rpWithUnresolved("rp-1", []string{"2001:db8::1"}, nil, svcRef("prod", "api")),
 			wantStatus: metav1.ConditionFalse,
 			wantReason: ReasonUnresolvedServiceRefs,
-			wantIn:     []string{"prod/api", "api.example.com"},
+			wantIn:     []string{"prod/api", "2001:db8::1"},
 		},
 		{
 			name:       "several unresolved refs are all named",

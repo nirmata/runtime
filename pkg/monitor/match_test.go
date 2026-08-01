@@ -12,6 +12,7 @@ func TestNetMatcher(t *testing.T) {
 		name     string
 		values   []string
 		addr     string
+		domain   string
 		want     bool
 		wantStar bool
 	}{
@@ -28,16 +29,43 @@ func TestNetMatcher(t *testing.T) {
 		{name: "ipv4-in-ipv6 cidr is unmapped and matches ipv4 addr", values: []string{"::ffff:10.0.0.0/120"}, addr: "10.0.0.5", want: true},
 		{name: "crlf from a CEL rendered list is trimmed", values: []string{"10.0.0.5\r\n"}, addr: "10.0.0.5", want: true},
 		{name: "empty value never matches", values: []string{"", "  "}, addr: "10.0.0.5"},
-		{name: "unparseable value is skipped", values: []string{"example.com", "10.0.0.0/notacidr"}, addr: "10.0.0.5"},
+		{name: "unparseable value is skipped", values: []string{"10.0.0.0/notacidr"}, addr: "10.0.0.5"},
 		{name: "ipv6 value is skipped", values: []string{"2001:db8::/32", "10.0.0.5"}, addr: "10.0.0.5", want: true},
 		{name: "no values", values: nil, addr: "10.0.0.5"},
+
+		{
+			name:   "hostname value matches the attributed domain",
+			values: []string{"api.example.com"}, addr: "10.0.0.5", domain: "api.example.com", want: true,
+		},
+		{
+			name:   "hostname value does not match an unrelated domain",
+			values: []string{"api.example.com"}, addr: "10.0.0.5", domain: "evil.example.com",
+		},
+		{
+			// the fall-through bug this guards: a hostname must never become a
+			// zero-address entry that quietly matches nothing
+			name:   "hostname value does not match an unattributed address",
+			values: []string{"api.example.com"}, addr: "10.0.0.5",
+		},
+		{
+			name:   "hostname value is normalized by the shared grammar",
+			values: []string{" \"API.Example.COM.\" "}, addr: "10.0.0.5", domain: "api.example.com", want: true,
+		},
+		{
+			name: "wildcard value is skipped", values: []string{"*.example.com"},
+			addr: "10.0.0.5", domain: "api.example.com",
+		},
+		{
+			name:   "address value does not match on the domain alone",
+			values: []string{"10.0.0.9"}, addr: "10.0.0.5", domain: "api.example.com",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newNetMatcher(tc.values)
-			if got := m.matches(netip.MustParseAddr(tc.addr)); got != tc.want {
-				t.Errorf("matches(%s) = %v, want %v", tc.addr, got, tc.want)
+			if got := m.matches(netip.MustParseAddr(tc.addr), tc.domain); got != tc.want {
+				t.Errorf("matches(%s, %q) = %v, want %v", tc.addr, tc.domain, got, tc.want)
 			}
 			if m.star != tc.wantStar {
 				t.Errorf("star = %v, want %v", m.star, tc.wantStar)
@@ -47,8 +75,8 @@ func TestNetMatcher(t *testing.T) {
 }
 
 func TestNetMatcher_InvalidAddrNeverMatches(t *testing.T) {
-	m := newNetMatcher([]string{"0.0.0.0/0", "10.0.0.5"})
-	if m.matches(netip.Addr{}) {
+	m := newNetMatcher([]string{"0.0.0.0/0", "10.0.0.5", "api.example.com"})
+	if m.matches(netip.Addr{}, "") {
 		t.Error("the zero address matched")
 	}
 }
@@ -92,7 +120,7 @@ func TestBehaviorsWithoutEntriesAreAbsent(t *testing.T) {
 		if nb != nil {
 			t.Errorf("net behavior for %+v = %+v, want nil", p, nb)
 		}
-		if nb.eval(netip.MustParseAddr("10.0.0.5")).violation {
+		if nb.eval(netip.MustParseAddr("10.0.0.5"), "api.example.com").violation {
 			t.Errorf("absent net behavior for %+v reported a violation", p)
 		}
 		pb := compilePathBehavior(p)
@@ -110,6 +138,7 @@ func TestNetBehaviorEval(t *testing.T) {
 		name            string
 		allow, deny     []string
 		addr            string
+		domain          string
 		wantViolation   bool
 		wantDefaultDeny bool
 	}{
@@ -126,14 +155,34 @@ func TestNetBehaviorEval(t *testing.T) {
 		},
 		{name: "default deny allowed", allow: []string{"10.0.0.5"}, deny: []string{compiler.StarTarget}, addr: "10.0.0.5"},
 		{name: "allow only, no deny", allow: []string{"10.0.0.1"}, addr: "10.0.0.5"},
+
+		{
+			name: "explicit deny of a hostname", deny: []string{"api.example.com"},
+			addr: "10.0.0.5", domain: "api.example.com", wantViolation: true,
+		},
+		{
+			name: "denied hostname does not implicate another domain", deny: []string{"api.example.com"},
+			addr: "10.0.0.5", domain: "cdn.example.com",
+		},
+		{
+			name: "default deny allowed by hostname", allow: []string{"api.example.com"},
+			deny: []string{compiler.StarTarget}, addr: "10.0.0.5", domain: "api.example.com",
+		},
+		{
+			// the same address without an attributed domain is still a
+			// violation: the allow entry names a domain, not an address
+			name: "default deny with an allowed hostname but no attribution", allow: []string{"api.example.com"},
+			deny: []string{compiler.StarTarget}, addr: "10.0.0.5",
+			wantViolation: true, wantDefaultDeny: true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b := compileNetBehavior(&compiler.AllowDenyPair{Allow: tc.allow, Deny: tc.deny})
-			got := b.eval(netip.MustParseAddr(tc.addr))
+			got := b.eval(netip.MustParseAddr(tc.addr), tc.domain)
 			if got.violation != tc.wantViolation || got.defaultDeny != tc.wantDefaultDeny {
-				t.Errorf("eval(%s) = %+v, want {violation:%v defaultDeny:%v}",
-					tc.addr, got, tc.wantViolation, tc.wantDefaultDeny)
+				t.Errorf("eval(%s, %q) = %+v, want {violation:%v defaultDeny:%v}",
+					tc.addr, tc.domain, got, tc.wantViolation, tc.wantDefaultDeny)
 			}
 		})
 	}

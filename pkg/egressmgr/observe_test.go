@@ -319,18 +319,24 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 			wantIn:     []string{"10.0.0.0/8", egressfilter.ReasonCIDRTooWide},
 		},
 		{
-			name:       "hostname",
+			name:       "hostname is a supported target",
 			allow:      []string{"api.example.com"},
+			wantStatus: metav1.ConditionTrue,
+			wantReason: ReasonAllTargetsSupported,
+		},
+		{
+			name:       "wildcard hostname",
+			allow:      []string{"*.example.com"},
 			wantStatus: metav1.ConditionFalse,
 			wantReason: ReasonUnsupportedTargets,
-			wantIn:     []string{"api.example.com", egressfilter.ReasonNotAnIP},
+			wantIn:     []string{"*.example.com", egressfilter.ReasonWildcard},
 		},
 		{
 			name:       "mixed: the supported half is still programmed",
-			allow:      []string{"1.1.1.1", "api.example.com"},
+			allow:      []string{"1.1.1.1", "not an address"},
 			wantStatus: metav1.ConditionFalse,
 			wantReason: ReasonUnsupportedTargets,
-			wantIn:     []string{"api.example.com"},
+			wantIn:     []string{"not an address", egressfilter.ReasonNotAnIP},
 		},
 	}
 
@@ -377,5 +383,70 @@ func TestNilStatusRecorderIsTolerated(t *testing.T) {
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"2001:db8::1"}, nil), events.EventTypeCreate)
 	if _, ok := e.rps["rp-1"]; !ok {
 		t.Error("policy was not tracked when the status recorder is nil")
+	}
+}
+
+// the domain the filter resolved has to survive onto the event, otherwise a
+// finding can name only an address the operator has to look up by hand.
+func TestCollectObservationsCarriesTheResolvedDomain(t *testing.T) {
+	e, _, _ := newTestManager()
+	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
+
+	named := ipKey(t, "10.0.0.1")
+	named.Domain = "api.example.com"
+	f.ipEvents = map[egressfilter.IPEventKey]uint32{
+		named:                3,
+		ipKey(t, "10.0.0.2"): 1, // no domain was attributed
+	}
+
+	got, err := e.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations: %v", err)
+	}
+
+	want := []runtimeevent.Event{
+		{
+			Kind: runtimeevent.KindNet, Time: testTime, Count: 3,
+			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.1"), Domain: "api.example.com"},
+			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
+		},
+		{
+			Kind: runtimeevent.KindNet, Time: testTime, Count: 1,
+			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.2")},
+			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
+		},
+	}
+	if diff := cmp.Diff(want, got, cmp.Comparer(func(a, b netip.Addr) bool { return a == b })); diff != "" {
+		t.Errorf("observations (-want +got):\n%s", diff)
+	}
+}
+
+// one address can be reached under several names, so the domain has to take
+// part in the ordering or those entries come out in map iteration order.
+func TestSortedIPEventKeysBreaksTiesOnDomain(t *testing.T) {
+	counts := make(map[egressfilter.IPEventKey]uint32)
+	for _, domain := range []string{"b.example.com", "", "a.example.com"} {
+		key := ipKey(t, "10.0.0.1")
+		key.Domain = domain
+		counts[key] = 1
+	}
+	denied := ipKeyDeny(t, "10.0.0.1")
+	denied.Domain = "a.example.com"
+	counts[denied] = 1
+
+	want := []string{"", "a.example.com", "b.example.com", "deny/a.example.com"}
+	for i := 0; i < 32; i++ {
+		got := make([]string, 0, len(counts))
+		for _, key := range sortedIPEventKeys(counts) {
+			if key.Decision == runtimeevent.DecisionDeny {
+				got = append(got, "deny/"+key.Domain)
+				continue
+			}
+			got = append(got, key.Domain)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("run %d order (-want +got):\n%s", i, diff)
+		}
 	}
 }

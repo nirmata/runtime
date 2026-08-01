@@ -255,7 +255,7 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 func (tp *trackedPolicy) eval(behavior string, ev runtimeevent.Event) decision {
 	switch behavior {
 	case BehaviorNetwork:
-		return tp.net.eval(ev.Net.DestIP)
+		return tp.net.eval(ev.Net.DestIP, ev.Net.Domain)
 	case BehaviorOpen:
 		return tp.open.eval(ev.Open.Path)
 	case BehaviorExec:
@@ -300,7 +300,7 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 	}
 	switch behavior {
 	case BehaviorNetwork:
-		f.Net = &reporter.NetSummary{DestIP: ev.Net.DestIP.String()}
+		f.Net = &reporter.NetSummary{DestIP: ev.Net.DestIP.String(), DestHost: ev.Net.Domain}
 	case BehaviorOpen, BehaviorExec:
 		f.Process = &reporter.ProcessSummary{Comm: ev.Comm}
 	}
@@ -321,6 +321,12 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 	case runtimeevent.KindNet:
 		if ev.Net == nil || !ev.Net.DestIP.IsValid() {
 			return "", ""
+		}
+		// A domain is only ever attributed from the interning table, whose
+		// entries are the names policies themselves authored, so naming it
+		// here stays inside the "policy-authored values only" rule below.
+		if ev.Net.Domain != "" {
+			return BehaviorNetwork, ev.Net.Domain
 		}
 		return BehaviorNetwork, ev.Net.DestIP.String()
 	case runtimeevent.KindOpen:

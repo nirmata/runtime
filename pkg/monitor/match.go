@@ -28,6 +28,7 @@ type netMatcher struct {
 	star     bool
 	addrs    map[netip.Addr]struct{}
 	prefixes []netip.Prefix
+	hosts    map[string]struct{}
 }
 
 func newNetMatcher(values []string) netMatcher {
@@ -44,6 +45,11 @@ func newNetMatcher(values []string) netMatcher {
 			m.star = true
 		case v.Prefix.IsValid():
 			m.prefixes = append(m.prefixes, v.Prefix)
+		case v.Host != "":
+			if m.hosts == nil {
+				m.hosts = make(map[string]struct{}, len(values))
+			}
+			m.hosts[v.Host] = struct{}{}
 		default:
 			if m.addrs == nil {
 				m.addrs = make(map[netip.Addr]struct{}, len(values))
@@ -54,10 +60,18 @@ func newNetMatcher(values []string) netMatcher {
 	return m
 }
 
-// matches reports whether addr is covered by an explicit value. The "*"
-// sentinel is deliberately NOT a match here: it is the default-deny marker,
-// handled separately by evalNet.
-func (m netMatcher) matches(addr netip.Addr) bool {
+// matches reports whether the observation is covered by an explicit value.
+// domain is the name the kernel attributed the address to, empty when it
+// attributed none; both sides of the comparison come out of
+// compiler.ParseNetworkValue, so the host compare is exact. The "*" sentinel is
+// deliberately NOT a match here: it is the default-deny marker, handled
+// separately by netBehavior.eval.
+func (m netMatcher) matches(addr netip.Addr, domain string) bool {
+	if domain != "" {
+		if _, ok := m.hosts[domain]; ok {
+			return true
+		}
+	}
 	if !addr.IsValid() {
 		return false
 	}
@@ -137,14 +151,14 @@ func compilePathBehavior(p *compiler.AllowDenyPair) *pathBehavior {
 // eval implements the network half of DESIGN §2.10: the destination violates
 // when an explicit deny value covers it, or when the behavior default-denies
 // ("*" in deny) and no allow value covers it.
-func (b *netBehavior) eval(addr netip.Addr) decision {
-	if b == nil || !addr.IsValid() {
+func (b *netBehavior) eval(addr netip.Addr, domain string) decision {
+	if b == nil || (!addr.IsValid() && domain == "") {
 		return decision{}
 	}
-	if b.deny.matches(addr) {
+	if b.deny.matches(addr, domain) {
 		return decision{violation: true}
 	}
-	if b.deny.star && !b.allow.matches(addr) {
+	if b.deny.star && !b.allow.matches(addr, domain) {
 		return decision{violation: true, defaultDeny: true}
 	}
 	return decision{}

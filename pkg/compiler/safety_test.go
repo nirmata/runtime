@@ -58,9 +58,16 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 			wantPaths: []string{"spec.behaviors[0].network.deny.values[1]"},
 		},
 		{
-			name: "hostname in network allow values",
+			name: "wildcard hostname in network allow values",
 			behaviors: []v1alpha1.PolicyBehavior{
-				{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"api.openai.com"}, "")}},
+				{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"*.openai.com"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].network.allow.values[0]"},
+		},
+		{
+			name: "single-label hostname in network allow values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"localhost"}, "")}},
 			},
 			wantPaths: []string{"spec.behaviors[0].network.allow.values[0]"},
 		},
@@ -95,6 +102,49 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Admission must never reject a value the runtime accepts, so every form
+// ParseNetworkValue admits has to survive Compile untouched.
+func TestCompile_AcceptsEveryNetworkValueForm(t *testing.T) {
+	values := []string{"1.2.3.4", "10.0.0.0/24", "*", "api.openai.com", "Example.COM."}
+
+	c := newTestCompiler(t)
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{Allow: behaviorRule(values, "")}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff(values, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCompile_WildcardHostnameErrorNamesTheRemedy(t *testing.T) {
+	c := newTestCompiler(t)
+	_, err := c.Compile(v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{Deny: behaviorRule([]string{"*.openai.com"}, "")}},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("Compile() error = nil, want rejection of a wildcard hostname")
+	}
+	if !strings.Contains(err.Error(), ErrWildcardNetworkValue.Error()) {
+		t.Errorf("Compile() error = %q, want it to contain %q", err.Error(), ErrWildcardNetworkValue.Error())
 	}
 }
 

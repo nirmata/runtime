@@ -8,11 +8,22 @@
 #define DECISION_ALLOW 0
 #define DECISION_DENY 1
 
+/* The wire-format QNAME, lowercased and zero padded: length-prefixed labels
+ * ending in a zero byte. Keeping the wire encoding means the snooper never has
+ * to rewrite a name into dotted form to look it up. */
+#define MAX_DOMAIN_LEN 128
+
+struct domain_key {
+    __u8 name[MAX_DOMAIN_LEN];
+};
+
 /* Padding-free by construction: a hash key is compared as raw bytes, so any
- * uninitialized byte would split one logical key across separate entries. */
+ * uninitialized byte would split one logical key across separate entries.
+ * domain_id is 0 when the address was never seen in a snooped DNS answer. */
 struct ip_event_key {
     __u32 daddr;
     __u32 decision;
+    __u32 domain_id;
 };
 
 struct {
@@ -43,3 +54,37 @@ struct {
     __type(key, struct ip_event_key);
     __type(value, __u32);
 } ip_events SEC(".maps");
+
+/* Userspace interns every domain a policy names, so a name absent here was
+ * never asked about and the snooper ignores the answer entirely. */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, struct domain_key);
+    __type(value, __u32);
+} domain_ids SEC(".maps");
+
+/* Written by the snooper from A records, read by the egress program. LRU
+ * rather than plain hash: a rotating answer set would otherwise fill it and
+ * start failing inserts, and eviction of a stale address is the safe direction
+ * under default deny. Expiry is therefore approximate and not TTL-driven. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u32);
+    __type(value, __u32);
+} ip_domain SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, __u8);
+} allowed_domains SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u32);
+    __type(value, __u8);
+} banned_domains SEC(".maps");

@@ -75,6 +75,9 @@ type PodIdentity struct {
 // NetFacts describes an egress connection attempt.
 type NetFacts struct {
 	DestIP netip.Addr `json:"destIP"`
+	// Domain is the DNS name DestIP was resolved from, empty when the kernel
+	// never saw the address in a snooped answer.
+	Domain string `json:"domain,omitempty"`
 }
 
 // ExecFacts describes a process execution.

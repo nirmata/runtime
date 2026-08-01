@@ -21,10 +21,13 @@ const MaxExpandedTargets = 256
 // Rejection reasons. They are surfaced verbatim to operators (log at V(0) and
 // policy status conditions), so they explain the remedy, not just the fault.
 const (
-	ReasonEmpty       = "empty target value"
-	ReasonIPv6        = "IPv6 targets are not supported: the egress BPF maps are IPv4-only"
-	ReasonCIDRTooWide = "CIDR prefix is wider than /24: expand it into narrower prefixes, or use \"*\" for default-deny"
-	ReasonNotAnIP     = "not an IPv4 address or CIDR: hostnames cannot be resolved at policy compile time"
+	ReasonEmpty          = "empty target value"
+	ReasonIPv6           = "IPv6 targets are not supported: the egress BPF maps are IPv4-only"
+	ReasonCIDRTooWide    = "CIDR prefix is wider than /24: expand it into narrower prefixes, or use \"*\" for default-deny"
+	ReasonNotAnIP        = `not an IPv4 address, IPv4 CIDR, hostname or "*"`
+	ReasonWildcard       = "wildcards are not supported: list each address or fully qualified hostname, or use \"*\" for default-deny"
+	ReasonDomainTooLong  = "DNS name does not fit the 128 byte domain key: name a shorter destination"
+	ReasonTooManyDomains = "the pod already tracks 256 distinct DNS names: reduce the number of DNS targets its policies name"
 )
 
 // RejectedTarget is a target value that could not be programmed, together with
@@ -41,34 +44,44 @@ func (r RejectedTarget) String() string {
 }
 
 // ParseTargets converts policy-authored network target strings into the IPv4
-// addresses the egress maps can hold.
+// addresses and DNS names the egress maps can hold.
 //
-// The value grammar (trimming, star sentinel, IPv4/CIDR forms, IPv6
+// The value grammar (trimming, star sentinel, IPv4/CIDR forms, DNS names, IPv6
 // rejection) is defined once, in compiler.ParseNetworkValue; ParseTargets is
-// the SINGLE narrowing point where the program-time restriction is applied on
+// the one narrowing point where the program-time restrictions are applied on
 // top of it: a CIDR wider than /MinCIDRPrefixBits is rejected as
 // ReasonCIDRTooWide instead of expanded, because the deny/allow maps are
-// plain hashes of individual /32 keys.
-// Admission validation deliberately does NOT apply this restriction, so it
-// never rejects a value the runtime would accept.
+// plain hashes of individual /32 keys, and a DNS name whose wire encoding
+// overflows the domain key is rejected as ReasonDomainTooLong.
+// Admission validation deliberately applies neither, so it never rejects a
+// value the runtime would accept.
 //
 //   - an IPv4 literal yields one address
 //   - an IPv4 CIDR with prefix >= /24 yields every address in the prefix
 //     (network and broadcast included), at most MaxExpandedTargets
+//   - a DNS name yields one host, normalized by compiler.ParseNetworkValue
 //   - compiler.StarTarget ("*") sets star, the default-deny sentinel, and
-//     yields no address
-//   - IPv6 literals/CIDRs, wider CIDRs, hostnames and empty values are
+//     yields neither
+//   - IPv6 literals/CIDRs, wider CIDRs, oversized names and empty values are
 //     returned in rejected
 //
-// Addresses are de-duplicated, preserving first-seen order.
-func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []RejectedTarget) {
-	seen := make(map[netip.Addr]struct{}, len(values))
+// Addresses and hosts are de-duplicated, preserving first-seen order.
+func ParseTargets(values []string) (addrs []netip.Addr, hosts []string, star bool, rejected []RejectedTarget) {
+	seenAddr := make(map[netip.Addr]struct{}, len(values))
 	add := func(a netip.Addr) {
-		if _, ok := seen[a]; ok {
+		if _, ok := seenAddr[a]; ok {
 			return
 		}
-		seen[a] = struct{}{}
+		seenAddr[a] = struct{}{}
 		addrs = append(addrs, a)
+	}
+	seenHost := make(map[string]struct{}, len(values))
+	addHost := func(h string) {
+		if _, ok := seenHost[h]; ok {
+			return
+		}
+		seenHost[h] = struct{}{}
+		hosts = append(hosts, h)
 	}
 	reject := func(v, reason string) {
 		rejected = append(rejected, RejectedTarget{Value: v, Reason: reason})
@@ -83,11 +96,24 @@ func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []Re
 		case errors.Is(err, compiler.ErrIPv6NetworkValue):
 			reject(raw, ReasonIPv6)
 
+		case errors.Is(err, compiler.ErrWildcardNetworkValue):
+			reject(raw, ReasonWildcard)
+
 		case err != nil:
 			reject(raw, ReasonNotAnIP)
 
 		case v.Star:
 			star = true
+
+		case v.Host != "":
+			switch _, err := encodeDomainKey(v.Host); {
+			case errors.Is(err, errDomainKeyTooLong):
+				reject(raw, ReasonDomainTooLong)
+			case err != nil:
+				reject(raw, ReasonNotAnIP)
+			default:
+				addHost(v.Host)
+			}
 
 		case v.Prefix.IsValid():
 			if v.Prefix.Bits() < MinCIDRPrefixBits {
@@ -103,7 +129,7 @@ func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []Re
 		}
 	}
 
-	return addrs, star, rejected
+	return addrs, hosts, star, rejected
 }
 
 // expandPrefix returns every address in an IPv4 prefix, capped at
