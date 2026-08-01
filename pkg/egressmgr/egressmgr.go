@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -21,11 +22,12 @@ import (
 
 // Condition type and reasons the manager writes onto a RuntimePolicy's status.
 const (
-	ConditionTargetsValid      = "TargetsValid"
-	ReasonUnsupportedTargets   = "UnsupportedTargets"
-	ReasonAllTargetsSupported  = "AllTargetsSupported"
-	ReasonNoTargets            = "NoTargets"
-	maxReportedRejectedTargets = 10
+	ConditionTargetsValid       = "TargetsValid"
+	ReasonUnsupportedTargets    = "UnsupportedTargets"
+	ReasonUnresolvedServiceRefs = "UnresolvedServiceRefs"
+	ReasonAllTargetsSupported   = "AllTargetsSupported"
+	ReasonNoTargets             = "NoTargets"
+	maxReportedRejectedTargets  = 10
 )
 
 // filterFactory builds the per-pod egress filter.
@@ -207,7 +209,8 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 		values = append(values, rp.IPs.Allow...)
 		values = append(values, rp.IPs.Deny...)
 	}
-	if len(values) == 0 {
+	unresolved := rp.UnresolvedServiceRefs
+	if len(values) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
 			Type:               ConditionTargetsValid,
 			Status:             metav1.ConditionTrue,
@@ -219,7 +222,7 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 	}
 
 	_, _, rejected := egressfilter.ParseTargets(values)
-	if len(rejected) == 0 {
+	if len(rejected) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
 			Type:               ConditionTargetsValid,
 			Status:             metav1.ConditionTrue,
@@ -233,11 +236,28 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 		e.logger.V(0).Info("egress network target cannot be enforced",
 			"policy", rp.UID, "target", r.Value, "reason", r.Reason)
 	}
+	for _, ref := range unresolved {
+		e.logger.V(0).Info("egress service reference did not resolve to any address",
+			"policy", rp.UID, "service", ref.Namespace+"/"+ref.Name)
+	}
+
+	messages := make([]string, 0, 2)
+	if len(rejected) > 0 {
+		messages = append(messages, rejectionMessage(rejected))
+	}
+	// an unresolved reference programs nothing, so under deny "*" the destination
+	// is blocked outright: it names the condition even when literals were also
+	// rejected.
+	reason := ReasonUnsupportedTargets
+	if len(unresolved) > 0 {
+		reason = ReasonUnresolvedServiceRefs
+		messages = append(messages, unresolvedMessage(unresolved))
+	}
 	e.recordCondition(rp.UID, metav1.Condition{
 		Type:               ConditionTargetsValid,
 		Status:             metav1.ConditionFalse,
-		Reason:             ReasonUnsupportedTargets,
-		Message:            rejectionMessage(rejected),
+		Reason:             reason,
+		Message:            strings.Join(messages, "; "),
 		LastTransitionTime: metav1.NewTime(e.clock()),
 	})
 }
@@ -259,6 +279,18 @@ func rejectionMessage(rejected []egressfilter.RejectedTarget) string {
 		parts = append(parts, r.String())
 	}
 	return fmt.Sprintf("%d network target(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
+}
+
+func unresolvedMessage(refs []v1alpha1.ServiceReference) string {
+	parts := make([]string, 0, len(refs))
+	for i, ref := range refs {
+		if i == maxReportedRejectedTargets {
+			parts = append(parts, fmt.Sprintf("and %d more", len(refs)-maxReportedRejectedTargets))
+			break
+		}
+		parts = append(parts, ref.Namespace+"/"+ref.Name)
+	}
+	return fmt.Sprintf("%d service reference(s) did not resolve: %s", len(refs), strings.Join(parts, "; "))
 }
 
 // clonePair copies a pair so later mutations of the policy cannot rewrite what

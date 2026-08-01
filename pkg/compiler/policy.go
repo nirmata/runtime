@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/google/cel-go/common/types"
@@ -24,6 +26,9 @@ type EvaluationResult struct {
 	Exec     *AllowDenyPair
 	Selector labels.Selector
 	Mode     string
+
+	// UnresolvedServiceRefs holds refs whose Service is absent from cache.
+	UnresolvedServiceRefs []v1alpha1.ServiceReference
 }
 
 type AllowDenyPair struct {
@@ -86,11 +91,14 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	open := &AllowDenyPair{}
 	exec := &AllowDenyPair{}
 
+	var unresolved []v1alpha1.ServiceReference
 	for _, compiledNet := range c.compiledNets {
 		err := evalCompiledBehavior(ctx, net, compiledNet, data)
 		if err != nil {
 			return nil, err
 		}
+		unresolved = append(unresolved, c.appendServiceAddrs(&net.Allow, compiledNet.allowRefs)...)
+		unresolved = append(unresolved, c.appendServiceAddrs(&net.Deny, compiledNet.denyRefs)...)
 	}
 
 	for _, compiledOpen := range c.compiledOpens {
@@ -108,14 +116,32 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	}
 
 	return &EvaluationResult{
-		UID:      c.UID,
-		Name:     c.Name,
-		IPs:      net,
-		Open:     open,
-		Exec:     exec,
-		Selector: selector,
-		Mode:     c.mode,
+		UID:                   c.UID,
+		Name:                  c.Name,
+		IPs:                   net,
+		Open:                  open,
+		Exec:                  exec,
+		Selector:              selector,
+		Mode:                  c.mode,
+		UnresolvedServiceRefs: unresolved,
 	}, nil
+}
+
+func (c *CompiledRuntimePolicy) appendServiceAddrs(dst *[]string, refs []v1alpha1.ServiceReference) []v1alpha1.ServiceReference {
+	var unresolved []v1alpha1.ServiceReference
+	for _, ref := range refs {
+		addrs, found := c.resolver.ResolveService(ref)
+		if !found {
+			unresolved = append(unresolved, ref)
+			continue
+		}
+		for _, addr := range slices.Sorted(slices.Values(addrs)) {
+			if !slices.Contains(*dst, addr) {
+				*dst = append(*dst, addr)
+			}
+		}
+	}
+	return unresolved
 }
 
 func evalCompiledBehavior(ctx context.Context, accum *AllowDenyPair, b *compiledBehavior, data map[string]any) error {

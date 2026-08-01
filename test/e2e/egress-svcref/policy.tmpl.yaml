@@ -1,0 +1,26 @@
+# Template applied by chainsaw-test.yaml after substituting TEST_NAMESPACE with
+# the ephemeral test namespace (chainsaw does not do partial string
+# interpolation, so the substitution happens in a script step -- keeping the
+# policy shape reviewable as YAML rather than buried in a heredoc).
+#
+# Default-deny egress with exactly one allowed destination, named as a Service
+# rather than as an address. Scoped by podSelector to the client pod only, so
+# the backends and the daemon itself keep their networking.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-svcref
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: svcref-client
+  behaviors:
+  - network:
+      allow:
+        serviceRefs:
+        - name: svcref-a
+          namespace: TEST_NAMESPACE
+      deny:
+        values:
+        - "*"

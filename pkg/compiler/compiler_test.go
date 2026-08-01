@@ -20,9 +20,14 @@ import (
 // network/apiserver access happens during Compile/Evaluate.
 func newTestCompiler(t *testing.T) *compiler {
 	t.Helper()
+	return newTestCompilerWithResolver(t, fakeResolver{})
+}
+
+func newTestCompilerWithResolver(t *testing.T, resolver ServiceResolver) *compiler {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	client := dynamicfake.NewSimpleDynamicClient(scheme)
-	c, err := NewCompiler(client)
+	c, err := NewCompiler(client, resolver)
 	if err != nil {
 		t.Fatalf("NewCompiler() error = %v", err)
 	}

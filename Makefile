@@ -211,6 +211,11 @@ test-e2e-gate:
 test-e2e-egress:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-enforce/
 
+# Service-reference resolution and enforcement. Same kernel requirements as
+# test-e2e-egress.
+test-e2e-svcref:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-svcref/
+
 # BPF-LSM open/exec enforcement behavior. REQUIRES a host booted with BPF-LSM
 # ('bpf' in /sys/kernel/security/lsm). Not part of test-e2e; see issue #60.
 test-e2e-lsm:

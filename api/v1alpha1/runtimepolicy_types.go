@@ -49,10 +49,35 @@ type BehaviorRule struct {
 	// Expression is a CEL expression that evaluates to a list of items.
 	// +optional
 	Expression string `json:"expression,omitempty"`
+
+	// ServiceRefs names in-cluster Services whose addresses are resolved from
+	// the API server. Only valid on a network behavior.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	ServiceRefs []ServiceReference `json:"serviceRefs,omitempty"`
+}
+
+// ServiceReference names one in-cluster Service. RuntimePolicy is cluster
+// scoped, so the namespace is not implied by the policy's own metadata.
+type ServiceReference struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace"`
 }
 
 // PolicyBehavior defines allow/deny rules for a specific behavior type.
 // +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1",message="exactly one of network, exec, or open must be specified"
+// One rule per allow/deny arm rather than a conjunction per behavior: the API
+// server's CEL cost estimator budgets each rule separately, and the combined
+// form is estimated at 1.7x the per-rule budget, which rejects the whole CRD.
+// +kubebuilder:validation:XValidation:rule="!has(self.exec) || !has(self.exec.allow) || !has(self.exec.allow.serviceRefs)",message="serviceRefs is only supported on a network behavior"
+// +kubebuilder:validation:XValidation:rule="!has(self.exec) || !has(self.exec.deny) || !has(self.exec.deny.serviceRefs)",message="serviceRefs is only supported on a network behavior"
+// +kubebuilder:validation:XValidation:rule="!has(self.open) || !has(self.open.allow) || !has(self.open.allow.serviceRefs)",message="serviceRefs is only supported on a network behavior"
+// +kubebuilder:validation:XValidation:rule="!has(self.open) || !has(self.open.deny) || !has(self.open.deny.serviceRefs)",message="serviceRefs is only supported on a network behavior"
 type PolicyBehavior struct {
 	// Network defines network behavior rules.
 	// +optional

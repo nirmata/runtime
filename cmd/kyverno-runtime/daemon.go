@@ -16,6 +16,7 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/metrics"
 	"github.com/nirmata/kyverno-runtime/pkg/monitor"
 	"github.com/nirmata/kyverno-runtime/pkg/reporter"
+	"github.com/nirmata/kyverno-runtime/pkg/services"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
@@ -121,7 +122,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	rpCompiler, err := compiler.NewCompiler(dclient)
+	resolver := services.NewResolver(k8sClient, logger.WithName("services"))
+
+	rpCompiler, err := compiler.NewCompiler(dclient, resolver)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy compiler")
 		os.Exit(1)
@@ -171,12 +174,23 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	col.AddStage(attrIdx)
 	col.AddSink(mon)
 
-	// runtime policy informer
-	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler)
+	// runtime policy informer. Constructing it registers its service change
+	// handler on the resolver, which has to happen before the resolver starts.
+	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler, resolver)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy informer")
 		os.Exit(1)
 	}
+
+	// a policy compiled from an unsynced service cache resolves its references to
+	// nothing, so a default deny would black-hole the egress of every pod it
+	// matches: the resolver syncs before the policy informer programs anything.
+	g.Go(func() error { return resolver.Start(ctx) })
+	if !cache.WaitForCacheSync(ctx.Done(), resolver.HasSynced) {
+		logger.Info("service resolver caches did not sync")
+		os.Exit(1)
+	}
+
 	g.Go(func() error {
 		for {
 			if err := rpInformer.Start(ctx); err != nil {

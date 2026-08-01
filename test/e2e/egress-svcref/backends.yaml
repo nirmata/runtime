@@ -1,0 +1,79 @@
+# Two identical HTTP services. One is named by the policy's serviceRefs, the
+# other is not, so the only difference between "reachable" and "not reachable"
+# is the eBPF map state.
+#
+# Deployments rather than bare pods, so a later step can change what the
+# referenced Service resolves to by scaling its backends.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: svcref-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: svcref-a
+  template:
+    metadata:
+      labels:
+        app: svcref-a
+    spec:
+      containers:
+      - name: httpd
+        image: busybox:1.36
+        command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svcref-a
+spec:
+  selector:
+    app: svcref-a
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: svcref-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: svcref-b
+  template:
+    metadata:
+      labels:
+        app: svcref-b
+    spec:
+      containers:
+      - name: httpd
+        image: busybox:1.36
+        command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svcref-b
+spec:
+  selector:
+    app: svcref-b
+  ports:
+  - port: 8080
+    targetPort: 8080

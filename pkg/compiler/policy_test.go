@@ -302,7 +302,7 @@ func newPanickingCompiler(t *testing.T) *compiler {
 	if err != nil {
 		t.Fatalf("Extend() error = %v", err)
 	}
-	return &compiler{env: env}
+	return &compiler{env: env, resolver: fakeResolver{}}
 }
 
 // TestEvaluate_PanickingCELBindingBecomesError covers the other half:

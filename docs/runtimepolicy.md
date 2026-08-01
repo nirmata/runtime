@@ -12,6 +12,8 @@
 - [Example: deny using a CEL expression](#example-deny-using-a-cel-expression)
 - [Example: allow using values and expressions](#example-allow-using-values-and-expressions)
 - [Example: default deny with an allow list](#example-default-deny-with-an-allow-list)
+- [Example: allow egress to a Service](#example-allow-egress-to-a-service)
+- [Limits of serviceRefs](#limits-of-servicerefs)
 - [Example: re-evaluated policy with a selector across multiple behaviors](#example-re-evaluated-policy-with-a-selector-across-multiple-behaviors)
 - [Example: deny IPs from a ConfigMap (resource library)](#example-deny-ips-from-a-configmap-resource-library)
 - [Example: deny IPs from an HTTP endpoint (http library)](#example-deny-ips-from-an-http-endpoint-http-library)
@@ -21,8 +23,9 @@
 
 Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, or `open`.
 Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
-`values` list, a CEL `expression` that evaluates to `list(string)`, or both (the two
-are unioned):
+`values` list, a CEL `expression` that evaluates to `list(string)`, a `serviceRefs` list
+of in-cluster Services (`network` only), or any combination of them (the results are
+unioned):
 
 ```yaml
 spec:
@@ -31,6 +34,7 @@ spec:
       allow:
         values: [...]        # literal list of allowed items
         expression: "..."    # CEL expression returning list(string), unioned with values
+        serviceRefs: [...]   # network only: Services resolved to addresses, unioned too
       deny:
         values: [...]
         expression: "..."
@@ -47,6 +51,10 @@ spec:
   from every matching policy. If none of the matching policies set a default
   deny for that behavior, it defaults to allow-all-except-denied, where the
   deny list is the union of `deny` entries from every matching policy.
+- `serviceRefs` names in-cluster Services by `name` and `namespace`, on a `network`
+  behavior's `allow` or `deny` rule. `RuntimePolicy` is cluster scoped, so `namespace` is
+  required rather than implied. The API rejects `serviceRefs` on an `exec` or `open`
+  behavior. See [Example: allow egress to a Service](#example-allow-egress-to-a-service).
 - `spec.variables` defines named CEL expressions (`admissionregistrationv1.Variable`)
   that can be reused across behaviors via `variables.<name>` inside any `expression`.
 - `expression` must evaluate to a statically-typed `list(string)`. Functions that return
@@ -139,7 +147,7 @@ Conditions:
 | Type | Reasons | Meaning |
 | --- | --- | --- |
 | `Applied` | `Enforcing`, `Monitoring` | The daemon has the policy loaded, and in which mode. |
-| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why. |
+| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServiceRefs` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServiceRefs` lists the `serviceRefs` entries naming a Service that is not in cache. |
 | `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy would silently produce no findings. |
 
 A target the runtime cannot program is never silently skipped: it always reaches both an
@@ -359,6 +367,111 @@ spec:
 
 `deny.expression` can also produce the default-deny sentinel dynamically, e.g.
 gated by a variable, but in most cases a literal `deny.values: ["*"]` is clearer.
+
+## Example: allow egress to a Service
+
+The allow list in the example above hardcodes the ClusterIPs of DNS and the API server.
+Those addresses are stable, but a Service that is redeployed, or whose backends move, is
+not — and the policy has no way to know. `serviceRefs` names the Service instead, and the
+daemon resolves it from Service and EndpointSlice informers.
+
+This is the same deny-all-then-allowlist egress policy, expressed as references: the
+workload may reach cluster DNS and an egress gateway, and nothing else. The
+`kubernetes` Service is deliberately absent, so the API server is unreachable from
+these pods:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: egress-via-gateway-only
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: payments
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+      allow:
+        serviceRefs:
+        - name: kube-dns
+          namespace: kube-system
+        - name: egress-gateway
+          namespace: networking
+```
+
+```bash
+kubectl apply -f egress-via-gateway-only.yaml
+kubectl get runtimepolicy egress-via-gateway-only
+```
+
+What a reference resolves to:
+
+- the Service's ClusterIP, when it has one, plus the addresses of its **ready**
+  endpoints. A headless Service therefore resolves to its endpoints alone; a Service
+  scaled to zero resolves to its ClusterIP alone.
+- IPv4 only. IPv6 endpoint addresses are skipped, as everywhere else in `network`.
+- re-resolved whenever the Service or one of its EndpointSlices changes, so scaling,
+  rolling, or replacing the backends updates the programmed addresses without touching
+  the policy. No `evaluationInterval` is needed for this; the informers drive it.
+
+`serviceRefs` unions with `values` and `expression` on the same rule, so a policy can mix
+references with addresses that have no Service in front of them:
+
+```yaml
+spec:
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - "192.0.2.10"     # an appliance outside the cluster
+        serviceRefs:
+        - name: kube-dns
+          namespace: kube-system
+```
+
+## Limits of serviceRefs
+
+A reference is resolved from watched cluster state, which bounds what it can express.
+These are real, current limits:
+
+- **In-cluster Services only.** There is no way to name an external hostname. A hostname
+  cannot be resolved at policy-evaluation time, and would have to be re-resolved per
+  connection to be meaningful — the same limit that makes hostnames an unsupported
+  `network` value.
+- **No port or protocol granularity.** Allowing a Service allows *every* port on the
+  addresses it resolves to, because the egress maps are keyed on a `u32` IPv4 address
+  and nothing else. Naming a Service that exposes port 443 does not restrict the
+  workload to port 443 on that address.
+- **Both the ClusterIP and the endpoint addresses are programmed, and both are needed.**
+  Which one the kernel actually matches depends on the client's network namespace: an
+  ordinary pod's traffic is DNATed in the host namespace, after the egress hook has run in
+  the pod namespace, so the hook matches the ClusterIP; a `hostNetwork` pod is DNATed in
+  its own namespace before the hook, so the hook matches the backend address. A cluster
+  using a socket-level load balancer instead of kube-proxy translates before the hook for
+  every client, in which case only the endpoint addresses match.
+- **Endpoint addresses are pod IPs, and they are programmed individually.** A matched pod
+  can therefore reach those pod IPs directly, not only through the Service's ClusterIP.
+  The grant is wider than "may talk to this Service": it is "may talk to this Service's
+  addresses", and if another Service happens to share a backend pod, that pod is
+  reachable through it too.
+- **An unresolved reference programs nothing.** A reference to a Service that does not
+  exist (a typo, a namespace that was never created, a Service deleted after the policy
+  was written) contributes no addresses. Under default-deny that means the destination is
+  fully blocked rather than quietly allowed, which is the safe direction but looks
+  identical to a network outage from inside the workload. It is surfaced as a
+  `TargetsValid=False` condition on the policy — check the status before concluding the
+  cluster is broken:
+
+  ```bash
+  kubectl get runtimepolicy egress-via-gateway-only -o jsonpath='{.status.conditions}'
+  ```
 
 ## Example: re-evaluated policy with a selector across multiple behaviors
 

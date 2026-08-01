@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,12 +18,19 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
+
+// ServiceChangeNotifier reports that the addresses behind a Service reference
+// may have changed. It is satisfied by *services.Resolver.
+type ServiceChangeNotifier interface {
+	AddChangeHandler(h func(ref v1alpha1.ServiceReference))
+}
 
 type rpWatch struct {
 	compiled *compiler.CompiledRuntimePolicy
@@ -71,7 +79,8 @@ func (m *RuntimePolicyMgr) HasSynced() bool {
 func NewRuntimePolicyMgr(cfg *rest.Config,
 	eventHandlers []events.RuntimePolicyEventHandler,
 	client v1alpha1client.Interface,
-	rpCompiler compiler.Compiler) (*RuntimePolicyMgr, error) {
+	rpCompiler compiler.Compiler,
+	resolver ServiceChangeNotifier) (*RuntimePolicyMgr, error) {
 	factory := v1alpha1informers.NewSharedInformerFactory(client, 0)
 	rpInformer := factory.Runtime().V1alpha1().RuntimePolicies().Informer()
 
@@ -124,7 +133,45 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 		},
 	})
 
+	resolver.AddChangeHandler(m.serviceRefChanged)
+
 	return m, nil
+}
+
+// serviceRefChanged runs on the resolver's informer goroutine, so it only queues:
+// the worker recompiles and re-evaluates the policy, and the handlers diff the
+// result against what they programmed.
+func (m *RuntimePolicyMgr) serviceRefChanged(ref v1alpha1.ServiceReference) {
+	policies, err := m.lister.List(labels.Everything())
+	if err != nil {
+		m.log.Error(err, "listing policies for a changed service", "service", ref.Namespace+"/"+ref.Name)
+		return
+	}
+	for _, rp := range policies {
+		if !referencesService(rp, ref) {
+			continue
+		}
+		m.log.V(2).Info("service changed, requeueing the policies that reference it",
+			"service", ref.Namespace+"/"+ref.Name, "policy", rp.Name)
+		m.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: rp.Name})
+	}
+}
+
+func referencesService(rp *v1alpha1.RuntimePolicy, ref v1alpha1.ServiceReference) bool {
+	for _, behavior := range rp.Spec.Behaviors {
+		if behavior.Network == nil {
+			continue
+		}
+		for _, rule := range []*v1alpha1.BehaviorRule{behavior.Network.Allow, behavior.Network.Deny} {
+			if rule == nil {
+				continue
+			}
+			if slices.Contains(rule.ServiceRefs, ref) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (m *RuntimePolicyMgr) runWorker(ctx context.Context) {

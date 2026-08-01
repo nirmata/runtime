@@ -57,8 +57,11 @@ spec:
               behaviors:
                 description: Behaviors defines the allowed and denied runtime behaviors.
                 items:
-                  description: PolicyBehavior defines allow/deny rules for a specific
-                    behavior type.
+                  description: |-
+                    PolicyBehavior defines allow/deny rules for a specific behavior type.
+                    One rule per allow/deny arm rather than a conjunction per behavior: the API
+                    server's CEL cost estimator budgets each rule separately, and the combined
+                    form is estimated at 1.7x the per-rule budget, which rejects the whole CRD.
                   properties:
                     exec:
                       description: Exec defines command execution behavior rules.
@@ -70,6 +73,29 @@ spec:
                               description: Expression is a CEL expression that evaluates
                                 to a list of items.
                               type: string
+                            serviceRefs:
+                              description: |-
+                                ServiceRefs names in-cluster Services whose addresses are resolved from
+                                the API server. Only valid on a network behavior.
+                              items:
+                                description: |-
+                                  ServiceReference names one in-cluster Service. RuntimePolicy is cluster
+                                  scoped, so the namespace is not implied by the policy's own metadata.
+                                properties:
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 64
+                              type: array
                             values:
                               description: Values is a list of allowed or denied items
                                 (IPs, commands, files, etc.).
@@ -84,6 +110,29 @@ spec:
                               description: Expression is a CEL expression that evaluates
                                 to a list of items.
                               type: string
+                            serviceRefs:
+                              description: |-
+                                ServiceRefs names in-cluster Services whose addresses are resolved from
+                                the API server. Only valid on a network behavior.
+                              items:
+                                description: |-
+                                  ServiceReference names one in-cluster Service. RuntimePolicy is cluster
+                                  scoped, so the namespace is not implied by the policy's own metadata.
+                                properties:
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 64
+                              type: array
                             values:
                               description: Values is a list of allowed or denied items
                                 (IPs, commands, files, etc.).
@@ -102,6 +151,29 @@ spec:
                               description: Expression is a CEL expression that evaluates
                                 to a list of items.
                               type: string
+                            serviceRefs:
+                              description: |-
+                                ServiceRefs names in-cluster Services whose addresses are resolved from
+                                the API server. Only valid on a network behavior.
+                              items:
+                                description: |-
+                                  ServiceReference names one in-cluster Service. RuntimePolicy is cluster
+                                  scoped, so the namespace is not implied by the policy's own metadata.
+                                properties:
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 64
+                              type: array
                             values:
                               description: Values is a list of allowed or denied items
                                 (IPs, commands, files, etc.).
@@ -116,6 +188,29 @@ spec:
                               description: Expression is a CEL expression that evaluates
                                 to a list of items.
                               type: string
+                            serviceRefs:
+                              description: |-
+                                ServiceRefs names in-cluster Services whose addresses are resolved from
+                                the API server. Only valid on a network behavior.
+                              items:
+                                description: |-
+                                  ServiceReference names one in-cluster Service. RuntimePolicy is cluster
+                                  scoped, so the namespace is not implied by the policy's own metadata.
+                                properties:
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 64
+                              type: array
                             values:
                               description: Values is a list of allowed or denied items
                                 (IPs, commands, files, etc.).
@@ -134,6 +229,29 @@ spec:
                               description: Expression is a CEL expression that evaluates
                                 to a list of items.
                               type: string
+                            serviceRefs:
+                              description: |-
+                                ServiceRefs names in-cluster Services whose addresses are resolved from
+                                the API server. Only valid on a network behavior.
+                              items:
+                                description: |-
+                                  ServiceReference names one in-cluster Service. RuntimePolicy is cluster
+                                  scoped, so the namespace is not implied by the policy's own metadata.
+                                properties:
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 64
+                              type: array
                             values:
                               description: Values is a list of allowed or denied items
                                 (IPs, commands, files, etc.).
@@ -148,6 +266,29 @@ spec:
                               description: Expression is a CEL expression that evaluates
                                 to a list of items.
                               type: string
+                            serviceRefs:
+                              description: |-
+                                ServiceRefs names in-cluster Services whose addresses are resolved from
+                                the API server. Only valid on a network behavior.
+                              items:
+                                description: |-
+                                  ServiceReference names one in-cluster Service. RuntimePolicy is cluster
+                                  scoped, so the namespace is not implied by the policy's own metadata.
+                                properties:
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                - namespace
+                                type: object
+                              maxItems: 64
+                              type: array
                             values:
                               description: Values is a list of allowed or denied items
                                 (IPs, commands, files, etc.).
@@ -161,6 +302,14 @@ spec:
                   - message: exactly one of network, exec, or open must be specified
                     rule: '(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0)
                       + (has(self.open) ? 1 : 0) == 1'
+                  - message: serviceRefs is only supported on a network behavior
+                    rule: '!has(self.exec) || !has(self.exec.allow) || !has(self.exec.allow.serviceRefs)'
+                  - message: serviceRefs is only supported on a network behavior
+                    rule: '!has(self.exec) || !has(self.exec.deny) || !has(self.exec.deny.serviceRefs)'
+                  - message: serviceRefs is only supported on a network behavior
+                    rule: '!has(self.open) || !has(self.open.allow) || !has(self.open.allow.serviceRefs)'
+                  - message: serviceRefs is only supported on a network behavior
+                    rule: '!has(self.open) || !has(self.open.deny) || !has(self.open.deny.serviceRefs)'
                 type: array
               evaluationInterval:
                 description: EvaluationInterval specifies how frequently the policy

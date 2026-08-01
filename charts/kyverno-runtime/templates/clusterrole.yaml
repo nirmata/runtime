@@ -16,6 +16,13 @@ rules:
 - apiGroups: ["runtime.kyverno.io"]
   resources: ["runtimepolicies/status"]
   verbs: ["get", "update", "patch"]
+# daemon: resolves the Services a policy's serviceRefs name
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list", "watch"]
 # daemon: writes OpenReports for observed/violating behaviors (#29)
 - apiGroups: ["openreports.io"]
   resources: ["reports", "clusterreports"]
