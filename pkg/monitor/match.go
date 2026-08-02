@@ -84,18 +84,21 @@ type pathMatcher struct {
 
 func newPathMatcher(values []string) pathMatcher {
 	m := pathMatcher{}
-	for _, v := range values {
-		if v == compiler.StarTarget {
-			m.star = true
+	for _, raw := range values {
+		v, err := compiler.ParseExecValue(raw)
+		if err != nil {
+			// a value lsm.ParsePaths cannot key is a value no kernel map holds;
+			// matching it here would report a finding enforcement never acts on
 			continue
 		}
-		if v == "" {
+		if v.Star {
+			m.star = true
 			continue
 		}
 		if m.paths == nil {
 			m.paths = make(map[string]struct{}, len(values))
 		}
-		m.paths[v] = struct{}{}
+		m.paths[v.Path] = struct{}{}
 	}
 	return m
 }

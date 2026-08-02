@@ -110,8 +110,9 @@ func TestRpCreated_ProgTypeSelection(t *testing.T) {
 	}
 }
 
-// the compiled exec pair lands verbatim in the exec enforcer's target maps, and
-// open and exec do not cross over.
+// the compiled exec pair reaches the exec enforcer's target maps, and open and
+// exec do not cross over. The "*" sentinel is default deny, not a path, so it
+// is carried by SetDefaultDeny and never appears as a key.
 func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -130,7 +131,6 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 		name:          "exec allow list with default deny",
 		execPair:      pair([]string{"/usr/bin/python3"}, []string{"*"}),
 		wantExecAllow: []string{"/usr/bin/python3"},
-		wantExecDeny:  []string{"*"},
 		wantExecDeny0: true,
 	}, {
 		name:          "open and exec are programmed independently",
@@ -488,10 +488,8 @@ func TestObservationFailureSurfacesPolicyCondition(t *testing.T) {
 	if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.status.conditionTypes("rp1"); len(got) == 0 {
-		t.Fatal("no condition recorded for a policy whose observation could not be enabled")
-	} else if got[0] != "ObservationAvailable" {
-		t.Errorf("condition type = %q, want ObservationAvailable", got[0])
+	if got := h.status.conditionTypes("rp1"); !slices.Contains(got, "ObservationAvailable") {
+		t.Errorf("conditions = %v, want one of type ObservationAvailable", got)
 	}
 	// the attachment is still tracked: enforcement (when in enforce mode) must not
 	// be dropped because counting failed
@@ -637,7 +635,7 @@ func TestSyncProgType_TargetDiffs(t *testing.T) {
 		newPair:     pair(nil, []string{"/etc/shadow", "*"}),
 		wantAdd:     []compiler.AllowDenyPair{{Deny: []string{"*"}}},
 		wantDenyAll: []bool{true},
-		wantDeny:    []string{"*", "/etc/shadow"},
+		wantDeny:    []string{"/etc/shadow"},
 	}, {
 		name:        "star leaving deny turns default deny off",
 		oldPair:     pair(nil, []string{"*", "/etc/shadow"}),
@@ -652,7 +650,6 @@ func TestSyncProgType_TargetDiffs(t *testing.T) {
 		wantAdd:     []compiler.AllowDenyPair{{Allow: []string{"/bin/ls"}}},
 		wantDenyAll: []bool{true},
 		wantAllow:   []string{"/bin/ls"},
-		wantDeny:    []string{"*"},
 	}}
 
 	for _, tt := range tests {
@@ -738,8 +735,8 @@ func TestSyncProgType_LateEnforcerSeededWithAttachedPodCgids(t *testing.T) {
 	if !execEnf.denyAll {
 		t.Error("exec enforcer default deny = false, want true (deny contains \"*\")")
 	}
-	if got := execEnf.denySet(); !slices.Equal(got, []string{"*"}) {
-		t.Errorf("exec deny set = %v, want [*]", got)
+	if got := execEnf.denySet(); len(got) != 0 {
+		t.Errorf("exec deny set = %v, want empty: \"*\" is default deny, not a key", got)
 	}
 	// the open enforcer must be untouched by the exec addition
 	openEnf := h.enf("rp1", open)

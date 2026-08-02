@@ -190,61 +190,52 @@ func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
 	return errors.Join(errs...)
 }
 
-func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
-	for _, p := range paths.Deny {
-		if len(p) > maxPathLen {
-			return fmt.Errorf("can't enforce limits on paths larger than %d", maxPathLen)
-		}
-		// todo: maybe we can optimize this by calling one big alloc and splitting it up ?
-		key := [maxPathLen]byte{}
-		copy(key[:], p)
+// AddTargets programs a policy's paths into the banned and allowed maps and
+// returns every value ParsePaths could not key.
+func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+	deny, allow, rejected := parsePair(paths)
 
+	for _, key := range deny {
 		if err := l.banned.Put(&key, uint8(0)); err != nil {
-			return err
+			return rejected, err
 		}
 	}
 
-	for _, p := range paths.Allow {
-		if len(p) > maxPathLen {
-			return fmt.Errorf("can't enforce limits on paths larger than %d", maxPathLen)
-		}
-		key := [maxPathLen]byte{}
-		copy(key[:], p)
-
+	for _, key := range allow {
 		if err := l.allowed.Put(&key, uint8(0)); err != nil {
-			return err
+			return rejected, err
 		}
 	}
-	return nil
+	return rejected, nil
 }
 
-func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
-	for _, p := range paths.Deny {
-		if len(p) > maxPathLen {
-			continue
-		}
-		// allocate an array of byte
-		key := [maxPathLen]byte{}
-		copy(key[:], p)
+// DeleteTargets removes what AddTargets programmed for the same pair. Both
+// derive their keys from ParsePaths, so a value one of them can key is a value
+// the other can key too.
+func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+	deny, allow, rejected := parsePair(paths)
 
+	for _, key := range deny {
 		if err := l.banned.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from banned map")
 		}
 	}
 
-	for _, p := range paths.Allow {
-		if len(p) > maxPathLen {
-			continue
-		}
-		// allocate an array of byte
-		key := [maxPathLen]byte{}
-		copy(key[:], p)
-
+	for _, key := range allow {
 		if err := l.allowed.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from allowed map")
 		}
 	}
-	return nil
+	return rejected, nil
+}
+
+func parsePair(paths *compiler.AllowDenyPair) (deny, allow []PathKey, rejected []RejectedTarget) {
+	if paths == nil {
+		return nil, nil, nil
+	}
+	deny, _, denyRejected := ParsePaths(paths.Deny)
+	allow, _, allowRejected := ParsePaths(paths.Allow)
+	return deny, allow, append(denyRejected, allowRejected...)
 }
 
 func (l *LsmEnforcer) SetDefaultDeny(val bool) error {

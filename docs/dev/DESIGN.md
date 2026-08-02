@@ -430,12 +430,15 @@ then lifts the newest `lastEvaluatedTime` across all shards to the top level. Up
 instead of clobbering each other.
 
 Conditions are merged by type: `Applied` is written by the `StatusWriter` itself with the reason
-naming the mode (`Enforcing`/`Monitoring`); `TargetsValid` comes from `egressmgr`
-and `ObservationAvailable` from `lsmmgr`, and are merged verbatim. This is the mechanism behind
+naming the mode (`Enforcing`/`Monitoring`); `TargetsValid` comes from `egressmgr`,
+`ObservationAvailable`, `ExecRulesValid` and `OpenRulesValid` from `lsmmgr`, and are merged
+verbatim. Each behavior gets its own condition type because conditions are keyed by type and
+last-write-wins. This is the mechanism behind
 the "fail loud, not silent" rule: a network target the runtime cannot program (IPv6, a CIDR wider
 than `/24`, a hostname) is reported as a typed `egressfilter.RejectedTarget`, logged at `V(0)`,
-**and** surfaced as `TargetsValid=False` with the per-value reason. Silently skipping it is the
-forbidden failure mode.
+**and** surfaced as `TargetsValid=False` with the per-value reason; an open or exec path that
+cannot become a `char[128]` map key does the same through `lsm.RejectedTarget`. Silently skipping
+it is the forbidden failure mode.
 
 ## Metrics
 

@@ -29,13 +29,33 @@ func IsObserveMode(mode string) bool {
 // validation stays deliberately permissive here so it never rejects a value
 // the runtime would accept.
 func validateNetworkBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
+	return validateBehaviorValues(path, b, func(v string) error {
+		_, err := ParseNetworkValue(v)
+		return err
+	})
+}
+
+// validateExecBehavior validates the hardcoded allow/deny values of an exec
+// behavior against ParseExecValue.
+//
+// Unlike the network case there is no narrowing at program time: lsm.ParsePaths
+// applies exactly this grammar, so a value accepted here is a value the kernel
+// maps can hold.
+func validateExecBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
+	return validateBehaviorValues(path, b, func(v string) error {
+		_, err := ParseExecValue(v)
+		return err
+	})
+}
+
+func validateBehaviorValues(path *field.Path, b *v1alpha1.Behavior, parse func(string) error) field.ErrorList {
 	if b == nil {
 		return nil
 	}
 	var errs field.ErrorList
 	check := func(path *field.Path, values []string) {
 		for i, v := range values {
-			if _, err := ParseNetworkValue(v); err != nil {
+			if err := parse(v); err != nil {
 				errs = append(errs, field.Invalid(path.Index(i), v, err.Error()))
 			}
 		}

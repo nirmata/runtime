@@ -154,10 +154,12 @@ Conditions:
 | --- | --- | --- |
 | `Applied` | `Enforcing`, `Monitoring` | The daemon has the policy loaded, and in which mode. |
 | `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why. |
+| `ExecRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `exec` path could be programmed. `UnsupportedPaths` lists the rejected values and why. |
+| `OpenRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | The same for `open` paths. |
 | `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy would silently produce no findings. |
 
-A target the runtime cannot program is never silently skipped: it always reaches both an
-operator-visible log line and a `TargetsValid=False` condition.
+A target or path the runtime cannot program is never silently skipped: it always reaches both an
+operator-visible log line and a `False` condition.
 
 ## Findings and Reports
 
@@ -213,6 +215,10 @@ current limits, not rounding errors:
   `/24`, and hostnames cannot be programmed (hostnames in particular cannot be resolved at
   policy-evaluation time). They are reported through `TargetsValid=False` with the reason per
   value. A CIDR of `/24` or narrower is expanded into individual addresses.
+- **`open` and `exec` values are literal paths, bounded at 127 bytes.** They are never split into
+  tokens and never treated as globs; only the whole value `"*"` is the default-deny sentinel. A
+  longer value, an empty one, or one carrying a NUL byte is rejected at admission and reported
+  through `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives from an `expression`.
 - **Observations that cannot be attributed to a pod are dropped** and counted in
   `nirmata_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.

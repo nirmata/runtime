@@ -14,8 +14,8 @@ type lsmEnforcer interface {
 	Close() error
 	AddCgids(cgids []uint64) error
 	DeleteCgids(cgids []uint64) error
-	AddTargets(paths *compiler.AllowDenyPair) error
-	DeleteTargets(paths *compiler.AllowDenyPair) error
+	AddTargets(paths *compiler.AllowDenyPair) ([]lsm.RejectedTarget, error)
+	DeleteTargets(paths *compiler.AllowDenyPair) ([]lsm.RejectedTarget, error)
 	SetDefaultDeny(val bool) error
 	EnableObservation(cgids []uint64) error
 	DisableObservation(cgids []uint64) error

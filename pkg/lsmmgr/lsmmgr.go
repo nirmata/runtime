@@ -2,6 +2,8 @@ package lsmmgr
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,19 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+)
+
+// Condition types and reasons the manager writes onto a RuntimePolicy's status.
+// Exec and open get a condition each because conditions are keyed by type and
+// last-write-wins: one shared type would report whichever behavior was recorded
+// last.
+const (
+	ConditionExecRulesValid  = "ExecRulesValid"
+	ConditionOpenRulesValid  = "OpenRulesValid"
+	ReasonUnsupportedPaths   = "UnsupportedPaths"
+	ReasonAllPathsSupported  = "AllPathsSupported"
+	ReasonNoPaths            = "NoPaths"
+	maxReportedRejectedPaths = 10
 )
 
 // enforcerFactory builds an enforcer for a bpf lsm attach target.
@@ -157,6 +172,70 @@ func (l *LsmManager) observationUnavailable(rpUID, progType, msg string, err err
 		Reason:  "ObservationUnavailable",
 		Message: msg + " for " + progType + ": " + err.Error(),
 	})
+}
+
+// recordPathRulesCondition reports, once per policy event, whether every path
+// value of one behavior can be programmed. It parses the policy's own values
+// with the parser the enforcer uses, so the answer holds in observe mode too,
+// where nothing reaches a kernel map at all.
+func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *compiler.AllowDenyPair) {
+	if !pair.HasEntries() {
+		l.recordCondition(rpUID, metav1.Condition{
+			Type:               condType,
+			Status:             metav1.ConditionTrue,
+			Reason:             ReasonNoPaths,
+			Message:            "the policy declares no paths for this behavior",
+			LastTransitionTime: metav1.NewTime(l.clock()),
+		})
+		return
+	}
+
+	_, _, rejected := lsm.ParsePaths(pair.Deny)
+	_, _, allowRejected := lsm.ParsePaths(pair.Allow)
+	rejected = append(rejected, allowRejected...)
+	if len(rejected) == 0 {
+		l.recordCondition(rpUID, metav1.Condition{
+			Type:               condType,
+			Status:             metav1.ConditionTrue,
+			Reason:             ReasonAllPathsSupported,
+			Message:            fmt.Sprintf("all %d paths are supported", len(pair.Allow)+len(pair.Deny)),
+			LastTransitionTime: metav1.NewTime(l.clock()),
+		})
+		return
+	}
+	for _, r := range rejected {
+		l.logger.V(0).Info("path cannot be enforced", "policy", rpUID, "condition", condType,
+			"path", r.Value, "reason", r.Reason)
+	}
+	l.recordCondition(rpUID, metav1.Condition{
+		Type:               condType,
+		Status:             metav1.ConditionFalse,
+		Reason:             ReasonUnsupportedPaths,
+		Message:            rejectionMessage(rejected),
+		LastTransitionTime: metav1.NewTime(l.clock()),
+	})
+}
+
+// logRejected reports what one enforcer refused to key. recordPathRulesCondition
+// already carries the same values onto the policy status, so this stays at V(2)
+// and only adds the program type.
+func (l *LsmManager) logRejected(rpUID, progType string, rejected []lsm.RejectedTarget) {
+	for _, r := range rejected {
+		l.logger.V(2).Info("path was not programmed", "uid", rpUID, "progType", progType,
+			"path", r.Value, "reason", r.Reason)
+	}
+}
+
+func rejectionMessage(rejected []lsm.RejectedTarget) string {
+	parts := make([]string, 0, len(rejected))
+	for i, r := range rejected {
+		if i == maxReportedRejectedPaths {
+			parts = append(parts, fmt.Sprintf("and %d more", len(rejected)-maxReportedRejectedPaths))
+			break
+		}
+		parts = append(parts, r.String())
+	}
+	return fmt.Sprintf("%d path(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
 }
 
 func (l *LsmManager) recordCondition(rpUID string, cond metav1.Condition) {

@@ -89,9 +89,12 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 			compiledNets = append(compiledNets, compiledNet)
 		}
 		if b.Exec != nil {
+			errPath := path.Index(i).Child("exec")
+			if errs := validateExecBehavior(errPath, b.Exec); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
 			compiledExec, err := c.compileBehavior(b.Exec)
 			if err != nil {
-				errPath := path.Index(i).Child("exec")
 				return nil, field.Invalid(errPath, b.Exec, err.Error())
 			}
 

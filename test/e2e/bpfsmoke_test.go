@@ -159,8 +159,12 @@ func TestBPFLsmProgramsLoadAndVerify(t *testing.T) {
 				}
 			}()
 
-			if err := enf.AddTargets(&compiler.AllowDenyPair{Deny: []string{"/etc/shadow"}}); err != nil {
+			rejected, err := enf.AddTargets(&compiler.AllowDenyPair{Deny: []string{"/etc/shadow"}})
+			if err != nil {
 				t.Errorf("programming deny targets: %v", err)
+			}
+			if len(rejected) != 0 {
+				t.Errorf("programming deny targets rejected %v", rejected)
 			}
 			if err := enf.SetDefaultDeny(false); err != nil {
 				t.Errorf("clearing default deny: %v", err)

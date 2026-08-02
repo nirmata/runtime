@@ -1,6 +1,7 @@
 package lsmmgr
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"sort"
@@ -121,30 +122,56 @@ func (f *fakeEnforcer) DeleteCgids(cgids []uint64) error {
 	return f.note("DeleteCgids")
 }
 
-func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
+// AddTargets and DeleteTargets model the real enforcer's effective map state by
+// deriving their keys the way it does, so a value lsm.ParsePaths rejects never
+// appears in the fake's allow or deny set either.
+func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]lsm.RejectedTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addTargets = append(f.addTargets, clonePair(paths))
-	for _, p := range paths.Allow {
+	allow, deny, rejected := parseFakePair(paths)
+	for _, p := range allow {
 		f.allow[p] = struct{}{}
 	}
-	for _, p := range paths.Deny {
+	for _, p := range deny {
 		f.deny[p] = struct{}{}
 	}
-	return f.note("AddTargets")
+	return rejected, f.note("AddTargets")
 }
 
-func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
+func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]lsm.RejectedTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.delTargets = append(f.delTargets, clonePair(paths))
-	for _, p := range paths.Allow {
+	allow, deny, rejected := parseFakePair(paths)
+	for _, p := range allow {
 		delete(f.allow, p)
 	}
-	for _, p := range paths.Deny {
+	for _, p := range deny {
 		delete(f.deny, p)
 	}
-	return f.note("DeleteTargets")
+	return rejected, f.note("DeleteTargets")
+}
+
+func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejected []lsm.RejectedTarget) {
+	allowKeys, _, allowRejected := lsm.ParsePaths(paths.Allow)
+	denyKeys, _, denyRejected := lsm.ParsePaths(paths.Deny)
+	for _, k := range allowKeys {
+		allow = append(allow, keyPath(k))
+	}
+	for _, k := range denyKeys {
+		deny = append(deny, keyPath(k))
+	}
+	return allow, deny, append(denyRejected, allowRejected...)
+}
+
+// keyPath is the inverse of the NUL padding lsm.ParsePaths applies; paths hold
+// no NUL byte, so the first one always ends the string.
+func keyPath(k lsm.PathKey) string {
+	if i := bytes.IndexByte(k[:], 0); i >= 0 {
+		return string(k[:i])
+	}
+	return string(k[:])
 }
 
 func (f *fakeEnforcer) SetDefaultDeny(val bool) error {
