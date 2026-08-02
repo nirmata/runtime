@@ -42,7 +42,7 @@ spec:
 - `exec`: command names/paths.
 - `open`: file paths.
 - `protocol`: application protocols for egress, classified from the first data segment of each
-  flow. Values are `ssh`, `tls`, `tls/<alpn>` (e.g. `tls/h2`, `tls/http/1.1`), `http1`, `h2c`,
+  flow. Values are `ssh`, `tls`, `tls/<alpn>` (e.g. `tls/h2`, `tls/http/1.1`), `http/1.1`, `h2c`,
   `quic`, and `unknown`. `unknown` is traffic the classifier could not label — a deliberate,
   separate token, never folded into `*`, so a policy has to say which way unclassifiable traffic
   goes. `network` and `protocol` evaluate independently and AND together: a connection must pass

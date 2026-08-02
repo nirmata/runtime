@@ -6,7 +6,7 @@
 # by 5-tuple; only the payload differs:
 #
 #   probe            first data segment              classified  policy verdict
-#   wget             "GET / HTTP/1.0..."             http1       allow
+#   wget             "GET / HTTP/1.0..."             http/1.1       allow
 #   clienthello.bin  TLS ClientHello, first ALPN h2  tls/h2      allow
 #   SSH banner       "SSH-2.0-..."                   ssh         default deny
 #   garbage          "HELLO..."                      unknown     deny (unknown)
@@ -127,8 +127,8 @@ spec:
           # ...and the allowed protocols must STILL work under the default
           # deny, which is what makes the drop above meaningful.
           probe 'printf "GET / HTTP/1.0\r\n\r\n"' | grep -q "200 OK" \
-            || { echo "FAIL: http1 blocked under protocol default deny (over-blocking)"; exit 1; }
-          echo "OK: http1 still allowed"
+            || { echo "FAIL: http/1.1 blocked under protocol default deny (over-blocking)"; exit 1; }
+          echo "OK: http/1.1 still allowed"
 
           probe 'cat /tmp/clienthello.bin' | grep -q "HTTP/" \
             || { echo "FAIL: TLS ClientHello offering h2 blocked despite allow tls/h2"; exit 1; }

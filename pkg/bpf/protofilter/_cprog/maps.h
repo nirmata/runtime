@@ -11,7 +11,7 @@
 #define PROTO_UNKNOWN 0
 #define PROTO_SSH 1
 #define PROTO_TLS 2
-#define PROTO_HTTP1 3
+#define PROTO_HTTP11 3
 #define PROTO_H2C 4
 #define PROTO_QUIC 5
 

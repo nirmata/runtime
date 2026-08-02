@@ -37,10 +37,10 @@ func wantLiveProtos(t *testing.T, f *fakeProtoFilter, allow, deny []string) {
 func TestAttachPolicyProgramsProtocolTargets(t *testing.T) {
 	e, _, _, _ := newTestManagerWithProto()
 	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
-	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls/h2", "http1"}, []string{"*", "ssh"}), events.EventTypeCreate)
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls/h2", "http/1.1"}, []string{"*", "ssh"}), events.EventTypeCreate)
 
 	pf := protoFilterOf(t, e, "pod-1")
-	wantLiveProtos(t, pf, []string{"http1", "tls/h2"}, []string{"ssh"})
+	wantLiveProtos(t, pf, []string{"http/1.1", "tls/h2"}, []string{"ssh"})
 	if !pf.defaultDeny {
 		t.Error("protocol default deny flag not set for a deny list containing the star sentinel")
 	}
@@ -82,10 +82,10 @@ func TestRpUpdatedDiffsProtocolTargets(t *testing.T) {
 	e, _, _, _ := newTestManagerWithProto()
 	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls/h2"}, []string{"*"}), events.EventTypeCreate)
-	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls/h2", "http1"}, nil), events.EventTypeUpdate)
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls/h2", "http/1.1"}, nil), events.EventTypeUpdate)
 
 	pf := protoFilterOf(t, e, "pod-1")
-	wantLiveProtos(t, pf, []string{"http1", "tls/h2"}, []string{})
+	wantLiveProtos(t, pf, []string{"http/1.1", "tls/h2"}, []string{})
 	if pf.defaultDeny {
 		t.Error("protocol default deny flag survived the star sentinel leaving the deny list")
 	}

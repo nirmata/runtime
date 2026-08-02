@@ -270,7 +270,7 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
         method_eq(buf, n, "PATCH", 5) || method_eq(buf, n, "TRACE", 5) ||
         method_eq(buf, n, "DELETE", 6) || method_eq(buf, n, "OPTIONS", 7) ||
         method_eq(buf, n, "CONNECT", 7))
-        return PROTO_HTTP1;
+        return PROTO_HTTP11;
 
     return PROTO_UNKNOWN;
 }

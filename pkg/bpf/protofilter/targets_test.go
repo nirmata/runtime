@@ -27,9 +27,9 @@ func TestParseTargets(t *testing.T) {
 		},
 		{
 			name:   "every bare token is programmable",
-			values: []string{"ssh", "tls", "http1", "h2c", "quic", "unknown"},
+			values: []string{"ssh", "tls", "http/1.1", "h2c", "quic", "unknown"},
 			wantTargets: []Target{
-				{Protocol: "ssh"}, {Protocol: "tls"}, {Protocol: "http1"},
+				{Protocol: "ssh"}, {Protocol: "tls"}, {Protocol: "http/1.1"},
 				{Protocol: "h2c"}, {Protocol: "quic"}, {Protocol: "unknown"},
 			},
 		},
@@ -153,7 +153,7 @@ func TestTargetKernelKey_RoundTripsTokenAndALPN(t *testing.T) {
 		{Protocol: compiler.ProtocolTLS},
 		{Protocol: compiler.ProtocolTLS, ALPN: "h2"},
 		{Protocol: compiler.ProtocolTLS, ALPN: strings.Repeat("a", compiler.MaxALPNLength)},
-		{Protocol: compiler.ProtocolHTTP1},
+		{Protocol: compiler.ProtocolHTTP11},
 		{Protocol: compiler.ProtocolH2C},
 		{Protocol: compiler.ProtocolQUIC},
 	}

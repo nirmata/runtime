@@ -37,7 +37,7 @@ func TestDefinesMatchKernelHeader(t *testing.T) {
 		"PROTO_UNKNOWN": protoIDUnknown,
 		"PROTO_SSH":     protoIDSSH,
 		"PROTO_TLS":     protoIDTLS,
-		"PROTO_HTTP1":   protoIDHTTP1,
+		"PROTO_HTTP11":  protoIDHTTP11,
 		"PROTO_H2C":     protoIDH2C,
 		"PROTO_QUIC":    protoIDQUIC,
 	}

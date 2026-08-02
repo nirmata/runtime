@@ -123,7 +123,7 @@ Semantics (see `docs/runtimepolicy.md` for the full reference with examples):
 - `network` values are IPv4 addresses (egress), `exec` values are command names/paths, `open`
   values are file paths.
 - `protocol` values are application-protocol tokens for egress flows, classified from the first
-  data segment of a connection: `ssh`, `tls`, `tls/<alpn>`, `http1`, `h2c`, `quic`, and `unknown`
+  data segment of a connection: `ssh`, `tls`, `tls/<alpn>`, `http/1.1`, `h2c`, `quic`, and `unknown`
   (traffic the classifier could not label). The grammar is defined once, in
   `pkg/compiler/protocolvalue.go: ParseProtocolValue`, and consumed by admission validation,
   program-time map filling (`protofilter.ParseTargets`) and monitor-mode matching.

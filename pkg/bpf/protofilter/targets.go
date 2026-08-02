@@ -12,7 +12,7 @@ import (
 const (
 	ReasonEmpty        = "empty target value"
 	ReasonInvalidALPN  = `ALPN suffix must be 1-16 visible ASCII characters, e.g. "tls/h2"`
-	ReasonNotAProtocol = `not a protocol token: use "ssh", "tls", "tls/<alpn>", "http1", "h2c", "quic", "unknown", or "*" for default-deny`
+	ReasonNotAProtocol = `not a protocol token: use "ssh", "tls", "tls/<alpn>", "http/1.1", "h2c", "quic", "unknown", or "*" for default-deny`
 )
 
 // RejectedTarget is a target value that could not be programmed, together with
@@ -40,7 +40,7 @@ type Target struct {
 // compiler.ParseProtocolValue, and every token it accepts is programmable, so
 // no narrowing happens here.
 //
-//   - a protocol token (ssh, tls, tls/<alpn>, http1, h2c, quic, unknown)
+//   - a protocol token (ssh, tls, tls/<alpn>, http/1.1, h2c, quic, unknown)
 //     yields one target
 //   - compiler.StarTarget ("*") sets star, the default-deny sentinel, and
 //     yields no target
@@ -94,7 +94,7 @@ const (
 	protoIDUnknown = 0
 	protoIDSSH     = 1
 	protoIDTLS     = 2
-	protoIDHTTP1   = 3
+	protoIDHTTP11  = 3
 	protoIDH2C     = 4
 	protoIDQUIC    = 5
 )
@@ -107,8 +107,8 @@ func protoID(token string) (uint32, bool) {
 		return protoIDSSH, true
 	case compiler.ProtocolTLS:
 		return protoIDTLS, true
-	case compiler.ProtocolHTTP1:
-		return protoIDHTTP1, true
+	case compiler.ProtocolHTTP11:
+		return protoIDHTTP11, true
 	case compiler.ProtocolH2C:
 		return protoIDH2C, true
 	case compiler.ProtocolQUIC:
@@ -129,8 +129,8 @@ func protoToken(id uint32) (string, bool) {
 		return compiler.ProtocolSSH, true
 	case protoIDTLS:
 		return compiler.ProtocolTLS, true
-	case protoIDHTTP1:
-		return compiler.ProtocolHTTP1, true
+	case protoIDHTTP11:
+		return compiler.ProtocolHTTP11, true
 	case protoIDH2C:
 		return compiler.ProtocolH2C, true
 	case protoIDQUIC:
