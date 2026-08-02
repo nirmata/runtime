@@ -2,20 +2,23 @@
 #
 # Proves the protocol classifier is loaded, attached to the client pod's
 # cgroup, and enforces per-protocol verdicts on the first data segment. Every
-# probe hits the SAME destination and port, so nothing here is distinguishable
-# by 5-tuple; only the payload differs:
+# TCP probe hits the SAME destination and port (443), so nothing here is
+# distinguishable by 5-tuple; only the payload differs. The policy allows
+# ["tls", "dns"] and default-denies everything else:
 #
-#   probe            first data segment              classified  policy verdict
-#   wget             "GET / HTTP/1.0..."             http/1.1       allow
-#   clienthello.bin  TLS ClientHello, first ALPN h2  tls/h2      allow
-#   SSH banner       "SSH-2.0-..."                   ssh         default deny
-#   garbage          "HELLO..."                      unknown     deny (unknown)
-#   split hello      10-byte TLS record prefix       unknown     deny (unknown)
+#   probe            first data segment              classified    policy verdict
+#   clienthello.bin  TLS ClientHello, first ALPN h2  tls/h2        allow (tls)
+#   nslookup         cleartext DNS query over UDP    dns           allow
+#   SSH banner       "SSH-2.0-..."                   ssh           default deny
+#   wget             "GET / HTTP/1.0..."             http/1.1      default deny
+#   garbage          "HELLO..."                      unclassified  default deny
+#   split hello      10-byte TLS record prefix       unclassified  default deny
 #
-# The target is a plain busybox httpd: it answers anything delivered (200 for
-# HTTP, 400 for garbage), so "response bytes" means the segment passed the
-# classifier and "no response" means it was dropped. The baseline step pins
-# that, so a broken network cannot masquerade as enforcement.
+# The target is a plain busybox httpd on 443: it answers anything delivered
+# (200 for HTTP, 400 for garbage), so "response bytes" means the segment
+# passed the classifier and "no response" means it was dropped. The baseline
+# step pins that -- including cluster DNS -- so a broken network cannot
+# masquerade as enforcement.
 #
 # Kernel requirements: cgroup v2 + BPF (CAP_BPF). BPF-LSM is NOT required.
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -69,7 +72,7 @@ spec:
           test -n "$ip"
 
           probe() { # $1: shell command producing the payload on stdout
-            kubectl -n "$NAMESPACE" exec protocol-client -- sh -c "$1 | nc -w 3 $ip 8080" 2>/dev/null || true
+            kubectl -n "$NAMESPACE" exec protocol-client -- sh -c "$1 | nc -w 3 $ip 443" 2>/dev/null || true
           }
 
           ok=0
@@ -83,7 +86,16 @@ spec:
             || { echo "FAIL: baseline SSH-banner probe got no response"; exit 1; }
           probe 'cat /tmp/clienthello.bin' | grep -q "HTTP/" \
             || { echo "FAIL: baseline ClientHello probe got no response"; exit 1; }
-          echo "OK: baseline -- every payload reaches the target"
+
+          # Cluster DNS must work before the policy exists, or a broken
+          # resolver would be indistinguishable from enforcement later.
+          ok=0
+          for _ in $(seq 1 15); do
+            if kubectl -n "$NAMESPACE" exec protocol-client -- nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: baseline cluster DNS is broken (no policy applied yet)"; exit 1; }
+          echo "OK: baseline -- every payload reaches the target and DNS resolves"
 
   - name: apply-protocol-default-deny-policy
     try:
@@ -107,7 +119,7 @@ spec:
           ip=$(kubectl -n "$NAMESPACE" get pod protocol-target -o jsonpath='{.status.podIP}')
 
           probe() {
-            kubectl -n "$NAMESPACE" exec protocol-client -- sh -c "$1 | nc -w 3 $ip 8080" 2>/dev/null || true
+            kubectl -n "$NAMESPACE" exec protocol-client -- sh -c "$1 | nc -w 3 $ip 443" 2>/dev/null || true
           }
 
           # The SSH banner must stop getting a response within a bounded
@@ -126,30 +138,42 @@ spec:
 
           # ...and the allowed protocols must STILL work under the default
           # deny, which is what makes the drop above meaningful.
-          probe 'printf "GET / HTTP/1.0\r\n\r\n"' | grep -q "200 OK" \
-            || { echo "FAIL: http/1.1 blocked under protocol default deny (over-blocking)"; exit 1; }
-          echo "OK: http/1.1 still allowed"
-
           probe 'cat /tmp/clienthello.bin' | grep -q "HTTP/" \
-            || { echo "FAIL: TLS ClientHello offering h2 blocked despite allow tls/h2"; exit 1; }
-          echo "OK: tls/h2 ClientHello still allowed"
+            || { echo "FAIL: TLS ClientHello blocked despite allow tls"; exit 1; }
+          echo "OK: TLS ClientHello still allowed"
 
-          # A payload matching no signature is classified unknown and takes
-          # the unknown rule.
-          if probe 'printf "HELLO THERE GENERAL\r\n"' | grep -q "HTTP/"; then
-            echo "FAIL: unclassifiable payload was delivered -- unknown rule not applied"
+          ok=0
+          for _ in $(seq 1 15); do
+            if kubectl -n "$NAMESPACE" exec protocol-client -- nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: cluster DNS blocked despite allow dns"; exit 1; }
+          echo "OK: dns still allowed"
+
+          # Cleartext HTTP is not in the allow list, so the GET must be
+          # dropped like any other default-denied protocol.
+          if probe 'printf "GET / HTTP/1.0\r\n\r\n"' | grep -q "HTTP/"; then
+            echo "FAIL: cleartext HTTP was delivered -- http/1.1 is not allowed"
             exit 1
           fi
-          echo "OK: unknown payload denied"
+          echo "OK: cleartext http/1.1 denied"
 
-          # A ClientHello split across two segments must take the unknown
-          # rule, not the tls rule: only the 10-byte record prefix is in the
+          # A payload matching no signature classifies as unclassified. No
+          # policy value could allow it short of removing the default deny.
+          if probe 'printf "HELLO THERE GENERAL\r\n"' | grep -q "HTTP/"; then
+            echo "FAIL: unclassifiable payload was delivered under default deny"
+            exit 1
+          fi
+          echo "OK: unclassified payload denied"
+
+          # A ClientHello split across two segments classifies as
+          # unclassified, not tls: only the 10-byte record prefix is in the
           # first segment.
           if probe '{ head -c 10 /tmp/clienthello.bin; sleep 1; tail -c +11 /tmp/clienthello.bin; }' | grep -q "HTTP/"; then
-            echo "FAIL: split ClientHello was delivered -- it must classify as unknown"
+            echo "FAIL: split ClientHello was delivered -- it must classify as unclassified"
             exit 1
           fi
-          echo "OK: split ClientHello denied as unknown"
+          echo "OK: split ClientHello denied as unclassified"
 
           # Re-check the deny once more so a transient failure cannot be
           # mistaken for enforcement.

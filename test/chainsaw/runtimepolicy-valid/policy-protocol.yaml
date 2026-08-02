@@ -13,7 +13,7 @@ spec:
         values:
         - tls/h2
         - tls/http/1.1
+        - dns
       deny:
         values:
         - "*"
-        - unknown

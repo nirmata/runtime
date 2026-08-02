@@ -1,9 +1,11 @@
-# One plain-TCP HTTP server. The classifier runs on the CLIENT's first data
-# segment, so this single listener serves every probe: busybox httpd answers
-# real HTTP with 200 and any delivered garbage (an SSH banner, a raw TLS
-# ClientHello) with 400. A delivered segment therefore always produces
-# response bytes, and a classifier drop produces none -- same destination,
-# same port for every protocol.
+# One plain-TCP HTTP server on port 443. The classifier runs on the CLIENT's
+# first data segment and never on the port, so this single listener serves
+# every probe: busybox httpd answers real HTTP with 200 and any delivered
+# garbage (an SSH banner, a raw TLS ClientHello) with 400. A delivered segment
+# therefore always produces response bytes, and a classifier drop produces
+# none -- same destination, same port for every protocol. Listening on 443
+# makes the point sharp: the SSH probe literally is SSH-on-443. busybox runs
+# as root, so it can bind the privileged port.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -14,11 +16,11 @@ spec:
   containers:
   - name: httpd
     image: busybox:1.36
-    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 443 -h /www"]
     ports:
-    - containerPort: 8080
+    - containerPort: 443
     readinessProbe:
       tcpSocket:
-        port: 8080
+        port: 443
       initialDelaySeconds: 1
       periodSeconds: 2

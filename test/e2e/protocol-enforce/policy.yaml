@@ -1,6 +1,6 @@
-# Application-protocol default deny with two allowed protocols. Scoped by
-# podSelector to the client pod only, so the target server and the daemon
-# keep their networking.
+# Application-protocol default deny allowing only TLS and cleartext DNS.
+# Scoped by podSelector to the client pod only, so the target server and the
+# daemon keep their networking.
 apiVersion: runtime.kyverno.io/v1alpha1
 kind: RuntimePolicy
 metadata:
@@ -14,9 +14,8 @@ spec:
   - protocol:
       allow:
         values:
-        - "http/1.1"
-        - "tls/h2"
+        - "tls"
+        - "dns"
       deny:
         values:
         - "*"
-        - "unknown"

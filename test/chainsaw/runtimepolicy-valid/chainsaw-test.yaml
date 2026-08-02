@@ -69,8 +69,8 @@ spec:
           spec:
             mode: enforce
             (length(behaviors)): 1
-            (behaviors[0].protocol.allow.values): ["tls/h2", "tls/http/1.1"]
-            (behaviors[0].protocol.deny.values): ["*", "unknown"]
+            (behaviors[0].protocol.allow.values): ["tls/h2", "tls/http/1.1", "dns"]
+            (behaviors[0].protocol.deny.values): ["*"]
     finally:
     - delete:
         ref:
