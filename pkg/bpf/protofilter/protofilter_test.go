@@ -31,15 +31,16 @@ func TestDefinesMatchKernelHeader(t *testing.T) {
 	}
 
 	want := map[string]int{
-		"DEFAULT_DENY":  DEFAULT_DENY,
-		"LEARNING_MODE": OBSERVE,
-		"ALPN_MAX_LEN":  compiler.MaxALPNLength,
-		"PROTO_UNKNOWN": protoIDUnknown,
-		"PROTO_SSH":     protoIDSSH,
-		"PROTO_TLS":     protoIDTLS,
-		"PROTO_HTTP11":  protoIDHTTP11,
-		"PROTO_H2C":     protoIDH2C,
-		"PROTO_QUIC":    protoIDQUIC,
+		"DEFAULT_DENY":       DEFAULT_DENY,
+		"LEARNING_MODE":      OBSERVE,
+		"ALPN_MAX_LEN":       compiler.MaxALPNLength,
+		"PROTO_UNCLASSIFIED": protoIDUnclassified,
+		"PROTO_SSH":          protoIDSSH,
+		"PROTO_TLS":          protoIDTLS,
+		"PROTO_HTTP11":       protoIDHTTP11,
+		"PROTO_HTTP2":        protoIDHTTP2,
+		"PROTO_QUIC":         protoIDQUIC,
+		"PROTO_DNS":          protoIDDNS,
 	}
 	for define, goValue := range want {
 		re := regexp.MustCompile(`(?m)^#define\s+` + define + `\s+(\d+)\s*$`)
@@ -108,12 +109,12 @@ func TestAddProtocols_ReturnsRejectedTargetsAsTypedValues(t *testing.T) {
 			name: "rejections from both lists are reported, allow first",
 			pair: &compiler.AllowDenyPair{
 				Allow: []string{"ssh", "gopher"},
-				Deny:  []string{"tls/", "h2c/h2"},
+				Deny:  []string{"tls/", "unknown"},
 			},
 			wantRejected: []RejectedTarget{
 				{Value: "gopher", Reason: ReasonNotAProtocol},
 				{Value: "tls/", Reason: ReasonInvalidALPN},
-				{Value: "h2c/h2", Reason: ReasonNotAProtocol},
+				{Value: "unknown", Reason: ReasonNotAProtocol},
 			},
 		},
 		{

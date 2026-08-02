@@ -27,10 +27,10 @@ func TestParseTargets(t *testing.T) {
 		},
 		{
 			name:   "every bare token is programmable",
-			values: []string{"ssh", "tls", "http/1.1", "h2c", "quic", "unknown"},
+			values: []string{"ssh", "tls", "dns", "http/1.1", "http/2", "quic"},
 			wantTargets: []Target{
-				{Protocol: "ssh"}, {Protocol: "tls"}, {Protocol: "http/1.1"},
-				{Protocol: "h2c"}, {Protocol: "quic"}, {Protocol: "unknown"},
+				{Protocol: "ssh"}, {Protocol: "tls"}, {Protocol: "dns"},
+				{Protocol: "http/1.1"}, {Protocol: "http/2"}, {Protocol: "quic"},
 			},
 		},
 		{
@@ -65,8 +65,8 @@ func TestParseTargets(t *testing.T) {
 		},
 		{
 			name:        "star mixes with tokens",
-			values:      []string{"*", "unknown"},
-			wantTargets: []Target{{Protocol: "unknown"}},
+			values:      []string{"*", "dns"},
+			wantTargets: []Target{{Protocol: "dns"}},
 			wantStar:    true,
 		},
 		{
@@ -100,9 +100,19 @@ func TestParseTargets(t *testing.T) {
 			wantRejected: []RejectedTarget{{Value: "gopher", Reason: ReasonNotAProtocol}},
 		},
 		{
+			name:         "unknown is not a protocol token",
+			values:       []string{"unknown"},
+			wantRejected: []RejectedTarget{{Value: "unknown", Reason: ReasonNotAProtocol}},
+		},
+		{
+			name:         "h2c is not a protocol token",
+			values:       []string{"h2c"},
+			wantRejected: []RejectedTarget{{Value: "h2c", Reason: ReasonNotAProtocol}},
+		},
+		{
 			name:         "ALPN suffix on a non-tls token is rejected",
-			values:       []string{"h2c/h2"},
-			wantRejected: []RejectedTarget{{Value: "h2c/h2", Reason: ReasonNotAProtocol}},
+			values:       []string{"quic/h2"},
+			wantRejected: []RejectedTarget{{Value: "quic/h2", Reason: ReasonNotAProtocol}},
 		},
 		{
 			name:         "wrong case is rejected",
@@ -138,6 +148,26 @@ func TestParseTargets(t *testing.T) {
 	}
 }
 
+// protoID can encode ProtocolUnclassified for observation keys, so a grammar
+// leak here would silently program a policy rule matching unclassifiable
+// traffic. The string must be rejected, never turned into a target.
+func TestParseTargets_UnclassifiedIsNotProgrammable(t *testing.T) {
+	targets, star, rejected := ParseTargets([]string{compiler.ProtocolUnclassified})
+
+	for _, target := range targets {
+		if target.Protocol == compiler.ProtocolUnclassified {
+			t.Errorf("ParseTargets emitted target %+v", target)
+		}
+	}
+	if len(targets) != 0 || star {
+		t.Errorf("ParseTargets = (%v, %v), want no targets and no star", targets, star)
+	}
+	want := []RejectedTarget{{Value: compiler.ProtocolUnclassified, Reason: ReasonNotAProtocol}}
+	if diff := cmp.Diff(want, rejected); diff != "" {
+		t.Errorf("rejected mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestRejectedTarget_StringNamesValueAndReason(t *testing.T) {
 	got := RejectedTarget{Value: "gopher", Reason: ReasonNotAProtocol}.String()
 	want := `"gopher": ` + ReasonNotAProtocol
@@ -148,13 +178,14 @@ func TestRejectedTarget_StringNamesValueAndReason(t *testing.T) {
 
 func TestTargetKernelKey_RoundTripsTokenAndALPN(t *testing.T) {
 	targets := []Target{
-		{Protocol: compiler.ProtocolUnknown},
+		{Protocol: compiler.ProtocolUnclassified},
 		{Protocol: compiler.ProtocolSSH},
 		{Protocol: compiler.ProtocolTLS},
 		{Protocol: compiler.ProtocolTLS, ALPN: "h2"},
 		{Protocol: compiler.ProtocolTLS, ALPN: strings.Repeat("a", compiler.MaxALPNLength)},
+		{Protocol: compiler.ProtocolDNS},
 		{Protocol: compiler.ProtocolHTTP11},
-		{Protocol: compiler.ProtocolH2C},
+		{Protocol: compiler.ProtocolHTTP2},
 		{Protocol: compiler.ProtocolQUIC},
 	}
 	for _, target := range targets {
@@ -187,7 +218,7 @@ func TestTargetKernelKey_RejectsUnencodableTargets(t *testing.T) {
 	}
 }
 
-func TestProtoToken_UnrecognizedIDIsNotFoldedIntoUnknown(t *testing.T) {
+func TestProtoToken_UnrecognizedIDIsNotFoldedIntoUnclassified(t *testing.T) {
 	if token, ok := protoToken(99); ok {
 		t.Errorf("protoToken(99) = %q, want not ok", token)
 	}

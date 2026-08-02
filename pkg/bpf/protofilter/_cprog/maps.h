@@ -8,12 +8,13 @@
 #define DECISION_ALLOW 0
 #define DECISION_DENY 1
 
-#define PROTO_UNKNOWN 0
+#define PROTO_UNCLASSIFIED 0
 #define PROTO_SSH 1
 #define PROTO_TLS 2
 #define PROTO_HTTP11 3
-#define PROTO_H2C 4
+#define PROTO_HTTP2 4
 #define PROTO_QUIC 5
+#define PROTO_DNS 6
 
 #define ALPN_MAX_LEN 16
 

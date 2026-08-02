@@ -147,29 +147,29 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
     __u16 b16;
 
     if (load_u8(skb, base + 5, &b8) < 0 || b8 != 0x01)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
 
     /* handshake header(4) + client_version(2) + random(32) */
     __u32 off = 5 + 4 + 2 + 32;
 
     if (off + 1 > record_end || load_u8(skb, base + off, &b8) < 0)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
     off += 1 + b8; /* session_id */
 
     if (off + 2 > record_end || load_u16be(skb, base + off, &b16) < 0)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
     off += 2 + b16; /* cipher_suites */
 
     if (off + 1 > record_end || load_u8(skb, base + off, &b8) < 0)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
     off += 1 + b8; /* compression_methods */
 
     if (off + 2 > record_end || load_u16be(skb, base + off, &b16) < 0)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
     off += 2;
     __u32 ext_end = off + b16;
     if (ext_end > record_end)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
 
     for (int i = 0; i < 32; i++) {
         if (off + 4 > ext_end)
@@ -177,10 +177,10 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
         __u16 ext_type, ext_len;
         if (load_u16be(skb, base + off, &ext_type) < 0 ||
             load_u16be(skb, base + off + 2, &ext_len) < 0)
-            return PROTO_UNKNOWN;
+            return PROTO_UNCLASSIFIED;
         off += 4;
         if (off + ext_len > ext_end)
-            return PROTO_UNKNOWN;
+            return PROTO_UNCLASSIFIED;
         if (ext_type != 16) {
             off += ext_len;
             continue;
@@ -188,10 +188,10 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
 
         /* ALPN: list length(2), then the first entry: length(1) + bytes */
         if (ext_len < 3 || load_u8(skb, base + off + 2, &b8) < 0)
-            return PROTO_UNKNOWN;
+            return PROTO_UNCLASSIFIED;
         __u32 alen = b8;
         if (3 + alen > ext_len)
-            return PROTO_UNKNOWN;
+            return PROTO_UNCLASSIFIED;
         /* checked last so the verifier carries alen's unsigned [1,16] bounds
          * into the variable-length load: a branch on a register derived from
          * alen would sync away the range the helper call is checked against */
@@ -200,7 +200,7 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
 
         __u8 tmp[ALPN_MAX_LEN] = {};
         if (bpf_skb_load_bytes(skb, base + off + 3, tmp, alen) < 0)
-            return PROTO_UNKNOWN;
+            return PROTO_UNCLASSIFIED;
         for (int j = 0; j < ALPN_MAX_LEN; j++) {
             if (j >= alen)
                 break;
@@ -237,11 +237,11 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
     __u64 n = payload_len;
     barrier_var(n);
     if (n == 0)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
     if (n > sizeof(buf))
         n = sizeof(buf);
     if (bpf_skb_load_bytes(skb, payload_off, buf, n) < 0)
-        return PROTO_UNKNOWN;
+        return PROTO_UNCLASSIFIED;
 
     if (n >= 4 && buf[0] == 'S' && buf[1] == 'S' && buf[2] == 'H' && buf[3] == '-')
         return PROTO_SSH;
@@ -254,14 +254,15 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
             if (buf[i] != (__u8)preface[i])
                 match = 0;
         if (match)
-            return PROTO_H2C;
+            return PROTO_HTTP2;
     }
 
     if (n >= 5 && buf[0] == 0x16 && buf[1] == 0x03 && buf[2] >= 0x01 && buf[2] <= 0x04) {
         __u32 record_len = ((__u32)buf[3] << 8) | buf[4];
-        /* a ClientHello split across segments takes the unknown rule, never tls */
+        /* a ClientHello split across segments is unclassified, never tls: no
+         * allow value can name it, so only a default deny covers it */
         if (5 + record_len > payload_len)
-            return PROTO_UNKNOWN;
+            return PROTO_UNCLASSIFIED;
         return parse_client_hello(skb, payload_off, 5 + record_len, alpn);
     }
 
@@ -272,7 +273,7 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
         method_eq(buf, n, "CONNECT", 7))
         return PROTO_HTTP11;
 
-    return PROTO_UNKNOWN;
+    return PROTO_UNCLASSIFIED;
 }
 
 static __always_inline int handle_tcp(struct __sk_buff *skb, struct flow_key *fk, __u32 l4off)
@@ -302,6 +303,52 @@ static __always_inline int handle_tcp(struct __sk_buff *skb, struct flow_key *fk
     return settle(fk, proto, alpn);
 }
 
+/* Matches a cleartext DNS query by shape, on any port: the 12-byte header
+ * (QR clear, opcode 0, QDCOUNT 1, ANCOUNT 0) followed by a QNAME whose label
+ * chain terminates inside the segment. A response, a compression pointer in
+ * the first name, or a name that runs past the segment is unclassified. */
+static __always_inline __u32 classify_dns(struct __sk_buff *skb, __u32 payload_off,
+                                          __u32 payload_len)
+{
+    /* header plus at least the QNAME root terminator */
+    if (payload_len < 13)
+        return PROTO_UNCLASSIFIED;
+
+    __u8 flag_hi;
+    __u16 qdcount, ancount;
+    if (load_u8(skb, payload_off + 2, &flag_hi) < 0 || (flag_hi & 0xF8) != 0)
+        return PROTO_UNCLASSIFIED;
+    if (load_u16be(skb, payload_off + 4, &qdcount) < 0 || qdcount != 1)
+        return PROTO_UNCLASSIFIED;
+    if (load_u16be(skb, payload_off + 6, &ancount) < 0 || ancount != 0)
+        return PROTO_UNCLASSIFIED;
+
+    /* Single-exit loop body (break, not return) so clang can fully unroll it;
+     * mid-loop returns leave multiple exit blocks the unroller refuses.
+     * Falling out of the loop is unclassified: a name truncated by the segment
+     * end, a length over 63 (a compression pointer has no place in a query's
+     * first name), or a name deeper than 32 labels is classified honestly
+     * rather than guessed. */
+    __u32 off = 12;
+    int terminated = 0;
+#pragma unroll
+    for (int i = 0; i < 32; i++) {
+        __u8 len;
+        if (off >= payload_len || load_u8(skb, payload_off + off, &len) < 0)
+            break;
+        if (len == 0) {
+            terminated = 1;
+            break;
+        }
+        if (len > 63)
+            break;
+        off += 1 + len;
+    }
+    if (terminated)
+        return PROTO_DNS;
+    return PROTO_UNCLASSIFIED;
+}
+
 static __always_inline int handle_udp(struct __sk_buff *skb, struct flow_key *fk, __u32 l4off)
 {
     if (bpf_skb_load_bytes(skb, l4off, &fk->sport, 4) < 0)
@@ -311,15 +358,20 @@ static __always_inline int handle_udp(struct __sk_buff *skb, struct flow_key *fk
     if (st)
         return cached_verdict(st);
 
-    __u32 proto = PROTO_UNKNOWN;
+    __u32 proto = PROTO_UNCLASSIFIED;
     __u32 payload_off = l4off + 8;
     __u32 skb_len = skb->len;
-    if (payload_off < skb_len && skb_len - payload_off >= 5) {
-        __u8 q[5];
-        if (bpf_skb_load_bytes(skb, payload_off, q, 5) == 0 &&
-            (q[0] & 0xF0) == 0xC0 &&
-            q[1] == 0x00 && q[2] == 0x00 && q[3] == 0x00 && q[4] == 0x01)
-            proto = PROTO_QUIC;
+    if (payload_off < skb_len) {
+        __u32 payload_len = skb_len - payload_off;
+        if (payload_len >= 5) {
+            __u8 q[5];
+            if (bpf_skb_load_bytes(skb, payload_off, q, 5) == 0 &&
+                (q[0] & 0xF0) == 0xC0 &&
+                q[1] == 0x00 && q[2] == 0x00 && q[3] == 0x00 && q[4] == 0x01)
+                proto = PROTO_QUIC;
+        }
+        if (proto == PROTO_UNCLASSIFIED)
+            proto = classify_dns(skb, payload_off, payload_len);
     }
 
     char alpn[ALPN_MAX_LEN] = {};
@@ -370,12 +422,12 @@ int proto_egress(struct __sk_buff *skb)
         return handle_udp(skb, &fk, l4off);
 
     // No parseable L4 (ICMP, an IPv6 extension header chain): the flow must be
-    // visible as unknown, not misparsed or dropped from observation.
+    // visible as unclassified, not misparsed or dropped from observation.
     struct flow_state *st = bpf_map_lookup_elem(&flows, &fk);
     if (st)
         return cached_verdict(st);
     char alpn[ALPN_MAX_LEN] = {};
-    return settle(&fk, PROTO_UNKNOWN, alpn);
+    return settle(&fk, PROTO_UNCLASSIFIED, alpn);
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

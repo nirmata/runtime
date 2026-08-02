@@ -12,7 +12,7 @@ import (
 const (
 	ReasonEmpty        = "empty target value"
 	ReasonInvalidALPN  = `ALPN suffix must be 1-16 visible ASCII characters, e.g. "tls/h2"`
-	ReasonNotAProtocol = `not a protocol token: use "ssh", "tls", "tls/<alpn>", "http/1.1", "h2c", "quic", "unknown", or "*" for default-deny`
+	ReasonNotAProtocol = `not a protocol token: use "ssh", "tls", "tls/<alpn>", "dns", "http/1.1", "http/2", "quic", or "*" for default-deny`
 )
 
 // RejectedTarget is a target value that could not be programmed, together with
@@ -40,7 +40,7 @@ type Target struct {
 // compiler.ParseProtocolValue, and every token it accepts is programmable, so
 // no narrowing happens here.
 //
-//   - a protocol token (ssh, tls, tls/<alpn>, http/1.1, h2c, quic, unknown)
+//   - a protocol token (ssh, tls, tls/<alpn>, dns, http/1.1, http/2, quic)
 //     yields one target
 //   - compiler.StarTarget ("*") sets star, the default-deny sentinel, and
 //     yields no target
@@ -91,26 +91,32 @@ type protoKernelKey struct {
 
 // Protocol ids, mirroring the PROTO_* defines in _cprog/maps.h.
 const (
-	protoIDUnknown = 0
-	protoIDSSH     = 1
-	protoIDTLS     = 2
-	protoIDHTTP11  = 3
-	protoIDH2C     = 4
-	protoIDQUIC    = 5
+	protoIDUnclassified = 0
+	protoIDSSH          = 1
+	protoIDTLS          = 2
+	protoIDHTTP11       = 3
+	protoIDHTTP2        = 4
+	protoIDQUIC         = 5
+	protoIDDNS          = 6
 )
 
+// protoID also encodes ProtocolUnclassified, which the grammar rejects: it can
+// appear in an observation key (SeedProtoEvent) but never reaches the policy
+// maps, whose only feed is ParseTargets.
 func protoID(token string) (uint32, bool) {
 	switch token {
-	case compiler.ProtocolUnknown:
-		return protoIDUnknown, true
+	case compiler.ProtocolUnclassified:
+		return protoIDUnclassified, true
 	case compiler.ProtocolSSH:
 		return protoIDSSH, true
 	case compiler.ProtocolTLS:
 		return protoIDTLS, true
+	case compiler.ProtocolDNS:
+		return protoIDDNS, true
 	case compiler.ProtocolHTTP11:
 		return protoIDHTTP11, true
-	case compiler.ProtocolH2C:
-		return protoIDH2C, true
+	case compiler.ProtocolHTTP2:
+		return protoIDHTTP2, true
 	case compiler.ProtocolQUIC:
 		return protoIDQUIC, true
 	}
@@ -118,21 +124,23 @@ func protoID(token string) (uint32, bool) {
 }
 
 // protoToken is the inverse of protoID. Decoding is total over the ids the
-// kernel writes; an unrecognized id is not folded into ProtocolUnknown, which
-// would merge distinct counters, but reported as not-ok for the reader to
-// surface.
+// kernel writes; an unrecognized id is not folded into ProtocolUnclassified,
+// which would merge distinct counters, but reported as not-ok for the reader
+// to surface.
 func protoToken(id uint32) (string, bool) {
 	switch id {
-	case protoIDUnknown:
-		return compiler.ProtocolUnknown, true
+	case protoIDUnclassified:
+		return compiler.ProtocolUnclassified, true
 	case protoIDSSH:
 		return compiler.ProtocolSSH, true
 	case protoIDTLS:
 		return compiler.ProtocolTLS, true
+	case protoIDDNS:
+		return compiler.ProtocolDNS, true
 	case protoIDHTTP11:
 		return compiler.ProtocolHTTP11, true
-	case protoIDH2C:
-		return compiler.ProtocolH2C, true
+	case protoIDHTTP2:
+		return compiler.ProtocolHTTP2, true
 	case protoIDQUIC:
 		return compiler.ProtocolQUIC, true
 	}

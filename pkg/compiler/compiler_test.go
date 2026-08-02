@@ -86,7 +86,7 @@ func TestCompile_ValidBehaviors(t *testing.T) {
 					Behaviors: []v1alpha1.PolicyBehavior{
 						{Protocol: &v1alpha1.Behavior{
 							Allow: behaviorRule([]string{"tls/h2", "tls/http/1.1"}, ""),
-							Deny:  behaviorRule([]string{"*", "unknown"}, ""),
+							Deny:  behaviorRule([]string{"*", "ssh"}, ""),
 						}},
 					},
 				},

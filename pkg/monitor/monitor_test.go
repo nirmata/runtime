@@ -355,22 +355,53 @@ func TestHandleEvent_ProtocolDefaultDenyCounterfactual(t *testing.T) {
 	}
 }
 
-func TestHandleEvent_ProtocolUnknownTakesItsOwnRuleNotStar(t *testing.T) {
+func TestHandleEvent_UnclassifiedFindingNamesUnclassified(t *testing.T) {
 	m, sink, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
-	rp.Protocols = pair([]string{"unknown"}, []string{compiler.StarTarget})
+	rp.Protocols = pair([]string{"tls"}, []string{compiler.StarTarget})
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
 
-	m.HandleEvent(protocolEvent("unknown", ""))
-	if got := sink.all(); len(got) != 0 {
-		t.Fatalf("allowed unknown produced findings: %+v", got)
+	m.HandleEvent(protocolEvent(compiler.ProtocolUnclassified, ""))
+	got := sink.all()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
+	}
+	want := "monitor mode: egress protocol unclassified would have been denied by policy p (default deny)"
+	if got[0].Message != want {
+		t.Errorf("message = %q, want %q", got[0].Message, want)
 	}
 
 	m.HandleEvent(protocolEvent("ssh", ""))
-	if got := sink.all(); len(got) != 1 {
-		t.Errorf("default-denied ssh findings = %d, want 1: %+v", len(got), got)
+	got = sink.all()
+	if len(got) != 2 {
+		t.Fatalf("expected two findings, got %d: %+v", len(got), got)
+	}
+	want = "monitor mode: egress protocol ssh would have been denied by policy p (default deny)"
+	if got[1].Message != want {
+		t.Errorf("message = %q, want %q", got[1].Message, want)
+	}
+}
+
+func TestHandleEvent_NoPolicyValueCanAllowUnclassified(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
+	// "unclassified" is not a value in the grammar; newProtoMatcher skips it,
+	// so this allow list cannot cover the event.
+	rp.Protocols = pair([]string{compiler.ProtocolUnclassified}, []string{compiler.StarTarget})
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(protocolEvent(compiler.ProtocolUnclassified, ""))
+	got := sink.all()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
+	}
+	want := "monitor mode: egress protocol unclassified would have been denied by policy p (default deny)"
+	if got[0].Message != want {
+		t.Errorf("message = %q, want %q", got[0].Message, want)
 	}
 }
 

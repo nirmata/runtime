@@ -7,16 +7,25 @@ import (
 
 // Protocol tokens a protocol behavior value may name. Classification happens
 // in the kernel against the first data segment of a flow, so the set is
-// limited to client-speaks-first protocols with a fixed signature; traffic
-// matching none of them is classified ProtocolUnknown.
+// limited to client-speaks-first protocols with a fixed signature. A token
+// names the outermost thing the classifier recognized, not a security
+// property: the tls/ prefix means a TLS record layer was observed on the
+// wire, and its absence says nothing about encryption (ssh and quic are both
+// encrypted).
 const (
-	ProtocolSSH     = "ssh"
-	ProtocolTLS     = "tls"
-	ProtocolHTTP11  = "http/1.1"
-	ProtocolH2C     = "h2c"
-	ProtocolQUIC    = "quic"
-	ProtocolUnknown = "unknown"
+	ProtocolSSH    = "ssh"
+	ProtocolTLS    = "tls"
+	ProtocolDNS    = "dns"
+	ProtocolHTTP11 = "http/1.1"
+	ProtocolHTTP2  = "http/2"
+	ProtocolQUIC   = "quic"
 )
+
+// ProtocolUnclassified is the kernel's residual classification for traffic
+// matching no signature. It is observation vocabulary — findings, metrics,
+// logs — never a policy value: ParseProtocolValue rejects it, so the only
+// rule that covers unclassifiable traffic is a default deny.
+const ProtocolUnclassified = "unclassified"
 
 // MaxALPNLength is the size of the kernel's ALPN match buffer. The grammar
 // caps the tls/<alpn> suffix at this length so admission never accepts a value
@@ -33,7 +42,7 @@ var (
 	ErrInvalidALPNValue = errors.New("ALPN must be 1-16 visible ASCII characters")
 	// ErrNotAProtocolValue reports anything else: an unrecognized token, an
 	// ALPN suffix on a token other than tls, wrong case.
-	ErrNotAProtocolValue = errors.New(`not a protocol token ("ssh", "tls", "tls/<alpn>", "http/1.1", "h2c", "quic", "unknown") or "*"`)
+	ErrNotAProtocolValue = errors.New(`not a protocol token ("ssh", "tls", "tls/<alpn>", "dns", "http/1.1", "http/2", "quic") or "*"`)
 )
 
 // ProtocolValue is the parsed form of one protocol target string. Star is
@@ -55,7 +64,7 @@ type ProtocolValue struct {
 // grammars agree about "*". Then:
 //
 //   - StarTarget ("*") yields Star
-//   - a bare token (ssh, tls, http/1.1, h2c, quic, unknown) yields Protocol
+//   - a bare token (ssh, tls, dns, http/1.1, http/2, quic) yields Protocol
 //   - tls/<alpn> yields Protocol tls with the ALPN, which must be 1 to
 //     MaxALPNLength bytes of visible ASCII (ALPN identifiers are
 //     case-sensitive byte strings, so no folding happens)
@@ -69,7 +78,7 @@ func ParseProtocolValue(raw string) (ProtocolValue, error) {
 		return ProtocolValue{}, ErrEmptyProtocolValue
 	case StarTarget:
 		return ProtocolValue{Star: true}, nil
-	case ProtocolSSH, ProtocolTLS, ProtocolHTTP11, ProtocolH2C, ProtocolQUIC, ProtocolUnknown:
+	case ProtocolSSH, ProtocolTLS, ProtocolDNS, ProtocolHTTP11, ProtocolHTTP2, ProtocolQUIC:
 		return ProtocolValue{Protocol: cleaned}, nil
 	}
 

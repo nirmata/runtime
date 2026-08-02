@@ -142,7 +142,7 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 					},
 					Protocol: &v1alpha1.Behavior{
 						Allow: behaviorRule([]string{"tls/h2"}, `["quic"]`),
-						Deny:  behaviorRule([]string{"*"}, `["unknown"]`),
+						Deny:  behaviorRule([]string{"*"}, `["ssh"]`),
 					},
 				},
 			},
@@ -170,7 +170,7 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 	if diff := cmp.Diff(&AllowDenyPair{Deny: []string{"exec-deny-hardcoded"}}, res.Exec); diff != "" {
 		t.Errorf("Exec mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"quic", "tls/h2"}, Deny: []string{"unknown", "*"}}, res.Protocols); diff != "" {
+	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"quic", "tls/h2"}, Deny: []string{"ssh", "*"}}, res.Protocols); diff != "" {
 		t.Errorf("Protocols mismatch (-want +got):\n%s", diff)
 	}
 }

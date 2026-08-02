@@ -93,11 +93,11 @@ func TestRpUpdatedDiffsProtocolTargets(t *testing.T) {
 
 func TestPodCreationProgramsExistingProtocolPolicies(t *testing.T) {
 	e, _, _, _ := newTestManagerWithProto()
-	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"quic"}, []string{"*", "unknown"}), events.EventTypeCreate)
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"quic"}, []string{"*", "dns"}), events.EventTypeCreate)
 	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 
 	pf := protoFilterOf(t, e, "pod-1")
-	wantLiveProtos(t, pf, []string{"quic"}, []string{"unknown"})
+	wantLiveProtos(t, pf, []string{"quic"}, []string{"dns"})
 	if !pf.defaultDeny {
 		t.Error("protocol default deny flag not set on a pod created after the policy")
 	}
@@ -139,9 +139,9 @@ func TestCollectObservationsEmitsProtocolEvents(t *testing.T) {
 
 	pf := protoFilterOf(t, e, "pod-1")
 	pf.protoEvents = map[protofilter.ProtoEventKey]uint32{
-		{Protocol: "tls", ALPN: "h2", Decision: runtimeevent.DecisionAllow}: 3,
-		{Protocol: "ssh", Decision: runtimeevent.DecisionDeny}:              2,
-		{Protocol: "unknown", Decision: runtimeevent.DecisionAllow}:         1,
+		{Protocol: "tls", ALPN: "h2", Decision: runtimeevent.DecisionAllow}:             3,
+		{Protocol: "ssh", Decision: runtimeevent.DecisionDeny}:                          2,
+		{Protocol: compiler.ProtocolUnclassified, Decision: runtimeevent.DecisionAllow}: 1,
 	}
 
 	got, err := e.CollectObservations(context.Background())
@@ -160,7 +160,7 @@ func TestCollectObservationsEmitsProtocolEvents(t *testing.T) {
 	wants := []want{
 		{protocol: "ssh", count: 2, denied: true},
 		{protocol: "tls", alpn: "h2", count: 3},
-		{protocol: "unknown", count: 1},
+		{protocol: compiler.ProtocolUnclassified, count: 1},
 	}
 	for i, w := range wants {
 		ev := got[i]
@@ -182,7 +182,7 @@ func TestCollectObservationsEmitsProtocolEvents(t *testing.T) {
 func TestTargetsConditionCoversProtocolValues(t *testing.T) {
 	e, _, _, status := newTestManagerWithProto()
 
-	mustRpEvent(t, e, rpWithProtos("rp-bad", "enforce", webLabels, []string{"grpc"}, nil), events.EventTypeCreate)
+	mustRpEvent(t, e, rpWithProtos("rp-bad", "enforce", webLabels, []string{"unknown"}, nil), events.EventTypeCreate)
 	cond, ok := status.latest("rp-bad", ConditionTargetsValid)
 	if !ok || cond.Reason != ReasonUnsupportedTargets {
 		t.Fatalf("condition for an unprogrammable protocol token: got %+v, want reason %s", cond, ReasonUnsupportedTargets)

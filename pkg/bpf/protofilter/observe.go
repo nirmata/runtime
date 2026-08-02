@@ -51,6 +51,20 @@ func (p *ProtoFilter) SeedProtoEvent(target Target, decision runtimeevent.Kernel
 	return p.bpfObjs.ProtoEvents.Put(&key, &count)
 }
 
+// RunPacket drives proto_egress over one synthetic packet via
+// BPF_PROG_TEST_RUN and returns the verdict: 1 pass, 0 drop. data must start
+// at the Ethernet header: the kernel derives skb->protocol from its ethertype
+// and strips it, so the program still reads from L3 as it does on the cgroup
+// hook. It exists for the kernel smoke test in test/e2e, which pins the
+// classifier against hand-built packet shapes; production packets arrive via
+// the cgroup attachment.
+func (p *ProtoFilter) RunPacket(data []byte) (uint32, error) {
+	if p.bpfObjs == nil || p.bpfObjs.ProtoEgress == nil {
+		return 0, ErrNotLoaded
+	}
+	return p.bpfObjs.ProtoEgress.Run(&ebpf.RunOptions{Data: data})
+}
+
 func readAndResetProtoEvents(m *ebpf.Map) (map[ProtoEventKey]uint32, error) {
 	out := make(map[ProtoEventKey]uint32)
 	keys := make([]protoEventKernelKey, 0, 16)

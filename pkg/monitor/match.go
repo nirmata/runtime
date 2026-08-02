@@ -145,8 +145,8 @@ func newProtoMatcher(values []string) protoMatcher {
 
 // matches reports whether an explicit value covers the observed protocol. The
 // "*" sentinel is deliberately NOT a match here: it is the default-deny
-// marker, handled separately by eval. "unknown" is an ordinary token, never
-// folded into "*".
+// marker, handled separately by eval. An observed "unclassified" protocol can
+// never match an explicit value — only a default deny covers it.
 func (m protoMatcher) matches(protocol, alpn string) bool {
 	if protocol == "" {
 		return false

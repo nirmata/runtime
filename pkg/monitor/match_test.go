@@ -103,7 +103,7 @@ func TestProtoMatcher(t *testing.T) {
 		{name: "tls with ALPN misses another ALPN", values: []string{"tls/h2"}, protocol: "tls", alpn: "http/1.1"},
 		{name: "tls with ALPN misses tls without ALPN", values: []string{"tls/h2"}, protocol: "tls"},
 		{name: "ALPN comparison is case-sensitive", values: []string{"tls/h2"}, protocol: "tls", alpn: "H2"},
-		{name: "unknown is an ordinary token", values: []string{"unknown"}, protocol: "unknown", want: true},
+		{name: "unclassified is never an explicit match", values: []string{compiler.ProtocolUnclassified}, protocol: compiler.ProtocolUnclassified},
 		{name: "star is not an explicit match", values: []string{compiler.StarTarget}, protocol: "ssh", wantStar: true},
 		{name: "star plus explicit value", values: []string{compiler.StarTarget, "ssh"}, protocol: "ssh", want: true, wantStar: true},
 		{name: "unparseable value is skipped", values: []string{"grpc", "ssh"}, protocol: "ssh", want: true},
@@ -145,11 +145,13 @@ func TestProtoBehaviorEval(t *testing.T) {
 		},
 		{name: "default deny with allowed bare tls covers any ALPN", allow: []string{"tls"}, deny: []string{compiler.StarTarget}, protocol: "tls", alpn: "h2"},
 		{
-			name: "unknown is default-denied when not allowed", allow: []string{"tls"}, deny: []string{compiler.StarTarget},
-			protocol: "unknown", wantViolation: true, wantDefaultDeny: true,
+			name: "unclassified is default-denied whatever the allow list holds", allow: []string{"tls", "dns", "quic", "ssh", "http/1.1", "http/2", "tls/h2"}, deny: []string{compiler.StarTarget},
+			protocol: compiler.ProtocolUnclassified, wantViolation: true, wantDefaultDeny: true,
 		},
-		{name: "allowed unknown is not folded into star", allow: []string{"unknown"}, deny: []string{compiler.StarTarget}, protocol: "unknown"},
-		{name: "explicit unknown deny", deny: []string{"unknown"}, protocol: "unknown", wantViolation: true},
+		{
+			name: "no value can allow unclassified", allow: []string{compiler.ProtocolUnclassified}, deny: []string{compiler.StarTarget},
+			protocol: compiler.ProtocolUnclassified, wantViolation: true, wantDefaultDeny: true,
+		},
 		{name: "allow only, no deny", allow: []string{"ssh"}, protocol: "tls"},
 		{name: "empty protocol", deny: []string{compiler.StarTarget}, protocol: ""},
 	}
