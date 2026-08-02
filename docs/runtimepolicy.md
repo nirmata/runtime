@@ -42,11 +42,27 @@ spec:
 - `exec`: command names/paths.
 - `open`: file paths.
 - `protocol`: application protocols for egress, classified from the first data segment of each
-  flow. Values are `ssh`, `tls`, `tls/<alpn>` (e.g. `tls/h2`, `tls/http/1.1`), `http/1.1`, `h2c`,
-  `quic`, and `unknown`. `unknown` is traffic the classifier could not label — a deliberate,
-  separate token, never folded into `*`, so a policy has to say which way unclassifiable traffic
-  goes. `network` and `protocol` evaluate independently and AND together: a connection must pass
-  both. See [Limits of protocol classification](#limits-of-protocol-classification).
+  flow. A token names the outermost thing the classifier recognized on the wire, not a security
+  property: the `tls/` prefix means a TLS record layer was observed, and its absence says nothing
+  about encryption — `ssh` and `quic` are both encrypted. The values are:
+
+  | Value | Matches |
+  | --- | --- |
+  | `tls` | any TLS handshake, whatever ALPN it offers |
+  | `tls/<alpn>` | TLS offering exactly that ALPN, as the raw wire value (`tls/h2`, `tls/http/1.1`, `tls/dot`), 1-16 visible ASCII characters |
+  | `quic` | QUIC, which includes HTTP/3 — its TLS 1.3 handshake travels inside QUIC frames, not TLS records, so it is never a `tls/` value and nothing finer is knowable |
+  | `ssh` | SSH, any version |
+  | `dns` | cleartext DNS over UDP |
+  | `http/1.1` | cleartext HTTP/1.x |
+  | `http/2` | cleartext HTTP/2 (the `PRI * HTTP/2.0` preface) |
+  | `*` | the default-deny sentinel, shared with the `network` grammar |
+
+  Traffic matching no signature is reported as `unclassified` in findings, metrics, and logs, so
+  a denial of unidentifiable traffic is distinguishable from a denial of, say, SSH.
+  `unclassified` is observation vocabulary, not a policy value: it matches no `allow` entry, so
+  the only rule that covers it is a default deny (`deny.values: ["*"]`). `network` and
+  `protocol` evaluate independently and AND together: a connection must pass both. See
+  [Limits of protocol classification](#limits-of-protocol-classification).
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a
   **default deny** for that behavior (`network`, `exec`, `open`, or `protocol`). This is
   evaluated across all `RuntimePolicy` objects matching a pod: if any one of
@@ -228,9 +244,17 @@ nothing else. Its verdict is deferred until that segment exists, so a denial is 
 drop (the client sees a stalled connection and a timeout), not a `connect`-time error. These are
 the honest boundaries of that design:
 
+- **Traffic matching no signature classifies as `unclassified`.** It appears under that name in
+  findings, metrics, and logs, but it is not a policy value: no `allow` entry can cover it, so
+  under a default deny it is simply denied, and without one it is simply allowed. There is no
+  third option.
 - **Only client-speaks-first protocols are classifiable.** MySQL, SMTP, IMAP, POP3 and FTP start
   with a server banner the egress hook never sees; the client's first segment carries no usable
-  signature, so those flows classify as `unknown`.
+  signature, so those flows classify as `unclassified`.
+- **`dns` is cleartext DNS over UDP only**, recognized by the query's shape — a clear QR bit,
+  opcode 0, one question, no answers, and a well-formed name — never by port. DNS over TLS and
+  DNS over HTTPS classify as `tls`, so a resolver pinned to DoT is covered by `tls` (or
+  `tls/dot`), not by `dns`.
 - **gRPC over TLS is indistinguishable from HTTPS.** Both negotiate ALPN `h2`; the header that
   separates them is inside the encryption. There is deliberately no `grpc` token — it would be a
   control that silently does nothing.
@@ -240,15 +264,13 @@ the honest boundaries of that design:
 - **`tls/<alpn>` matches the client's first (most-preferred) offered ALPN entry**, byte-exact. A
   ClientHello without an ALPN extension matches only the bare `tls` token. An Encrypted
   ClientHello hides SNI but not the outer ALPN.
-- **A ClientHello that spans TCP segments classifies as `unknown`**, not `tls` — post-quantum key
-  shares routinely push it past one MTU. This is visible by design: say what `unknown` should do
-  rather than letting truncated handshakes take the default.
-- **Every flow gets a classification, including UDP and ICMP.** DNS over UDP, for example, is
-  `unknown`. A `protocol` default deny (`deny: ["*"]`) therefore blocks DNS unless the policy
-  allows `unknown` or the workload resolves elsewhere — scope the policy accordingly.
+- **A ClientHello that spans TCP segments classifies as `unclassified`**, not `tls` —
+  post-quantum key shares routinely push it past one MTU. Under a default deny such a handshake
+  is denied and reported as `unclassified`, which is visible by design: a truncated handshake
+  should not silently pass as TLS.
 - **Classification happens once per flow** and the verdict is cached (an LRU map of 8192 flows per
   pod). Traffic that predates the policy or an evicted entry re-classifies on the next data
-  segment, which for a mid-stream segment means `unknown`.
+  segment, which for a mid-stream segment means `unclassified`.
 
 ## Example: RuntimePolicy
 
@@ -277,9 +299,10 @@ kubectl get runtimepolicy detect-loopback-egress
 
 ## Example: application-protocol default deny
 
-Allow only HTTPS-shaped egress; deny SSH (even on port 443), any other protocol, and anything the
-classifier cannot label. Destination scoping stays in `network`, and the two behaviors AND
-together:
+Allow TLS and cleartext DNS; deny everything else, including SSH (even on port 443), cleartext
+HTTP, and anything the classifier cannot label. DNS is allowable directly — the workload keeps
+resolving names — while unclassifiable traffic falls to the default deny. Destination scoping
+stays in `network`, and the two behaviors AND together:
 
 ```yaml
 apiVersion: runtime.kyverno.io/v1alpha1
@@ -294,15 +317,21 @@ spec:
   behaviors:
   - protocol:
       allow:
-        values: ["tls/h2", "tls/http/1.1"]
+        values: ["tls", "dns"]
       deny:
-        values: ["*", "unknown"]
+        values: ["*"]
   - network:
       allow:
         values: ["10.0.0.0/24"]
       deny:
         values: ["*"]
 ```
+
+Under this policy **HTTP/3 is denied**: it classifies as `quic`, not `tls`, so an allow list
+written to mean "only HTTPS" blocks QUIC-capable clients. That is the safe default — HTTP/3
+bypasses a TCP-based TLS inspection proxy, so permitting QUIC routes traffic around the
+inspection point. An operator who wants both writes `allow: ["tls", "quic", "dns"]` and accepts
+that the QUIC half cannot be inspected.
 
 ## Example: deny using a CEL expression
 

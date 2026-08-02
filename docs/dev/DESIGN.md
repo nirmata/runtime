@@ -123,10 +123,15 @@ Semantics (see `docs/runtimepolicy.md` for the full reference with examples):
 - `network` values are IPv4 addresses (egress), `exec` values are command names/paths, `open`
   values are file paths.
 - `protocol` values are application-protocol tokens for egress flows, classified from the first
-  data segment of a connection: `ssh`, `tls`, `tls/<alpn>`, `http/1.1`, `h2c`, `quic`, and `unknown`
-  (traffic the classifier could not label). The grammar is defined once, in
-  `pkg/compiler/protocolvalue.go: ParseProtocolValue`, and consumed by admission validation,
-  program-time map filling (`protofilter.ParseTargets`) and monitor-mode matching.
+  data segment of a connection: `ssh`, `tls`, `tls/<alpn>`, `dns`, `http/1.1`, `http/2`, and
+  `quic`. A token names the outermost thing the classifier recognized, not a security property:
+  `tls/` means a TLS record layer was observed on the wire, and its absence says nothing about
+  encryption (`ssh` and `quic` are both encrypted). Traffic
+  matching no signature is classified `unclassified` — observation vocabulary only, visible in
+  findings and metrics but rejected by the grammar, so only a default deny covers it. The
+  grammar is defined once, in `pkg/compiler/protocolvalue.go: ParseProtocolValue`, and consumed
+  by admission validation, program-time map filling (`protofilter.ParseTargets`) and
+  monitor-mode matching.
 - `deny.values: ["*"]` (or an expression producing `["*"]`) is a **default-deny** sentinel for that
   behavior type: that behavior becomes deny-all-except-allowed for matched pods, instead of the
   default allow-all-except-denied.
@@ -289,13 +294,14 @@ protocol evidence lives:
 
 - The IP family comes from `skb->protocol`, never from payload bytes, so IPv4 and IPv6 cannot be
   misread as each other. An IPv6 extension-header chain, ICMP, and every other unparseable L4 are
-  classified `unknown` rather than skipped.
+  classified `unclassified` rather than skipped.
 - TCP packets with no payload pass (the verdict is deferred); the first data segment is matched
-  against the SSH banner, the 24-byte h2c preface, the TLS record header (then a bounded walk of
-  the ClientHello for the first offered ALPN entry), and the HTTP/1 method tokens. UDP classifies
-  on the first packet: a QUIC v1 long header or `unknown`. A ClientHello that does not fit in one
-  segment classifies `unknown`, deliberately: folding it into `tls` or the default would make the
-  control untrustworthy.
+  against the SSH banner, the 24-byte cleartext HTTP/2 preface, the TLS record header (then a
+  bounded walk of the ClientHello for the first offered ALPN entry), and the HTTP/1 method
+  tokens. UDP classifies on the first packet: a QUIC v1 long header, a cleartext DNS query
+  (header sanity plus a bounded QNAME walk; the port is never consulted), or `unclassified`. A
+  ClientHello that does not fit in one segment classifies `unclassified`, deliberately: folding
+  it into `tls` or the default would make the control untrustworthy.
 - The decision comes from `allowed_protos`/`banned_protos` maps keyed by the padding-free
   `{proto id, alpn[16]}` pair — an empty ALPN key means "this protocol with any ALPN" — plus the
   same `flags` default-deny/observe bits the IP filter uses. Compute decision → record it in
