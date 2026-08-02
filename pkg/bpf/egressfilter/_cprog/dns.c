@@ -26,7 +26,12 @@ struct dns_rr {
     __be16 class;
     __be32 ttl;
     __be16 rdlength;
-};
+} __attribute__((packed));
+
+// sizeof() is what walks the read cursor past a record header, and the natural
+// layout pads this one to 12 for the __be32 -- which lands two bytes into the
+// RDATA and reads a mangled address, or none at all off the end of the packet.
+_Static_assert(sizeof(struct dns_rr) == 10, "dns_rr must match the wire layout");
 
 // One flat pass over the wire bytes instead of a loop per label: `remaining`
 // counts down the current label, so a byte read with remaining == 0 is the next

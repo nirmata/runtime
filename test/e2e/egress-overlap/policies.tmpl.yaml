@@ -1,0 +1,44 @@
+# Template applied by chainsaw-test.yaml after substituting the target pod IPs
+# (chainsaw does not do partial string interpolation, so the substitution
+# happens in a script step -- keeping the policy shape reviewable as YAML rather
+# than buried in a heredoc).
+#
+# Two default-deny policies selecting the same pod. SHARED_IP appears in both,
+# so one policy going away must not revoke it; SINGLE_IP appears only in A, so
+# A going away must revoke it.
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-overlap-a
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: overlap-client
+  behaviors:
+  - network:
+      allow:
+        values:
+        - SHARED_IP
+        - SINGLE_IP
+      deny:
+        values:
+        - "*"
+---
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-overlap-b
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: overlap-client
+  behaviors:
+  - network:
+      allow:
+        values:
+        - SHARED_IP
+      deny:
+        values:
+        - "*"

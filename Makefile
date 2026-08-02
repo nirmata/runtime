@@ -216,6 +216,16 @@ test-e2e-egress:
 test-e2e-svcref:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-svcref/
 
+# Domain-name enforcement: the cgroup DNS snooper feeding the egress filter.
+# Same kernel requirements as test-e2e-egress, plus a working cluster DNS.
+test-e2e-dns:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-dns/
+
+# Overlapping policies and a pod that starts after the policies selecting it.
+# Same kernel requirements as test-e2e-egress.
+test-e2e-overlap:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-overlap/
+
 # BPF-LSM open/exec enforcement behavior. REQUIRES a host booted with BPF-LSM
 # ('bpf' in /sys/kernel/security/lsm). Not part of test-e2e; see issue #60.
 test-e2e-lsm:
@@ -247,4 +257,4 @@ helm-verify:
 		| grep -q -- '--metrics-addr=:19090'
 	@echo "helm chart renders"
 
-.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-chainsaw fmt lint lint-docs helm-verify run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-chainsaw fmt lint lint-docs helm-verify run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

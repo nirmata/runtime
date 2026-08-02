@@ -1,0 +1,76 @@
+# Two identical HTTP services. One is named by the policy as a fully qualified
+# domain name, the other is not, so the only difference between "reachable" and
+# "not reachable" is what the DNS snooper wrote into ip_domain.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dns-allowed
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dns-allowed
+  template:
+    metadata:
+      labels:
+        app: dns-allowed
+    spec:
+      containers:
+      - name: httpd
+        image: busybox:1.36
+        command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-allowed
+spec:
+  selector:
+    app: dns-allowed
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dns-denied
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dns-denied
+  template:
+    metadata:
+      labels:
+        app: dns-denied
+    spec:
+      containers:
+      - name: httpd
+        image: busybox:1.36
+        command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-denied
+spec:
+  selector:
+    app: dns-denied
+  ports:
+  - port: 8080
+    targetPort: 8080

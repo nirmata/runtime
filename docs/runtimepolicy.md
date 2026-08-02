@@ -14,6 +14,8 @@
 - [Example: default deny with an allow list](#example-default-deny-with-an-allow-list)
 - [Example: allow egress to a Service](#example-allow-egress-to-a-service)
 - [Limits of serviceRefs](#limits-of-servicerefs)
+- [Example: allow egress to a domain name](#example-allow-egress-to-a-domain-name)
+- [Limits of domain names](#limits-of-domain-names)
 - [Example: re-evaluated policy with a selector across multiple behaviors](#example-re-evaluated-policy-with-a-selector-across-multiple-behaviors)
 - [Example: deny IPs from a ConfigMap (resource library)](#example-deny-ips-from-a-configmap-resource-library)
 - [Example: deny IPs from an HTTP endpoint (http library)](#example-deny-ips-from-an-http-endpoint-http-library)
@@ -40,7 +42,7 @@ spec:
         expression: "..."
 ```
 
-- `network`: IPv4 addresses for egress.
+- `network`: IPv4 addresses and fully qualified domain names for egress.
 - `exec`: command names/paths.
 - `open`: file paths.
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a
@@ -201,7 +203,7 @@ The daemon serves Prometheus metrics on `--metrics-addr` (default `:9090`, the c
 ## Limits of monitor mode
 
 Monitor mode is built on the counters the existing eBPF programs already keep. It adds no new
-kernel programs, and it does not observe DNS names, TLS SNI, or HTTP. These are real,
+kernel programs, and it does not observe TLS SNI or HTTP. These are real,
 current limits, not rounding errors:
 
 - **Observation is poll-based, not streamed.** There is no ring buffer; counters are drained
@@ -212,10 +214,14 @@ current limits, not rounding errors:
   the excess. The read-and-reset drain mitigates this but does not eliminate it.
 - **Network observation is IPv4 only** — destination address only, with no port or protocol —
   because the egress maps are keyed on a `u32` IPv4 address.
+- **A destination is named only when the snooper learned it.** An observation carries a
+  domain when the address came from a DNS answer for a name some policy already names
+  (see [Limits of domain names](#limits-of-domain-names)); every other destination is
+  reported by address alone.
 - **Unsupported `network` targets are rejected, not skipped.** IPv6 literals, CIDRs wider than
-  `/24`, and hostnames cannot be programmed (hostnames in particular cannot be resolved at
-  policy-evaluation time). They are reported through `TargetsValid=False` with the reason per
-  value. A CIDR of `/24` or narrower is expanded into individual addresses.
+  `/24`, and names whose wire encoding exceeds 128 bytes cannot be programmed. They are
+  reported through `TargetsValid=False` with the reason per value. A CIDR of `/24` or
+  narrower is expanded into individual addresses.
 - **Observations that cannot be attributed to a pod are dropped** and counted in
   `kyverno_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.
@@ -441,10 +447,10 @@ spec:
 A reference is resolved from watched cluster state, which bounds what it can express.
 These are real, current limits:
 
-- **In-cluster Services only.** There is no way to name an external hostname. A hostname
-  cannot be resolved at policy-evaluation time, and would have to be re-resolved per
-  connection to be meaningful — the same limit that makes hostnames an unsupported
-  `network` value.
+- **In-cluster Services only.** A `serviceRefs` entry is looked up in the Service and
+  EndpointSlice informers, so it cannot name anything outside the cluster. For an
+  external destination, name it as a domain in `values` instead — a different mechanism
+  with [different limits](#limits-of-domain-names).
 - **No port or protocol granularity.** Allowing a Service allows *every* port on the
   addresses it resolves to, because the egress maps are keyed on a `u32` IPv4 address
   and nothing else. Naming a Service that exposes port 443 does not restrict the
@@ -472,6 +478,77 @@ These are real, current limits:
   ```bash
   kubectl get runtimepolicy egress-via-gateway-only -o jsonpath='{.status.conditions}'
   ```
+
+## Example: allow egress to a domain name
+
+A `network` value may be a fully qualified domain name instead of an address. Unlike
+`serviceRefs`, nothing about the name is resolved when the policy is written: the daemon
+attaches a second eBPF program to the matched pod's cgroup that reads the pod's own DNS
+answers, and an A record for a name the policy mentions makes that address allowed (or
+denied) for that pod. The pod learns the address the same moment the kernel does.
+
+The resolver has to stay reachable for any of this to happen, which is why cluster DNS is
+allowed by reference alongside the name — under default-deny a workload that cannot reach
+its resolver resolves nothing, and every domain in the allow list is dead:
+
+```yaml
+apiVersion: runtime.kyverno.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: egress-to-payments-api
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: checkout
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - api.payments.example.com
+        serviceRefs:
+        - name: kube-dns
+          namespace: kube-system
+```
+
+A name in `deny.values` works the same way in the other direction: without a default deny,
+the addresses answered for that name are blocked and everything else is allowed.
+
+## Limits of domain names
+
+A domain allow-list is a convenience for naming destinations whose addresses change. It is
+**not a containment boundary**, and it must not be relied on as one. These are real,
+current limits:
+
+- **Only unencrypted UDP/53 answers are seen.** The snooper parses UDP source port 53. A
+  resolver reached over TCP/53, DNS over TLS, or DNS over HTTPS is invisible to it, and so
+  is a client that skips resolution entirely and connects to a hardcoded address. In each
+  of those cases the address is never attributed to a domain: under default-deny the
+  connection is blocked (a false outage), and under a deny list it is allowed (a real
+  bypass). A workload that must be contained needs its destinations named as addresses or
+  `serviceRefs`.
+- **No wildcards.** Every name is matched whole, against the question the pod actually
+  asked. A CNAME chain is attributed to the question, not to the owner name of the A
+  record, so naming the alias is correct and naming its target is not. `*.example.com`
+  fails the whole policy to compile — the daemon logs the offending field path and
+  enforces nothing from that policy, not even the values around it.
+- **Expiry is eviction, not TTL.** Learned addresses live in a 4096-entry LRU map per pod
+  and are dropped when it fills, not when the record expires. An address that has rotated
+  away from a name stays allowed until something evicts it, which can be well past its
+  TTL — and, on a quiet pod, indefinitely.
+- **An address shared by two domains is ambiguous.** The last answer to name it wins, so
+  one shared front end named by two policies is attributed to whichever name was resolved
+  most recently. The attribution is at least visible: monitor-mode network observations
+  carry the domain the address was learned under.
+- **Bounded per pod: 256 names, 4096 addresses.** A pod whose policies name more than 256
+  distinct domains rejects the excess with `TargetsValid=False`. A name that resolves to
+  more addresses than the map holds loses the oldest of them to eviction. A name is also
+  rejected if its DNS wire encoding exceeds 128 bytes.
+- **IPv4 only, on both sides.** Only A records are read, and only from answers carried
+  over IPv4, matching the IPv4-only egress maps.
 
 ## Example: re-evaluated policy with a selector across multiple behaviors
 

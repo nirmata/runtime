@@ -1,0 +1,237 @@
+# E2E behavioral assertion -- egress enforcement driven by a domain name.
+#
+# The policy names a fully qualified domain name, never an address. Nothing in
+# the policy tells the kernel which address that name has: the cgroup ingress
+# program reads the resolver's answer off the wire and writes the address into
+# ip_domain, and only then does the egress program have an allow verdict for it.
+#
+# The arms are chosen so no weaker implementation passes:
+#   1. before any policy   -> both Services reachable by name        (baseline)
+#   2. under the policy    -> the named Service reachable by name    (not over-blocking)
+#   3. under the policy    -> the other Service blocked              (enforcement works)
+#   4. under the policy    -> the named Service's backend pod IP blocked
+#                             (only the answered address is allowed, not the
+#                              Service's endpoints -- so nothing resolved this
+#                              policy the way a serviceRefs entry would)
+#   5. a client that has never resolved anything is blocked from the named
+#      Service's own ClusterIP, then resolves the name, then reaches that same
+#      address. Same pod, same address, opposite verdicts: the DNS answer is the
+#      only thing that changed.
+#
+# Arm 5 is what makes the suite worth running. Without it, an implementation
+# that simply allowed every address a policy mentions would pass arms 1-4.
+#
+# Kernel requirements: cgroup v2 + BPF (CAP_BPF). BPF-LSM is not required.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: egress-dns
+spec:
+  steps:
+  - name: start-two-backing-services-and-the-client
+    try:
+    - apply:
+        file: backends.yaml
+    - apply:
+        file: client.yaml
+    - assert:
+        file: backends-ready.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dns-client
+          status:
+            phase: Running
+
+  - name: baseline-client-resolves-and-reaches-both-services
+    # Establishes both halves of the baseline the enforcement assertions depend
+    # on: cluster DNS answers, and the answered addresses are reachable. If this
+    # fails, "blocked" below would be meaningless.
+    try:
+    - script:
+        content: |
+          set -eu
+          for name in dns-allowed dns-denied; do
+            fqdn="${name}.${NAMESPACE}.svc.cluster.local"
+            ok=0
+            for _ in $(seq 1 15); do
+              if kubectl -n "$NAMESPACE" exec dns-client -- \
+                   wget -q -T 3 -O /dev/null "http://${fqdn}:8080/" 2>/dev/null; then
+                ok=1; break
+              fi
+              sleep 2
+            done
+            [ "$ok" -eq 1 ] || { echo "FAIL: baseline connectivity to ${fqdn} is broken (no policy applied yet)"; exit 1; }
+          done
+          echo "OK: baseline -- both Services resolvable and reachable by name"
+
+  - name: apply-default-deny-allowing-one-fqdn-and-cluster-dns
+    try:
+    - script:
+        content: |
+          set -eu
+          sed "s/TEST_NAMESPACE/${NAMESPACE}/" policy.tmpl.yaml | tee /tmp/e2e-egress-dns-policy.yaml
+          kubectl apply -f /tmp/e2e-egress-dns-policy.yaml
+    # The domain and the resolver reference must both be reported as programmable
+    # before any "blocked" assertion is trusted: a rejected target also produces
+    # "blocked", which would pass this test for the wrong reason.
+    - assert:
+        resource:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-egress-dns
+          spec:
+            mode: enforce
+          status:
+            (conditions[?type == 'TargetsValid'].status | [0]): "True"
+            (conditions[?type == 'TargetsValid'].reason | [0]): AllTargetsSupported
+
+  - name: enforced-client-reaches-the-named-service-and-nothing-else
+    try:
+    - script:
+        content: |
+          set -eu
+          allowed="dns-allowed.${NAMESPACE}.svc.cluster.local"
+          denied="dns-denied.${NAMESPACE}.svc.cluster.local"
+          deniedIP=$(kubectl -n "$NAMESPACE" get svc dns-denied -o jsonpath='{.spec.clusterIP}')
+          backend=$(kubectl -n "$NAMESPACE" get pod -l app=dns-allowed -o jsonpath='{.items[0].status.podIP}')
+          test -n "$deniedIP" && test -n "$backend"
+
+          # The unnamed Service must become unreachable within a bounded window.
+          # Poll rather than sleep blindly: the daemon programs maps on its own
+          # schedule.
+          blocked=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec dns-client -- \
+                 wget -q -T 3 -O /dev/null "http://${denied}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          [ "$blocked" -eq 1 ] || { echo "FAIL: ${denied} still reachable -- the policy did not take effect"; exit 1; }
+          echo "OK: ${denied} blocked"
+
+          # ...and the named domain must still be reachable under default-deny.
+          # An allow-list that blocks its own entries is worse than no policy,
+          # and this is what makes the assertion above meaningful.
+          ok=0
+          for _ in $(seq 1 15); do
+            if kubectl -n "$NAMESPACE" exec dns-client -- \
+                 wget -q -T 5 -O /dev/null "http://${allowed}:8080/" 2>/dev/null; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: ${allowed} is unreachable under default-deny (over-blocking)"; exit 1; }
+          echo "OK: ${allowed} reachable by name"
+
+          # The answer carried the ClusterIP and nothing else, so the backend
+          # behind it stays denied. A serviceRefs entry would have programmed
+          # the endpoint addresses too; a snooped A record does not.
+          if kubectl -n "$NAMESPACE" exec dns-client -- \
+               wget -q -T 3 -O /dev/null "http://${backend}:8080/" 2>/dev/null; then
+            echo "FAIL: backend ${backend} of the allowed Service is reachable, so more than the answered address was programmed"
+            exit 1
+          fi
+          echo "OK: backend ${backend} of the allowed Service blocked"
+
+          # Re-check the denied Service by address so a transient DNS failure
+          # cannot be mistaken for enforcement.
+          if kubectl -n "$NAMESPACE" exec dns-client -- \
+               wget -q -T 3 -O /dev/null "http://${deniedIP}:8080/" 2>/dev/null; then
+            echo "FAIL: dns-denied (${deniedIP}) is reachable by address"
+            exit 1
+          fi
+          echo "OK: enforcement stable"
+
+  - name: an-unresolved-address-is-denied-and-the-same-address-is-allowed-once-resolved
+    try:
+    - apply:
+        file: probe.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dns-probe
+          status:
+            phase: Running
+    - script:
+        content: |
+          set -eu
+          allowedIP=$(kubectl -n "$NAMESPACE" get svc dns-allowed -o jsonpath='{.spec.clusterIP}')
+          deniedIP=$(kubectl -n "$NAMESPACE" get svc dns-denied -o jsonpath='{.spec.clusterIP}')
+          allowed="dns-allowed.${NAMESPACE}.svc.cluster.local"
+          test -n "$allowedIP" && test -n "$deniedIP"
+
+          # Wait until enforcement is live on this pod before reading anything
+          # into "blocked": an unattached pod is unenforced, and unenforced looks
+          # exactly like allowed. dns-denied is in no map on any pod, so it is
+          # the signal that default-deny is programmed here.
+          live=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec dns-probe -- \
+                 wget -q -T 3 -O /dev/null "http://${deniedIP}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              live=1; break
+            fi
+          done
+          [ "$live" -eq 1 ] || { echo "FAIL: enforcement never took effect on dns-probe"; exit 1; }
+          echo "OK: enforcement live on dns-probe"
+
+          # This pod has resolved nothing, so its ip_domain holds no entry for
+          # the allowed Service's address. Required to be blocked every time,
+          # not merely eventually: "eventually blocked" is satisfied by any
+          # amount of flapping.
+          for attempt in 1 2 3; do
+            if kubectl -n "$NAMESPACE" exec dns-probe -- \
+                 wget -q -T 3 -O /dev/null "http://${allowedIP}:8080/" 2>/dev/null; then
+              echo "FAIL: ${allowedIP} reachable on attempt ${attempt} without ever having been resolved -- the address was allowed by something other than the DNS answer"
+              exit 1
+            fi
+          done
+          echo "OK: ${allowedIP} blocked before any lookup"
+
+          # One lookup, and the same address the pod was just refused becomes
+          # reachable.
+          ok=0
+          for _ in $(seq 1 15); do
+            if kubectl -n "$NAMESPACE" exec dns-probe -- \
+                 wget -q -T 5 -O /dev/null "http://${allowed}:8080/" 2>/dev/null; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: ${allowed} unreachable by name on dns-probe"; exit 1; }
+          echo "OK: ${allowed} reachable by name on dns-probe"
+
+          if ! kubectl -n "$NAMESPACE" exec dns-probe -- \
+                 wget -q -T 5 -O /dev/null "http://${allowedIP}:8080/" 2>/dev/null; then
+            echo "FAIL: ${allowedIP} still blocked after the name was resolved -- the answer did not reach ip_domain"
+            exit 1
+          fi
+          echo "OK: ${allowedIP} reachable after the lookup, having been blocked before it"
+
+          if kubectl -n "$NAMESPACE" exec dns-probe -- \
+               wget -q -T 3 -O /dev/null "http://${deniedIP}:8080/" 2>/dev/null; then
+            echo "FAIL: dns-denied (${deniedIP}) became reachable on dns-probe"
+            exit 1
+          fi
+          echo "OK: dns-denied still blocked on dns-probe"
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=200 || true
+          kubectl -n "$NAMESPACE" get pods,svc -o wide || true
+          kubectl get runtimepolicy e2e-egress-dns -o yaml || true
+    - delete:
+        ref:
+          apiVersion: runtime.kyverno.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-dns
