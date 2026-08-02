@@ -8,7 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-const namespace = "kyverno_runtime"
+const namespace = "nirmata_runtime"
 
 // Metrics holds every Prometheus collector registered by kyverno-runtime.
 type Metrics struct {

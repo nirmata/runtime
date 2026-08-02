@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	GroupVersion       = schema.GroupVersion{Group: "runtime.kyverno.io", Version: "v1alpha1"}
+	GroupVersion       = schema.GroupVersion{Group: "runtime.nirmata.io", Version: "v1alpha1"}
 	SchemeGroupVersion = GroupVersion
 
 	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)

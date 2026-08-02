@@ -1,4 +1,4 @@
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-gate-enforce
@@ -17,7 +17,7 @@ spec:
         values:
         - 10.254.254.254
 ---
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-gate-monitor

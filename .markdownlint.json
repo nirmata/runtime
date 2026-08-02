@@ -1,6 +1,9 @@
 {
   "default": true,
   "MD013": false,
+  "MD033": {
+    "allowed_elements": ["div"]
+  },
   "MD060": {
     "style": "compact"
   }

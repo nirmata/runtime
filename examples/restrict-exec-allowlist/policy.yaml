@@ -1,0 +1,21 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: restrict-exec-allowlist
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: lsm-client
+  variables:
+  - name: readOnlyTools
+    expression: "['/bin/cat', '/bin/ls']"
+  behaviors:
+  - exec:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - "/bin/sh"
+        expression: "variables.readOnlyTools"

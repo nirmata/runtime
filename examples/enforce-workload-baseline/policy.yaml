@@ -1,0 +1,31 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: enforce-workload-baseline
+spec:
+  mode: enforce
+  evaluationInterval: 30s
+  podSelector:
+    matchLabels:
+      app: nginx
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - "10.96.0.10"
+  - exec:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - "/usr/sbin/nginx"
+        - "/usr/bin/curl"
+        - "/bin/cat"
+  - open:
+      deny:
+        values:
+        - "/etc/shadow"

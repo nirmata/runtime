@@ -1,0 +1,8 @@
+# helm values: grant the daemon read access to the ConfigMap the policy expression
+# reads. Pass with `helm upgrade ... -f rbac-values.yaml`.
+daemon:
+  rbac:
+    extraRules:
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["get", "list", "watch"]

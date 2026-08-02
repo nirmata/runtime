@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ip-blocklist
+  namespace: default
+data:
+  ips: "192.0.2.55"

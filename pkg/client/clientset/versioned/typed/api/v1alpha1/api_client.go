@@ -30,7 +30,7 @@ type RuntimeV1alpha1Interface interface {
 	RuntimePoliciesGetter
 }
 
-// RuntimeV1alpha1Client is used to interact with features provided by the runtime.kyverno.io group.
+// RuntimeV1alpha1Client is used to interact with features provided by the runtime.nirmata.io group.
 type RuntimeV1alpha1Client struct {
 	restClient rest.Interface
 }
