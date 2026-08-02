@@ -1,4 +1,4 @@
-#include "include/vmlinux.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 
 #define MAX_PATH_LEN 128

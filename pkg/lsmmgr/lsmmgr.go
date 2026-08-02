@@ -30,6 +30,10 @@ type LsmManager struct {
 	newEnforcer enforcerFactory
 	clock       func() time.Time
 
+	// cgroupSinks gate observation-only sources on the pods the exec policies
+	// select. Set before the informers start and not mutated afterwards.
+	cgroupSinks []CgroupSink
+
 	// while each informer is serial, both the pod and the policy informers run in parallel.
 	// we need to guard against them both modifying the internal state concurrently
 	mu sync.Mutex
@@ -62,10 +66,11 @@ type lsmAttachment struct {
 	observe bool
 }
 
-func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder) *LsmManager {
+func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, cgroupSinks ...CgroupSink) *LsmManager {
 	return &LsmManager{
-		logger: logger,
-		status: status,
+		logger:      logger,
+		status:      status,
+		cgroupSinks: cgroupSinks,
 		newEnforcer: func(logger *logr.Logger, target string) (lsmEnforcer, error) {
 			enf, err := lsm.NewForAttachTarget(logger, target)
 			if err != nil {
@@ -128,6 +133,7 @@ func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids 
 	if err := prog.enf.EnableObservation(cgids); err != nil {
 		l.observationUnavailable(rpUID, progType, "failed to enable observation", err)
 	}
+	l.mirrorCgids(rpUID, progType, cgids, true)
 }
 
 // removePodCgids is addPodCgids' inverse, and pairs the same two calls.
@@ -140,6 +146,31 @@ func (l *LsmManager) removePodCgids(rpUID, progType string, prog *progState, cgi
 	}
 	if err := prog.enf.DisableObservation(cgids); err != nil {
 		l.observationUnavailable(rpUID, progType, "failed to disable observation", err)
+	}
+	l.mirrorCgids(rpUID, progType, cgids, false)
+}
+
+// mirrorCgids forwards the exec program's cgroup set to the observation-only
+// sources that gate on the same pods.
+//
+// Only the exec attach target is mirrored. A pod can be attached for
+// file_open and for bprm_check_security independently, and the sinks hold one
+// unqualified set: mirroring both targets would let a file_open detach remove
+// a cgroup the exec target still wants.
+func (l *LsmManager) mirrorCgids(rpUID, progType string, cgids []uint64, add bool) {
+	if progType != lsm.PROG_TYPE_LSM_EXEC {
+		return
+	}
+	for _, sink := range l.cgroupSinks {
+		var err error
+		if add {
+			err = sink.AddCgids(cgids)
+		} else {
+			err = sink.DeleteCgids(cgids)
+		}
+		if err != nil {
+			l.logger.Error(err, "failed to mirror cgids to observation source", "uid", rpUID, "add", add)
+		}
 	}
 }
 
