@@ -413,6 +413,8 @@ distributions and hosted CI runners are typically not booted with it.
 | --- | --- | --- | --- |
 | [block-known-bad-egress](../../../examples/block-known-bad-egress/) | Deny a literal destination IPv4 with `deny.values` | `enforce` | cgroup v2 |
 | [default-deny-egress](../../../examples/default-deny-egress/) | `deny.values: ["*"]` plus an `allow` list | `enforce` | cgroup v2 |
+| [egress-via-service-refs](../../../examples/egress-via-service-refs/) | `allow.serviceRefs` under default deny, with the API server denied by omission | `enforce` | cgroup v2 |
+| [egress-to-domain-name](../../../examples/egress-to-domain-name/) | A domain name in `allow.values`, with cluster DNS allowed by reference | `enforce` | cgroup v2 |
 | [monitor-egress](../../../examples/monitor-egress/) | Same policy shape observed instead of blocked | `monitor` | cgroup v2 |
 | [deny-sensitive-file-access](../../../examples/deny-sensitive-file-access/) | `open` deny with `values` unioned with a `variables` expression | `enforce` | BPF-LSM |
 | [restrict-exec-allowlist](../../../examples/restrict-exec-allowlist/) | Default-deny `exec` with an allow-list | `enforce` | BPF-LSM |

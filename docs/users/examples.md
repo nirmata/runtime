@@ -32,8 +32,17 @@ If enforcement appears to do nothing, that distinction is the first thing to che
 | --- | --- | --- | --- |
 | [block-known-bad-egress](../../examples/block-known-bad-egress/) | Stop a pod from reaching one known-bad destination address, leaving the rest of its egress alone | enforce | cgroup v2 |
 | [default-deny-egress](../../examples/default-deny-egress/) | Contain a compromised pod: block all egress except one approved service | enforce | cgroup v2 |
+| [egress-via-service-refs](../../examples/egress-via-service-refs/) | Name the approved destinations as in-cluster Services instead of addresses, leaving the API server unreachable by omission | enforce | cgroup v2 |
+| [egress-to-domain-name](../../examples/egress-to-domain-name/) | Allow a fully qualified domain name, enforced from the pod's own DNS answers | enforce | cgroup v2 |
 
 `block-known-bad-egress` is the scenario the [quickstart](quickstart.md) walks through.
+
+A destination named as a Service is resolved from Service and EndpointSlice informers; a
+destination named as a domain is learned from the pod's DNS answers. The two mechanisms have
+different failure modes, listed in
+[limits of serviceRefs](reference/runtimepolicy.md#limits-of-servicerefs) and
+[limits of domain names](reference/runtimepolicy.md#limits-of-domain-names). A domain allow
+list is not a containment boundary.
 
 ## File and process control
 

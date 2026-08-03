@@ -1,0 +1,20 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: egress-via-service-refs
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: gateway-client
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+      allow:
+        serviceRefs:
+        - name: kube-dns
+          namespace: kube-system
+        - name: egress-gateway
+          namespace: egress-gateway

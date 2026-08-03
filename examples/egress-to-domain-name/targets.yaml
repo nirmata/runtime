@@ -1,0 +1,63 @@
+# Two identical HTTP servers, each behind a ClusterIP Service so it has a name
+# the client can resolve. One name is in the policy's allow list and the other is
+# not, so the only difference between "reachable" and "not reachable" is what the
+# DNS snooper learned from the resolver's answer.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-target-allowed
+  labels:
+    app: dns-target-allowed
+spec:
+  containers:
+  - name: httpd
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-target-allowed
+spec:
+  selector:
+    app: dns-target-allowed
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-target-denied
+  labels:
+    app: dns-target-denied
+spec:
+  containers:
+  - name: httpd
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-target-denied
+spec:
+  selector:
+    app: dns-target-denied
+  ports:
+  - port: 8080
+    targetPort: 8080

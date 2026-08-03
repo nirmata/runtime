@@ -311,6 +311,20 @@ jobs:
       - name: Egress enforcement behavior
         run: make test-e2e-egress
 
+      # Two policies over one pod, and a pod that starts after the policies
+      # exist: the only coverage of per-address refcounting and of the
+      # pod-creation programming path.
+      - name: Egress overlapping policies and pod-first ordering
+        run: make test-e2e-overlap
+
+      - name: Egress targets named as in-cluster Services
+        run: make test-e2e-svcref
+
+      # Needs cluster DNS reachable from the client, which the suite allows by
+      # reference alongside the domain under test.
+      - name: Egress targets named as domains
+        run: make test-e2e-dns
+
       - name: Dump cluster state on failure
         if: failure()
         run: |

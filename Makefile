@@ -26,6 +26,19 @@ CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 CONTROLLER_GEN_VERSION ?= v0.20.0
 CHAINSAW_VERSION ?= v0.2.15
 
+CRDS := crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
+
+# A CRD accepted a moment ago can still have a nil status.conditions, and
+# `kubectl wait` reports that as an accessor error instead of waiting for the
+# field to appear, so the wait is retried rather than trusted once.
+define wait_crds_established
+	ok=0; for _ in 1 2 3 4 5; do \
+		if kubectl wait --for=condition=Established --timeout=60s $(CRDS); then ok=1; break; fi; \
+		sleep 2; \
+	done; \
+	if [ "$$ok" != 1 ]; then echo "CRDs did not become Established"; exit 1; fi
+endef
+
 generate-crds:
 	go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
 
@@ -131,7 +144,7 @@ test-examples:
 # and no eBPF-capable kernel.
 test-chainsaw:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	@$(call wait_crds_established)
 	chainsaw test --config test/chainsaw/.chainsaw.yaml --test-dir test/chainsaw/
 
 fmt:
@@ -179,7 +192,7 @@ kind-install-prebuilt:
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	@$(call wait_crds_established)
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \
