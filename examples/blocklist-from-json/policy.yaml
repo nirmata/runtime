@@ -1,0 +1,17 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: blocklist-from-json
+spec:
+  mode: monitor
+  evaluationInterval: 30s
+  podSelector:
+    matchLabels:
+      app: json-client
+  variables:
+  - name: blocklist
+    expression: json.unmarshal(resource.get("v1", "configmaps", "default", "ip-blocklist-json").data["ips"])
+  behaviors:
+  - network:
+      deny:
+        expression: variables.blocklist["ips"].map(x, string(x))

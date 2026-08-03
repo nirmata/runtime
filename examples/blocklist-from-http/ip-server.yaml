@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ip-server
+  labels:
+    app: ip-server
+spec:
+  containers:
+  - name: server
+    image: python:3.12-slim
+    env:
+    # The feed serves its own pod IP, so the deny list resolves to a destination
+    # that exists in the cluster without any manifest carrying a placeholder.
+    - name: MY_POD_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.podIP
+    command:
+    - python3
+    - -c
+    - |
+      import http.server, json, os
+
+      IPS = [os.environ["MY_POD_IP"]]
+
+      class Handler(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              body = json.dumps(IPS).encode()
+              self.send_response(200)
+              self.send_header("Content-Type", "application/json")
+              self.send_header("Content-Length", str(len(body)))
+              self.end_headers()
+              self.wfile.write(body)
+
+      http.server.HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ip-server
+  namespace: default
+spec:
+  selector:
+    app: ip-server
+  ports:
+  - port: 8080
+    targetPort: 8080

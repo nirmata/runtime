@@ -1,0 +1,17 @@
+# DENIED_IP is replaced with the egress-target-denied pod's IP before this is applied.
+# Egress matching is by destination IPv4 address, so the address has to be discovered
+# from the running pod.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: block-known-bad-egress
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: egress-client
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "DENIED_IP"

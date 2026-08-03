@@ -25,12 +25,12 @@ const Category = "Runtime Security"
 // AnnotationTruncatedResults is set to "true" on a Report whose results were
 // capped at Options.MaxResultsPerReport. Silence must never read as safety:
 // an operator can always tell that findings were dropped.
-const AnnotationTruncatedResults = "runtime.kyverno.io/truncated-results"
+const AnnotationTruncatedResults = "runtime.nirmata.io/truncated-results"
 
 // Labels applied to every Report this package writes.
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
-	LabelNode      = "runtime.kyverno.io/node"
+	LabelNode      = "runtime.nirmata.io/node"
 )
 
 // Property keys. This is the COMPLETE, fixed key set: buildResult writes no

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: kyverno-runtime
-description: Runtime policy controller for Kubernetes using Kyverno-style PolicyReports
+description: Kyverno policies for eBPF runtime enforcement
 type: application
 version: 0.1.0
 appVersion: "0.0.0-dev"

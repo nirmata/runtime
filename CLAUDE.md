@@ -1,7 +1,7 @@
 # Working on kyverno-runtime
 
 Conventions for anyone — human or agent — changing this repo. `Agents.md` covers
-task workflow and the package map; `DEVELOPMENT.md` covers build and test
+task workflow and the package map; `docs/dev/DEVELOPMENT.md` covers build and test
 mechanics. This file is about the judgment that review keeps catching.
 
 Every rule below is here because it was violated in a real PR and a reviewer had

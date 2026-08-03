@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.0
-  name: runtimepolicies.runtime.kyverno.io
+  name: runtimepolicies.runtime.nirmata.io
 spec:
-  group: runtime.kyverno.io
+  group: runtime.nirmata.io
   names:
     kind: RuntimePolicy
     listKind: RuntimePolicyList

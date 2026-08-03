@@ -1,7 +1,7 @@
 # Invalid under strict validation: namespaceSelector is not part of
 # RuntimePolicySpec (it belonged to a removed schema). Pruning would drop it
 # silently; strict client-side/server-side validation must reject it.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: chainsaw-invalid-unknown-field

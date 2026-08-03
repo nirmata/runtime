@@ -23,7 +23,7 @@ spec:
     finally:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: chainsaw-valid-minimal
 
@@ -35,7 +35,7 @@ spec:
     # carries exactly one kind, values survive, and mode round-trips.
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: chainsaw-valid-enforce
@@ -49,7 +49,7 @@ spec:
     finally:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: chainsaw-valid-enforce
 
@@ -62,7 +62,7 @@ spec:
     # intact.
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: chainsaw-valid-protocol
@@ -74,7 +74,7 @@ spec:
     finally:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: chainsaw-valid-protocol
 
@@ -84,7 +84,7 @@ spec:
         file: policy-monitor.yaml
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: chainsaw-valid-monitor
@@ -96,7 +96,7 @@ spec:
     finally:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: chainsaw-valid-monitor
 
@@ -134,7 +134,7 @@ spec:
             }'
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: chainsaw-valid-minimal
@@ -145,6 +145,6 @@ spec:
     finally:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: chainsaw-valid-minimal

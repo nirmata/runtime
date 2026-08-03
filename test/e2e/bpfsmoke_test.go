@@ -5,7 +5,7 @@
 // These are NOT unit tests and deliberately do not assert "returns an error on
 // darwin" -- that would be coverage theatre. On any host that
 // cannot run them they SKIP with an explicit reason, except where the caller
-// opts into a hard requirement via KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 (the
+// opts into a hard requirement via NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 (the
 // workflow_dispatch LSM lane sets it, so a misconfigured runner fails loudly
 // instead of reporting a green skip).
 //
@@ -357,11 +357,11 @@ func TestBPFProtocolClassifierClassifiesPackets(t *testing.T) {
 // unless the kernel was booted with BPF-LSM active, so this skips by default and
 // only hard-fails when the caller declares the host is supposed to support it.
 func TestBPFLsmProgramsLoadAndVerify(t *testing.T) {
-	required := os.Getenv("KYVERNO_RUNTIME_REQUIRE_BPF_LSM") == "1"
+	required := os.Getenv("NIRMATA_RUNTIME_REQUIRE_BPF_LSM") == "1"
 
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		if required {
-			t.Fatalf("KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 but host is %s and euid %d (need linux + root)",
+			t.Fatalf("NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 but host is %s and euid %d (need linux + root)",
 				runtime.GOOS, os.Geteuid())
 		}
 		requireBPFCapableHost(t)
@@ -370,11 +370,11 @@ func TestBPFLsmProgramsLoadAndVerify(t *testing.T) {
 	enabled, err := utils.BpfLSMEnabled()
 	switch {
 	case err != nil && required:
-		t.Fatalf("KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 but /sys/kernel/security/lsm is unreadable: %v", err)
+		t.Fatalf("NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 but /sys/kernel/security/lsm is unreadable: %v", err)
 	case err != nil:
 		t.Skipf("cannot determine active LSMs: %v", err)
 	case !enabled && required:
-		t.Fatal("KYVERNO_RUNTIME_REQUIRE_BPF_LSM=1 but 'bpf' is not in /sys/kernel/security/lsm; " +
+		t.Fatal("NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 but 'bpf' is not in /sys/kernel/security/lsm; " +
 			"the kernel must be booted with lsm=...,bpf")
 	case !enabled:
 		t.Skip("kernel not booted with BPF-LSM ('bpf' absent from /sys/kernel/security/lsm); " +

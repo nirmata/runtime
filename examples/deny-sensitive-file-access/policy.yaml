@@ -1,0 +1,18 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: deny-sensitive-file-access
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: lsm-client
+  variables:
+  - name: extraDenied
+    expression: "['/etc/gshadow', '/root/.ssh/id_rsa']"
+  behaviors:
+  - open:
+      deny:
+        values:
+        - "/etc/shadow"
+        expression: "variables.extraDenied"

@@ -1,0 +1,21 @@
+# Application-protocol default deny allowing only TLS and cleartext DNS.
+# Scoped by podSelector to the client pod only, so the target server and the
+# daemon keep their networking.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: tls-only-egress
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: protocol-client
+  behaviors:
+  - protocol:
+      allow:
+        values:
+        - "tls"
+        - "dns"
+      deny:
+        values:
+        - "*"

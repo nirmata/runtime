@@ -1,6 +1,6 @@
 # NOT rejected at admission: `expression` is an opaque string in the CRD schema.
 # See the chainsaw-test.yaml comment for why this is a positive test.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: chainsaw-invalid-malformed-cel

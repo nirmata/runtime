@@ -1,7 +1,7 @@
 # Application-protocol default deny allowing only TLS and cleartext DNS.
 # Scoped by podSelector to the client pod only, so the target server and the
 # daemon keep their networking.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-protocol-enforce

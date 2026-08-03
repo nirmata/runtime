@@ -103,7 +103,7 @@ spec:
         file: policy.yaml
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-protocol-enforce
@@ -191,6 +191,6 @@ spec:
           kubectl get runtimepolicy e2e-protocol-enforce -o yaml || true
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-protocol-enforce
