@@ -2,14 +2,17 @@ package egressmgr
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
+	"github.com/cilium/ebpf/link"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -192,5 +195,80 @@ func TestTargetsConditionCoversProtocolValues(t *testing.T) {
 	cond, ok = status.latest("rp-good", ConditionTargetsValid)
 	if !ok || cond.Reason != ReasonAllTargetsSupported {
 		t.Fatalf("condition for supported protocol values: got %+v, want reason %s", cond, ReasonAllTargetsSupported)
+	}
+}
+
+// TestPaddedStarSentinelSetsDefaultDeny pins that the manager's star detection
+// agrees with the value grammars, which trim the quotes and brackets CEL list
+// rendering leaks. A raw "*" comparison misses `" * "` and silently downgrades
+// a default-deny policy to allow-all-except-denied.
+func TestPaddedStarSentinelSetsDefaultDeny(t *testing.T) {
+	for _, star := range []string{"*", " * ", `"*"`, "[*]", "*\r\n"} {
+		t.Run(star, func(t *testing.T) {
+			e, _, _, _ := newTestManagerWithProto()
+			addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+			mustRpEvent(t, e, rp("rp-net", "enforce", webLabels, []string{"1.1.1.1"}, []string{star}), events.EventTypeCreate)
+			mustRpEvent(t, e, rpWithProtos("rp-proto", "enforce", webLabels, []string{"tls"}, []string{star}), events.EventTypeCreate)
+
+			wantDefaultDeny(t, filterOf(t, e, "pod-1"), true)
+			if !protoFilterOf(t, e, "pod-1").defaultDeny {
+				t.Errorf("protocol default deny not set for deny value %q", star)
+			}
+		})
+	}
+}
+
+// TestPaddedStarSentinelSetsDefaultDenyOnUpdate covers the same agreement on the
+// update diff path, which computes the flag from the added and removed values
+// rather than the whole list.
+func TestPaddedStarSentinelSetsDefaultDenyOnUpdate(t *testing.T) {
+	e, _, _, _ := newTestManagerWithProto()
+	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls"}, nil), events.EventTypeCreate)
+	if protoFilterOf(t, e, "pod-1").defaultDeny {
+		t.Fatal("default deny set by a policy that has no star")
+	}
+
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls"}, []string{" * "}), events.EventTypeUpdate)
+	if !protoFilterOf(t, e, "pod-1").defaultDeny {
+		t.Error("default deny not set after an update added a padded star")
+	}
+
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls"}, nil), events.EventTypeUpdate)
+	if protoFilterOf(t, e, "pod-1").defaultDeny {
+		t.Error("default deny survived an update that removed the padded star")
+	}
+}
+
+// TestCloseLinksDrainsEveryMap pins that a partially-attached pod's links are
+// released rather than orphaned. The maps are drained so a caller cannot close
+// the same link twice, and a nil entry is tolerated because link.Link is an
+// interface the fakes cannot implement.
+func TestCloseLinksDrainsEveryMap(t *testing.T) {
+	cgA := containers.ContainerCgroupInfo{Path: "/cg/a"}
+	cgB := containers.ContainerCgroupInfo{Path: "/cg/b"}
+	first := map[containers.ContainerCgroupInfo]link.Link{cgA: nil}
+	second := map[containers.ContainerCgroupInfo]link.Link{cgB: nil}
+
+	closeLinks(first, second)
+
+	if len(first) != 0 || len(second) != 0 {
+		t.Errorf("maps not drained: first=%d second=%d", len(first), len(second))
+	}
+}
+
+// TestPodCreatedReleasesLinksWhenProtoAttachFails pins that a pod whose
+// protocol attach fails is not tracked, so nothing later reads a half-built
+// attachment.
+func TestPodCreatedReleasesLinksWhenProtoAttachFails(t *testing.T) {
+	e, _, pfac, _ := newTestManagerWithProto()
+	pfac.attachErr = errors.New("attach refused")
+
+	err := e.PodEvent(makePod("pod-1", webLabels), cgInfos("/cg/pod-1"), events.EventTypeCreate)
+	if err == nil {
+		t.Fatal("podCreated returned nil despite a failing protocol attach")
+	}
+	if _, ok := e.pods["pod-1"]; ok {
+		t.Error("a pod whose attach failed is tracked in e.pods")
 	}
 }

@@ -13,6 +13,22 @@ import (
 // default-deny flag.
 const StarTarget = "*"
 
+// trimValue strips what CEL list rendering and hand-written YAML leak around a
+// value. Every value grammar trims identically, so they cannot disagree about
+// what a value is before they start deciding what it means.
+func trimValue(raw string) string {
+	return strings.Trim(raw, " \t\r\n\"'[]")
+}
+
+// IsStarTarget reports whether raw is the StarTarget sentinel under the same
+// trimming the value grammars apply. Consumers that translate the sentinel into
+// a default-deny flag must use this rather than comparing against StarTarget:
+// a policy value of `" * "` is a default deny to every parser, and a raw
+// comparison would silently downgrade it to allow-all-except-denied.
+func IsStarTarget(raw string) bool {
+	return trimValue(raw) == StarTarget
+}
+
 // Sentinel errors returned by ParseNetworkValue. They are deliberately terse:
 // callers that surface them to operators (admission's field errors, the egress
 // filter's rejected-target conditions) wrap or map them into their own
@@ -60,7 +76,7 @@ type NetworkValue struct {
 //   - everything else is an error: ErrEmptyNetworkValue,
 //     ErrIPv6NetworkValue, or ErrNotAnIPNetworkValue
 func ParseNetworkValue(raw string) (NetworkValue, error) {
-	cleaned := strings.Trim(raw, " \t\r\n\"'[]")
+	cleaned := trimValue(raw)
 
 	switch {
 	case cleaned == "":

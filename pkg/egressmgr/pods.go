@@ -37,11 +37,13 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	for _, cg := range cgInfos {
 		l, err := filter.Attach(cg.Path)
 		if err != nil {
+			closeLinks(pa.cgs, pa.protoCgs)
 			return err
 		}
 		pa.cgs[*cg] = l
 		pl, err := pf.Attach(cg.Path)
 		if err != nil {
+			closeLinks(pa.cgs, pa.protoCgs)
 			return err
 		}
 		pa.protoCgs[*cg] = pl
@@ -119,15 +121,22 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	// for the ones that are gone the attachment would be already deleted by the kernel
 	newCgs := make(map[containers.ContainerCgroupInfo]link.Link)
 	newProtoCgs := make(map[containers.ContainerCgroupInfo]link.Link)
+	// Links this call created, as opposed to the ones pa already owns: only
+	// these are closed if a later attach fails, since the rest stay live under
+	// the untouched pa.cgs / pa.protoCgs.
+	fresh := make(map[containers.ContainerCgroupInfo]link.Link)
+	freshProto := make(map[containers.ContainerCgroupInfo]link.Link)
 	for _, cgInfo := range cgInfos {
 		l, exists := pa.cgs[*cgInfo]
 		if !exists {
 			// new cgroup, attach and get a link
 			newLink, err := pa.filter.Attach(cgInfo.Path)
 			if err != nil {
+				closeLinks(fresh, freshProto)
 				return err
 			}
 			l = newLink
+			fresh[*cgInfo] = l
 		}
 		newCgs[*cgInfo] = l
 
@@ -135,9 +144,11 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 		if !exists {
 			newLink, err := pa.protoFilter.Attach(cgInfo.Path)
 			if err != nil {
+				closeLinks(fresh, freshProto)
 				return err
 			}
 			pl = newLink
+			freshProto[*cgInfo] = pl
 		}
 		newProtoCgs[*cgInfo] = pl
 	}
@@ -162,6 +173,22 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabel
 		case !matches && attached:
 			e.logger.V(2).Info("relabelled pod stopped matching runtime policy, detaching", "podUid", podUid, "uid", uid)
 			e.detachPolicy(podUid, pa, uid, att.IPs, att.Protocols)
+		}
+	}
+}
+
+// closeLinks detaches links created on a path that then failed. A pod whose
+// attach fails partway is never stored in e.pods, so nothing else holds these
+// and the kernel keeps the programs attached to a live cgroup until they are
+// closed here.
+func closeLinks(sets ...map[containers.ContainerCgroupInfo]link.Link) {
+	for _, set := range sets {
+		for cg, l := range set {
+			// link.Link is an interface, so a map entry can hold a nil one
+			if l != nil {
+				_ = l.Close()
+			}
+			delete(set, cg)
 		}
 	}
 }

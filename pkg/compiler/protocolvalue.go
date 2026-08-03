@@ -71,7 +71,7 @@ type ProtocolValue struct {
 //   - everything else is ErrEmptyProtocolValue, ErrInvalidALPNValue or
 //     ErrNotAProtocolValue
 func ParseProtocolValue(raw string) (ProtocolValue, error) {
-	cleaned := strings.Trim(raw, " \t\r\n\"'[]")
+	cleaned := trimValue(raw)
 
 	switch cleaned {
 	case "":

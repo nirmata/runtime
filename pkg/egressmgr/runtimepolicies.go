@@ -1,8 +1,6 @@
 package egressmgr
 
 import (
-	"slices"
-
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
@@ -84,11 +82,11 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	toRemoveProtoPair := compiledRp.Protocols.DiffPair(currentRp.Protocols)
 
 	// the incoming policy update contains a deny "*"
-	hasDefaultDeny := slices.Contains(toAddPair.Deny, compiler.StarTarget)
+	hasDefaultDeny := denyHasStar(toAddPair)
 	// had default deny before, but doesn't anymore
-	defaultDenyRemoved := slices.Contains(toRemovePair.Deny, compiler.StarTarget)
-	hasProtoDefaultDeny := slices.Contains(toAddProtoPair.Deny, compiler.StarTarget)
-	protoDefaultDenyRemoved := slices.Contains(toRemoveProtoPair.Deny, compiler.StarTarget)
+	defaultDenyRemoved := denyHasStar(toRemovePair)
+	hasProtoDefaultDeny := denyHasStar(toAddProtoPair)
+	protoDefaultDenyRemoved := denyHasStar(toRemoveProtoPair)
 
 	// update the current runtime behavior's information to point to the new compiled behavior data.
 	// the shared pointer itself is never replaced: the pods hold it.
