@@ -299,6 +299,35 @@ are not the whole story. `exec` cannot enforce on arguments; the argv is nonethe
 observed, and a predicate over it turns a stream of every process start into the few that
 mean something.
 
+The predicate reads one `event` variable with a fixed schema — `pod`, `workload`,
+`process`, `net`, `dns`, `tls`, `http`, and `ai` — so a filter names exactly the dimension
+it cares about:
+
+```cel
+// only a confident classification is worth a finding
+event.ai.confidence >= 60
+
+// an LLM call identified by SNI rather than by a resolved name
+"sni" in event.ai.evidence && event.ai.class == "llm"
+
+// an agent card fetch, which is how an A2A peer announces itself
+event.http.path.startsWith("/.well-known/agent")
+
+// egress that did not go through the proxy, whatever it claims
+!event.net.governed
+```
+
+The last one is the shape that matters most: `event.net.governed` is the bit set when a
+flow was seen reaching the proxy, so its negation is the population worth looking at at
+all. Filtering on it is the difference between reporting every connection a cluster makes
+and reporting the ones that skipped the chokepoint.
+
+Command-level questions live in the same schema — `event.process.argv` is a list, so
+`"secret" in event.process.argv` is expressible against an exec event. Note where that
+predicate currently attaches: `match` is a field on the AI behavior and is evaluated per
+detected AI event, so filtering arbitrary exec activity this way needs the same machinery
+pointed at a different event source.
+
 The environment a per-event predicate runs in deliberately excludes the `http`, `resource`
 and `json` libraries available elsewhere. A program evaluated at event rate must not be
 able to make a network call or read from the API server — the cost is unbounded and the
