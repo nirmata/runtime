@@ -9,15 +9,22 @@
 # them and the result is a red test that eventually gets muted.
 #
 # Coverage of the eBPF layer on hosted runners:
-#   * program load + verifier acceptance for the egress program: ASSERTED
-#     (bpf-verifier-smoke).
+#   * program load + verifier acceptance for every committed object that does
+#     not need BPF-LSM: ASSERTED (bpf-verifier-smoke). The set of objects lives
+#     in the table in test/e2e/bpfverify_test.go, and a committed object with no
+#     entry there fails the unit suite, so this lane cannot silently lose a
+#     program.
 #   * egress allow/deny packet behavior end to end: ASSERTED (e2e-egress).
-#   * BPF-LSM file_open / bprm_check_security behavior: NOT COVERED. Loading a
-#     BPF_PROG_TYPE_LSM program needs the kernel booted with `lsm=...,bpf`;
-#     that is a boot parameter and hosted runners are not booted with it, so it
-#     cannot be enabled from inside a job or a kind node. The lane exists
-#     (lsm-behavior) and is workflow_dispatch-gated for a host that qualifies.
-#     This gap is issue #60 and is stated, not hidden.
+#   * BPF-LSM file_open / bprm_check_security, both load and behavior: NOT
+#     COVERED on a hosted runner, and this is measured rather than assumed. A
+#     BPF_PROG_TYPE_LSM program is refused at load unless `bpf` is in
+#     /sys/kernel/security/lsm, which comes from the `lsm=` boot parameter; no
+#     job, container or kind node can change it. On ubuntu-latest that list
+#     reads:
+#         lockdown,capability,landlock,yama,apparmor,ima,evm
+#     The lane exists (lsm-behavior), takes the runner label as a
+#     workflow_dispatch input, and hard-fails rather than skipping when pointed
+#     at a host that does not qualify.
 #   * committed *_bpfel.o / *_bpfeb.o matching their _cprog sources: GATED
 #     (bpf-object-drift recompiles the C with the pinned clang in
 #     hack/bpf-builder and fails on any byte difference; it asserts nothing
@@ -30,6 +37,13 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      lsm_runner:
+        description: >-
+          Runner label for the BPF-LSM behavior lane. The default cannot satisfy
+          it; point this at a self-hosted runner or VM booted with lsm=...,bpf.
+        type: string
+        default: ubuntu-latest
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -198,7 +212,7 @@ jobs:
 
   # ------------------------------------------------- ASSERTION (kernel-bound)
   bpf-verifier-smoke:
-    name: "Assert: BPF egress program loads & passes the verifier (Linux, root)"
+    name: "Assert: committed BPF programs load & pass the verifier (Linux, root)"
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -212,7 +226,7 @@ jobs:
           cache: true
 
       # Fail loudly on a runner that cannot host the test at all, rather than
-      # letting the Go test skip and report green (issue #60 asks for this).
+      # letting the Go test skip and report green.
       - name: Kernel preconditions
         run: |
           set -euo pipefail
@@ -227,7 +241,13 @@ jobs:
       # sudo -E keeps GOCACHE/GOPATH so this reuses the module cache. The Go test
       # skips (not fails) if the environment turns out unsuitable; the step above
       # is what makes an unsuitable runner loud.
-      - name: Load the egress BPF program and program its maps
+      #
+      # Adding a BPF program does not touch this file: test-bpf-verify walks the
+      # table in test/e2e/bpfverify_test.go.
+      - name: Load every committed BPF program (verifier log on rejection)
+        run: sudo -E env "PATH=$PATH" make test-bpf-verify
+
+      - name: Program and read back the egress maps
         run: sudo -E env "PATH=$PATH" make test-bpf-smoke
 
   # ------------------------------------------------- ASSERTION (kernel-bound)
@@ -329,17 +349,20 @@ jobs:
   # at LOAD time unless the kernel was booted with BPF-LSM active, i.e. `bpf`
   # appears in /sys/kernel/security/lsm. That list comes from the `lsm=` boot
   # parameter; it cannot be changed from inside a workflow, a container, or a
-  # kind node, and GitHub's hosted images are not booted with it. Consequently
+  # kind node. Measured on ubuntu-latest, the list is
+  # `lockdown,capability,landlock,yama,apparmor,ima,evm`. Consequently
   # pkg/bpf/lsm's load/attach paths and everything in pkg/lsmmgr below the
-  # manager seam are UNVERIFIED by this CI. That is the documented gap in issue
-  # #60; the fix is a self-hosted or VM-based runner booted with lsm=...,bpf,
-  # not a softer assertion here.
+  # manager seam are UNVERIFIED by this CI. The fix is a runner booted with
+  # lsm=...,bpf, not a softer assertion here.
   #
-  # Run it with: Actions -> CI -> Run workflow, on a runner that qualifies.
+  # Run it with: Actions -> CI -> Run workflow, setting `lsm_runner` to the label
+  # of a runner that qualifies. Docker Desktop's LinuxKit VM qualifies as
+  # shipped, so `make kind-install && make test-e2e-lsm` also runs this suite on
+  # a developer machine.
   lsm-behavior:
-    name: "Not run on PRs: BPF-LSM open/exec enforcement (needs lsm=bpf -- issue #60)"
+    name: "Not run on PRs: BPF-LSM open/exec enforcement (needs a runner booted with lsm=...,bpf)"
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.lsm_runner || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       DOCKER_CONFIG: /tmp/.docker
@@ -369,22 +392,32 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
 
+      # The two failures have different fixes, so they get different messages:
+      # an unreadable list means securityfs is not mounted here, which is not
+      # evidence about the kernel.
       - name: Require BPF-LSM (fails loudly on a non-qualifying runner)
         run: |
           set -euo pipefail
-          lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo "")
-          echo "active LSMs: ${lsm:-unreadable}"
+          if ! lsm=$(cat /sys/kernel/security/lsm); then
+            echo "ERROR: /sys/kernel/security/lsm could not be read, so the active"
+            echo "       LSM list is unknown. This is NOT proof that BPF-LSM is off."
+            echo "       Mount securityfs where this job can see it."
+            exit 1
+          fi
+          echo "active LSMs: ${lsm}"
           case ",${lsm}," in
             *,bpf,*) echo "BPF-LSM active" ;;
             *)
               echo "ERROR: this runner was not booted with BPF-LSM."
-              echo "       GitHub hosted runners never are -- see issue #60."
-              echo "       Point this job at a self-hosted runner or VM booted with lsm=...,bpf."
+              echo "       Point lsm_runner at a self-hosted runner or VM booted with lsm=...,bpf."
               exit 1
               ;;
           esac
 
-      - name: LSM program load + attach smoke
+      - name: Load every committed BPF program, LSM included (verifier log on rejection)
+        run: sudo -E env "PATH=$PATH" NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 make test-bpf-verify
+
+      - name: LSM program map writes + attach smoke
         run: sudo -E env "PATH=$PATH" NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 make test-bpf-smoke
 
       - name: Set up kind
