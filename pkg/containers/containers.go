@@ -118,7 +118,7 @@ func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Cont
 	}
 	qos := strings.ToLower(string(pod.Status.QOSClass))
 
-	paths := buildCandidatePaths(cg.mountPoint, runtime, cgroupPodUID(pod), containerID, qos)
+	paths := buildCandidatePaths(cg.mountPoint, runtime, cgroupDirID(pod), containerID, qos)
 	for _, path := range paths {
 		var stat syscall.Stat_t
 		if err := syscall.Stat(path, &stat); err == nil {
@@ -134,11 +134,7 @@ func cgroupInfoFromContainer(pod *corev1.Pod, cs *corev1.ContainerStatus) (*Cont
 // a static pod.
 const configHashAnnotation = "kubernetes.io/config.hash"
 
-// cgroupPodUID returns the identifier the kubelet used to name the pod's cgroup
-// directory. For a static pod that is the config hash, not .metadata.uid: the
-// API object is a mirror pod whose UID the kubelet generates separately, so
-// searching by it finds nothing on any node.
-func cgroupPodUID(pod *corev1.Pod) string {
+func cgroupDirID(pod *corev1.Pod) string {
 	if hash := pod.Annotations[configHashAnnotation]; hash != "" {
 		return hash
 	}
@@ -190,12 +186,13 @@ func cgroupfsLeaves(runtime, containerID string) []string {
 
 // buildCandidatePaths enumerates, most-likely-first, the cgroup directories a
 // container may live in. runtime is the scheme of the CRI container id ("" for
-// unknown); podUID is the RAW pod UID — systemd escaping happens internally,
-// because the cgroupfs driver does NOT escape it; qos is the lowercased QoS
-// class, "" treated as guaranteed (the only layout without a QoS level).
-func buildCandidatePaths(root, runtime, podUID, containerID, qos string) []string {
+// unknown); podDirID is the RAW identifier the kubelet put in the pod directory
+// name — systemd escaping happens internally, because the cgroupfs driver does
+// NOT escape it; qos is the lowercased QoS class, "" treated as guaranteed (the
+// only layout without a QoS level).
+func buildCandidatePaths(root, runtime, podDirID, containerID, qos string) []string {
 	// systemd escapes '-' in unit names, so the kubelet replaces it with '_'.
-	escapedUID := strings.ReplaceAll(podUID, "-", "_")
+	escapedID := strings.ReplaceAll(podDirID, "-", "_")
 	noQoS := qos == "" || qos == "guaranteed"
 
 	var paths []string
@@ -217,12 +214,12 @@ func buildCandidatePaths(root, runtime, podUID, containerID, qos string) []strin
 		for _, r := range systemdRoots {
 			if noQoS {
 				// some kubelet versions skip the qos slice for guaranteed pods
-				add(fmt.Sprintf("%s/%s.slice/%s-pod%s.slice/%s", r.root, r.prefix, r.prefix, escapedUID, leaf))
+				add(fmt.Sprintf("%s/%s.slice/%s-pod%s.slice/%s", r.root, r.prefix, r.prefix, escapedID, leaf))
 			}
 			if qos != "" {
 				// others include it (and it is mandatory for burstable/besteffort)
 				add(fmt.Sprintf("%s/%s.slice/%s-%s.slice/%s-%s-pod%s.slice/%s",
-					r.root, r.prefix, r.prefix, qos, r.prefix, qos, escapedUID, leaf))
+					r.root, r.prefix, r.prefix, qos, r.prefix, qos, escapedID, leaf))
 			}
 		}
 	}
@@ -233,10 +230,10 @@ func buildCandidatePaths(root, runtime, podUID, containerID, qos string) []strin
 	for _, leaf := range cgroupfsLeaves(runtime, containerID) {
 		for _, base := range cgroupfsBases {
 			if noQoS {
-				add(fmt.Sprintf("%s/kubepods/pod%s/%s", base, podUID, leaf))
+				add(fmt.Sprintf("%s/kubepods/pod%s/%s", base, podDirID, leaf))
 			}
 			if qos != "" {
-				add(fmt.Sprintf("%s/kubepods/%s/pod%s/%s", base, qos, podUID, leaf))
+				add(fmt.Sprintf("%s/kubepods/%s/pod%s/%s", base, qos, podDirID, leaf))
 			}
 		}
 	}

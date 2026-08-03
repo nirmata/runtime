@@ -492,7 +492,7 @@ func TestResolveCgInfosNilAndEmptyPod(t *testing.T) {
 	}
 }
 
-func TestCgroupPodUIDPrefersStaticPodConfigHash(t *testing.T) {
+func TestCgroupDirIDPrefersStaticPodConfigHash(t *testing.T) {
 	mirrorUID := "730e610d-5d39-4125-b7f9-420afead9035"
 	configHash := "129636dd4b80c88d09e934b98c18d4f4"
 
@@ -522,8 +522,8 @@ func TestCgroupPodUIDPrefersStaticPodConfigHash(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cgroupPodUID(tt.pod); got != tt.want {
-				t.Errorf("cgroupPodUID() = %q, want %q", got, tt.want)
+			if got := cgroupDirID(tt.pod); got != tt.want {
+				t.Errorf("cgroupDirID() = %q, want %q", got, tt.want)
 			}
 		})
 	}
