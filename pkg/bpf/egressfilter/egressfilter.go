@@ -35,6 +35,8 @@ type EgressFilter struct {
 
 	domainIDs    map[string]uint32
 	nextDomainID uint32
+	// ids returned by retireDomain, handed out again before nextDomainID
+	freeDomainIDs []uint32
 }
 
 func New(l *logr.Logger) (*EgressFilter, error) {

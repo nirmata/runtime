@@ -205,3 +205,135 @@ func TestDeleteDomains_IgnoresNamesThatWereNeverInterned(t *testing.T) {
 		t.Errorf("deleteDomains err = %v, want nil", err)
 	}
 }
+
+// simulateRetire performs only the id bookkeeping half of retireDomain. The
+// map deletes and the ip_domain sweep need a kernel and are asserted by
+// TestBPFRetiredDomainIDIsReusableWithoutInheritingStaleAttribution in
+// test/e2e; what is simulated here is what a completed retire leaves behind, so
+// the allocator can be exercised without one.
+func simulateRetire(e *EgressFilter, name string) uint32 {
+	id, ok := e.domainIDs[name]
+	if !ok {
+		panic("simulateRetire: " + name + " was never interned")
+	}
+	delete(e.domainIDs, name)
+	e.freeDomainIDs = append(e.freeDomainIDs, id)
+	return id
+}
+
+func TestReserveDomainID_PrefersARetiredIDOverAFreshOne(t *testing.T) {
+	e := newUnloadedFilter()
+	for _, name := range []string{"a.example.com", "b.example.com", "c.example.com"} {
+		if _, ok := e.reserveDomainID(name); !ok {
+			t.Fatalf("reserveDomainID(%q) reported the table full", name)
+		}
+	}
+
+	retired := simulateRetire(e, "b.example.com")
+
+	got, ok := e.reserveDomainID("d.example.com")
+	if !ok {
+		t.Fatal("reserveDomainID reported the table full with an id free")
+	}
+	if got != retired {
+		t.Errorf("id = %d, want the retired %d: a fresh id was allocated instead of reusing", got, retired)
+	}
+	if len(e.freeDomainIDs) != 0 {
+		t.Errorf("freeDomainIDs = %v, want empty: the reused id was not taken off the free list", e.freeDomainIDs)
+	}
+}
+
+// The regression the retire path exists for: before it, a filter could intern
+// maxDomains names over the pod's whole life however few were live at once, and
+// exhaustion needed a pod restart to clear.
+func TestReserveDomainID_ReusesARetiredIDAfterTheTableFilled(t *testing.T) {
+	e := newUnloadedFilter()
+	for i := 0; i < maxDomains; i++ {
+		if _, ok := e.reserveDomainID(fmt.Sprintf("host-%d.example.com", i)); !ok {
+			t.Fatalf("table reported full after %d names, want %d", i, maxDomains)
+		}
+	}
+	if _, ok := e.reserveDomainID("before.retiring"); ok {
+		t.Fatal("reserveDomainID accepted a name with the table full")
+	}
+
+	retired := simulateRetire(e, "host-7.example.com")
+
+	got, ok := e.reserveDomainID("after.retiring")
+	if !ok {
+		t.Fatal("reserveDomainID still reports the table full after an id was retired")
+	}
+	if got != retired {
+		t.Errorf("id = %d, want the retired %d", got, retired)
+	}
+
+	// putDomains is where exhaustion becomes operator-visible: the freed slot
+	// must stop it from reporting ReasonTooManyDomains. The unloaded map makes
+	// the write itself fail, which is a plumbing error and not a rejection.
+	e2 := newUnloadedFilter()
+	for i := 0; i < maxDomains; i++ {
+		e2.reserveDomainID(fmt.Sprintf("host-%d.example.com", i))
+	}
+	simulateRetire(e2, "host-7.example.com")
+
+	rejected, err := e2.putDomains(nil, "allowed_domains", []string{"after.retiring"})
+	if len(rejected) != 0 {
+		t.Errorf("rejected = %v, want none: the retired slot should have accepted the name", rejected)
+	}
+	if !errors.Is(err, ErrNotLoaded) {
+		t.Errorf("err = %v, want ErrNotLoaded", err)
+	}
+}
+
+func TestReserveDomainID_ConsumesOneSlotPerDistinctName(t *testing.T) {
+	e := newUnloadedFilter()
+
+	first, _ := e.reserveDomainID("api.example.com")
+	again, _ := e.reserveDomainID("api.example.com")
+	if again != first {
+		t.Errorf("second reserve of the same name gave %d, want %d", again, first)
+	}
+	if len(e.domainIDs) != 1 {
+		t.Errorf("domainIDs holds %d entries after interning one name twice, want 1", len(e.domainIDs))
+	}
+
+	// One slot consumed means maxDomains-1 remain.
+	for i := 0; i < maxDomains-1; i++ {
+		if _, ok := e.reserveDomainID(fmt.Sprintf("host-%d.example.com", i)); !ok {
+			t.Fatalf("table reported full after %d further names, want %d", i, maxDomains-1)
+		}
+	}
+	if _, ok := e.reserveDomainID("one.too.many"); ok {
+		t.Error("reserveDomainID accepted a name past maxDomains: the repeat consumed two slots")
+	}
+}
+
+// 0 is the kernel's "no domain attributed" value in ip_event_key.domain_id, so
+// a real id of 0 would be indistinguishable from an unattributed address.
+func TestReserveDomainID_NeverHandsOutZero(t *testing.T) {
+	e := newUnloadedFilter()
+
+	assert := func(stage, name string, id uint32, ok bool) {
+		t.Helper()
+		if !ok {
+			t.Fatalf("%s: reserveDomainID(%q) reported the table full", stage, name)
+		}
+		if id == 0 {
+			t.Errorf("%s: reserveDomainID(%q) = 0, which the kernel reads as \"no domain attributed\"", stage, name)
+		}
+	}
+
+	for i := 0; i < maxDomains; i++ {
+		name := fmt.Sprintf("host-%d.example.com", i)
+		id, ok := e.reserveDomainID(name)
+		assert("fresh allocation", name, id, ok)
+	}
+	for i := 0; i < maxDomains; i++ {
+		simulateRetire(e, fmt.Sprintf("host-%d.example.com", i))
+	}
+	for i := 0; i < maxDomains; i++ {
+		name := fmt.Sprintf("reused-%d.example.com", i)
+		id, ok := e.reserveDomainID(name)
+		assert("after retiring every id", name, id, ok)
+	}
+}

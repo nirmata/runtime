@@ -66,9 +66,9 @@ func asciiLower(b byte) byte {
 	return b
 }
 
-// reserveDomainID hands out the id for name, assigning the next one on first
-// use. Ids are per-filter, because every pod loads its own map set, and start
-// at 1: the kernel writes 0 into ip_event_key.domain_id to mean "no domain
+// reserveDomainID hands out the id for name, preferring one retired by
+// retireDomain. Ids are per-filter, because every pod loads its own map set, and
+// start at 1: the kernel writes 0 into ip_event_key.domain_id to mean "no domain
 // known". ok is false once the table is full.
 func (e *EgressFilter) reserveDomainID(name string) (uint32, bool) {
 	if id, ok := e.domainIDs[name]; ok {
@@ -80,15 +80,20 @@ func (e *EgressFilter) reserveDomainID(name string) (uint32, bool) {
 	if e.domainIDs == nil {
 		e.domainIDs = make(map[string]uint32, 1)
 	}
+
+	if n := len(e.freeDomainIDs); n > 0 {
+		id := e.freeDomainIDs[n-1]
+		e.freeDomainIDs = e.freeDomainIDs[:n-1]
+		e.domainIDs[name] = id
+		return id, true
+	}
+
 	e.nextDomainID++
 	e.domainIDs[name] = e.nextDomainID
 	return e.nextDomainID, true
 }
 
-// internDomain publishes name in domain_ids and returns its id. An id is never
-// retired: the snooper's ip_domain entries outlive a policy detaching, so
-// handing the same id to a different name would attribute those addresses to
-// the wrong domain.
+// internDomain publishes name in domain_ids and returns its id.
 func (e *EgressFilter) internDomain(name string) (uint32, error) {
 	if id, ok := e.domainIDs[name]; ok {
 		return id, nil
@@ -168,7 +173,129 @@ func (e *EgressFilter) deleteDomains(m *ebpf.Map, name string, hosts []string) e
 		}
 		if err := m.Delete(&id); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			errs = append(errs, fmt.Errorf("deleting from %s: %w", name, err))
+			continue
 		}
+		if err := e.retireDomain(host, id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// retireDomain unpublishes a domain whose id no longer appears on either side,
+// freeing the id for reuse. Without this a filter can only ever intern
+// maxDomains names over the pod's whole life, however few are live at once.
+//
+// The order is what makes reuse safe. domain_ids goes first: the snooper mints
+// an id only by matching a QNAME there, so removing the name stops new ip_domain
+// entries from appearing before the sweep clears the ones already recorded.
+// Reusing an id while any of those survived would authorize and attribute a
+// stale address as the new domain.
+func (e *EgressFilter) retireDomain(host string, id uint32) error {
+	allowed, banned := e.domainMaps()
+	if domainMapHasID(allowed, id) || domainMapHasID(banned, id) {
+		return nil
+	}
+
+	key, err := encodeDomainKey(host)
+	if err != nil {
+		return fmt.Errorf("retiring %q: %w", host, err)
+	}
+	if e.bpfObjs == nil || e.bpfObjs.DomainIds == nil {
+		return fmt.Errorf("domain_ids: %w", ErrNotLoaded)
+	}
+	if err := e.bpfObjs.DomainIds.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("deleting from domain_ids: %w", err)
+	}
+	// The kernel entry is gone, so the cached id goes with it: internDomain
+	// returns a cached id without republishing the name, which would leave the
+	// domain unenforceable for the rest of the pod's life.
+	delete(e.domainIDs, host)
+
+	if err := errors.Join(e.sweepIPDomain(id), e.sweepIPEvents(id)); err != nil {
+		// the id stays out of circulation, since an entry that still carries it
+		// would be attributed to whichever name received it next
+		return err
+	}
+	e.freeDomainIDs = append(e.freeDomainIDs, id)
+	return nil
+}
+
+func domainMapHasID(m *ebpf.Map, id uint32) bool {
+	if m == nil {
+		return false
+	}
+	var val uint8
+	return m.Lookup(&id, &val) == nil
+}
+
+// sweepIPDomain drops every address the snooper attributed to id. Keys are
+// collected before deleting: mutating a hash map mid-iteration is not something
+// the iterator promises to survive.
+func (e *EgressFilter) sweepIPDomain(id uint32) error {
+	if e.bpfObjs == nil || e.bpfObjs.IpDomain == nil {
+		return fmt.Errorf("ip_domain: %w", ErrNotLoaded)
+	}
+	m := e.bpfObjs.IpDomain
+
+	var (
+		daddr, got uint32
+		stale      []uint32
+	)
+	it := m.Iterate()
+	for it.Next(&daddr, &got) {
+		if got == id {
+			stale = append(stale, daddr)
+		}
+	}
+	if err := it.Err(); err != nil {
+		return fmt.Errorf("scanning ip_domain: %w", err)
+	}
+
+	var errs []error
+	for _, d := range stale {
+		if err := m.Delete(&d); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			errs = append(errs, fmt.Errorf("deleting from ip_domain: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// sweepIPEvents drops observation counters attributed to id. They carry
+// domain_id in the key and only drain on the next read, so leaving them behind
+// reports a retired domain's traffic under whichever name receives the id next.
+// The counters discarded here are at most one poll interval of a domain no
+// policy references any more, which is a better loss than a wrong name.
+func (e *EgressFilter) sweepIPEvents(id uint32) error {
+	if e.bpfObjs == nil || e.bpfObjs.IpEvents == nil {
+		return fmt.Errorf("ip_events: %w", ErrNotLoaded)
+	}
+	m := e.bpfObjs.IpEvents
+
+	var (
+		key   ipEventKernelKey
+		count uint32
+		stale []ipEventKernelKey
+	)
+	it := m.Iterate()
+	for it.Next(&key, &count) {
+		if key.DomainId == id {
+			stale = append(stale, key)
+		}
+	}
+	if err := it.Err(); err != nil {
+		return fmt.Errorf("scanning ip_events: %w", err)
+	}
+
+	var errs []error
+	for _, k := range stale {
+		if err := m.Delete(&k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			errs = append(errs, fmt.Errorf("deleting from ip_events: %w", err))
+		}
+	}
+	if len(stale) > 0 && e.logger != nil {
+		e.logger.V(2).Info("discarded egress observations for a retired domain",
+			"domainId", id, "counters", len(stale))
 	}
 	return errors.Join(errs...)
 }

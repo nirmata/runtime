@@ -60,8 +60,9 @@ func (e *EgressFilter) SeedIPEvent(addr netip.Addr, decision runtimeevent.Kernel
 }
 
 // domainNamer returns the id-to-name lookup used for one read. Interning is the
-// only allocator of these ids and never retires one, so inverting its table
-// once per read is both complete and stable for the duration of the read.
+// only allocator of these ids, and retiring one sweeps the counters carrying it,
+// so a name missing from the inverted table means the counter outlived its
+// domain rather than that the table is behind.
 func (e *EgressFilter) domainNamer() func(uint32) string {
 	names := make(map[uint32]string, len(e.domainIDs))
 	for name, id := range e.domainIDs {
