@@ -142,10 +142,16 @@ CRDS := runtimepolicies.runtime.nirmata.io reports.openreports.io clusterreports
 # the condition so a CRD that never establishes still fails the target.
 wait-crds:
 	@for crd in $(CRDS); do \
-		for i in $$(seq 1 60); do \
+		i=0; \
+		while [ "$$i" -lt 60 ]; do \
 			[ -n "$$(kubectl get crd $$crd -o jsonpath='{.status.conditions}' 2>/dev/null)" ] && break; \
+			i=$$((i + 1)); \
 			sleep 1; \
 		done; \
+		if [ "$$i" -ge 60 ]; then \
+			echo "ERROR: crd/$$crd published no .status.conditions within 60s; it may not exist."; \
+			exit 1; \
+		fi; \
 		kubectl wait --for=condition=Established --timeout=60s crd/$$crd || exit 1; \
 	done
 
