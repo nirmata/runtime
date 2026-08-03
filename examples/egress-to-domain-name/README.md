@@ -9,15 +9,18 @@ record for a name the policy allows makes that address allowed for that pod. The
 the destination's address in the same moment the kernel does, which is what makes this
 usable for destinations whose addresses change under you.
 
-The `kube-dns` reference in the allow list is not incidental. Under default deny a workload
-that cannot reach its resolver resolves nothing, the snooper never sees an answer, and every
-domain in the allow list is dead — the pod's egress is fully closed and the policy looks
-broken. Cluster DNS has to be allowed alongside the name, and `serviceRefs` is how, since
-the resolver's addresses are not something a policy author should be pinning by hand.
+The `kube-dns.kube-system.svc.cluster.local` value in the allow list is not incidental.
+Under default deny a workload that cannot reach its resolver resolves nothing, the snooper
+never sees an answer, and every domain in the allow list is dead — the pod's egress is fully
+closed and the policy looks broken. Cluster DNS has to be allowed alongside the name, and a
+cluster Service name is how: the resolver's addresses come from Service and EndpointSlice
+informers rather than being pinned by hand.
 
-The name here is another Service in the cluster, so the example runs on a kind cluster with
-no internet egress. That means the policy is coupled to the `default` namespace: change the
-namespace and the name in `policy.yaml` changes with it.
+The two values in this policy are the two mechanisms side by side. `example.com` is outside
+the cluster's DNS domain, so it is snooped from the pod's answers; a name shaped
+`<service>.<namespace>.svc.cluster.local` is looked up in the API server instead and
+programs the Service's ClusterIP and endpoint addresses. Which one a value gets is decided
+by its shape alone.
 
 ## This is not a containment boundary
 
@@ -31,7 +34,7 @@ There are no wildcards, and learned addresses expire by LRU eviction rather than
 Read [limits of domain names](../../docs/users/reference/runtimepolicy.md#limits-of-domain-names)
 before relying on this. A workload that must be contained needs its destinations named as
 addresses or as
-[serviceRefs](../../docs/users/reference/runtimepolicy.md#service-references).
+[cluster Service names](../../docs/users/reference/runtimepolicy.md#cluster-service-targets).
 
 ## Requires
 
@@ -41,24 +44,25 @@ stock kind cluster on a Linux host qualifies. BPF-LSM is not needed.
 Nirmata Runtime must be installed — see [installation](../../docs/users/installation.md).
 The policy runs in `mode: enforce`.
 
-The allowed value is `dns-target-allowed.default.svc.cluster.local`, so apply the manifests
-in the `default` namespace.
+The destinations are public names, so the cluster's pods need egress to the internet and a
+resolver that answers for public names. `www.wikipedia.org` is the control: it is not in the
+allow list, and its addresses have nothing to do with `example.com`'s.
 
 ## Run it
 
-1. Start the two named targets and the client:
+1. Start the client:
 
    ```bash
-   kubectl apply -f targets.yaml -f client.yaml
-   kubectl wait --for=condition=Ready pod/dns-target-allowed pod/dns-target-denied pod/dns-client --timeout=90s
+   kubectl apply -f client.yaml
+   kubectl wait --for=condition=Ready pod/dns-client --timeout=90s
    ```
 
 2. Confirm the client resolves and reaches both names before any policy exists. If this
    step fails, the "blocked" result below would prove nothing:
 
    ```bash
-   kubectl exec dns-client -- wget -q -T 3 -O /dev/null "http://dns-target-allowed.default.svc.cluster.local:8080/"; echo "baseline allowed exit=$?"
-   kubectl exec dns-client -- wget -q -T 3 -O /dev/null "http://dns-target-denied.default.svc.cluster.local:8080/"; echo "baseline denied exit=$?"
+   kubectl exec dns-client -- nc -z -w 3 example.com 443; echo "baseline allowed exit=$?"
+   kubectl exec dns-client -- nc -z -w 3 www.wikipedia.org 443; echo "baseline control exit=$?"
    ```
 
    Both print `exit=0`.
@@ -73,9 +77,8 @@ in the `default` namespace.
    `Applied=True` with reason `Enforcing` once the daemon has programmed the pod's egress
    maps.
 
-4. Check that the name and the resolver reference were both programmable. A name that was
-   rejected also produces "blocked", which would make the verification pass for the wrong
-   reason:
+4. Check that the name and the resolver were both programmable. A name that was rejected
+   also produces "blocked", which would make the verification pass for the wrong reason:
 
    ```bash
    kubectl get rpol egress-to-domain-name -o jsonpath='{.status.conditions}'
@@ -89,31 +92,36 @@ Both directions matter. A policy that dropped every packet would also pass the "
 check on its own.
 
 ```bash
-kubectl exec dns-client -- wget -q -T 3 -O /dev/null "http://dns-target-allowed.default.svc.cluster.local:8080/"; echo "allowed exit=$?"
-kubectl exec dns-client -- wget -q -T 3 -O /dev/null "http://dns-target-denied.default.svc.cluster.local:8080/"; echo "denied exit=$?"
+kubectl exec dns-client -- nc -z -w 3 example.com 443; echo "allowed exit=$?"
+kubectl exec dns-client -- nc -z -w 3 www.wikipedia.org 443; echo "control exit=$?"
 ```
 
 - `allowed exit=0` — the name resolved, the answered address was written into the pod's
   learned-address map, and the connection to it was permitted. Reaching it at all also
-  proves the `kube-dns` reference took effect.
-- `denied exit=1` — the other name resolves just as well, and the address it answers with
-  is dropped in the kernel. The daemon programs maps on its own schedule, so allow a few
-  seconds after applying the policy before the first attempt fails.
+  proves the cluster DNS value took effect.
+- `control exit=1` — the control name resolves just as well, and the addresses it answers
+  with are dropped in the kernel. The daemon programs maps on its own schedule, so allow a
+  few seconds after applying the policy before the first attempt fails.
 
-Only the answered address is allowed, not everything behind the Service. The allowed
-target's own pod IP was never in a DNS answer for the allowed name, so it stays blocked:
+Only an address that arrived in an answer for an *allowed* name is allowed, so an address the
+pod already holds gets nothing from this policy. Resolve the control name from the pod and
+connect to the address it answers with:
 
 ```bash
-BACKEND=$(kubectl get pod dns-target-allowed -o jsonpath='{.status.podIP}')
-kubectl exec dns-client -- wget -q -T 3 -O /dev/null "http://${BACKEND}:8080/"; echo "backend exit=$?"
+CONTROL=$(kubectl exec dns-client -- nslookup www.wikipedia.org \
+  | awk '/^Name:/{f=1} f && /^Address:/ && $2 ~ /^[0-9.]+$/ {print $2; exit}')
+test -n "$CONTROL" || echo "the lookup returned no IPv4 address, so the check below would prove nothing"
+kubectl exec dns-client -- nc -z -w 3 "${CONTROL}" 443; echo "control by address exit=$?"
 ```
 
-`backend exit=1`. This is the visible difference between a domain name and a `serviceRefs`
-entry, which would have programmed the endpoint addresses too.
+`control by address exit=1`. The lookup succeeded and the answer reached the pod, but the
+name is not in the allow list, so nothing was recorded for it and the address is dropped
+exactly as the name was. Guard the address before using it: `nc` given an empty argument also
+exits non-zero, which would look like the result you were hoping for.
 
 ## Clean up
 
 ```bash
 kubectl delete rpol egress-to-domain-name
-kubectl delete -f targets.yaml -f client.yaml
+kubectl delete -f client.yaml
 ```

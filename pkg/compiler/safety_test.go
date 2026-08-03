@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -72,6 +73,20 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 			wantPaths: []string{"spec.behaviors[0].network.allow.values[0]"},
 		},
 		{
+			name: "pod record in network allow values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"kube-dns.kube-system.svc.cluster.local", "10-1-2-3.default.pod.cluster.local"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].network.allow.values[1]"},
+		},
+		{
+			name: "Service name in another cluster domain",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"foo.bar.svc.example.com"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].network.allow.values[0]"},
+		},
+		{
 			name: "offenders in both allow and deny of the second behavior",
 			behaviors: []v1alpha1.PolicyBehavior{
 				{Network: &v1alpha1.Behavior{Deny: behaviorRule([]string{"*"}, "")}},
@@ -108,7 +123,7 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 // Admission must never reject a value the runtime accepts, so every form
 // ParseNetworkValue admits has to survive Compile untouched.
 func TestCompile_AcceptsEveryNetworkValueForm(t *testing.T) {
-	values := []string{"1.2.3.4", "10.0.0.0/24", "*", "api.openai.com", "Example.COM."}
+	values := []string{"1.2.3.4", "10.0.0.0/24", "*", "api.openai.com", "Example.COM.", "redis.default"}
 
 	c := newTestCompiler(t)
 	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
@@ -145,6 +160,62 @@ func TestCompile_WildcardHostnameErrorNamesTheRemedy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), ErrWildcardNetworkValue.Error()) {
 		t.Errorf("Compile() error = %q, want it to contain %q", err.Error(), ErrWildcardNetworkValue.Error())
+	}
+}
+
+func TestCompile_AcceptsCanonicalClusterServiceValues(t *testing.T) {
+	c := newTestCompiler(t)
+	if _, err := c.Compile(v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{"kube-dns.kube-system.svc.cluster.local", "API.Default.SVC.Cluster.Local."}, ""),
+					Deny:  behaviorRule([]string{"redis.2ns.svc.cluster.local"}, ""),
+				}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+}
+
+// Admission owns no grammar of its own: the message an operator sees is the one
+// ParseNetworkValue produced for the same value.
+func TestCompile_ClusterServiceErrorsComeFromTheOneGrammar(t *testing.T) {
+	values := []string{
+		"kube-dns.svc.cluster.local",
+		"pod-0.redis.default.svc.cluster.local",
+		"foo.bar.svc.example.com",
+		"1redis.default.svc.cluster.local",
+	}
+
+	c := newTestCompiler(t)
+	for _, v := range values {
+		t.Run(v, func(t *testing.T) {
+			_, want := ParseNetworkValue(v)
+			if want == nil {
+				t.Fatalf("ParseNetworkValue(%q) error = nil, want a rejection", v)
+			}
+			_, err := c.Compile(v1alpha1.RuntimePolicy{
+				Spec: v1alpha1.RuntimePolicySpec{
+					Behaviors: []v1alpha1.PolicyBehavior{
+						{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{v}, "")}},
+					},
+				},
+			})
+			if err == nil {
+				t.Fatalf("Compile() error = nil, want rejection of %q", v)
+			}
+			if !strings.Contains(err.Error(), want.Error()) {
+				t.Errorf("Compile() error = %q, want it to contain %q", err.Error(), want.Error())
+			}
+			if errors.Is(want, ErrServiceLabelNetworkValue) {
+				return
+			}
+			if !strings.Contains(err.Error(), "<service>.<namespace>.svc.") || !strings.Contains(err.Error(), ClusterDomain) {
+				t.Errorf("Compile() error = %q, want it to name the canonical form and %q", err.Error(), ClusterDomain)
+			}
+		})
 	}
 }
 

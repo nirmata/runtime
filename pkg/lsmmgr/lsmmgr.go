@@ -163,5 +163,5 @@ func (l *LsmManager) recordCondition(rpUID string, cond metav1.Condition) {
 	if l.status == nil || rpUID == "" {
 		return
 	}
-	l.status.RecordCondition(rpUID, cond)
+	l.status.RecordCondition(rpUID, "", cond)
 }

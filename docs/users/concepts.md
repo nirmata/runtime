@@ -12,11 +12,16 @@ Network egress is enforced by a `cgroup_skb` eBPF program attached to the matche
 cgroup: on every outbound packet it looks up the destination IPv4 address in an
 allow/deny map programmed for that pod and drops the packet if the lookup says to.
 
-When a policy names a destination by domain rather than by address, a second program on
-the same cgroup reads the pod's own UDP/53 answers and programs the addresses they carry,
-so the decision still reduces to an address lookup. It sees only unencrypted UDP
-resolution, which makes a domain allow-list a convenience and not a containment boundary
-— see [limits of domain names](reference/runtimepolicy.md#limits-of-domain-names).
+When a policy names an in-cluster Service by its DNS name, the daemon resolves it from
+Service and EndpointSlice informers and programs the addresses it resolves to, re-resolving
+on every change — see
+[cluster Service targets](reference/runtimepolicy.md#cluster-service-targets).
+
+When a policy names an external destination by domain, a second program on the same cgroup
+reads the pod's own UDP/53 answers and programs the addresses they carry, so the decision
+still reduces to an address lookup. It sees only unencrypted UDP resolution, which makes a
+domain allow-list a convenience and not a containment boundary — see
+[limits of domain names](reference/runtimepolicy.md#limits-of-domain-names).
 
 File `open` and process `exec` are enforced by BPF-LSM programs attached to the
 `file_open` and `bprm_check_security` kernel hooks. Each program looks up the path (or
@@ -30,9 +35,11 @@ distributions and hosted CI runners are typically not booted with it.
 
 Each behavior in `spec.behaviors` takes an optional `allow` and/or `deny`, each a
 `values` list and/or a CEL `expression` returning `list(string)` (unioned with
-`values`). A `network` rule additionally takes `serviceRefs`, naming in-cluster Services
-that the daemon resolves to their ClusterIP and ready endpoint addresses from Service and
-EndpointSlice informers. Setting `deny.values: ["*"]` on a behavior is a default-deny
+`values`). A `network` value may be an address, a CIDR, or a name; a name in the form
+`<service>.<namespace>.svc.cluster.local` is an in-cluster Service, which the daemon
+resolves to its ClusterIP and ready endpoint addresses from Service and EndpointSlice
+informers, and any other fully qualified domain name is external. Setting
+`deny.values: ["*"]` on a behavior is a default-deny
 sentinel: that behavior flips from allow-all-except-denied to deny-all-except-allowed. This is
 evaluated across every `RuntimePolicy` matching a pod: if any matching policy sets
 default-deny for a behavior, the effective allow list is the union of every matching

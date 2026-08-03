@@ -1,9 +1,9 @@
 # Template applied by chainsaw-test.yaml after substituting TEST_NAMESPACE, as
 # with policy.tmpl.yaml.
 #
-# The referenced Service does not exist. Nothing can be programmed for it, so
-# under default-deny the client has no allowed destination at all -- the state
-# an operator most needs surfaced rather than inferred from a silent outage.
+# The named Service does not exist. Nothing can be programmed for it, so under
+# default-deny the client has no allowed destination at all -- the state an
+# operator most needs surfaced rather than inferred from a silent outage.
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
@@ -16,9 +16,8 @@ spec:
   behaviors:
   - network:
       allow:
-        serviceRefs:
-        - name: svcref-does-not-exist
-          namespace: TEST_NAMESPACE
+        values:
+        - svcref-does-not-exist.TEST_NAMESPACE.svc.cluster.local
       deny:
         values:
         - "*"

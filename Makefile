@@ -249,8 +249,9 @@ test-e2e-egress:
 test-e2e-svcref:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-svcref/
 
-# Domain-name enforcement: the cgroup DNS snooper feeding the egress filter.
-# Same kernel requirements as test-e2e-egress, plus a working cluster DNS.
+# Domain-name enforcement: the cgroup DNS snooper feeding the egress filter. Same
+# kernel requirements as test-e2e-egress. The suite runs its own resolver, so it
+# needs neither cluster DNS nor egress to the internet.
 test-e2e-dns:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-dns/
 

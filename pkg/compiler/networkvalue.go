@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 )
@@ -30,6 +31,19 @@ var (
 	// addresses, and strings that are not a usable hostname either (a single
 	// label, an over-long or malformed label, a numeric last label).
 	ErrNotAnIPNetworkValue = errors.New(`not an IPv4 address, IPv4 CIDR, hostname or "*"`)
+	// ErrServiceFormNetworkValue reports a name in the cluster DNS domain that
+	// is not a Service name: a pod record, a headless Service's per-pod record,
+	// or a short form. Such a name is rejected instead of falling through to
+	// Host, because resolving it from the pod's DNS answers is not what an
+	// operator naming a cluster address asked for. Callers prefix the specific
+	// diagnosis; see serviceFormError.
+	ErrServiceFormNetworkValue = errors.New(`a cluster Service must be named "<service>.<namespace>.svc.<cluster-domain>"`)
+	// ErrServiceDomainNetworkValue reports a Service-shaped name whose suffix is
+	// some other cluster's DNS domain.
+	ErrServiceDomainNetworkValue = errors.New("Service name is not in this cluster's DNS domain")
+	// ErrServiceLabelNetworkValue reports a canonical Service name whose service
+	// or namespace label is malformed.
+	ErrServiceLabelNetworkValue = errors.New(`invalid cluster Service name: the service label must start with a letter and the namespace label with a letter or digit, both continuing with alphanumerics or "-" and at most 63 characters`)
 )
 
 const (
@@ -39,7 +53,8 @@ const (
 
 // NetworkValue is the parsed form of one network target string. Exactly one
 // of the fields is meaningful: Star for the "*" sentinel, Addr for a single
-// address, Prefix for a CIDR, Host for a hostname.
+// address, Prefix for a CIDR, Host for an external hostname, Service for a
+// cluster Service DNS name.
 type NetworkValue struct {
 	// Star is true when the value is the StarTarget sentinel.
 	Star bool
@@ -54,7 +69,24 @@ type NetworkValue struct {
 	// Host is set for a hostname value, lowercased and without the root dot,
 	// so "API.Example.COM." and "api.example.com" are the same value.
 	Host string
+	// Service is set for a cluster Service DNS name. It is parsed rather than
+	// left in Host because the two resolve by different mechanisms: a Service
+	// is looked up in the API server, any other name is learned from the pod's
+	// own DNS answers.
+	Service *ClusterService
 }
+
+// ClusterService is the Service named by a cluster DNS value.
+type ClusterService struct {
+	Name      string
+	Namespace string
+}
+
+// ClusterDomain is the cluster's DNS domain, the suffix that makes a value a
+// Service name rather than an external one. It is a cluster-wide constant that
+// every consumer of the grammar has to agree on, so it is set once from the
+// daemon's flag before any policy is compiled, never per call.
+var ClusterDomain = "cluster.local"
 
 // ParseNetworkValue parses one policy-authored network target string. This is
 // the ONE definition of the egress target value grammar: admission validation
@@ -69,11 +101,13 @@ type NetworkValue struct {
 //   - an IPv4 literal (or IPv4-mapped IPv6 literal) yields Addr, unmapped
 //   - an IPv4 CIDR (or IPv4-mapped IPv6 CIDR) of any width yields Prefix,
 //     unmapped and masked
-//   - a multi-label DNS name yields Host, lowercased and stripped of its
-//     root dot
+//   - "<service>.<namespace>.svc.<ClusterDomain>" yields Service
+//   - any other multi-label DNS name yields Host, lowercased and stripped of
+//     its root dot
 //   - everything else is an error: ErrEmptyNetworkValue,
-//     ErrIPv6NetworkValue, ErrWildcardNetworkValue, or
-//     ErrNotAnIPNetworkValue
+//     ErrIPv6NetworkValue, ErrWildcardNetworkValue,
+//     ErrServiceFormNetworkValue, ErrServiceDomainNetworkValue,
+//     ErrServiceLabelNetworkValue, or ErrNotAnIPNetworkValue
 func ParseNetworkValue(raw string) (NetworkValue, error) {
 	cleaned := strings.Trim(raw, " \t\r\n\"'[]")
 
@@ -107,7 +141,14 @@ func ParseNetworkValue(raw string) (NetworkValue, error) {
 			}
 			return NetworkValue{Addr: addr}, nil
 		}
-		host, err := parseHostname(cleaned)
+		name := normalizeName(cleaned)
+		if svc, isServiceName, err := parseClusterService(name); isServiceName {
+			if err != nil {
+				return NetworkValue{}, err
+			}
+			return NetworkValue{Service: svc}, nil
+		}
+		host, err := parseHostname(name)
 		if err != nil {
 			return NetworkValue{}, err
 		}
@@ -115,8 +156,50 @@ func ParseNetworkValue(raw string) (NetworkValue, error) {
 	}
 }
 
-func parseHostname(cleaned string) (string, error) {
-	host := strings.ToLower(strings.TrimSuffix(cleaned, "."))
+// parseClusterService reports whether name is meant as a cluster DNS name at
+// all, separately from whether it is a usable one, so that a name aimed at the
+// cluster is never quietly downgraded to an external host.
+func parseClusterService(name string) (*ClusterService, bool, error) {
+	suffix := "." + ClusterDomain
+	labels := strings.Split(name, ".")
+	inClusterDomain := strings.HasSuffix(name, suffix)
+	svcPositioned := len(labels) > 3 && labels[2] == "svc"
+
+	if !inClusterDomain {
+		if !svcPositioned {
+			return nil, false, nil
+		}
+		return nil, true, fmt.Errorf(`%w: name a cluster Service as "<service>.<namespace>.svc.%s"`, ErrServiceDomainNetworkValue, ClusterDomain)
+	}
+
+	head := strings.Split(strings.TrimSuffix(name, suffix), ".")
+	switch {
+	case len(head) == 3 && head[2] == "pod":
+		return nil, true, serviceFormError("a pod DNS record, not a Service")
+	case len(head) == 4 && head[3] == "svc":
+		return nil, true, serviceFormError("a headless Service's per-pod DNS record, not a Service")
+	case len(head) != 3 || head[2] != "svc":
+		return nil, true, serviceFormError("an incomplete cluster Service DNS name")
+	}
+	// A Service name is an RFC 1035 label, a namespace an RFC 1123 one: a
+	// Service cannot start with a digit, a namespace can.
+	if len(name) > maxHostnameLen || !validServiceLabel(head[0]) || !validLabel(head[1]) {
+		return nil, true, ErrServiceLabelNetworkValue
+	}
+	return &ClusterService{Name: head[0], Namespace: head[1]}, true, nil
+}
+
+func serviceFormError(diagnosis string) error {
+	return fmt.Errorf("%s: %w (cluster-domain is %q)", diagnosis, ErrServiceFormNetworkValue, ClusterDomain)
+}
+
+func normalizeName(cleaned string) string {
+	return strings.ToLower(strings.TrimSuffix(cleaned, "."))
+}
+
+// host is already normalized: normalizing again here would strip a second root
+// dot and turn "example.com.." into a valid name.
+func parseHostname(host string) (string, error) {
 	if host == "" || len(host) > maxHostnameLen {
 		return "", ErrNotAnIPNetworkValue
 	}
@@ -135,6 +218,10 @@ func parseHostname(cleaned string) (string, error) {
 		return "", ErrNotAnIPNetworkValue
 	}
 	return host, nil
+}
+
+func validServiceLabel(label string) bool {
+	return validLabel(label) && label[0] >= 'a' && label[0] <= 'z'
 }
 
 func validLabel(label string) bool {

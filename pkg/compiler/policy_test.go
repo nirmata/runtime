@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -120,6 +121,299 @@ func TestAllowDenyPair_DiffPair(t *testing.T) {
 				t.Errorf("DiffPair() mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// mapResolver resolves only the Services present in its map, keyed
+// "namespace/name". An entry with an empty address list is a Service that
+// exists with no ready endpoints, which the interface distinguishes from an
+// absent Service.
+type mapResolver struct {
+	services map[string][]string
+}
+
+func (m mapResolver) ResolveService(namespace, name string) ([]string, bool) {
+	addrs, found := m.services[namespace+"/"+name]
+	return addrs, found
+}
+
+// recordingResolver resolves nothing and remembers what it was asked for.
+type recordingResolver struct {
+	calls []string
+}
+
+func (r *recordingResolver) ResolveService(namespace, name string) ([]string, bool) {
+	r.calls = append(r.calls, namespace+"/"+name)
+	return nil, false
+}
+
+func svcValue(name, namespace string) string {
+	return name + "." + namespace + ".svc." + ClusterDomain
+}
+
+func netPolicy(b *v1alpha1.Behavior) v1alpha1.RuntimePolicy {
+	return v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{{Network: b}},
+		},
+	}
+}
+
+func TestEvaluate_ServiceValueIsReplacedByItsAddressesOnItsOwnSide(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{
+		"prod/api":     {"10.0.0.2", "10.0.0.1"},
+		"prod/metrics": {"10.1.0.1"},
+	}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	api := svcValue("api", "prod")
+	metrics := svcValue("metrics", "prod")
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{api}, ""),
+		Deny:  behaviorRule([]string{metrics}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := &AllowDenyPair{Allow: []string{"10.0.0.1", "10.0.0.2"}, Deny: []string{"10.1.0.1"}}
+	if diff := cmp.Diff(want, res.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+	if slices.Contains(res.IPs.Allow, api) || slices.Contains(res.IPs.Deny, metrics) {
+		t.Errorf("IPs = %+v, want the Service DNS names replaced, not kept alongside their addresses", res.IPs)
+	}
+	if len(res.UnresolvedServices) != 0 {
+		t.Errorf("UnresolvedServices = %v, want none", res.UnresolvedServices)
+	}
+}
+
+func TestEvaluate_ServiceValueInDenyResolvesIntoDeny(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/api": {"10.0.0.1"}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Deny: behaviorRule([]string{svcValue("api", "prod")}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"10.0.0.1"}, res.IPs.Deny); diff != "" {
+		t.Errorf("IPs.Deny mismatch (-want +got):\n%s", diff)
+	}
+	if len(res.IPs.Allow) != 0 {
+		t.Errorf("IPs.Allow = %v, want none", res.IPs.Allow)
+	}
+}
+
+func TestEvaluate_ServiceValuesAreResolvedAtEvaluationTime(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	value := svcValue("api", "prod")
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{Allow: behaviorRule([]string{value}, "")}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if len(res.IPs.Allow) != 0 {
+		t.Fatalf("IPs.Allow = %v before the Service exists, want none", res.IPs.Allow)
+	}
+
+	resolver.services["prod/api"] = []string{"10.0.0.1"}
+	res, err = compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"10.0.0.1"}, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch after the Service appeared (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_LiteralAndServiceValuesDeduplicate(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{
+		"prod/api":       {"10.0.0.1", "10.0.0.2"},
+		"prod/api-alias": {"10.0.0.2", "10.0.0.3"},
+	}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{"10.0.0.1", svcValue("api", "prod"), svcValue("api-alias", "prod")}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	if diff := cmp.Diff(want, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_UnresolvedServiceValueIsReportedVerbatim(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/present": {"10.0.0.1"}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	missing := svcValue("missing", "prod")
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{svcValue("present", "prod"), missing}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"10.0.0.1"}, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{missing}, res.UnresolvedServices); diff != "" {
+		t.Errorf("UnresolvedServices mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_ResolvedServiceWithNoEndpointsIsNotUnresolved(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/scaled-to-zero": {}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{svcValue("scaled-to-zero", "prod")}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if len(res.IPs.Allow) != 0 {
+		t.Errorf("IPs.Allow = %v, want none", res.IPs.Allow)
+	}
+	if len(res.UnresolvedServices) != 0 {
+		t.Errorf("UnresolvedServices = %v, want none for a Service that exists", res.UnresolvedServices)
+	}
+}
+
+func TestEvaluate_ExternalHostnameIsNotResolved(t *testing.T) {
+	resolver := &recordingResolver{}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{"api.example.com"}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"api.example.com"}, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch (-want +got):\n%s", diff)
+	}
+	if len(resolver.calls) != 0 {
+		t.Errorf("resolver was called with %v, want an external hostname never resolved", resolver.calls)
+	}
+	if len(res.UnresolvedServices) != 0 {
+		t.Errorf("UnresolvedServices = %v, want none", res.UnresolvedServices)
+	}
+}
+
+func TestEvaluate_ServiceValuesCoexistWithDefaultDenySentinel(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/api": {"10.0.0.1"}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{svcValue("api", "prod")}, ""),
+		Deny:  behaviorRule([]string{StarTarget}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := &AllowDenyPair{Allow: []string{"10.0.0.1"}, Deny: []string{StarTarget}}
+	if diff := cmp.Diff(want, res.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_ResolvedOutputIsStableAcrossEvaluations(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{
+		"prod/a": {"10.0.0.3", "10.0.0.1"},
+		"prod/b": {"10.0.0.2"},
+		"prod/c": {"10.2.0.1", "10.1.0.1"},
+	}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	missing := svcValue("missing", "prod")
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{"10.9.9.9", svcValue("a", "prod"), missing}, ""),
+					Deny:  behaviorRule([]string{StarTarget, svcValue("c", "prod")}, ""),
+				}},
+				{Network: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{svcValue("b", "prod"), missing}, ""),
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	first, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	for range 5 {
+		next, err := compiled.Evaluate(t.Context())
+		if err != nil {
+			t.Fatalf("Evaluate() unexpected error = %v", err)
+		}
+		if diff := cmp.Diff(first.IPs, next.IPs); diff != "" {
+			t.Fatalf("successive Evaluate() IPs differ (-first +next):\n%s", diff)
+		}
+		if diff := cmp.Diff(first.UnresolvedServices, next.UnresolvedServices); diff != "" {
+			t.Fatalf("successive Evaluate() UnresolvedServices differ (-first +next):\n%s", diff)
+		}
+	}
+
+	want := &AllowDenyPair{
+		Allow: []string{"10.9.9.9", "10.0.0.1", "10.0.0.3", "10.0.0.2"},
+		Deny:  []string{StarTarget, "10.1.0.1", "10.2.0.1"},
+	}
+	if diff := cmp.Diff(want, first.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{missing}, first.UnresolvedServices); diff != "" {
+		t.Errorf("UnresolvedServices mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -302,7 +596,7 @@ func newPanickingCompiler(t *testing.T) *compiler {
 	if err != nil {
 		t.Fatalf("Extend() error = %v", err)
 	}
-	return &compiler{env: env, resolver: fakeResolver{}}
+	return &compiler{env: env, resolver: mapResolver{}}
 }
 
 // TestEvaluate_PanickingCELBindingBecomesError covers the other half:

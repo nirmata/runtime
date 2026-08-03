@@ -67,19 +67,52 @@ kubectl get rpol <name> -o yaml
 ```
 
 `UnsupportedTargets` means one or more `network` targets could not be programmed into the
-kernel maps. IPv6 addresses, CIDRs wider than `/24`, and domain names whose DNS wire
-encoding exceeds 128 bytes are rejected rather than silently skipped; a CIDR of `/24` or
-narrower is expanded into individual addresses.
+kernel maps. CIDRs wider than `/24` and domain names whose DNS wire encoding exceeds 128
+bytes are rejected rather than silently skipped; a CIDR of `/24` or narrower is expanded
+into individual addresses. A value the grammar refuses outright — a malformed Service name,
+an IPv6 literal, a wildcard — does not reach this condition when it is written as a
+literal: it fails the policy to compile, and appears under `Applied` instead. See
+[Applied is False](#applied-is-false).
 
-`UnresolvedServiceRefs` means a `serviceRefs` entry named a Service that is not in the
-daemon's cache — a typo, a namespace that was never created, or a Service deleted after
-the policy was written. It contributes no addresses, so under default-deny the destination
-is fully blocked, which from inside the workload looks like a network outage. Check the
-Service exists in the namespace the reference names:
+`UnresolvedServices` means a value named a cluster Service that is not in the daemon's
+cache — a typo, a namespace that was never created, or a Service deleted after the policy
+was written. It contributes no addresses, so under default-deny the destination is fully
+blocked, which from inside the workload looks like a network outage. Check the Service
+exists in the namespace the name carries:
 
 ```bash
 kubectl -n <namespace> get svc <name>
 ```
+
+A Service name that is rejected outright rather than left unresolved reaches
+`UnsupportedTargets`, for one of three reasons: it is not the canonical
+`<service>.<namespace>.svc.cluster.local` form (a pod record, a headless Service's per-pod
+record, or a short form written with the cluster domain), its suffix is not this cluster's
+DNS domain, or one of its two labels is malformed — the service label must start with a
+letter, while the namespace label may also start with a digit.
+
+A value that resolves nothing and reports nothing is almost always a short form. `redis.default`
+is a valid external name, so no condition complains, but a pod's resolver expands short names
+through its search domains and asks for `redis.default.svc.cluster.local` instead, which the
+policy never named. Write cluster Services in full.
+
+## Applied is False
+
+`CompileFailed` means the spec could not be compiled, and **nothing in the policy is in
+force** — not the offending rule, and not the rules either side of it. The message carries
+the field path, the value and the reason, so it points at one entry in one behavior:
+
+```bash
+kubectl get rpol <name> -o jsonpath='{.status.conditions[?(@.type=="Applied")].message}'
+```
+
+Causes are a value the grammar refuses (a malformed cluster Service name, an IPv6 literal, a
+wildcard such as `*.example.com`), an `expression` that does not compile, or one that returns
+something other than `list(string)`. Correcting the spec applies immediately; there is
+nothing to restart.
+
+`NoMode` means the policy omits `spec.mode`. It is loaded and inert by design: no programs
+are attached, nothing is blocked and no findings are produced. Set `enforce` or `monitor`.
 
 ## Events are being dropped
 

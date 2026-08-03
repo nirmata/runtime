@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -22,12 +21,12 @@ import (
 
 // Condition type and reasons the manager writes onto a RuntimePolicy's status.
 const (
-	ConditionTargetsValid       = "TargetsValid"
-	ReasonUnsupportedTargets    = "UnsupportedTargets"
-	ReasonUnresolvedServiceRefs = "UnresolvedServiceRefs"
-	ReasonAllTargetsSupported   = "AllTargetsSupported"
-	ReasonNoTargets             = "NoTargets"
-	maxReportedRejectedTargets  = 10
+	ConditionTargetsValid      = "TargetsValid"
+	ReasonUnsupportedTargets   = "UnsupportedTargets"
+	ReasonUnresolvedServices   = "UnresolvedServices"
+	ReasonAllTargetsSupported  = "AllTargetsSupported"
+	ReasonNoTargets            = "NoTargets"
+	maxReportedRejectedTargets = 10
 )
 
 // filterFactory builds the per-pod egress filter.
@@ -216,7 +215,7 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 		values = append(values, rp.IPs.Allow...)
 		values = append(values, rp.IPs.Deny...)
 	}
-	unresolved := rp.UnresolvedServiceRefs
+	unresolved := rp.UnresolvedServices
 	if len(values) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
 			Type:               ConditionTargetsValid,
@@ -243,21 +242,21 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 		e.logger.V(0).Info("egress network target cannot be enforced",
 			"policy", rp.UID, "target", r.Value, "reason", r.Reason)
 	}
-	for _, ref := range unresolved {
-		e.logger.V(0).Info("egress service reference did not resolve to any address",
-			"policy", rp.UID, "service", ref.Namespace+"/"+ref.Name)
+	for _, value := range unresolved {
+		e.logger.V(0).Info("egress service target did not resolve to any address",
+			"policy", rp.UID, "target", value)
 	}
 
 	messages := make([]string, 0, 2)
 	if len(rejected) > 0 {
 		messages = append(messages, rejectionMessage(rejected))
 	}
-	// an unresolved reference programs nothing, so under deny "*" the destination
+	// an unresolved Service programs nothing, so under deny "*" the destination
 	// is blocked outright: it names the condition even when literals were also
 	// rejected.
 	reason := ReasonUnsupportedTargets
 	if len(unresolved) > 0 {
-		reason = ReasonUnresolvedServiceRefs
+		reason = ReasonUnresolvedServices
 		messages = append(messages, unresolvedMessage(unresolved))
 	}
 	e.recordCondition(rp.UID, metav1.Condition{
@@ -269,11 +268,18 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 	})
 }
 
+// recordCondition resolves the policy's name from the tracked evaluation
+// results so callers that only hold a uid do not have to thread it through. An
+// untracked uid records no name and the recorder waits for one.
 func (e *EgressManager) recordCondition(uid string, cond metav1.Condition) {
 	if e.status == nil || uid == "" {
 		return
 	}
-	e.status.RecordCondition(uid, cond)
+	var name string
+	if rp := e.rps[uid]; rp != nil {
+		name = rp.Name
+	}
+	e.status.RecordCondition(uid, name, cond)
 }
 
 func rejectionMessage(rejected []egressfilter.RejectedTarget) string {
@@ -288,16 +294,16 @@ func rejectionMessage(rejected []egressfilter.RejectedTarget) string {
 	return fmt.Sprintf("%d network target(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
 }
 
-func unresolvedMessage(refs []v1alpha1.ServiceReference) string {
-	parts := make([]string, 0, len(refs))
-	for i, ref := range refs {
+func unresolvedMessage(values []string) string {
+	parts := make([]string, 0, len(values))
+	for i, value := range values {
 		if i == maxReportedRejectedTargets {
-			parts = append(parts, fmt.Sprintf("and %d more", len(refs)-maxReportedRejectedTargets))
+			parts = append(parts, fmt.Sprintf("and %d more", len(values)-maxReportedRejectedTargets))
 			break
 		}
-		parts = append(parts, ref.Namespace+"/"+ref.Name)
+		parts = append(parts, value)
 	}
-	return fmt.Sprintf("%d service reference(s) did not resolve: %s", len(refs), strings.Join(parts, "; "))
+	return fmt.Sprintf("%d service target(s) did not resolve: %s", len(values), strings.Join(parts, "; "))
 }
 
 // clonePair copies a pair so later mutations of the policy cannot rewrite what

@@ -37,11 +37,6 @@ type compiledBehavior struct {
 	denyProg  cel.Program
 	allowProg cel.Program
 	pair      *AllowDenyPair
-
-	// Refs stay unresolved here and are resolved on every Evaluate, because the
-	// resolver's answer changes as Services and their endpoints change.
-	allowRefs []v1alpha1.ServiceReference
-	denyRefs  []v1alpha1.ServiceReference
 }
 
 type compiler struct {
@@ -154,7 +149,6 @@ func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, err
 	if b.Deny != nil {
 		// go over the hardcoded values and add them to the pair
 		cp.pair.Deny = append(cp.pair.Deny, b.Deny.Values...)
-		cp.denyRefs = b.Deny.ServiceRefs
 		if b.Deny.Expression != "" {
 			ast, compileErr := c.env.Compile(b.Deny.Expression)
 			if compileErr != nil {
@@ -174,7 +168,6 @@ func (c *compiler) compileBehavior(b *v1alpha1.Behavior) (*compiledBehavior, err
 	}
 	if b.Allow != nil {
 		cp.pair.Allow = append(cp.pair.Allow, b.Allow.Values...)
-		cp.allowRefs = b.Allow.ServiceRefs
 		if b.Allow.Expression != "" {
 			ast, compileErr := c.env.Compile(b.Allow.Expression)
 			if compileErr != nil {

@@ -4,24 +4,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func svcRef(namespace, name string) v1alpha1.ServiceReference {
-	return v1alpha1.ServiceReference{Namespace: namespace, Name: name}
-}
-
-func rpWithUnresolved(uid string, allow, deny []string, unresolved ...v1alpha1.ServiceReference) *compiler.EvaluationResult {
+func rpWithUnresolved(uid string, allow, deny []string, unresolved ...string) *compiler.EvaluationResult {
 	res := rp(uid, "enforce", webLabels, allow, deny)
-	res.UnresolvedServiceRefs = unresolved
+	res.UnresolvedServices = unresolved
 	return res
 }
 
-func TestTargetsConditionReportsUnresolvedServiceRefs(t *testing.T) {
+func TestTargetsConditionReportsUnresolvedServices(t *testing.T) {
 	tests := []struct {
 		name       string
 		res        *compiler.EvaluationResult
@@ -30,41 +25,49 @@ func TestTargetsConditionReportsUnresolvedServiceRefs(t *testing.T) {
 		wantIn     []string
 	}{
 		{
-			name:       "an unresolved ref is the policy's only target",
-			res:        rpWithUnresolved("rp-1", nil, []string{"*"}, svcRef("prod", "api")),
+			name:       "an unresolved service is the policy's only target",
+			res:        rpWithUnresolved("rp-1", nil, []string{"*"}, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServiceRefs,
-			wantIn:     []string{"prod/api"},
+			wantReason: ReasonUnresolvedServices,
+			wantIn:     []string{"api.prod.svc.cluster.local"},
 		},
 		{
-			name:       "resolved literals alongside an unresolved ref",
-			res:        rpWithUnresolved("rp-1", []string{"1.1.1.1"}, []string{"*"}, svcRef("prod", "api")),
+			name:       "resolved literals alongside an unresolved service",
+			res:        rpWithUnresolved("rp-1", []string{"1.1.1.1"}, []string{"*"}, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServiceRefs,
-			wantIn:     []string{"prod/api"},
+			wantReason: ReasonUnresolvedServices,
+			wantIn:     []string{"api.prod.svc.cluster.local"},
 		},
 		{
-			name:       "an unresolved ref and a rejected literal are both reported",
-			res:        rpWithUnresolved("rp-1", []string{"2001:db8::1"}, nil, svcRef("prod", "api")),
+			name:       "an unresolved service and a rejected literal are both reported",
+			res:        rpWithUnresolved("rp-1", []string{"2001:db8::1"}, nil, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServiceRefs,
-			wantIn:     []string{"prod/api", "2001:db8::1"},
+			wantReason: ReasonUnresolvedServices,
+			wantIn:     []string{"api.prod.svc.cluster.local", "2001:db8::1"},
 		},
 		{
-			name:       "several unresolved refs are all named",
-			res:        rpWithUnresolved("rp-1", nil, nil, svcRef("prod", "api"), svcRef("staging", "cache")),
+			name:       "an unresolved service is not reported as an absence of targets",
+			res:        rpWithUnresolved("rp-1", nil, nil, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServiceRefs,
-			wantIn:     []string{"prod/api", "staging/cache"},
+			wantReason: ReasonUnresolvedServices,
+			wantIn:     []string{"api.prod.svc.cluster.local"},
 		},
 		{
-			name:       "no unresolved refs keeps the supported reason",
+			name: "several unresolved services are all named",
+			res: rpWithUnresolved("rp-1", nil, nil,
+				"api.prod.svc.cluster.local", "cache.staging.svc.cluster.local"),
+			wantStatus: metav1.ConditionFalse,
+			wantReason: ReasonUnresolvedServices,
+			wantIn:     []string{"api.prod.svc.cluster.local", "cache.staging.svc.cluster.local"},
+		},
+		{
+			name:       "no unresolved services keeps the supported reason",
 			res:        rpWithUnresolved("rp-1", []string{"1.1.1.1"}, nil),
 			wantStatus: metav1.ConditionTrue,
 			wantReason: ReasonAllTargetsSupported,
 		},
 		{
-			name:       "no unresolved refs and no targets keeps the empty reason",
+			name:       "no unresolved services and no targets keeps the empty reason",
 			res:        rpWithUnresolved("rp-1", nil, nil),
 			wantStatus: metav1.ConditionTrue,
 			wantReason: ReasonNoTargets,
@@ -96,12 +99,12 @@ func TestTargetsConditionReportsUnresolvedServiceRefs(t *testing.T) {
 	}
 }
 
-// the update path reports the condition too, so a ref that resolves on a later
-// evaluation clears the failure.
-func TestTargetsConditionClearsWhenAServiceRefResolves(t *testing.T) {
+// the update path reports the condition too, so a Service that resolves on a
+// later evaluation clears the failure.
+func TestTargetsConditionClearsWhenAServiceResolves(t *testing.T) {
 	e, _, status := newTestManager()
 
-	mustRpEvent(t, e, rpWithUnresolved("rp-1", nil, []string{"*"}, svcRef("prod", "api")), events.EventTypeCreate)
+	mustRpEvent(t, e, rpWithUnresolved("rp-1", nil, []string{"*"}, "api.prod.svc.cluster.local"), events.EventTypeCreate)
 	mustRpEvent(t, e, rpWithUnresolved("rp-1", []string{"10.0.0.1"}, []string{"*"}), events.EventTypeUpdate)
 
 	cond, ok := status.latest("rp-1", ConditionTargetsValid)
@@ -109,7 +112,7 @@ func TestTargetsConditionClearsWhenAServiceRefResolves(t *testing.T) {
 		t.Fatalf("no %s condition was recorded for rp-1", ConditionTargetsValid)
 	}
 	if cond.Status != metav1.ConditionTrue || cond.Reason != ReasonAllTargetsSupported {
-		t.Errorf("condition after the ref resolved: got %s/%s, want %s/%s",
+		t.Errorf("condition after the Service resolved: got %s/%s, want %s/%s",
 			cond.Status, cond.Reason, metav1.ConditionTrue, ReasonAllTargetsSupported)
 	}
 }

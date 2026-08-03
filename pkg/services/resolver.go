@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -28,7 +26,7 @@ type Resolver struct {
 	lister   corev1listers.ServiceLister
 
 	mu       sync.RWMutex
-	handlers []func(ref v1alpha1.ServiceReference)
+	handlers []func(namespace, name string)
 
 	log logr.Logger
 }
@@ -94,8 +92,8 @@ func (r *Resolver) HasSynced() bool {
 }
 
 // AddChangeHandler registers a callback invoked whenever the addresses for a
-// reference may have changed. Handlers are registered before Start.
-func (r *Resolver) AddChangeHandler(h func(ref v1alpha1.ServiceReference)) {
+// Service may have changed. Handlers are registered before Start.
+func (r *Resolver) AddChangeHandler(h func(namespace, name string)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.handlers = append(r.handlers, h)
@@ -109,8 +107,8 @@ func (r *Resolver) AddChangeHandler(h func(ref v1alpha1.ServiceReference)) {
 // so the hook sees the ClusterIP; a hostNetwork pod is DNATed in nat/OUTPUT of
 // its own netns before the hook, so the hook sees the backend address. Headless
 // Services have no ClusterIP at all.
-func (r *Resolver) ResolveService(ref v1alpha1.ServiceReference) ([]string, bool) {
-	svc, err := r.lister.Services(ref.Namespace).Get(ref.Name)
+func (r *Resolver) ResolveService(namespace, name string) ([]string, bool) {
+	svc, err := r.lister.Services(namespace).Get(name)
 	if err != nil {
 		return nil, false
 	}
@@ -120,7 +118,7 @@ func (r *Resolver) ResolveService(ref v1alpha1.ServiceReference) ([]string, bool
 		r.addIPv4(set, ip)
 	}
 
-	key := ref.Namespace + "/" + ref.Name
+	key := namespace + "/" + name
 	objs, err := r.slices.GetIndexer().ByIndex(serviceNameIndex, key)
 	if err != nil {
 		panic(fmt.Sprintf("querying the EndpointSlice service-name index: %v", err))
@@ -166,7 +164,7 @@ func (r *Resolver) serviceChanged(obj interface{}) {
 	if !ok {
 		return
 	}
-	r.notify(v1alpha1.ServiceReference{Name: svc.Name, Namespace: svc.Namespace})
+	r.notify(svc.Namespace, svc.Name)
 }
 
 func (r *Resolver) sliceChanged(obj interface{}) {
@@ -178,18 +176,18 @@ func (r *Resolver) sliceChanged(obj interface{}) {
 	if name == "" {
 		return
 	}
-	r.notify(v1alpha1.ServiceReference{Name: name, Namespace: slice.Namespace})
+	r.notify(slice.Namespace, name)
 }
 
 // The handler snapshot is taken under the lock and the handlers are called
 // without it, so a handler is free to call back into ResolveService.
-func (r *Resolver) notify(ref v1alpha1.ServiceReference) {
+func (r *Resolver) notify(namespace, name string) {
 	r.mu.RLock()
 	handlers := r.handlers
 	r.mu.RUnlock()
 
 	for _, h := range handlers {
-		h(ref)
+		h(namespace, name)
 	}
 }
 

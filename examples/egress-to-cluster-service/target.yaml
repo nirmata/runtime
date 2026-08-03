@@ -5,9 +5,9 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: unreferenced-target
+  name: unlisted-target
   labels:
-    app: unreferenced-target
+    app: unlisted-target
 spec:
   containers:
   - name: httpd

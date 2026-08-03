@@ -7,6 +7,8 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var (
@@ -18,6 +20,26 @@ func mustRpEvent(t *testing.T, e *EgressManager, r *compiler.EvaluationResult, e
 	t.Helper()
 	if err := e.RuntimePolicyEvent(r, eventType); err != nil {
 		t.Fatalf("RuntimePolicyEvent(%s, %s): unexpected error: %v", r.UID, eventType, err)
+	}
+}
+
+// The recorder addresses the RuntimePolicy by name, so the manager has to
+// resolve it from the tracked policy: the call sites only carry a uid.
+func TestRecordConditionSuppliesThePolicyName(t *testing.T) {
+	e, _, status := newTestManager()
+
+	tracked := rp("rp-1", "enforce", webLabels, []string{"2001:db8::1"}, nil)
+	tracked.Name = "block-v6"
+	mustRpEvent(t, e, tracked, events.EventTypeCreate)
+
+	if got := status.recordedNames("rp-1"); !slices.Equal(got, []string{"block-v6"}) {
+		t.Errorf("recorded names = %v, want [block-v6]", got)
+	}
+
+	// an untracked uid has no name to resolve, and must not invent one
+	e.recordCondition("rp-unknown", metav1.Condition{Type: ConditionTargetsValid, Reason: ReasonNoTargets})
+	if got := status.recordedNames("rp-unknown"); !slices.Equal(got, []string{""}) {
+		t.Errorf("recorded names for an untracked policy = %v, want one empty name", got)
 	}
 }
 

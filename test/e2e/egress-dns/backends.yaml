@@ -1,76 +1,41 @@
-# Two identical HTTP services. One is named by the policy as a fully qualified
-# domain name, the other is not, so the only difference between "reachable" and
-# "not reachable" is what the DNS snooper wrote into ip_domain.
-apiVersion: apps/v1
-kind: Deployment
+# Two identical HTTP servers, reachable by address and by whatever name the stub
+# resolver answers with their addresses. No Service fronts them: a name in the
+# cluster DNS domain resolves from the API server instead of from the pod's own
+# DNS answers, which is the opposite of what this suite exercises.
+apiVersion: v1
+kind: Pod
 metadata:
-  name: dns-allowed
+  name: dns-allowed-backend
+  labels:
+    app: dns-allowed-backend
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: dns-allowed
-  template:
-    metadata:
-      labels:
-        app: dns-allowed
-    spec:
-      containers:
-      - name: httpd
-        image: busybox:1.36
-        command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
-        ports:
-        - containerPort: 8080
-        readinessProbe:
-          tcpSocket:
-            port: 8080
-          initialDelaySeconds: 1
-          periodSeconds: 2
+  containers:
+  - name: httpd
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
 ---
 apiVersion: v1
-kind: Service
+kind: Pod
 metadata:
-  name: dns-allowed
+  name: dns-denied-backend
+  labels:
+    app: dns-denied-backend
 spec:
-  selector:
-    app: dns-allowed
-  ports:
-  - port: 8080
-    targetPort: 8080
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: dns-denied
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: dns-denied
-  template:
-    metadata:
-      labels:
-        app: dns-denied
-    spec:
-      containers:
-      - name: httpd
-        image: busybox:1.36
-        command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
-        ports:
-        - containerPort: 8080
-        readinessProbe:
-          tcpSocket:
-            port: 8080
-          initialDelaySeconds: 1
-          periodSeconds: 2
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: dns-denied
-spec:
-  selector:
-    app: dns-denied
-  ports:
-  - port: 8080
-    targetPort: 8080
+  containers:
+  - name: httpd
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2

@@ -45,6 +45,7 @@ const (
 var (
 	logLevel             int
 	metricsAddr          string
+	clusterDomain        string
 	observeInterval      time.Duration
 	eventBufferSize      int
 	sourceRestartBackoff time.Duration
@@ -60,6 +61,8 @@ func init() {
 	daemonCmd.Flags().IntVar(&logLevel, "log-level", 0, "Verbosity level for debug logs (higher is more verbose).")
 	daemonCmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":9090",
 		"Address the Prometheus /metrics endpoint binds to. Set to an empty string to disable it.")
+	daemonCmd.Flags().StringVar(&clusterDomain, "cluster-domain", "cluster.local",
+		"The cluster's DNS domain. A network target under it names an in-cluster Service; any other name is an external one.")
 	daemonCmd.Flags().DurationVar(&observeInterval, "observe-interval", defaultObserveInterval,
 		"How often the BPF observation maps are drained. Bounds monitor-mode detection latency.")
 	daemonCmd.Flags().IntVar(&eventBufferSize, "event-buffer-size", defaultEventBufferSize,
@@ -80,7 +83,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)
 
-	logger.Info("starting kyverno-runtime daemon")
+	logger.Info("starting kyverno-runtime daemon", "clusterDomain", clusterDomain)
+
+	// the domain decides whether a network target is a Service or an external
+	// name, so it has to be in place before the first policy is compiled.
+	compiler.ClusterDomain = clusterDomain
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -176,7 +183,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// runtime policy informer. Constructing it registers its service change
 	// handler on the resolver, which has to happen before the resolver starts.
-	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler, resolver)
+	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler, resolver, sw)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy informer")
 		os.Exit(1)

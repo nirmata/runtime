@@ -197,11 +197,15 @@ func (ff *fakeFactory) new(*logr.Logger) (egressFilter, error) {
 type fakeStatus struct {
 	mu         sync.Mutex
 	conditions map[string][]metav1.Condition
+	names      map[string][]string
 	violations []string
 }
 
 func newFakeStatus() *fakeStatus {
-	return &fakeStatus{conditions: make(map[string][]metav1.Condition)}
+	return &fakeStatus{
+		conditions: make(map[string][]metav1.Condition),
+		names:      make(map[string][]string),
+	}
 }
 
 func (s *fakeStatus) RecordViolation(policyUID string, podUID string) {
@@ -210,10 +214,18 @@ func (s *fakeStatus) RecordViolation(policyUID string, podUID string) {
 	s.violations = append(s.violations, policyUID+"/"+podUID)
 }
 
-func (s *fakeStatus) RecordCondition(policyUID string, cond metav1.Condition) {
+func (s *fakeStatus) RecordCondition(policyUID, policyName string, cond metav1.Condition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.conditions[policyUID] = append(s.conditions[policyUID], cond)
+	s.names[policyUID] = append(s.names[policyUID], policyName)
+}
+
+// recordedNames returns the names supplied alongside a policy's conditions.
+func (s *fakeStatus) recordedNames(policyUID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.names[policyUID])
 }
 
 func (s *fakeStatus) all(policyUID string) []metav1.Condition {

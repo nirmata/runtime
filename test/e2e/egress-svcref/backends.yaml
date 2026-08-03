@@ -1,9 +1,9 @@
-# Two identical HTTP services. One is named by the policy's serviceRefs, the
-# other is not, so the only difference between "reachable" and "not reachable"
-# is the eBPF map state.
+# Two identical HTTP services. One is named by the policy, the other is not, so
+# the only difference between "reachable" and "not reachable" is the eBPF map
+# state.
 #
 # Deployments rather than bare pods, so a later step can change what the
-# referenced Service resolves to by scaling its backends.
+# named Service resolves to by scaling its backends.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

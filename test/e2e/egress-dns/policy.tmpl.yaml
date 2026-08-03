@@ -3,11 +3,17 @@
 # interpolation, so the substitution happens in a script step -- keeping the
 # policy shape reviewable as YAML rather than buried in a heredoc).
 #
-# Default-deny egress with exactly one allowed destination named as a fully
-# qualified domain name. The kube-dns reference is not incidental: under
-# default-deny a client that cannot reach the resolver resolves nothing, the
-# snooper sees no answer, and every arm of the test would report "blocked" for
-# the wrong reason.
+# Default-deny egress with two allowed destinations, one per resolution
+# mechanism, which is what makes the test runnable at all:
+#
+#   allowed.test is outside the cluster DNS domain, so nothing resolves it up
+#   front. The snooper reads the pod's own answer for it, and only then is that
+#   address allowed, for that pod alone.
+#
+#   dns-stub.<ns>.svc.cluster.local is the resolver those answers come from,
+#   resolved instead from Service and EndpointSlice informers. Under default-deny
+#   a client that cannot reach its resolver learns nothing, so without this value
+#   every arm below would report "blocked" for the wrong reason.
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
@@ -21,10 +27,8 @@ spec:
   - network:
       allow:
         values:
-        - dns-allowed.TEST_NAMESPACE.svc.cluster.local
-        serviceRefs:
-        - name: kube-dns
-          namespace: kube-system
+        - allowed.test
+        - dns-stub.TEST_NAMESPACE.svc.cluster.local
       deny:
         values:
         - "*"

@@ -12,7 +12,8 @@
 #                      Needs cgroup v2 + BPF; does NOT need BPF-LSM.
 #   egress-svcref/  -- the same, for targets named as in-cluster Services.
 #   egress-dns/     -- the same, for targets named as domains: the cgroup DNS
-#                      snooper feeding the egress filter. Also needs cluster DNS.
+#                      snooper feeding the egress filter. Brings its own resolver,
+#                      so it needs neither cluster DNS nor the internet.
 #   egress-overlap/ -- two policies over one pod, and a pod that starts after the
 #                      policies selecting it.
 #   dispatch-only/  -- excluded from the default run. Requires `lsm=bpf` in

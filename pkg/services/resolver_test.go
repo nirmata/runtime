@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -70,7 +68,7 @@ func started(t *testing.T, objs ...runtime.Object) *Resolver {
 func TestResolveServiceClusterIPOnly(t *testing.T) {
 	r := started(t, service("kube-system", "kube-dns", "10.96.0.10"))
 
-	addrs, found := r.ResolveService(v1alpha1.ServiceReference{Namespace: "kube-system", Name: "kube-dns"})
+	addrs, found := r.ResolveService("kube-system", "kube-dns")
 	if !found {
 		t.Fatal("expected the Service to be found")
 	}
@@ -85,7 +83,7 @@ func TestResolveServiceHeadlessOmitsNoneSentinel(t *testing.T) {
 		slice("default", "db-abc", "db", discoveryv1.AddressTypeIPv4, endpoint(ptr(true), "10.244.1.5")),
 	)
 
-	addrs, found := r.ResolveService(v1alpha1.ServiceReference{Namespace: "default", Name: "db"})
+	addrs, found := r.ResolveService("default", "db")
 	if !found {
 		t.Fatal("expected the Service to be found")
 	}
@@ -109,7 +107,7 @@ func TestResolveServiceReadyConditions(t *testing.T) {
 		),
 	)
 
-	addrs, found := r.ResolveService(v1alpha1.ServiceReference{Namespace: "default", Name: "api"})
+	addrs, found := r.ResolveService("default", "api")
 	if !found {
 		t.Fatal("expected the Service to be found")
 	}
@@ -129,7 +127,7 @@ func TestResolveServiceUnionsSlicesAndClusterIP(t *testing.T) {
 		slice("default", "other-1", "other", discoveryv1.AddressTypeIPv4, endpoint(ptr(true), "10.244.9.9")),
 	)
 
-	addrs, found := r.ResolveService(v1alpha1.ServiceReference{Namespace: "default", Name: "api"})
+	addrs, found := r.ResolveService("default", "api")
 	if !found {
 		t.Fatal("expected the Service to be found")
 	}
@@ -147,7 +145,7 @@ func TestResolveServiceSkipsNonIPv4(t *testing.T) {
 		slice("default", "api-v4", "api", discoveryv1.AddressTypeIPv4, endpoint(ptr(true), "10.244.3.3", "fd00::2")),
 	)
 
-	addrs, found := r.ResolveService(v1alpha1.ServiceReference{Namespace: "default", Name: "api"})
+	addrs, found := r.ResolveService("default", "api")
 	if !found {
 		t.Fatal("expected the Service to be found")
 	}
@@ -159,11 +157,11 @@ func TestResolveServiceSkipsNonIPv4(t *testing.T) {
 func TestResolveServiceAbsentVersusEmpty(t *testing.T) {
 	r := started(t, service("default", "scaled-to-zero", corev1.ClusterIPNone))
 
-	if addrs, found := r.ResolveService(v1alpha1.ServiceReference{Namespace: "default", Name: "nope"}); found || len(addrs) != 0 {
+	if addrs, found := r.ResolveService("default", "nope"); found || len(addrs) != 0 {
 		t.Fatalf("absent Service: got (%v, %v), want (empty, false)", addrs, found)
 	}
 
-	addrs, found := r.ResolveService(v1alpha1.ServiceReference{Namespace: "default", Name: "scaled-to-zero"})
+	addrs, found := r.ResolveService("default", "scaled-to-zero")
 	if !found {
 		t.Fatal("a Service with nothing to resolve must still report found")
 	}
@@ -179,30 +177,35 @@ func TestResolveServiceIsNamespaceScoped(t *testing.T) {
 		slice("b", "api-1", "api", discoveryv1.AddressTypeIPv4, endpoint(ptr(true), "10.244.0.2")),
 	)
 
-	addrs, _ := r.ResolveService(v1alpha1.ServiceReference{Namespace: "a", Name: "api"})
+	addrs, _ := r.ResolveService("a", "api")
 	if want := []string{"10.96.0.1"}; !reflect.DeepEqual(addrs, want) {
 		t.Fatalf("got %v, want %v", addrs, want)
 	}
 }
 
-func collect(t *testing.T, r *Resolver) chan v1alpha1.ServiceReference {
+type changed struct {
+	namespace string
+	name      string
+}
+
+func collect(t *testing.T, r *Resolver) chan changed {
 	t.Helper()
-	refs := make(chan v1alpha1.ServiceReference, 32)
-	r.AddChangeHandler(func(ref v1alpha1.ServiceReference) {
+	notified := make(chan changed, 32)
+	r.AddChangeHandler(func(namespace, name string) {
 		select {
-		case refs <- ref:
+		case notified <- changed{namespace: namespace, name: name}:
 		default:
 		}
 	})
-	return refs
+	return notified
 }
 
-func awaitRef(t *testing.T, refs chan v1alpha1.ServiceReference, want v1alpha1.ServiceReference) {
+func awaitChange(t *testing.T, notified chan changed, want changed) {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
-		case got := <-refs:
+		case got := <-notified:
 			if got == want {
 				return
 			}
@@ -215,7 +218,7 @@ func awaitRef(t *testing.T, refs chan v1alpha1.ServiceReference, want v1alpha1.S
 func TestChangeHandlerFiresForServiceUpdate(t *testing.T) {
 	client := fake.NewClientset(service("default", "api", "10.96.0.1"))
 	r := NewResolver(client, logr.Discard())
-	refs := collect(t, r)
+	notified := collect(t, r)
 	start(t, r)
 
 	updated := service("default", "api", "10.96.0.2")
@@ -223,14 +226,14 @@ func TestChangeHandlerFiresForServiceUpdate(t *testing.T) {
 		t.Fatalf("updating the Service: %v", err)
 	}
 
-	awaitRef(t, refs, v1alpha1.ServiceReference{Namespace: "default", Name: "api"})
+	awaitChange(t, notified, changed{namespace: "default", name: "api"})
 }
 
 func TestChangeHandlerFiresForEndpointSliceUpdate(t *testing.T) {
 	existing := slice("default", "api-1", "api", discoveryv1.AddressTypeIPv4, endpoint(ptr(true), "10.244.0.1"))
 	client := fake.NewClientset(service("default", "api", "10.96.0.1"), existing)
 	r := NewResolver(client, logr.Discard())
-	refs := collect(t, r)
+	notified := collect(t, r)
 	start(t, r)
 
 	updated := slice("default", "api-1", "api", discoveryv1.AddressTypeIPv4, endpoint(ptr(true), "10.244.0.2"))
@@ -238,26 +241,26 @@ func TestChangeHandlerFiresForEndpointSliceUpdate(t *testing.T) {
 		t.Fatalf("updating the EndpointSlice: %v", err)
 	}
 
-	awaitRef(t, refs, v1alpha1.ServiceReference{Namespace: "default", Name: "api"})
+	awaitChange(t, notified, changed{namespace: "default", name: "api"})
 }
 
 func TestChangeHandlerHandlesTombstones(t *testing.T) {
 	r := NewResolver(fake.NewClientset(), logr.Discard())
-	refs := collect(t, r)
+	notified := collect(t, r)
 
 	r.serviceChanged(cache.DeletedFinalStateUnknown{Key: "default/api", Obj: service("default", "api", "10.96.0.1")})
-	awaitRef(t, refs, v1alpha1.ServiceReference{Namespace: "default", Name: "api"})
+	awaitChange(t, notified, changed{namespace: "default", name: "api"})
 
 	r.sliceChanged(cache.DeletedFinalStateUnknown{
 		Key: "default/api-1",
 		Obj: slice("default", "api-1", "api", discoveryv1.AddressTypeIPv4),
 	})
-	awaitRef(t, refs, v1alpha1.ServiceReference{Namespace: "default", Name: "api"})
+	awaitChange(t, notified, changed{namespace: "default", name: "api"})
 }
 
 func TestChangeHandlerIgnoresUnlabelledSliceAndUnknownObject(t *testing.T) {
 	r := NewResolver(fake.NewClientset(), logr.Discard())
-	refs := collect(t, r)
+	notified := collect(t, r)
 
 	unlabelled := slice("default", "orphan", "api", discoveryv1.AddressTypeIPv4)
 	unlabelled.Labels = nil
@@ -265,8 +268,8 @@ func TestChangeHandlerIgnoresUnlabelledSliceAndUnknownObject(t *testing.T) {
 	r.sliceChanged(cache.DeletedFinalStateUnknown{Key: "default/orphan", Obj: nil})
 	r.serviceChanged(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api"}})
 
-	if len(refs) != 0 {
-		t.Fatalf("expected no notifications, got %d", len(refs))
+	if len(notified) != 0 {
+		t.Fatalf("expected no notifications, got %d", len(notified))
 	}
 }
 
@@ -275,8 +278,8 @@ func TestChangeHandlerRunsWhileResolveServiceIsReachable(t *testing.T) {
 	r := NewResolver(client, logr.Discard())
 
 	resolved := make(chan []string, 8)
-	r.AddChangeHandler(func(ref v1alpha1.ServiceReference) {
-		addrs, _ := r.ResolveService(ref)
+	r.AddChangeHandler(func(namespace, name string) {
+		addrs, _ := r.ResolveService(namespace, name)
 		select {
 		case resolved <- addrs:
 		default:

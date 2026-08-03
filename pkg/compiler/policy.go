@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"slices"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/google/cel-go/common/types"
@@ -27,8 +26,9 @@ type EvaluationResult struct {
 	Selector labels.Selector
 	Mode     string
 
-	// UnresolvedServiceRefs holds refs whose Service is absent from cache.
-	UnresolvedServiceRefs []v1alpha1.ServiceReference
+	// UnresolvedServices holds the Service DNS values whose Service is absent
+	// from cache, as authored.
+	UnresolvedServices []string
 }
 
 type AllowDenyPair struct {
@@ -91,15 +91,18 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	open := &AllowDenyPair{}
 	exec := &AllowDenyPair{}
 
-	var unresolved []v1alpha1.ServiceReference
 	for _, compiledNet := range c.compiledNets {
 		err := evalCompiledBehavior(ctx, net, compiledNet, data)
 		if err != nil {
 			return nil, err
 		}
-		unresolved = append(unresolved, c.appendServiceAddrs(&net.Allow, compiledNet.allowRefs)...)
-		unresolved = append(unresolved, c.appendServiceAddrs(&net.Deny, compiledNet.denyRefs)...)
 	}
+
+	// Resolution happens here rather than in Compile because the resolver's
+	// answer changes as Services and their endpoints change.
+	var unresolved []string
+	net.Allow, unresolved = c.resolveServiceValues(net.Allow, unresolved)
+	net.Deny, unresolved = c.resolveServiceValues(net.Deny, unresolved)
 
 	for _, compiledOpen := range c.compiledOpens {
 		err := evalCompiledBehavior(ctx, open, compiledOpen, data)
@@ -116,32 +119,54 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	}
 
 	return &EvaluationResult{
-		UID:                   c.UID,
-		Name:                  c.Name,
-		IPs:                   net,
-		Open:                  open,
-		Exec:                  exec,
-		Selector:              selector,
-		Mode:                  c.mode,
-		UnresolvedServiceRefs: unresolved,
+		UID:                c.UID,
+		Name:               c.Name,
+		IPs:                net,
+		Open:               open,
+		Exec:               exec,
+		Selector:           selector,
+		Mode:               c.mode,
+		UnresolvedServices: unresolved,
 	}, nil
 }
 
-func (c *CompiledRuntimePolicy) appendServiceAddrs(dst *[]string, refs []v1alpha1.ServiceReference) []v1alpha1.ServiceReference {
-	var unresolved []v1alpha1.ServiceReference
-	for _, ref := range refs {
-		addrs, found := c.resolver.ResolveService(ref)
+// resolveServiceValues replaces each cluster Service DNS value with that
+// Service's current addresses, keeping every other value in place. The name has
+// to disappear from the result: egressfilter.ParseTargets would otherwise also
+// intern it for DNS snooping and program the same Service by two mechanisms.
+func (c *CompiledRuntimePolicy) resolveServiceValues(side []string, unresolved []string) ([]string, []string) {
+	if !slices.ContainsFunc(side, isServiceValue) {
+		return side, unresolved
+	}
+
+	out := make([]string, 0, len(side))
+	for i, value := range side {
+		parsed, err := ParseNetworkValue(value)
+		if err != nil || parsed.Service == nil {
+			out = append(out, value)
+			continue
+		}
+		addrs, found := c.resolver.ResolveService(parsed.Service.Namespace, parsed.Service.Name)
 		if !found {
-			unresolved = append(unresolved, ref)
+			if !slices.Contains(unresolved, value) {
+				unresolved = append(unresolved, value)
+			}
 			continue
 		}
 		for _, addr := range slices.Sorted(slices.Values(addrs)) {
-			if !slices.Contains(*dst, addr) {
-				*dst = append(*dst, addr)
+			// An address a later value carries verbatim is left to that value.
+			if slices.Contains(out, addr) || slices.Contains(side[i+1:], addr) {
+				continue
 			}
+			out = append(out, addr)
 		}
 	}
-	return unresolved
+	return out, unresolved
+}
+
+func isServiceValue(value string) bool {
+	parsed, err := ParseNetworkValue(value)
+	return err == nil && parsed.Service != nil
 }
 
 func evalCompiledBehavior(ctx context.Context, accum *AllowDenyPair, b *compiledBehavior, data map[string]any) error {

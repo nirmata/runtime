@@ -1,17 +1,18 @@
-# E2E behavioral assertion -- egress enforcement driven by a Service reference.
+# E2E behavioral assertion -- egress enforcement driven by a cluster Service DNS
+# name.
 #
 # This is a real assertion, not a gate: it proves a policy that names an
 # in-cluster Service instead of an address ends up programmed into the cgroup
 # egress maps, and that the programmed set follows the Service's endpoints.
 #
 # Both directions are asserted deliberately. A test that only checks "the
-# referenced Service is reachable" would also pass against a program that allows
-# everything, and one that only checks "the unreferenced Service is blocked"
+# named Service is reachable" would also pass against a program that allows
+# everything, and one that only checks "the unnamed Service is blocked"
 # would pass against a broken cluster network. So the same client pod is used
 # throughout:
 #   1. before any policy          -> both Services reachable   (baseline)
-#   2. after default-deny + ref   -> Service A reachable        (not over-blocking)
-#   3. after default-deny + ref   -> Service B blocked          (enforcement works)
+#   2. after default-deny + name  -> Service A reachable        (not over-blocking)
+#   3. after default-deny + name  -> Service B blocked          (enforcement works)
 #   4. after scaling A's backends -> the new backend reachable  (re-resolution)
 #   5. after scaling back down    -> the gone backend blocked   (re-resolution prunes)
 #
@@ -76,7 +77,7 @@ spec:
           set -eu
           sed "s/TEST_NAMESPACE/${NAMESPACE}/" policy.tmpl.yaml | tee /tmp/e2e-egress-svcref-policy.yaml
           kubectl apply -f /tmp/e2e-egress-svcref-policy.yaml
-    # The reference must be reported as programmable before any "blocked"
+    # The name must be reported as programmable before any "blocked"
     # assertion is trusted: a rejected or unresolved target also produces
     # "blocked", which would pass this test for the wrong reason.
     - assert:
@@ -101,7 +102,7 @@ spec:
           backendA=$(kubectl -n "$NAMESPACE" get pod -l app=svcref-a -o jsonpath='{.items[0].status.podIP}')
           test -n "$backendA"
 
-          # The unreferenced Service must become unreachable within a bounded
+          # The unnamed Service must become unreachable within a bounded
           # window. Poll rather than sleep blindly: the daemon programs maps on
           # its own schedule.
           blocked=0
@@ -114,12 +115,12 @@ spec:
             fi
           done
           if [ "$blocked" -ne 1 ]; then
-            echo "FAIL: svcref-b (${b}) still reachable -- the Service reference did not take effect"
+            echo "FAIL: svcref-b (${b}) still reachable -- the Service name did not take effect"
             exit 1
           fi
           echo "OK: svcref-b (${b}) blocked"
 
-          # ...and the referenced Service must still be reachable under
+          # ...and the named Service must still be reachable under
           # default-deny. An allow-list that blocks its own entries is worse
           # than no policy, and this is what makes the assertion above
           # meaningful.
@@ -139,7 +140,7 @@ spec:
           fi
           echo "OK: svcref-a backend ${backendA} reachable"
 
-          # Re-check the unreferenced Service so a transient failure above
+          # Re-check the unnamed Service so a transient failure above
           # cannot be mistaken for enforcement.
           if kubectl -n "$NAMESPACE" exec svcref-client -- \
                wget -q -T 3 -O /dev/null "http://${b}:8080/" 2>/dev/null; then
@@ -249,15 +250,15 @@ spec:
           kind: RuntimePolicy
           name: e2e-egress-svcref
 
-  - name: unresolvable-reference-is-reported-on-the-policy-status
+  - name: unresolvable-service-name-is-reported-on-the-policy-status
     try:
     - script:
         content: |
           set -eu
           sed "s/TEST_NAMESPACE/${NAMESPACE}/" policy-unresolved.tmpl.yaml | tee /tmp/e2e-egress-svcref-unresolved.yaml
           kubectl apply -f /tmp/e2e-egress-svcref-unresolved.yaml
-    # A reference the daemon cannot resolve must reach the policy's status
-    # rather than only programming nothing.
+    # A name the daemon cannot resolve must reach the policy's status rather
+    # than only programming nothing.
     - assert:
         resource:
           apiVersion: runtime.nirmata.io/v1alpha1
@@ -266,7 +267,7 @@ spec:
             name: e2e-egress-svcref-unresolved
           status:
             (conditions[?type == 'TargetsValid'].status | [0]): "False"
-            (conditions[?type == 'TargetsValid'].reason | [0]): UnresolvedServiceRefs
+            (conditions[?type == 'TargetsValid'].reason | [0]): UnresolvedServices
     - script:
         content: |
           set -eu

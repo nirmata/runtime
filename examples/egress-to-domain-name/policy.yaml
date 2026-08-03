@@ -1,5 +1,3 @@
-# The allowed destination is a name in the default namespace, so the manifests
-# alongside this file must be applied there for the name to resolve.
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
@@ -16,7 +14,5 @@ spec:
         - "*"
       allow:
         values:
-        - dns-target-allowed.default.svc.cluster.local
-        serviceRefs:
-        - name: kube-dns
-          namespace: kube-system
+        - example.com
+        - kube-dns.kube-system.svc.cluster.local

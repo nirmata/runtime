@@ -48,11 +48,11 @@ type manifest struct {
 	body []byte
 }
 
-// These manifests are compiled, never evaluated, so no serviceRefs entry is ever
+// These manifests are compiled, never evaluated, so no Service value is ever
 // looked up.
 type resolveNothing struct{}
 
-func (resolveNothing) ResolveService(v1alpha1.ServiceReference) ([]string, bool) {
+func (resolveNothing) ResolveService(namespace, name string) ([]string, bool) {
 	return nil, false
 }
 

@@ -1,7 +1,7 @@
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
-  name: egress-via-service-refs
+  name: egress-to-cluster-service
 spec:
   mode: enforce
   podSelector:
@@ -13,8 +13,6 @@ spec:
         values:
         - "*"
       allow:
-        serviceRefs:
-        - name: kube-dns
-          namespace: kube-system
-        - name: egress-gateway
-          namespace: egress-gateway
+        values:
+        - kube-dns.kube-system.svc.cluster.local
+        - egress-gateway.egress-gateway.svc.cluster.local

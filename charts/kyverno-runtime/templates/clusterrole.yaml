@@ -16,7 +16,7 @@ rules:
 - apiGroups: ["runtime.nirmata.io"]
   resources: ["runtimepolicies/status"]
   verbs: ["get", "update", "patch"]
-# daemon: resolves the Services a policy's serviceRefs name
+# daemon: resolves the Services a policy's network values name
 - apiGroups: [""]
   resources: ["services"]
   verbs: ["get", "list", "watch"]

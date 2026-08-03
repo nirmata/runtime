@@ -1,6 +1,8 @@
 # A second client, started after the policy, that has never looked anything up.
 # Each pod loads its own map set, so this pod's ip_domain is empty and the
-# allowed Service's address means nothing to it until it resolves the name.
+# address behind an allowed name means nothing to it until it resolves the name.
+#
+# STUB_RESOLVER_IP is substituted as in client.tmpl.yaml.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -8,6 +10,10 @@ metadata:
   labels:
     app: dns-client
 spec:
+  dnsPolicy: None
+  dnsConfig:
+    nameservers:
+    - STUB_RESOLVER_IP
   containers:
   - name: client
     image: busybox:1.36

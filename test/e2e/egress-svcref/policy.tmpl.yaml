@@ -3,9 +3,9 @@
 # interpolation, so the substitution happens in a script step -- keeping the
 # policy shape reviewable as YAML rather than buried in a heredoc).
 #
-# Default-deny egress with exactly one allowed destination, named as a Service
-# rather than as an address. Scoped by podSelector to the client pod only, so
-# the backends and the daemon itself keep their networking.
+# Default-deny egress with exactly one allowed destination, named by its cluster
+# Service DNS name rather than by address. Scoped by podSelector to the client
+# pod only, so the backends and the daemon itself keep their networking.
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
@@ -18,9 +18,8 @@ spec:
   behaviors:
   - network:
       allow:
-        serviceRefs:
-        - name: svcref-a
-          namespace: TEST_NAMESPACE
+        values:
+        - svcref-a.TEST_NAMESPACE.svc.cluster.local
       deny:
         values:
         - "*"

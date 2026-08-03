@@ -179,7 +179,7 @@ func TestStatusWriterMergesConditions(t *testing.T) {
 	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeMonitor, labels.Everything()), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	sw.RecordCondition("uid-1", metav1.Condition{
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
 		Type:    "TargetsValid",
 		Status:  metav1.ConditionFalse,
 		Reason:  "UnsupportedTargets",
@@ -213,15 +213,18 @@ func TestStatusWriterMergesConditions(t *testing.T) {
 	}
 }
 
+// A policy with no spec.mode neither enforces nor reports, so Applied must not
+// claim otherwise.
 func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 	tests := []struct {
-		mode string
-		want string
+		mode       string
+		wantReason string
+		wantStatus metav1.ConditionStatus
 	}{
-		{mode: compiler.ModeEnforce, want: ReasonEnforcing},
-		{mode: compiler.ModeMonitor, want: ReasonMonitoring},
-		{mode: "", want: ReasonEnforcing},
-		{mode: "something-new", want: ReasonEnforcing},
+		{mode: compiler.ModeEnforce, wantReason: ReasonEnforcing, wantStatus: metav1.ConditionTrue},
+		{mode: compiler.ModeMonitor, wantReason: ReasonMonitoring, wantStatus: metav1.ConditionTrue},
+		{mode: "", wantReason: ReasonNoMode, wantStatus: metav1.ConditionFalse},
+		{mode: "something-new", wantReason: ReasonEnforcing, wantStatus: metav1.ConditionTrue},
 	}
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
@@ -233,14 +236,21 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 				t.Fatalf("flush: %v", err)
 			}
 			got := getPolicy(t, client, "p")
-			var reason string
-			for _, c := range got.Status.Conditions {
-				if c.Type == ConditionApplied {
-					reason = c.Reason
+			var applied *metav1.Condition
+			for i := range got.Status.Conditions {
+				if got.Status.Conditions[i].Type == ConditionApplied {
+					applied = &got.Status.Conditions[i]
 				}
 			}
-			if reason != tc.want {
-				t.Errorf("Applied reason for mode %q = %q, want %q", tc.mode, reason, tc.want)
+			if applied == nil {
+				t.Fatalf("conditions = %+v, want Applied", got.Status.Conditions)
+			}
+			if applied.Reason != tc.wantReason || applied.Status != tc.wantStatus {
+				t.Errorf("Applied for mode %q = (%s, %s), want (%s, %s)",
+					tc.mode, applied.Status, applied.Reason, tc.wantStatus, tc.wantReason)
+			}
+			if applied.Message == "" {
+				t.Error("Applied has no message")
 			}
 		})
 	}
@@ -318,13 +328,13 @@ func TestStatusWriterSkipsNoOpUpdates(t *testing.T) {
 }
 
 // TestStatusWriterRecordersToleratePolicyEventOrdering covers the concurrent
-// fan-out: a manager can record a condition before the StatusWriter itself has
-// seen the policy event, so the entry has to wait for its name rather than be
-// dropped.
+// fan-out: a manager that knows only the uid can record a condition before the
+// StatusWriter has seen the policy event, so the entry has to wait for its name
+// rather than be dropped.
 func TestStatusWriterRecordersToleratePolicyEventOrdering(t *testing.T) {
 	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
 
-	sw.RecordCondition("uid-1", metav1.Condition{
+	sw.RecordCondition("uid-1", "", metav1.Condition{
 		Type: "TargetsValid", Status: metav1.ConditionFalse, Reason: "UnsupportedTargets",
 	})
 	// nothing can be written yet: the policy name is unknown
@@ -355,6 +365,31 @@ func TestStatusWriterRecordersToleratePolicyEventOrdering(t *testing.T) {
 	}
 	if diff := cmp.Diff([]string{ConditionApplied, "TargetsValid"}, types, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("condition types mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A supplied name makes the entry addressable straight away, which is what a
+// policy that never compiles depends on: it produces no policy event at all.
+func TestStatusWriterRecordedNameMakesConditionFlushable(t *testing.T) {
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: ConditionApplied, Status: metav1.ConditionFalse, Reason: ReasonCompileFailed,
+		Message: "spec.behaviors[0].network: Invalid value",
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	got := getPolicy(t, client, "p")
+	if !hasCondition(got.Status.Conditions, ConditionApplied) {
+		t.Fatalf("conditions = %+v, want Applied written without any policy event", got.Status.Conditions)
+	}
+	sw.mu.Lock()
+	dirty := sw.policies["uid-1"].dirty
+	sw.mu.Unlock()
+	if dirty {
+		t.Error("the entry is still dirty after a successful flush")
 	}
 }
 
@@ -468,7 +503,7 @@ func TestStatusWriterRunFlushesOnIntervalAndOnCancel(t *testing.T) {
 	}
 
 	// a change made just before cancellation must still land
-	sw.RecordCondition("uid-1", metav1.Condition{
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
 		Type: "TargetsValid", Status: metav1.ConditionFalse, Reason: "UnsupportedTargets",
 	})
 	cancel()

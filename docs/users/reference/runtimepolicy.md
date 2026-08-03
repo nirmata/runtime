@@ -25,13 +25,12 @@ kubectl get rpol <name> -o yaml
 | `spec.mode` | `monitor` \| `enforce` | What the daemon does with a matched pod. Optional, with no default. |
 | `spec.evaluationInterval` | duration | How often matched pods are re-evaluated. Required to pick up changes behind a `resource` or `http` expression. |
 | `spec.variables` | list of `name` + `expression` | Named CEL expressions, referenced as `variables.<name>` from any other expression. |
-| `spec.behaviors` | list | One entry per behavior kind; each entry configures exactly one of `network`, `exec`, `open`. Each `allow`/`deny` rule takes `values`, `expression`, and — on `network` only — `serviceRefs`. |
+| `spec.behaviors` | list | One entry per behavior kind; each entry configures exactly one of `network`, `exec`, `open`. Each `allow`/`deny` rule takes `values` and `expression`. |
 
 Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, or `open`.
 Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
-`values` list, a CEL `expression` that evaluates to `list(string)`, a `serviceRefs` list
-of in-cluster Services (`network` only), or any combination of them (the results are
-unioned):
+`values` list, a CEL `expression` that evaluates to `list(string)`, or both (the results
+are unioned):
 
 ```yaml
 spec:
@@ -40,13 +39,13 @@ spec:
       allow:
         values: [...]        # literal list of allowed items
         expression: "..."    # CEL expression returning list(string), unioned with values
-        serviceRefs: [...]   # network only: Services resolved to addresses, unioned too
       deny:
         values: [...]
         expression: "..."
 ```
 
-- `network`: IPv4 addresses and fully qualified domain names for egress.
+- `network`: IPv4 addresses, IPv4 CIDRs, cluster Service DNS names, and fully qualified
+  domain names for egress.
 - `exec`: command names/paths.
 - `open`: file paths.
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a
@@ -57,10 +56,11 @@ spec:
   from every matching policy. If none of the matching policies set a default
   deny for that behavior, it defaults to allow-all-except-denied, where the
   deny list is the union of `deny` entries from every matching policy.
-- `serviceRefs` names in-cluster Services by `name` and `namespace`, on a `network`
-  behavior's `allow` or `deny` rule. `RuntimePolicy` is cluster scoped, so `namespace` is
-  required rather than implied. The API rejects `serviceRefs` on an `exec` or `open`
-  behavior. See [Service references](#service-references).
+- A `network` value that is a name is resolved by one of two mechanisms, chosen by the
+  shape of the name alone: a cluster Service DNS name resolves from API server informers
+  (see [Cluster Service targets](#cluster-service-targets)), any other fully qualified
+  domain name is learned from the pod's own DNS answers (see
+  [Domain name targets](#domain-name-targets)).
 - `spec.variables` defines named CEL expressions that can be reused across behaviors via
   `variables.<name>` inside any `expression`.
 - `expression` must evaluate to a statically-typed `list(string)`. Functions that return
@@ -76,16 +76,23 @@ rejected at admission by a CEL validation rule on the CRD.
 Expression syntax, the available CEL libraries, and the `resource`/`http`/`json` helpers
 are in [CEL in RuntimePolicy](cel.md).
 
-## Service references
+## Cluster Service targets
 
 An allow list of literal ClusterIPs works only as long as they hold. A Service that is
 redeployed, or whose backends move, changes addresses and the policy has no way to know.
-`serviceRefs` names the Service instead, and the daemon resolves it from Service and
-EndpointSlice informers.
+Naming the Service by its
+[cluster DNS name](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#services)
+instead lets the daemon resolve it from Service and EndpointSlice informers.
 
-This is a deny-all-then-allowlist egress policy expressed as references: the workload may
-reach cluster DNS and an egress gateway, and nothing else. The `kubernetes` Service is
-deliberately absent, so the API server is unreachable from these pods:
+A `network` value in the form `<service>.<namespace>.svc.<cluster-domain>` is a Service
+name and resolves that way. Any other fully qualified domain name is an external name,
+learned from the pod's own DNS answers by the snooper. The two are chosen by shape, and
+they are not equivalent: informer resolution is authoritative and watch-driven, whereas
+DNS snooping is best-effort and [not a containment boundary](#limits-of-domain-names).
+
+This is a deny-all-then-allowlist egress policy: the workload may reach cluster DNS and an
+egress gateway, and nothing else. The `kubernetes` Service is deliberately absent, so the
+API server is unreachable from these pods:
 
 ```yaml
 apiVersion: runtime.nirmata.io/v1alpha1
@@ -103,14 +110,12 @@ spec:
         values:
         - "*"
       allow:
-        serviceRefs:
-        - name: kube-dns
-          namespace: kube-system
-        - name: egress-gateway
-          namespace: networking
+        values:
+        - kube-dns.kube-system.svc.cluster.local
+        - egress-gateway.networking.svc.cluster.local
 ```
 
-What a reference resolves to:
+What a Service name resolves to:
 
 - the Service's ClusterIP, when it has one, plus the addresses of its **ready**
   endpoints. A headless Service therefore resolves to its endpoints alone; a Service
@@ -120,8 +125,8 @@ What a reference resolves to:
   rolling, or replacing the backends updates the programmed addresses without touching
   the policy. No `evaluationInterval` is needed for this; the informers drive it.
 
-`serviceRefs` unions with `values` and `expression` on the same rule, so a policy can mix
-references with addresses that have no Service in front of them:
+A Service name is one value among others on the same rule, so a policy can mix it with
+addresses that have no Service in front of them:
 
 ```yaml
 spec:
@@ -133,20 +138,65 @@ spec:
       allow:
         values:
         - "192.0.2.10"     # an appliance outside the cluster
-        serviceRefs:
-        - name: kube-dns
-          namespace: kube-system
+        - kube-dns.kube-system.svc.cluster.local
 ```
 
-## Limits of serviceRefs
+### Always write a Service name in full
 
-A reference is resolved from watched cluster state, which bounds what it can express.
+**A short form matches nothing, and says nothing.** `redis.default` is accepted as an
+external name, because it is shaped exactly like `example.com` — two labels — and no
+syntactic rule can tell them apart without rejecting every two-label external domain along
+with it. It then never matches anything: a pod's resolver expands an unqualified name
+through its `resolv.conf` search domains before it asks, so the question the snooper
+observes is `redis.default.svc.cluster.local`, never the `redis.default` the policy names.
+The value looks valid, no condition reports it, and the destination is simply never
+allowed. Write `redis.default.svc.cluster.local`.
+
+### Accepted names
+
+The cluster domain is the daemon's `--cluster-domain`, `cluster.local` unless it is set
+otherwise.
+
+| Value | Result |
+| --- | --- |
+| `kube-dns.kube-system.svc.cluster.local` | Service `kube-dns` in `kube-system`, resolved from informers |
+| `api.payments.example.com` | external name, learned from the pod's DNS answers |
+| `redis.default` | external name — resolves nothing, see above |
+| `redis` | rejected: a single label is not a usable name |
+| `10-1-2-3.default.pod.cluster.local` | rejected: pod record, not a Service |
+| `web-0.web.default.svc.cluster.local` | rejected: headless per-pod record, not a Service |
+| `kube-dns.kube-system.svc.example.com` | rejected, naming the expected cluster domain |
+| `1redis.default.svc.cluster.local` | rejected: a service label must start with a letter |
+
+A name that ends in the cluster domain but is not a Service name — a pod record, a
+headless Service's per-pod record, a short form written with the cluster domain — is
+rejected rather than treated as external, because falling through would hand the operator
+the weaker of the two mechanisms for a destination that is plainly in-cluster. A name
+whose third label is `svc` is held to the same rule even when its suffix is some other
+domain, on the grounds that it is far more likely a mistyped cluster name than a real
+host. The collateral is real: an external destination genuinely named
+`api.prod.svc.mycompany.com` cannot be used as a target, and has to be reached by address.
+
+The two labels have different rules, following Kubernetes' own: a service label is RFC
+1035, so it must start with a letter, while a namespace label is RFC 1123 and may start
+with a digit. Both are at most 63 characters of lowercase alphanumerics and `-`.
+
+A rejected literal fails the whole policy to compile, reported as `Applied=False` with
+reason `CompileFailed` and a message naming the field path, the value and the reason.
+Nothing in that policy is applied while it is rejected, including the rules either side of
+the offending value. A value produced by an `expression` is not seen until evaluation, so
+the same mistake there is reported per value through `TargetsValid=False` and leaves the
+rest of the policy in force.
+
+## Limits of cluster Service targets
+
+A Service name is resolved from watched cluster state, which bounds what it can express.
 These are real, current limits:
 
-- **In-cluster Services only.** A `serviceRefs` entry is looked up in the Service and
-  EndpointSlice informers, so it cannot name anything outside the cluster. For an
-  external destination, name it as a domain in `values` instead — a different mechanism
-  with [different limits](#limits-of-domain-names).
+- **In-cluster Services only.** A Service name is looked up in the Service and
+  EndpointSlice informers, never in DNS, so it cannot name anything outside the cluster.
+  For an external destination, name it as a domain instead — a different mechanism with
+  [different limits](#limits-of-domain-names).
 - **No port or protocol granularity.** Allowing a Service allows *every* port on the
   addresses it resolves to, because the egress maps are keyed on a `u32` IPv4 address
   and nothing else. Naming a Service that exposes port 443 does not restrict the
@@ -163,13 +213,13 @@ These are real, current limits:
   The grant is wider than "may talk to this Service": it is "may talk to this Service's
   addresses", and if another Service happens to share a backend pod, that pod is
   reachable through it too.
-- **An unresolved reference programs nothing.** A reference to a Service that does not
-  exist (a typo, a namespace that was never created, a Service deleted after the policy
-  was written) contributes no addresses. Under default-deny that means the destination is
+- **An unresolved name programs nothing.** A name whose Service does not exist (a typo, a
+  namespace that was never created, a Service deleted after the policy was written)
+  contributes no addresses. Under default-deny that means the destination is
   fully blocked rather than quietly allowed, which is the safe direction but looks
   identical to a network outage from inside the workload. It is surfaced as a
-  `TargetsValid=False` condition on the policy — check the status before concluding the
-  cluster is broken:
+  `TargetsValid=False` condition with reason `UnresolvedServices` — check the status before
+  concluding the cluster is broken:
 
   ```bash
   kubectl get rpol egress-via-gateway-only -o jsonpath='{.status.conditions}'
@@ -177,15 +227,15 @@ These are real, current limits:
 
 ## Domain name targets
 
-A `network` value may be a fully qualified domain name instead of an address. Unlike
-`serviceRefs`, nothing about the name is resolved when the policy is written: the daemon
-attaches a second eBPF program to the matched pod's cgroup that reads the pod's own DNS
-answers, and an A record for a name the policy mentions makes that address allowed (or
+A `network` value that is a fully qualified domain name outside the cluster domain names an
+external destination, and nothing about it is resolved when the policy is written: the
+daemon attaches a second eBPF program to the matched pod's cgroup that reads the pod's own
+DNS answers, and an A record for a name the policy mentions makes that address allowed (or
 denied) for that pod. The pod learns the address the same moment the kernel does.
 
 The resolver has to stay reachable for any of this to happen, which is why cluster DNS is
-allowed by reference alongside the name — under default-deny a workload that cannot reach
-its resolver resolves nothing, and every domain in the allow list is dead:
+allowed alongside the name — under default-deny a workload that cannot reach its resolver
+resolves nothing, and every domain in the allow list is dead:
 
 ```yaml
 apiVersion: runtime.nirmata.io/v1alpha1
@@ -205,9 +255,7 @@ spec:
       allow:
         values:
         - api.payments.example.com
-        serviceRefs:
-        - name: kube-dns
-          namespace: kube-system
+        - kube-dns.kube-system.svc.cluster.local
 ```
 
 A name in `deny.values` works the same way in the other direction: without a default deny,
@@ -225,7 +273,7 @@ current limits:
   of those cases the address is never attributed to a domain: under default-deny the
   connection is blocked (a false outage), and under a deny list it is allowed (a real
   bypass). A workload that must be contained needs its destinations named as addresses or
-  `serviceRefs`.
+  as [cluster Service names](#cluster-service-targets).
 - **No wildcards.** Every name is matched whole, against the question the pod actually
   asked. A CNAME chain is attributed to the question, not to the owner name of the A
   record, so naming the alias is correct and naming its target is not. `*.example.com`
@@ -328,12 +376,15 @@ Conditions:
 
 | Type | Reasons | Meaning |
 | --- | --- | --- |
-| `Applied` | `Enforcing`, `Monitoring` | The daemon has the policy loaded, and in which mode. |
-| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServiceRefs` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServiceRefs` lists the `serviceRefs` entries naming a Service that is not in cache. |
+| `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for a policy that omits `spec.mode`, which is neither enforced nor reported. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in such a policy is applied, including the rules either side of the bad one. |
+| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServices` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServices` lists the Service names that are not in cache. |
 | `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy would silently produce no findings. |
 
-A target the runtime cannot program is never silently skipped: it always reaches both an
-operator-visible log line and a `TargetsValid=False` condition.
+A target the runtime cannot program is never silently skipped. Which condition carries it
+depends on where the value came from: a literal is checked when the policy compiles and a
+bad one reports `Applied=False` with `CompileFailed`, while a value an `expression` produced
+is checked when it is programmed and reports `TargetsValid=False`. Either way it also
+reaches an operator-visible log line.
 
 ## Findings and Reports
 
@@ -389,10 +440,12 @@ not rounding errors:
   domain when the address came from a DNS answer for a name some policy already names
   (see [Limits of domain names](#limits-of-domain-names)); every other destination is
   reported by address alone.
-- **Unsupported `network` targets are rejected, not skipped.** IPv6 literals, CIDRs wider than
-  `/24`, and names whose wire encoding exceeds 128 bytes cannot be programmed. They are
-  reported through `TargetsValid=False` with the reason per value. A CIDR of `/24` or
-  narrower is expanded into individual addresses.
+- **Unsupported `network` targets are rejected, not skipped.** A CIDR wider than `/24`, a
+  name whose wire encoding exceeds 128 bytes, and a pod's 257th distinct domain are all
+  accepted by the grammar and refused when programmed, so they are reported per value
+  through `TargetsValid=False`. A CIDR of `/24` or narrower is expanded into individual
+  addresses. An IPv6 literal is refused earlier, by the grammar, so as a literal value it
+  fails the policy to compile instead.
 - **Observations that cannot be attributed to a pod are dropped** and counted in
   `nirmata_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.
@@ -413,8 +466,8 @@ distributions and hosted CI runners are typically not booted with it.
 | --- | --- | --- | --- |
 | [block-known-bad-egress](../../../examples/block-known-bad-egress/) | Deny a literal destination IPv4 with `deny.values` | `enforce` | cgroup v2 |
 | [default-deny-egress](../../../examples/default-deny-egress/) | `deny.values: ["*"]` plus an `allow` list | `enforce` | cgroup v2 |
-| [egress-via-service-refs](../../../examples/egress-via-service-refs/) | `allow.serviceRefs` under default deny, with the API server denied by omission | `enforce` | cgroup v2 |
-| [egress-to-domain-name](../../../examples/egress-to-domain-name/) | A domain name in `allow.values`, with cluster DNS allowed by reference | `enforce` | cgroup v2 |
+| [egress-to-cluster-service](../../../examples/egress-to-cluster-service/) | Cluster Service DNS names in `allow.values` under default deny, with the API server denied by omission | `enforce` | cgroup v2 |
+| [egress-to-domain-name](../../../examples/egress-to-domain-name/) | An external domain name in `allow.values`, alongside cluster DNS named as a Service | `enforce` | cgroup v2 |
 | [monitor-egress](../../../examples/monitor-egress/) | Same policy shape observed instead of blocked | `monitor` | cgroup v2 |
 | [deny-sensitive-file-access](../../../examples/deny-sensitive-file-access/) | `open` deny with `values` unioned with a `variables` expression | `enforce` | BPF-LSM |
 | [restrict-exec-allowlist](../../../examples/restrict-exec-allowlist/) | Default-deny `exec` with an allow-list | `enforce` | BPF-LSM |

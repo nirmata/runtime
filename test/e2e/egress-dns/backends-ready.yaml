@@ -1,27 +1,15 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Pod
 metadata:
-  name: dns-allowed
+  name: dns-allowed-backend
 status:
-  readyReplicas: 1
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: dns-denied
-status:
-  readyReplicas: 1
+  (conditions[?type == 'Ready'].status | [0]): "True"
+  (podIP != ''): true
 ---
 apiVersion: v1
-kind: Service
+kind: Pod
 metadata:
-  name: dns-allowed
-spec:
-  (clusterIP != '' && clusterIP != 'None'): true
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: dns-denied
-spec:
-  (clusterIP != '' && clusterIP != 'None'): true
+  name: dns-denied-backend
+status:
+  (conditions[?type == 'Ready'].status | [0]): "True"
+  (podIP != ''): true
