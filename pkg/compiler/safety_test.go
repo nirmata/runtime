@@ -100,7 +100,7 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 
 // open and exec targets are paths, not addresses: they must not be run through
 // the network validation.
-func TestCompile_DoesNotValidateOpenAndPathValuesAsNetworkTargets(t *testing.T) {
+func TestCompile_DoesNotValidateOpenAndExecValuesAsNetworkTargets(t *testing.T) {
 	c := newTestCompiler(t)
 
 	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
