@@ -1,17 +1,3 @@
-// Package e2e_test holds kernel-level smoke tests: assertions that only a real
-// Linux kernel can answer, and that therefore have no business in the unit
-// suites under pkg/.
-//
-// These are NOT unit tests and deliberately do not assert "returns an error on
-// darwin" -- that would be coverage theatre. On any host that
-// cannot run them they SKIP with an explicit reason, except where the caller
-// opts into a hard requirement via NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 (the
-// workflow_dispatch LSM lane sets it, so a misconfigured runner fails loudly
-// instead of reporting a green skip).
-//
-// Run locally on Linux:
-//
-//	sudo -E go test ./test/e2e/ -run TestBPF -v
 package e2e_test
 
 import (
@@ -42,11 +28,10 @@ func requireBPFCapableHost(t *testing.T) {
 	}
 }
 
-// TestBPFEgressProgramLoadsAndVerifies loads the committed egressblock object
-// into the running kernel, which exercises BTF relocation and the full verifier
-// pass, and prints the verifier log on failure. It does not need BPF-LSM, so it
-// runs on ordinary Linux CI.
-func TestBPFEgressProgramLoadsAndVerifies(t *testing.T) {
+// TestBPFEgressMapsRoundTrip programs the egress maps through the same calls
+// egressmgr makes and reads them back. Verifier acceptance is TestBPFVerify's
+// job; what this adds is that the loaded maps are usable from Go.
+func TestBPFEgressMapsRoundTrip(t *testing.T) {
 	requireBPFCapableHost(t)
 
 	logger := logr.Discard()
@@ -117,11 +102,12 @@ func TestBPFEgressProgramLoadsAndVerifies(t *testing.T) {
 	}
 }
 
-// TestBPFLsmProgramsLoadAndVerify loads both LSM programs (file_open and
-// bprm_check_security). A BPF_PROG_TYPE_LSM program cannot be loaded at all
-// unless the kernel was booted with BPF-LSM active, so this skips by default and
-// only hard-fails when the caller declares the host is supposed to support it.
-func TestBPFLsmProgramsLoadAndVerify(t *testing.T) {
+// TestBPFLsmAttaches programs targets into both LSM programs and attaches each
+// to its hook, which is the assertion neither the map writes nor a bare load
+// makes. A BPF_PROG_TYPE_LSM program cannot be loaded at all unless the kernel
+// was booted with BPF-LSM active, so this skips by default and only hard-fails
+// when the caller declares the host is supposed to support it.
+func TestBPFLsmAttaches(t *testing.T) {
 	required := os.Getenv("NIRMATA_RUNTIME_REQUIRE_BPF_LSM") == "1"
 
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
