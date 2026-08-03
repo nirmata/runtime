@@ -8,7 +8,7 @@
 # default-deny a client that cannot reach the resolver resolves nothing, the
 # snooper sees no answer, and every arm of the test would report "blocked" for
 # the wrong reason.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-egress-dns

@@ -4,7 +4,7 @@
 # The referenced Service does not exist. Nothing can be programmed for it, so
 # under default-deny the client has no allowed destination at all -- the state
 # an operator most needs surfaced rather than inferred from a silent outage.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-egress-svcref-unresolved

@@ -2,6 +2,12 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
+  # propagation: None on every bind below. HostToContainer and Bidirectional
+  # require the source to already be a shared or slave mount, and Docker
+  # Desktop's LinuxKit VM has all three of these private -- the daemon rejects
+  # the run outright, so the cluster cannot be created at all. None binds the
+  # same filesystems; only host<->node propagation of later submounts is lost,
+  # which nothing here relies on.
   extraMounts:
   # Inspektor Gadget needs tracefs (debugfs) to attach kprobes/tracepoints.
   # Without this mount the kind node container cannot see the host kernel's
@@ -9,8 +15,15 @@ nodes:
   - hostPath: /sys/kernel/debug
     containerPath: /sys/kernel/debug
     readOnly: false
-    propagation: HostToContainer
+    propagation: None
   # BPF filesystem — required for pinning eBPF programs and maps.
   - hostPath: /sys/fs/bpf
     containerPath: /sys/fs/bpf
-    propagation: Bidirectional
+    propagation: None
+  # securityfs carries /sys/kernel/security/lsm, the only way to read which LSMs
+  # are active. A kind node does not mount it, so without this bind the agent
+  # cannot tell "BPF-LSM is off" apart from "I cannot see whether it is on".
+  - hostPath: /sys/kernel/security
+    containerPath: /sys/kernel/security
+    readOnly: true
+    propagation: None

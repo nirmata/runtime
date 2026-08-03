@@ -1,5 +1,5 @@
 # Invalid: spec.mode must be one of the enum values monitor|enforce.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: chainsaw-invalid-mode

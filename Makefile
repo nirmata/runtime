@@ -6,6 +6,19 @@ IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 HOST_PLATFORM ?= linux/$(shell go env GOARCH)
 
+CHART_DIR := charts/kyverno-runtime
+CHART_NAME := kyverno-runtime
+# helm push appends the chart name, so this resolves to
+# ghcr.io/nirmata/charts/kyverno-runtime and keeps the chart out of the image package.
+CHART_REGISTRY ?= oci://ghcr.io/nirmata/charts
+CHART_PACKAGE_DIR ?= dist
+# Default to whatever Chart.yaml carries; override either on the command line to
+# package a release without editing the file (the release workflow derives both
+# from the git tag).
+CHART_VERSION ?= $(shell awk '/^version:/ {print $$2; exit}' $(CHART_DIR)/Chart.yaml)
+CHART_APP_VERSION ?= $(shell awk '/^appVersion:/ {gsub(/"/, "", $$2); print $$2; exit}' $(CHART_DIR)/Chart.yaml)
+CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
+
 # Pinned tool versions. controller-gen stamps its own version into the
 # controller-gen.kubebuilder.io/version annotation of every generated CRD, so an
 # unpinned `go run` makes that annotation flap with whatever each developer or
@@ -106,12 +119,19 @@ test: test-unit
 test-unit:
 	go test -race ./...
 
+# test-examples validates every manifest under examples/ and every fenced yaml
+# policy snippet in the docs: strict decode, exactly one behavior kind, an
+# explicit mode, and a successful CEL compile. No cluster needed; `test-unit`
+# already covers it via ./...
+test-examples:
+	go test ./test/examples/...
+
 # test-chainsaw runs the CRD schema / admission conformance suite. It needs a
 # cluster with charts/kyverno-runtime/crds applied but NOT the daemon, no image
 # and no eBPF-capable kernel.
 test-chainsaw:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
 	chainsaw test --config test/chainsaw/.chainsaw.yaml --test-dir test/chainsaw/
 
 fmt:
@@ -137,7 +157,7 @@ ko-push:
 
 # Create a kind cluster and install all components
 kind:
-	kind create cluster --name $(KIND_CLUSTER_NAME) || true
+	kind create cluster --name $(KIND_CLUSTER_NAME) --config test/e2e/kind-config.yaml || true
 	$(MAKE) kind-install
 
 # Load the locally built image into a kind cluster
@@ -159,7 +179,7 @@ kind-install-prebuilt:
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.kyverno.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \
@@ -257,4 +277,20 @@ helm-verify:
 		| grep -q -- '--metrics-addr=:19090'
 	@echo "helm chart renders"
 
-.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-chainsaw fmt lint lint-docs helm-verify run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+# helm lints and packages the chart into $(CHART_PACKAGE_DIR) for local inspection or a
+# manual push. appVersion is the image tag the DaemonSet will pull, so a package whose
+# appVersion names an image that was never pushed installs and then fails ImagePull.
+helm: helm-verify
+	@mkdir -p $(CHART_PACKAGE_DIR)
+	helm package $(CHART_DIR) \
+		--destination $(CHART_PACKAGE_DIR) \
+		--version $(CHART_VERSION) \
+		--app-version $(CHART_APP_VERSION)
+	@echo "packaged $(CHART_PACKAGE) (appVersion $(CHART_APP_VERSION) -> $(IMAGE_REPOSITORY):$(CHART_APP_VERSION))"
+
+# helm-push publishes the packaged chart as an OCI artifact. Needs a prior
+# `helm registry login ghcr.io`; the release workflow does this from the tag instead.
+helm-push: helm
+	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
+
+.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

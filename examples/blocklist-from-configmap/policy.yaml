@@ -1,0 +1,14 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: blocklist-from-configmap
+spec:
+  mode: enforce
+  evaluationInterval: 30s
+  podSelector:
+    matchLabels:
+      app: blocklist-client
+  behaviors:
+  - network:
+      deny:
+        expression: resource.get("v1", "configmaps", "default", "ip-blocklist").data["ips"].split(",")

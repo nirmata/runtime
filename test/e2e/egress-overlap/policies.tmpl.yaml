@@ -6,7 +6,7 @@
 # Two default-deny policies selecting the same pod. SHARED_IP appears in both,
 # so one policy going away must not revoke it; SINGLE_IP appears only in A, so
 # A going away must revoke it.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-egress-overlap-a
@@ -25,7 +25,7 @@ spec:
         values:
         - "*"
 ---
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-egress-overlap-b

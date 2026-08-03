@@ -75,7 +75,7 @@ spec:
           kubectl apply -f /tmp/e2e-egress-policy.yaml
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-egress-enforce
@@ -135,6 +135,6 @@ spec:
           kubectl get runtimepolicy e2e-egress-enforce -o yaml || true
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-egress-enforce

@@ -1,0 +1,14 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: blocklist-from-http
+spec:
+  mode: enforce
+  evaluationInterval: 30s
+  podSelector:
+    matchLabels:
+      app: http-client
+  behaviors:
+  - network:
+      deny:
+        expression: http.get("http://ip-server.default.svc.cluster.local:8080").body.map(x, string(x))

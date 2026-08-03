@@ -10,10 +10,10 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch"]
-- apiGroups: ["runtime.kyverno.io"]
+- apiGroups: ["runtime.nirmata.io"]
   resources: ["runtimepolicies"]
   verbs: ["get", "list", "watch"]
-- apiGroups: ["runtime.kyverno.io"]
+- apiGroups: ["runtime.nirmata.io"]
   resources: ["runtimepolicies/status"]
   verbs: ["get", "update", "patch"]
 # daemon: resolves the Services a policy's serviceRefs name

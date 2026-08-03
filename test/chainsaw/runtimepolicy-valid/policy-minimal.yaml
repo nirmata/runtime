@@ -1,4 +1,4 @@
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: chainsaw-valid-minimal

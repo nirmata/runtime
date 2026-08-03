@@ -6,7 +6,7 @@
 # DEFAULT_DENY egress ("*" in deny) with exactly one allowed destination IP.
 # Scoped by podSelector to the client pod only, so the target servers and the
 # daemon itself keep their networking.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-egress-enforce

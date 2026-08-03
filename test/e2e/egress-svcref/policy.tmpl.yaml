@@ -6,7 +6,7 @@
 # Default-deny egress with exactly one allowed destination, named as a Service
 # rather than as an address. Scoped by podSelector to the client pod only, so
 # the backends and the daemon itself keep their networking.
-apiVersion: runtime.kyverno.io/v1alpha1
+apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: e2e-egress-svcref

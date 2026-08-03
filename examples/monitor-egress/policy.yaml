@@ -1,0 +1,14 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: monitor-egress
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: egress-client
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"

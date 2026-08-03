@@ -45,7 +45,7 @@ spec:
     # the wrong reason.
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-egress-overlap-a
@@ -54,7 +54,7 @@ spec:
             (conditions[?type == 'TargetsValid'].reason | [0]): AllTargetsSupported
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-egress-overlap-b
@@ -109,7 +109,7 @@ spec:
     try:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-egress-overlap-a
     - script:
@@ -158,7 +158,7 @@ spec:
     try:
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-egress-overlap-b
     - script:

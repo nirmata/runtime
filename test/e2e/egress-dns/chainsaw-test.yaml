@@ -79,7 +79,7 @@ spec:
     # "blocked", which would pass this test for the wrong reason.
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-egress-dns
@@ -232,6 +232,6 @@ spec:
           kubectl get runtimepolicy e2e-egress-dns -o yaml || true
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-egress-dns

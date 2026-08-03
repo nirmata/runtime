@@ -81,7 +81,7 @@ spec:
     # "blocked", which would pass this test for the wrong reason.
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-egress-svcref
@@ -245,7 +245,7 @@ spec:
           kubectl get runtimepolicy e2e-egress-svcref -o yaml || true
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-egress-svcref
 
@@ -260,7 +260,7 @@ spec:
     # rather than only programming nothing.
     - assert:
         resource:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           metadata:
             name: e2e-egress-svcref-unresolved
@@ -280,6 +280,6 @@ spec:
           kubectl get runtimepolicy e2e-egress-svcref-unresolved -o yaml || true
     - delete:
         ref:
-          apiVersion: runtime.kyverno.io/v1alpha1
+          apiVersion: runtime.nirmata.io/v1alpha1
           kind: RuntimePolicy
           name: e2e-egress-svcref-unresolved
