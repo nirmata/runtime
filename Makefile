@@ -131,8 +131,29 @@ test-examples:
 # and no eBPF-capable kernel.
 test-chainsaw:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	$(MAKE) wait-crds
 	chainsaw test --config test/chainsaw/.chainsaw.yaml --test-dir test/chainsaw/
+
+CRDS := runtimepolicies.runtime.nirmata.io reports.openreports.io clusterreports.openreports.io
+
+# `kubectl wait --for=condition=X` errors instead of retrying when .status.conditions
+# does not exist yet, which the CRD applied last reliably hits: "accessor error: <nil>
+# is of the type <nil>, expected []interface{}". Poll for the field first, then wait on
+# the condition so a CRD that never establishes still fails the target.
+wait-crds:
+	@for crd in $(CRDS); do \
+		i=0; \
+		while [ "$$i" -lt 60 ]; do \
+			[ -n "$$(kubectl get crd $$crd -o jsonpath='{.status.conditions}' 2>/dev/null)" ] && break; \
+			i=$$((i + 1)); \
+			sleep 1; \
+		done; \
+		if [ "$$i" -ge 60 ]; then \
+			echo "ERROR: crd/$$crd published no .status.conditions within 60s; it may not exist."; \
+			exit 1; \
+		fi; \
+		kubectl wait --for=condition=Established --timeout=60s crd/$$crd || exit 1; \
+	done
 
 fmt:
 	gofmt -l -w .
@@ -179,7 +200,7 @@ kind-install-prebuilt:
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	kubectl wait --for=condition=Established --timeout=60s crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
+	$(MAKE) wait-crds
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \
@@ -291,4 +312,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
