@@ -157,9 +157,19 @@ func (l *LsmManager) removePodCgids(rpUID, progType string, prog *progState, cgi
 // file_open and for bprm_check_security independently, and the sinks hold one
 // unqualified set: mirroring both targets would let a file_open detach remove
 // a cgroup the exec target still wants.
+//
+// The same unqualified set means a detach must also survive other policies:
+// two exec policies can select one pod, so a removal only reaches the sinks for
+// the cgroups no other exec attachment still holds.
 func (l *LsmManager) mirrorCgids(rpUID, progType string, cgids []uint64, add bool) {
 	if progType != lsm.PROG_TYPE_LSM_EXEC {
 		return
+	}
+	if !add {
+		cgids = l.cgidsUnwantedByOtherExecPolicies(rpUID, cgids)
+		if len(cgids) == 0 {
+			return
+		}
 	}
 	for _, sink := range l.cgroupSinks {
 		var err error
@@ -172,6 +182,38 @@ func (l *LsmManager) mirrorCgids(rpUID, progType string, cgids []uint64, add boo
 			l.logger.Error(err, "failed to mirror cgids to observation source", "uid", rpUID, "add", add)
 		}
 	}
+}
+
+// cgidsUnwantedByOtherExecPolicies filters cgids down to those no exec
+// attachment other than excludeUID still selects.
+//
+// Callers run before their own bookkeeping is torn down — podDeleted and the
+// selector sync both remove the pod from attachedPods after the cgid removal —
+// so excluding the caller's own policy is what makes this answer the question
+// "does anyone else still need this cgroup".
+func (l *LsmManager) cgidsUnwantedByOtherExecPolicies(excludeUID string, cgids []uint64) []uint64 {
+	wanted := make(map[uint64]struct{})
+	for uid, la := range l.lsmAttachments {
+		if uid == excludeUID {
+			continue
+		}
+		if _, ok := la.progs[lsm.PROG_TYPE_LSM_EXEC]; !ok {
+			continue
+		}
+		for _, pod := range la.attachedPods {
+			for _, cgid := range pod.cgids {
+				wanted[cgid] = struct{}{}
+			}
+		}
+	}
+
+	unwanted := make([]uint64, 0, len(cgids))
+	for _, cgid := range cgids {
+		if _, ok := wanted[cgid]; !ok {
+			unwanted = append(unwanted, cgid)
+		}
+	}
+	return unwanted
 }
 
 // observationUnavailable records a policy condition for an observation failure:

@@ -24,11 +24,22 @@ func selfCgroupID(t *testing.T) uint64 {
 	if err != nil {
 		t.Fatalf("reading /proc/self/cgroup: %v", err)
 	}
-	fields := strings.SplitN(strings.TrimSpace(string(b)), ":", 3)
-	if len(fields) != 3 {
+	// A hybrid or cgroup v1 host lists one line per controller, so the unified
+	// entry has to be picked out by its empty controller field rather than by
+	// splitting the whole file — which on those hosts yields a path with
+	// newlines in it and an unnecessary skip.
+	var unified string
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.SplitN(strings.TrimSpace(line), ":", 3)
+		if len(fields) == 3 && fields[0] == "0" && fields[1] == "" {
+			unified = fields[2]
+			break
+		}
+	}
+	if unified == "" {
 		t.Skipf("no cgroup v2 line in /proc/self/cgroup: %q", b)
 	}
-	fi, err := os.Stat("/sys/fs/cgroup" + fields[2])
+	fi, err := os.Stat("/sys/fs/cgroup" + unified)
 	if err != nil {
 		t.Skipf("cgroup v2 path not present: %v", err)
 	}

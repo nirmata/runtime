@@ -127,6 +127,14 @@ func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	if !ok {
 		return
 	}
+	// Closing the enforcers releases their own cgroup maps, but the sinks are
+	// manager-scoped and outlive this attachment: its pods have to leave them
+	// here, while the bookkeeping that identifies them still exists.
+	if _, mirrored := la.progs[lsm.PROG_TYPE_LSM_EXEC]; mirrored {
+		for _, pod := range la.attachedPods {
+			l.mirrorCgids(compiledRp.UID, lsm.PROG_TYPE_LSM_EXEC, pod.cgids, false)
+		}
+	}
 	for _, prog := range la.progs {
 		if err := prog.enf.Close(); err != nil {
 			l.logger.Error(err, "failed to close bpf lsm enforcer")

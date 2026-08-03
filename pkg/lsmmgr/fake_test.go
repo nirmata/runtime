@@ -559,3 +559,53 @@ func attachedPolicyUIDs(pr *podRepresentation) []string {
 	sort.Strings(out)
 	return out
 }
+
+// fakeSink is a CgroupSink that records the effective admitted set, so a test
+// can assert what the observation-only sources would actually see.
+type fakeSink struct {
+	mu    sync.Mutex
+	cgids map[uint64]struct{}
+}
+
+func newFakeSink() *fakeSink {
+	return &fakeSink{cgids: map[uint64]struct{}{}}
+}
+
+func (s *fakeSink) AddCgids(cgids []uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range cgids {
+		s.cgids[c] = struct{}{}
+	}
+	return nil
+}
+
+func (s *fakeSink) DeleteCgids(cgids []uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range cgids {
+		delete(s.cgids, c)
+	}
+	return nil
+}
+
+func (s *fakeSink) set() []uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]uint64, 0, len(s.cgids))
+	for c := range s.cgids {
+		out = append(out, c)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// newHarnessWithSink is newHarness plus a recording CgroupSink, which
+// NewLsmManager only accepts at construction.
+func newHarnessWithSink(t *testing.T) (*harness, *fakeSink) {
+	t.Helper()
+	sink := newFakeSink()
+	h := newHarness(t)
+	h.l.cgroupSinks = []CgroupSink{sink}
+	return h, sink
+}

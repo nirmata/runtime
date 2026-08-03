@@ -128,9 +128,13 @@ func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 		ev.Time = s.clock()
 
 		if s.log.V(2).Enabled() {
+			// argvLen, not argv: arguments routinely carry credentials (-p, a
+			// bearer token, a signed URL) and this line would copy them into
+			// the log whenever verbosity is raised. The count is what tells us
+			// decode agreed with the kernel about how many there were.
 			s.log.V(2).Info("observed exec", "source", SourceName,
 				"cgroupID", ev.CgroupID, "pid", ev.PID,
-				"filename", ev.Exec.Filename, "argv", ev.Exec.Argv)
+				"filename", ev.Exec.Filename, "argvLen", len(ev.Exec.Argv))
 		}
 
 		select {

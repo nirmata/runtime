@@ -373,3 +373,73 @@ func assertConcurrentState(
 		}
 	}
 }
+
+// TestMirrorCgidsSurvivesOverlappingExecPolicies pins that a pod selected by two
+// exec policies keeps its cgroup in the observation sinks until the last of them
+// lets go. The sinks hold one unqualified set, so a per-policy detach that
+// forwarded its delta verbatim would blind the surviving policy.
+func TestMirrorCgidsSurvivesOverlappingExecPolicies(t *testing.T) {
+	h, sink := newHarnessWithSink(t)
+	sel := selFor(map[string]string{"app": "web"})
+
+	execOnly := func(uid string) *compiler.EvaluationResult {
+		return result(uid, compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/nc"}))
+	}
+
+	for _, uid := range []string{"rp1", "rp2"} {
+		if err := h.l.RuntimePolicyEvent(execOnly(uid), events.EventTypeCreate); err != nil {
+			t.Fatalf("create %s: %v", uid, err)
+		}
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Fatalf("sink after both policies = %v, want [11 12]", got)
+	}
+
+	// rp1 goes away; rp2 still selects the pod, so the sink must not change.
+	if err := h.l.RuntimePolicyEvent(execOnly("rp1"), events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rp1: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Errorf("sink after deleting rp1 = %v, want [11 12] -- rp2 still selects podWeb", got)
+	}
+
+	// rp2 is the last holder, so now the cgroups leave the sink.
+	if err := h.l.RuntimePolicyEvent(execOnly("rp2"), events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rp2: %v", err)
+	}
+	if got := sink.set(); len(got) != 0 {
+		t.Errorf("sink after deleting the last exec policy = %v, want empty", got)
+	}
+}
+
+// TestMirrorCgidsPodDeleteWithOverlappingExecPolicies is the pod-side inverse:
+// the pod itself going away must clear the sink even though two attachments
+// referenced it.
+func TestMirrorCgidsPodDeleteWithOverlappingExecPolicies(t *testing.T) {
+	h, sink := newHarnessWithSink(t)
+	sel := selFor(map[string]string{"app": "web"})
+
+	for _, uid := range []string{"rp1", "rp2"} {
+		if err := h.l.RuntimePolicyEvent(
+			result(uid, compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/nc"})),
+			events.EventTypeCreate); err != nil {
+			t.Fatalf("create %s: %v", uid, err)
+		}
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11}) {
+		t.Fatalf("sink = %v, want [11]", got)
+	}
+
+	if err := h.l.PodDeleted("podWeb"); err != nil {
+		t.Fatalf("PodDeleted: %v", err)
+	}
+	if got := sink.set(); len(got) != 0 {
+		t.Errorf("sink after the pod was deleted = %v, want empty", got)
+	}
+}
