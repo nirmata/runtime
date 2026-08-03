@@ -24,6 +24,10 @@ var (
 	ErrNULInExecValue = errors.New("path contains a NUL byte")
 	// ErrExecValueTooLong reports a value longer than MaxExecPathLen.
 	ErrExecValueTooLong = fmt.Errorf("path is longer than %d bytes", MaxExecPathLen)
+	// ErrRelativeExecValue reports a value that is not an absolute path. The
+	// kernel resolves every path it can match with bpf_d_path, which always
+	// yields one, so a relative value programs a key nothing can ever produce.
+	ErrRelativeExecValue = errors.New("path must be absolute: the kernel matches resolved paths, so a bare program name never matches")
 )
 
 // ExecValue is the parsed form of one program path value. Exactly one of the
@@ -48,7 +52,7 @@ type ExecValue struct {
 //   - StarTarget ("*") yields Star
 //   - anything else yields Path, a literal never split into tokens and never
 //     interpreted as a glob
-//   - an empty, NUL-bearing or over-long value is an error
+//   - an empty, NUL-bearing, over-long or relative value is an error
 func ParseExecValue(raw string) (ExecValue, error) {
 	cleaned := strings.Trim(raw, " \t\r\n")
 
@@ -64,6 +68,9 @@ func ParseExecValue(raw string) (ExecValue, error) {
 
 	case len(cleaned) > MaxExecPathLen:
 		return ExecValue{}, ErrExecValueTooLong
+
+	case cleaned[0] != '/':
+		return ExecValue{}, ErrRelativeExecValue
 
 	default:
 		return ExecValue{Path: cleaned}, nil

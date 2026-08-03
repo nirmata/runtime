@@ -15,12 +15,14 @@ func TestParseExecValue(t *testing.T) {
 		wantErr  error
 	}{
 		{name: "absolute path", in: "/usr/bin/curl", wantPath: "/usr/bin/curl"},
-		{name: "bare program name", in: "kubectl", wantPath: "kubectl"},
+		{name: "bare program name rejected", in: "kubectl", wantErr: ErrRelativeExecValue},
 		{name: "path with spaces inside", in: "/opt/my app/run", wantPath: "/opt/my app/run"},
 		{name: "path with brackets", in: "/tmp/[cache]/bin", wantPath: "/tmp/[cache]/bin"},
 		{name: "path with quotes", in: `/tmp/"odd"/bin`, wantPath: `/tmp/"odd"/bin`},
 		{name: "interior star is a literal, not a glob", in: "/usr/bin/*", wantPath: "/usr/bin/*"},
-		{name: "argv-looking value is one literal path", in: "kubectl delete", wantPath: "kubectl delete"},
+		{name: "argv-looking value rejected, and would be one literal path anyway", in: "kubectl delete", wantErr: ErrRelativeExecValue},
+		{name: "dot-relative rejected", in: "./relative", wantErr: ErrRelativeExecValue},
+		{name: "parent-relative rejected", in: "../up", wantErr: ErrRelativeExecValue},
 		{name: "surrounding whitespace trimmed", in: "  /bin/sh\t", wantPath: "/bin/sh"},
 		{name: "trailing newline from a YAML block scalar", in: "/bin/sh\n", wantPath: "/bin/sh"},
 		{name: "carriage return and newline", in: "/bin/sh\r\n", wantPath: "/bin/sh"},
@@ -72,9 +74,7 @@ func TestExecValuePreservesLiteralPaths(t *testing.T) {
 		`/tmp/"odd"/[dir]/bin`,
 		"/usr/bin/*",
 		"/tmp/x'y",
-		"kubectl",
-		"./relative",
-		"../up",
+
 		"/" + strings.Repeat("a", MaxExecPathLen-1),
 		"/eé中/bin",
 	}

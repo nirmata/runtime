@@ -215,10 +215,16 @@ current limits, not rounding errors:
   `/24`, and hostnames cannot be programmed (hostnames in particular cannot be resolved at
   policy-evaluation time). They are reported through `TargetsValid=False` with the reason per
   value. A CIDR of `/24` or narrower is expanded into individual addresses.
-- **`open` and `exec` values are literal paths, bounded at 127 bytes.** They are never split into
-  tokens and never treated as globs; only the whole value `"*"` is the default-deny sentinel. A
-  longer value, an empty one, or one carrying a NUL byte is rejected at admission and reported
-  through `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives from an `expression`.
+- **`open` and `exec` values are absolute literal paths, bounded at 127 bytes.** They are never
+  split into tokens and never treated as globs; only the whole value `"*"` is the default-deny
+  sentinel. A longer value, an empty one, one carrying a NUL byte, or a relative one is rejected
+  at admission and reported through `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives
+  from an `expression`.
+- **`exec` selects a binary, never a command.** The key is the resolved program path, so allowing
+  `/usr/bin/kubectl` allows every subcommand it has; arguments are not part of the key and cannot
+  be enforced on. `kubectl` and `kubectl delete` are both rejected rather than accepted and then
+  silently never matched — the kernel resolves paths with `bpf_d_path`, which always yields an
+  absolute one.
 - **Observations that cannot be attributed to a pod are dropped** and counted in
   `nirmata_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.
