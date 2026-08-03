@@ -1,10 +1,10 @@
 # Positioning
 
-What this project is for, given a cluster that already runs the rest of the stack.
+This document articulates what Kyverno Runtime is intended for, and what it does not do.
 
 ## The assumed stack
 
-Two distinct proxies, not one, and the difference matters throughout:
+Here are the in cluster components assumed, other than Kyverno Runtime:
 
 - **An LLM/MCP gateway.** Agents are pointed at it — `ANTHROPIC_BASE_URL`, an MCP broker
   endpoint. It governs models, tool calls, budgets and approvals for traffic addressed to
@@ -18,16 +18,13 @@ Two distinct proxies, not one, and the difference matters throughout:
   NetworkPolicies, and injection of the proxy environment and CA bundle.
 - **A CNI with NetworkPolicy** — identity-based L3/L4, FQDN-aware egress, ingress,
   encryption, flow observability.
-
-The MITM proxy substantially widens coverage, and it does not change the shape of the
-problem: it still needs the workload to route through it and to trust its CA. Both are
-provisioning facts about a workload someone declared. Neither holds for a workload nobody
-declared.
+- **RBAC** — fine roles and role bindings are configured -- ideally automated with Kyverno.
 
 ## The claim
 
-Nirmata Runtime is the **non-cooperative plane**: the layer that verifies — and where
-needed compels — what every cooperative control can only assume, expressed as one
+Kyverno Runtime is the **ground-truth plane**: the layer that establishes what a workload
+actually did — and where needed makes the chokepoint mandatory — where every cooperative
+control can only assume, expressed as one
 validated policy object with pod-attributed findings.
 
 Every other layer's guarantee is conditional on the workload's cooperation:
@@ -40,44 +37,25 @@ Every other layer's guarantee is conditional on the workload's cooperation:
 - **NetworkPolicy** decides connectivity. Its drops are invisible to the operator, it has
   no process identity, and no API surface reports whether the CNI enforces it at all.
 
-Nothing in that stack answers *"is the rest of the stack actually in effect for this pod,
-right now?"* — which is the question this project exists to answer.
+Nothing in that stack answers:
+
+- Is this workload trying to bypass the proxies?
+- Is this a shadow AI workload?
 
 ## Layers
 
-| Layer | Owns | Blind to |
+| Layer | Governs | Blind to |
 | --- | --- | --- |
 | LLM/MCP gateway | model, tools, prompts, budgets, approvals | anything not addressed to it |
 | MITM TLS proxy | content of any intercepted HTTPS, including CLI tool calls that skip the gateway | anything that does not route through it or does not trust its CA |
 | Kyverno admission | what may be created; injects env and CA | whether the process honors either |
 | CNI NetworkPolicy | who may reach whom, L3/L4 and FQDN | attempts, process identity, its own enforcement status |
-| **Nirmata Runtime** | **per-pod in-kernel fact: protocol identity of every flow, exec and file enforcement, attempts as Reports** | content, which requires the client's cooperation |
+| **Kyverno Runtime** | **per-pod in-kernel fact: protocol identity of every flow, exec and file enforcement, attempts as Reports** | content, which requires the client's cooperation |
 
 The mechanism — eBPF at `cgroup_skb` and BPF-LSM — is shared with other runtime tools. The
 difference is altitude: an admission-validated CRD, status conditions per node, findings as
 OpenReports objects in the offending namespace, and CEL expressions, rather than tracing
 primitives and a JSON event stream.
-
-### Enforcement mechanism
-
-Runtime tools divide on a sharper line than eBPF-or-not: whether the operation is stopped,
-or the process is killed after it starts.
-
-| Tool | Mechanism | Guarantee |
-| --- | --- | --- |
-| Tetragon `Sigkill` | `bpf_send_signal` from BPF | Kills the calling process synchronously — but the operation may still complete. Its own docs note a SIGKILL during `write()` does not guarantee the data is unwritten |
-| Tetragon `Override` | `bpf_override_return` | The function never runs. Restricted to syscalls and security-check functions, and needs `CONFIG_BPF_KPROBE_OVERRIDE` and the kernel error-injection framework |
-| KubeArmor | AppArmor, BPF-LSM, SELinux for the host | Inline denial at an LSM hook. Positioned explicitly against killing a process once malicious intent is already observed |
-| This project | BPF-LSM, `cgroup_skb` | `-EPERM` at `file_open` and `bprm_check_security`; packets dropped at the cgroup hook. No kill path and no error-injection dependency |
-
-Neither Tetragon action is a userspace kill — both run in kernel BPF — but only `Override`
-prevents the operation, which is why Tetragon documents combining the two when the
-operation itself must not complete.
-
-The same standard applied here: `open` and `exec` are genuinely inline, because an LSM hook
-returns before the operation. `protocol` and `network` are not equivalent. A `cgroup_skb`
-program cannot forge a reset, so a denied flow has already completed its handshake and gets
-its first data segment dropped — the payload is prevented, the connection is not.
 
 ## Cooperation is the dividing line
 
@@ -98,7 +76,7 @@ in marketing will not survive contact with an operator.
 
 Two mechanisms make the distinction pay:
 
-- **Compelled routing** — per-pod cgroup default-deny egress permitting only DNS, the
+- **Mandatory routing** — per-pod cgroup default-deny egress permitting only DNS, the
   proxy, and an explicit allowlist. This is the one enforcement a proxy cannot perform on
   itself.
 - **Reconciliation** — the proxy reports *N* calls for an identity; the kernel observed *M*
@@ -113,7 +91,7 @@ workload: declared, labelled, selected by a RuntimePolicy, image sanctioned, pro
 with the proxy CA. It calls an MCP tool to fetch incident tickets, and one ticket body
 carries injected instructions.
 
-Nothing here bypasses anything — the agent cooperates fully — so compelled routing and
+Nothing here bypasses anything — the agent cooperates fully — so mandatory routing and
 reconciliation contribute nothing. That is what makes it a useful test.
 
 **Recognizing the injection belongs to the proxies, and to nothing else.** The gateway sees
@@ -190,6 +168,30 @@ this provider, and it was denied"* for a workload that was never provisioned, ne
 declared, and never cooperated. What was said in that connection is not knowable, and the
 docs should not imply otherwise.
 
+### Enforcement limits
+
+Coarse is not a hedge, it is the shape of what a kernel hook can decide. Three limits are
+worth stating before writing a policy, because each one is a place an operator could expect
+more than is delivered.
+
+**`exec` selects a binary, never a command.** The map key is the resolved program path.
+Allowing `/usr/bin/kubectl` allows `kubectl delete` exactly as much as `kubectl get`;
+arguments are not part of the key and cannot be enforced on at all. For a binary with a
+subcommand surface — kubectl, aws, git, curl — the useful question is whether the workload
+should be able to run it, not which way it uses it. Command-level questions belong to
+observation, below.
+
+**Paths are absolute and exact.** The kernel resolves what it matches with `bpf_d_path`,
+which always yields an absolute path, so a value has to be one too. There is no basename
+matching and no globbing: `/usr/bin/curl` does not cover a copy at `/tmp/curl`, and denying
+one binary does not deny the interpreter that could re-implement it.
+
+**Egress denial is not connection denial.** `open` and `exec` are genuinely inline, because
+an LSM hook returns before the operation. `protocol` and `network` are not equivalent: a
+`cgroup_skb` program cannot forge a reset, so a denied flow has already completed its
+handshake and has its first data segment dropped. The payload is prevented; the connection
+is not, and the client sees a stall rather than a refusal.
+
 ### Discover first
 
 Absent a `podSelector` this selects every pod on the node, and `monitor` blocks nothing —
@@ -212,7 +214,7 @@ spec:
         values: ["*"]
 ```
 
-### Then compel routing
+### Then make routing mandatory
 
 For workloads that are supposed to use the proxy, this makes it non-optional. Note that
 neither behavior depends on the workload honoring an environment variable or trusting a
@@ -280,6 +282,30 @@ legitimate caller in most workloads. The ServiceAccount token deny is the one to
 `monitor` first — plenty of in-cluster clients read it legitimately, and the finding tells
 you which before anything is enforced.
 
+### Signal, not noise
+
+Observation at this granularity produces far more than an operator can read. Every exec in
+every selected pod, every flow's protocol and decision, every destination — a discovery
+policy across a busy node is a firehose, and a finding nobody reads is not a detection.
+
+The filter is a CEL predicate evaluated in userspace, per event, against the observed
+event itself. It is where a question too specific for the kernel gets asked: the kernel
+knows a pod executed `/usr/bin/kubectl`, and the predicate is what narrows that to the
+argument pattern actually worth a finding — a secret being read, a namespace being
+deleted, a provider endpoint being reached by a workload nobody declared as an agent.
+
+This is the other half of the coarse/fine split, and it is why the enforcement limits above
+are not the whole story. `exec` cannot enforce on arguments; the argv is nonetheless
+observed, and a predicate over it turns a stream of every process start into the few that
+mean something.
+
+The environment a per-event predicate runs in deliberately excludes the `http`, `resource`
+and `json` libraries available elsewhere. A program evaluated at event rate must not be
+able to make a network call or read from the API server — the cost is unbounded and the
+failure mode is a daemon that stalls under load. Enrichment that needs either belongs on
+the `evaluationInterval` path, batched, where a slow answer delays a decision rather than a
+packet.
+
 ## What this project does not do
 
 Destination scoping belongs to the CNI, which does it better: identity-based L3/L4,
@@ -293,12 +319,3 @@ hard-denies such as the instance metadata endpoint, not as an egress firewall.
 Semantic AI enforcement — which model, which tool, which prompt — belongs to the proxy. A
 weaker duplicate evaluated in userspace against traffic the kernel cannot decrypt would be
 strictly worse than what already exists.
-
-## Self-attestation is a prerequisite, not polish
-
-A product whose pitch is attesting other layers has to attest itself first. The recurring
-defect class in this repository's history is *the control appears applied and enforces
-nothing* — thirteen instances fixed across two reviews. Until a policy that cannot be
-compiled, a pod whose cgroup cannot be resolved, and a policy with no mode each produce a
-condition or a metric that says so, the claim above is not one this project can make about
-itself.
