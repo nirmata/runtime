@@ -1,0 +1,34 @@
+# CRD conformance: every shipped example policy must be ACCEPTED by the apiserver.
+#
+# Asserts what the Go suite in test/examples cannot: the CRD's
+# x-kubernetes-validations CEL rules run only in the apiserver, so an example
+# whose behavior item carries two of network/exec/open compiles fine offline and
+# is rejected here.
+#
+# Requires: charts/kyverno-runtime/crds applied. No daemon, no eBPF. Workload
+# manifests from the example directories are deliberately not applied.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: examples-accepted
+spec:
+  steps:
+  - name: apply-every-example-policy
+    try:
+    - script:
+        content: ./render-policies.sh | kubectl apply -f -
+    # Read every applied object back by name. An apply that was pruned to
+    # nothing, or a name the apiserver stored differently, fails the comparison.
+    - script:
+        content: |
+          set -eu
+          expected=$(./render-policies.sh | grep -c '^kind:[ ]*RuntimePolicy[ ]*$')
+          actual=$(./render-policies.sh | kubectl get -f - -o name | grep -c 'runtimepolicy')
+          if [ "$expected" != "$actual" ]; then
+            echo "applied $expected example policies, apiserver returned $actual" >&2
+            exit 1
+          fi
+          echo "apiserver accepted and stored $actual example RuntimePolicy manifests"
+    finally:
+    - script:
+        content: ./render-policies.sh | kubectl delete --ignore-not-found -f -

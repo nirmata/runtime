@@ -9,32 +9,44 @@ import (
 
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
+const maxRequeues = 5
+
+type queueKey struct {
+	Type string
+	// Key is "<namespace>/<name>" for create and update, and the object UID for
+	// delete.
+	Key string
+}
+
 type podWatcher struct {
 	factory  informers.SharedInformerFactory
 	informer cache.SharedIndexInformer
-	// we store pod cgroup infos here as well to avoid any case of pods being
-	// deleted and we are unable to retrieve their cgroup infos
-	podCgInfos map[string][]*containers.ContainerCgroupInfo
-	queue      workqueue.TypedRateLimitingInterface[events.Event[*corev1.Pod]]
+	lister   corev1listers.PodLister
+	queue    workqueue.TypedRateLimitingInterface[queueKey]
 
 	nodeName      string
-	eventHandlers []events.EventIface
+	eventHandlers []events.PodEventHandler
 	log           logr.Logger
 }
 
 func (w *podWatcher) Start(ctx context.Context) error {
+	defer w.queue.ShutDown()
+
 	w.factory.Start(ctx.Done())
 
 	timeOut, cancel := context.WithTimeout(ctx, time.Second*30)
@@ -50,7 +62,7 @@ func (w *podWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.EventIface) *podWatcher {
+func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers []events.PodEventHandler) *podWatcher {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		client,
 		0,
@@ -63,55 +75,65 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 	)
 
 	queue := workqueue.NewTypedRateLimitingQueue(
-		workqueue.DefaultTypedControllerRateLimiter[events.Event[*corev1.Pod]](),
+		workqueue.DefaultTypedControllerRateLimiter[queueKey](),
 	)
 
-	podInformer := factory.Core().V1().Pods().Informer()
-	podCgInfos := make(map[string][]*containers.ContainerCgroupInfo)
+	pods := factory.Core().V1().Pods()
+	podInformer := pods.Informer()
 
-	// AddEventHandler only errors if the informer has already stopped, which
-	// cannot happen here since it hasn't been started yet.
+	w := &podWatcher{
+		factory:       factory,
+		queue:         queue,
+		informer:      podInformer,
+		lister:        pods.Lister(),
+		nodeName:      nodeName,
+		eventHandlers: eventHandlers,
+		log:           ctrl.Log.WithName("podwatcher"),
+	}
+
+	// AddEventHandler only errors once the informer has stopped, which cannot
+	// happen before Start.
 	_, _ = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
 				return
 			}
-			queue.Add(events.Event[*corev1.Pod]{Obj: pod, Type: events.EventTypeCreate})
+			key, err := cache.MetaNamespaceKeyFunc(pod)
+			if err != nil {
+				w.log.Error(err, "cannot derive a queue key for pod", "pod", pod.Name, "namespace", pod.Namespace)
+				return
+			}
+			w.queue.Add(queueKey{Type: events.EventTypeCreate, Key: key})
 		},
-		UpdateFunc: func(_, new interface{}) {
-			pod, ok := new.(*corev1.Pod)
+		UpdateFunc: func(_, newObj interface{}) {
+			pod, ok := newObj.(*corev1.Pod)
 			if !ok {
 				return
 			}
-			queue.Add(events.Event[*corev1.Pod]{Obj: pod, Type: events.EventTypeUpdate})
+			key, err := cache.MetaNamespaceKeyFunc(pod)
+			if err != nil {
+				w.log.Error(err, "cannot derive a queue key for pod", "pod", pod.Name, "namespace", pod.Namespace)
+				return
+			}
+			w.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: key})
 		},
 		DeleteFunc: func(obj interface{}) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
 				// handle cache.DeletedFinalStateUnknown
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				unknown, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
 					return
 				}
-				pod, ok = tombstone.Obj.(*corev1.Pod)
+				pod, ok = unknown.Obj.(*corev1.Pod)
 				if !ok {
 					return
 				}
 			}
-			queue.Add(events.Event[*corev1.Pod]{Obj: pod, Type: events.EventTypeDelete})
+			w.queue.Add(queueKey{Type: events.EventTypeDelete, Key: string(pod.UID)})
 		},
 	})
-
-	w := &podWatcher{
-		factory:       factory,
-		queue:         queue,
-		informer:      podInformer,
-		nodeName:      nodeName,
-		eventHandlers: eventHandlers,
-		podCgInfos:    podCgInfos,
-		log:           ctrl.Log.WithName("podwatcher"),
-	}
 
 	return w
 }
@@ -122,132 +144,114 @@ func (w *podWatcher) runWorker() {
 }
 
 func (w *podWatcher) processNextWorkItem() bool {
-	ev, shutdown := w.queue.Get()
+	key, shutdown := w.queue.Get()
 	if shutdown {
 		return false
 	}
+	// without Done the item stays in the queue's processing set and requeued
+	// events are never handed out again
+	defer w.queue.Done(key)
 
 	var err error
-
-	switch ev.Type {
-	case events.EventTypeCreate:
-		err = w.handleCreate(ev)
-	case events.EventTypeUpdate:
-		err = w.handleUpdate(ev)
+	switch key.Type {
+	case events.EventTypeCreate, events.EventTypeUpdate:
+		namespace, name, keyErr := cache.SplitMetaNamespaceKey(key.Key)
+		if keyErr != nil {
+			w.log.Error(keyErr, "malformed queue key, dropping event", "key", key.Key)
+			break
+		}
+		// the pod is read at processing time so a retry acts on its current
+		// state rather than on the revision that was queued
+		pod, getErr := w.lister.Pods(namespace).Get(name)
+		if apierrors.IsNotFound(getErr) {
+			w.log.V(2).Info("pod missing from the lister, dropping event", "pod", key.Key, "type", key.Type)
+			break
+		}
+		if getErr != nil {
+			err = fmt.Errorf("fetching pod %s from lister: %w", key.Key, getErr)
+			break
+		}
+		err = w.handleCreateOrUpdate(pod, key.Type)
 	case events.EventTypeDelete:
-		err = w.handleDelete(ev)
+		err = w.handleDelete(key.Key)
 	}
 
 	if err != nil {
-		requeues := w.queue.NumRequeues(ev)
-		// don't try the same event more than 5 times
-		if requeues >= 5 {
-			w.log.Error(err, "giving up on event after max requeues", "pod", fmt.Sprintf("%s/%s", ev.Obj.Namespace, ev.Obj.Name), "type", ev.Type, "requeues", requeues)
-			w.queue.Forget(ev)
+		requeues := w.queue.NumRequeues(key)
+		if requeues >= maxRequeues {
+			w.log.Error(err, "giving up on event after max requeues", "pod", key.Key, "type", key.Type, "requeues", requeues)
+			w.queue.Forget(key)
 			return true
 		}
-
-		// we need to ensure that we are getting the latest pod during requeuing updates
-		// because the pod object's status is what gets used to determine the container ids
-		if ev.Type == events.EventTypeUpdate {
-			current, fetchErr := w.factory.Core().V1().Pods().Lister().Pods(ev.Obj.Namespace).Get(ev.Obj.Name)
-			if fetchErr != nil {
-				w.log.Error(fetchErr, "failed to fetch latest pod from lister, giving up on update", "pod", fmt.Sprintf("%s/%s", ev.Obj.Namespace, ev.Obj.Name))
-				w.queue.Forget(ev)
-				return true
-			}
-			ev.Obj = current
-			w.queue.AddRateLimited(ev)
-			return true
-		} else {
-			w.queue.AddRateLimited(ev)
-			return true
-		}
+		w.queue.AddRateLimited(key)
+		return true
 	}
 
-	w.queue.Forget(ev)
+	w.queue.Forget(key)
 	return true
 }
 
-func (w *podWatcher) handleCreate(ev events.Event[*corev1.Pod]) error {
-	pod := ev.Obj
-	cgInfos, err := containers.ResolveCgInfos(pod)
-	if err != nil {
-		return err
+// ResolveCgInfos reports partial success, so the resolved set is always handed
+// to the handlers even when some containers could not be attributed.
+func (w *podWatcher) handleCreateOrUpdate(pod *corev1.Pod, evType string) error {
+	cgInfos, resolveErr := containers.ResolveCgInfos(pod)
+	if resolveErr != nil {
+		w.log.V(2).Info("some containers of the pod could not be attributed to a cgroup",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name), "podUid", string(pod.UID),
+			"resolved", len(cgInfos), "reason", resolveErr.Error())
 	}
 
-	if len(cgInfos) != 0 {
-		w.podCgInfos[string(pod.UID)] = cgInfos
-	}
+	fanOutErr := w.fanOut(pod, cgInfos, evType)
 
-	errChan := make(chan error, len(w.eventHandlers))
-	var wg sync.WaitGroup
-	wg.Add(len(w.eventHandlers))
-	for _, e := range w.eventHandlers {
-		go func() {
-			defer wg.Done()
-			if err := e.PodEvent(*pod, cgInfos, events.EventTypeCreate); err != nil {
-				errChan <- err
-			}
-		}()
+	if resolveRetryable(cgInfos, resolveErr) {
+		return errors.Join(fanOutErr, resolveErr)
 	}
-	wg.Wait()
-	close(errChan)
-
-	var errs []error
-	for err := range errChan {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+	return fanOutErr
 }
 
-func (w *podWatcher) handleUpdate(ev events.Event[*corev1.Pod]) error {
-	pod := ev.Obj
-	cgInfos, err := containers.ResolveCgInfos(pod)
-	if err != nil {
-		return err
-	}
-
-	if len(cgInfos) != 0 {
-		w.podCgInfos[string(pod.UID)] = cgInfos
-	}
-
-	errChan := make(chan error, len(w.eventHandlers))
-	var wg sync.WaitGroup
-	wg.Add(len(w.eventHandlers))
-	for _, e := range w.eventHandlers {
-		go func() {
-			defer wg.Done()
-			if err := e.PodEvent(*pod, cgInfos, events.EventTypeUpdate); err != nil {
-				errChan <- err
-			}
-		}()
-	}
-	wg.Wait()
-	close(errChan)
-
-	var errs []error
-	for err := range errChan {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+// only a total resolution failure is worth a retry, since that is what a
+// container mid-creation looks like
+func resolveRetryable(cgInfos []*containers.ContainerCgroupInfo, err error) bool {
+	return err != nil && len(cgInfos) == 0
 }
 
-func (w *podWatcher) handleDelete(ev events.Event[*corev1.Pod]) error {
-	pod := ev.Obj
-	cgInfos := w.podCgInfos[string(pod.UID)]
-	delete(w.podCgInfos, string(pod.UID))
+// every handler's teardown is keyed by pod UID, so the UID is all a delete
+// carries
+func (w *podWatcher) handleDelete(uid string) error {
+	return w.dispatch(
+		func(handler events.PodEventHandler) string {
+			return fmt.Sprintf("%T.PodDeleted(%s)", handler, uid)
+		},
+		func(handler events.PodEventHandler) error {
+			return handler.PodDeleted(uid)
+		})
+}
 
+func (w *podWatcher) fanOut(pod *corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, evType string) error {
+	return w.dispatch(
+		func(handler events.PodEventHandler) string {
+			return fmt.Sprintf("%T.PodEvent(%s/%s, %s)", handler, pod.Namespace, pod.Name, evType)
+		},
+		func(handler events.PodEventHandler) error {
+			return handler.PodEvent(*pod, cgInfos, evType)
+		})
+}
+
+// utils.Guard turns a panicking handler into an error on this item instead of
+// taking the worker down
+func (w *podWatcher) dispatch(describe func(events.PodEventHandler) string, call func(events.PodEventHandler) error) error {
 	errChan := make(chan error, len(w.eventHandlers))
 	var wg sync.WaitGroup
 	wg.Add(len(w.eventHandlers))
 	for _, e := range w.eventHandlers {
-		go func() {
+		go func(handler events.PodEventHandler) {
 			defer wg.Done()
-			if err := e.PodEvent(*pod, cgInfos, events.EventTypeDelete); err != nil {
+			if err := utils.Guard(describe(handler), func() error {
+				return call(handler)
+			}); err != nil {
 				errChan <- err
 			}
-		}()
+		}(e)
 	}
 	wg.Wait()
 	close(errChan)

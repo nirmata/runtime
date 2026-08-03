@@ -9,8 +9,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "kyverno-runtime",
-	Short: "Kyverno Runtime",
-	Long:  "Kyverno Runtime - a runtime policy enforcement engine",
+	Short: "Nirmata Runtime",
+	Long:  "Nirmata Runtime - a runtime policy enforcement engine",
 }
 
 func Execute() {
@@ -22,5 +22,4 @@ func Execute() {
 
 func init() {
 	rootCmd.AddCommand(daemonCmd)
-	rootCmd.AddCommand(ctrlCmd)
 }

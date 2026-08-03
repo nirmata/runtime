@@ -33,7 +33,13 @@ spec:
           runAsUser: 0
         args:
         - daemon
-        - --grpc-bind-address={{ .Values.daemon.grpcBindAddress }}
+        - --metrics-addr=:{{ .Values.daemon.metrics.port }}
+        {{- with .Values.daemon.observeInterval }}
+        - --observe-interval={{ . }}
+        {{- end }}
+        {{- with .Values.daemon.eventBufferSize }}
+        - --event-buffer-size={{ . }}
+        {{- end }}
         env:
         - name: HOST_ROOT
           value: /host
@@ -42,8 +48,9 @@ spec:
             fieldRef:
               fieldPath: spec.nodeName
         ports:
-        - containerPort: 9090
-          name: grpc
+        - name: metrics
+          containerPort: {{ .Values.daemon.metrics.port }}
+          protocol: TCP
         volumeMounts:
         - name: host-root
           mountPath: /host

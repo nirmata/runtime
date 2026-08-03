@@ -1,0 +1,125 @@
+# CRD conformance: valid RuntimePolicy shapes must be ACCEPTED.
+#
+# Asserts (real assertions, not a gate): the generated CRD schema accepts every
+# spec shape the daemon is expected to honour, and that defaulting/pruning does
+# not silently drop fields. If a future api/v1alpha1 change tightens the schema
+# by accident, these applies start failing.
+#
+# Requires: charts/kyverno-runtime/crds applied. No daemon, no eBPF.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: runtimepolicy-valid
+spec:
+  # Cluster-scoped resources: chainsaw's per-test namespace is unused but its
+  # cleanup still removes the policies via the deletion below.
+  steps:
+  - name: minimal-empty-spec
+    try:
+    - apply:
+        file: policy-minimal.yaml
+    - assert:
+        file: policy-minimal.yaml
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-valid-minimal
+
+  - name: enforce-mode-network-open-exec
+    try:
+    - apply:
+        file: policy-enforce.yaml
+    # Read the object back and prove nothing was pruned: each behavior item
+    # carries exactly one kind, values survive, and mode round-trips.
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-valid-enforce
+          spec:
+            mode: enforce
+            (length(behaviors)): 3
+            (behaviors[?network != null] | length(@)): 1
+            (behaviors[?open != null] | length(@)): 1
+            (behaviors[?exec != null] | length(@)): 1
+            (behaviors[?network != null].network.deny.values | [0]): ["10.0.0.7", "192.168.1.0/24"]
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-valid-enforce
+
+  - name: monitor-mode-with-variables-and-cel
+    try:
+    - apply:
+        file: policy-monitor.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-valid-monitor
+          spec:
+            mode: monitor
+            evaluationInterval: 30s
+            (length(variables)): 1
+            (variables[0].name): blockedPaths
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-valid-monitor
+
+  - name: status-subresource-is-writable
+    # The status shape (per-node shards + conditions) is only useful if the
+    # apiserver accepts it. This asserts the listType=map/listMapKey=nodeName
+    # schema and the metav1.Condition shape, and that a status write does not
+    # clobber spec.
+    try:
+    - apply:
+        file: policy-minimal.yaml
+    - script:
+        env:
+        - name: KUBECTL
+          value: kubectl
+        content: |
+          set -eu
+          kubectl patch runtimepolicy chainsaw-valid-minimal \
+            --subresource=status --type=merge -p '{
+              "status": {
+                "nodes": [
+                  {"nodeName": "node-a", "lastEvaluatedTime": "2026-01-01T00:00:00Z"},
+                  {"nodeName": "node-b", "lastEvaluatedTime": "2026-01-01T00:00:00Z"}
+                ],
+                "conditions": [
+                  {
+                    "type": "Applied",
+                    "status": "True",
+                    "reason": "Enforcing",
+                    "message": "chainsaw",
+                    "lastTransitionTime": "2026-01-01T00:00:00Z"
+                  }
+                ]
+              }
+            }'
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-valid-minimal
+          status:
+            (length(nodes)): 2
+            (contains(to_string(nodes[?nodeName == 'node-a'].lastEvaluatedTime | [0]), '2026-01-01')): true
+            (conditions[?type == 'Applied'].reason | [0]): Enforcing
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-valid-minimal

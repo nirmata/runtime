@@ -1,0 +1,23 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: monitor-workload-baseline
+spec:
+  mode: monitor
+  evaluationInterval: 30s
+  podSelector:
+    matchLabels:
+      app: baseline-workload
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+  - open:
+      deny:
+        values:
+        - "*"
+  - exec:
+      deny:
+        values:
+        - "*"

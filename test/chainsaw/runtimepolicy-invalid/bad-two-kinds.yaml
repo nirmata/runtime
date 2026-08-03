@@ -1,0 +1,16 @@
+# Invalid: one behavior item declares BOTH network and open.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-invalid-two-kinds
+spec:
+  mode: enforce
+  behaviors:
+  - network:
+      deny:
+        values:
+        - 10.0.0.7
+    open:
+      deny:
+        values:
+        - /etc/shadow

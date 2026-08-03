@@ -80,15 +80,25 @@ type Behavior struct {
 
 // RuntimePolicyStatus reflects the observed state of the policy.
 type RuntimePolicyStatus struct {
-	// ObservedPods is the number of pods observed by this policy.
-	// +optional
-	ObservedPods int32 `json:"observedPods,omitempty"`
-
-	// ViolatingPods is the number of pods violating this policy.
-	// +optional
-	ViolatingPods int32 `json:"violatingPods,omitempty"`
-
 	// LastEvaluatedTime is the last time the policy was evaluated.
+	// +optional
+	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
+
+	// Nodes holds one per-node shard, each written only by that node's daemon.
+	// +optional
+	// +listType=map
+	// +listMapKey=nodeName
+	Nodes []NodePolicyStatus `json:"nodes,omitempty"`
+
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// NodePolicyStatus is one node's shard of a RuntimePolicy's status, written
+// only by that node's daemon.
+type NodePolicyStatus struct {
+	NodeName string `json:"nodeName"`
+
 	// +optional
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
 }
@@ -99,8 +109,8 @@ type RuntimePolicyStatus struct {
 // +kubebuilder:resource:shortName=rpol,scope=Cluster
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
-// +kubebuilder:printcolumn:name="ObservedPods",type=integer,JSONPath=`.status.observedPods`
-// +kubebuilder:printcolumn:name="ViolatingPods",type=integer,JSONPath=`.status.violatingPods`
+// +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 type RuntimePolicy struct {

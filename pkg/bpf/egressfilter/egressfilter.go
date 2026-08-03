@@ -1,9 +1,9 @@
 package egressfilter
 
 import (
-	"encoding/binary"
-	"net"
-	"strings"
+	"errors"
+	"fmt"
+	"net/netip"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 
@@ -14,10 +14,20 @@ import (
 
 //go:generate go tool bpf2go egressBlock ./_cprog/probe.c -- -I ./_cprog
 
+// Flag bit indices in the BPF `flags` array map, mirroring the defines in
+// _cprog/maps.h; the C program tests `*f & (1 << IDX)`.
 const (
-	DEFAULT_DENY  = 1
-	LEARNING_MODE = 2
+	DEFAULT_DENY = 1
+	// OBSERVE is LEARNING_MODE in the C.
+	OBSERVE = 2
+
+	// maxFlagIdx is bounded by the __u8 map value.
+	maxFlagIdx = 7
 )
+
+// ErrNotLoaded is returned by map-touching methods when the BPF objects are not
+// loaded (a filter built by a test, or a failed load).
+var ErrNotLoaded = errors.New("egressfilter: bpf objects not loaded")
 
 type EgressFilter struct {
 	logger  *logr.Logger
@@ -52,69 +62,130 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 	return p, nil
 }
 
-func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) {
-	for _, ip := range pair.Allow {
-		ip4 := e.normalizeIP(ip)
-		if ip4 == nil {
-			continue
-		}
-		ipBytes := binary.LittleEndian.Uint32(ip4)
-
-		err := e.bpfObjs.AllowedIps.Put(&ipBytes, uint8(0))
-		if err != nil {
-			e.logger.Error(err, "failed to add ip to bpf map", ip)
-		}
+// AddIps programs the allow and deny targets of pair into the BPF maps.
+// Targets ParseTargets cannot represent are returned as typed rejections and
+// logged; err covers only map-write failures. Both may be non-empty at once.
+func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+	if pair == nil {
+		return nil, nil
 	}
 
-	for _, ip := range pair.Deny {
-		ip4 := e.normalizeIP(ip)
-		if ip4 == nil {
+	allowAddrs, denyAddrs, rejected := parsePair(pair)
+	e.logRejected(rejected)
+
+	allowedMap, bannedMap := e.ipMaps()
+	return rejected, errors.Join(
+		putAddrs(allowedMap, "allowed_ips", allowAddrs),
+		putAddrs(bannedMap, "banned_ips", denyAddrs),
+	)
+}
+
+// DeleteIps removes the allow and deny targets of pair from the BPF maps.
+// Rejections are reported for symmetry with AddIps: a target that was never
+// programmed cannot be removed either.
+func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+	if pair == nil {
+		return nil, nil
+	}
+
+	allowAddrs, denyAddrs, rejected := parsePair(pair)
+
+	allowedMap, bannedMap := e.ipMaps()
+	return rejected, errors.Join(
+		deleteAddrs(allowedMap, "allowed_ips", allowAddrs),
+		deleteAddrs(bannedMap, "banned_ips", denyAddrs),
+	)
+}
+
+// parsePair resolves both target lists of pair through the single target
+// grammar. rejected is nil when nothing was rejected.
+func parsePair(pair *compiler.AllowDenyPair) (allow, deny []netip.Addr, rejected []RejectedTarget) {
+	allow, _, allowRejected := ParseTargets(pair.Allow)
+	deny, _, denyRejected := ParseTargets(pair.Deny)
+	if len(allowRejected)+len(denyRejected) == 0 {
+		return allow, deny, nil
+	}
+
+	rejected = make([]RejectedTarget, 0, len(allowRejected)+len(denyRejected))
+	rejected = append(rejected, allowRejected...)
+	rejected = append(rejected, denyRejected...)
+	return allow, deny, rejected
+}
+
+func (e *EgressFilter) ipMaps() (allowed, banned *ebpf.Map) {
+	if e.bpfObjs == nil {
+		return nil, nil
+	}
+	return e.bpfObjs.AllowedIps, e.bpfObjs.BannedIps
+}
+
+func putAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
+	if len(addrs) == 0 {
+		return nil
+	}
+	if m == nil {
+		return fmt.Errorf("%s: %w", name, ErrNotLoaded)
+	}
+
+	var errs []error
+	for _, addr := range addrs {
+		key, ok := addrKey(addr)
+		if !ok {
 			continue
 		}
-		ipBytes := binary.LittleEndian.Uint32(ip4)
-
-		err := e.bpfObjs.BannedIps.Put(&ipBytes, uint8(0))
-		if err != nil {
-			e.logger.Error(err, "failed to add ip to bpf map", ip)
+		if err := m.Put(&key, uint8(0)); err != nil {
+			errs = append(errs, fmt.Errorf("writing %s: %w", name, err))
 		}
+	}
+	return errors.Join(errs...)
+}
+
+func deleteAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
+	if len(addrs) == 0 {
+		return nil
+	}
+	if m == nil {
+		return fmt.Errorf("%s: %w", name, ErrNotLoaded)
+	}
+
+	var errs []error
+	for _, addr := range addrs {
+		key, ok := addrKey(addr)
+		if !ok {
+			continue
+		}
+		if err := m.Delete(&key); err != nil {
+			errs = append(errs, fmt.Errorf("deleting from %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (e *EgressFilter) logRejected(rejected []RejectedTarget) {
+	if e.logger == nil {
+		return
+	}
+	for _, r := range rejected {
+		e.logger.Info("rejected egress network target: it will not be enforced",
+			"target", r.Value, "reason", r.Reason)
 	}
 }
 
-func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) {
-	for _, ip := range pair.Allow {
-		ip4 := e.normalizeIP(ip)
-		if ip4 == nil {
-			continue
-		}
-		ipBytes := binary.LittleEndian.Uint32(ip4)
-
-		err := e.bpfObjs.AllowedIps.Delete(&ipBytes)
-		if err != nil {
-			e.logger.Error(err, "failed to remove ip from bpf map", ip)
-		}
-	}
-
-	for _, ip := range pair.Deny {
-		ip4 := e.normalizeIP(ip)
-		if ip4 == nil {
-			continue
-		}
-		ipBytes := binary.LittleEndian.Uint32(ip4)
-
-		err := e.bpfObjs.BannedIps.Delete(&ipBytes)
-		if err != nil {
-			e.logger.Error(err, "failed to remove ip from bpf map", ip)
-		}
-	}
-}
-
+// SetFlagIdx sets or clears bit idx of the flags map. It panics on an
+// out-of-range idx, which can only be a programming error.
 func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
+	checkFlagIdx(idx)
+	if e.bpfObjs == nil || e.bpfObjs.Flags == nil {
+		e.logError(ErrNotLoaded, "cannot set egress flag")
+		return
+	}
+
 	var key uint32
 	var currentval uint8
 
-	err := e.bpfObjs.Flags.Lookup(&key, &currentval)
-	if err != nil {
-		panic("failed to read the flags map. corrupt state")
+	if err := e.bpfObjs.Flags.Lookup(&key, &currentval); err != nil {
+		e.logError(err, "failed to read the flags map, egress flag not applied")
+		return
 	}
 
 	if val {
@@ -124,30 +195,42 @@ func (e *EgressFilter) SetFlagIdx(idx uint8, val bool) {
 	}
 
 	if err := e.bpfObjs.Flags.Put(&key, &currentval); err != nil {
-		e.logger.Error(err, "failed to write flags map. corrupt state")
+		e.logError(err, "failed to write flags map. corrupt state")
 	}
 }
 
-func (e *EgressFilter) ReadLearned() (map[uint32]uint32, error) {
-	ret := make(map[uint32]uint32)
-	iter := e.bpfObjs.IpEvents.Iterate()
-
-	var (
-		key   uint32
-		value uint32
-	)
-
-	for iter.Next(&key, &value) {
-		ret[key] = value
-	}
-	if err := iter.Err(); err != nil {
-		return nil, err
+// FlagIdx reports whether bit idx is set. It panics on an out-of-range idx.
+func (e *EgressFilter) FlagIdx(idx uint8) (bool, error) {
+	checkFlagIdx(idx)
+	if e.bpfObjs == nil || e.bpfObjs.Flags == nil {
+		return false, ErrNotLoaded
 	}
 
-	return ret, nil
+	var key uint32
+	var currentval uint8
+	if err := e.bpfObjs.Flags.Lookup(&key, &currentval); err != nil {
+		return false, fmt.Errorf("reading flags map: %w", err)
+	}
+	return currentval&(1<<idx) != 0, nil
+}
+
+func checkFlagIdx(idx uint8) {
+	if idx > maxFlagIdx {
+		panic(fmt.Sprintf("egressfilter: flag index %d out of range (max %d)", idx, maxFlagIdx))
+	}
+}
+
+func (e *EgressFilter) logError(err error, msg string) {
+	if e.logger == nil {
+		return
+	}
+	e.logger.Error(err, msg)
 }
 
 func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
+	if e.bpfObjs == nil {
+		return nil, ErrNotLoaded
+	}
 	link, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgPath,
 		Attach:  ebpf.AttachCGroupInetEgress,
@@ -157,14 +240,4 @@ func (e *EgressFilter) Attach(cgPath string) (link.Link, error) {
 		return nil, err
 	}
 	return link, nil
-}
-
-func (e *EgressFilter) normalizeIP(raw string) net.IP {
-	cleaned := strings.Trim(raw, " \t\"'[]")
-	ip4 := net.ParseIP(cleaned).To4()
-	if ip4 == nil {
-		e.logger.V(2).Info("failed to parse ip, skipping", "ip", raw)
-		return nil
-	}
-	return ip4
 }

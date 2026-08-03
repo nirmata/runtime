@@ -1,7 +1,10 @@
 package lsm
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"sync"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 
@@ -12,62 +15,152 @@ import (
 
 const maxPathLen = 128
 
-// argtype values written into the `argtypes` map, read back out by the BPF program
-// in lsm.bpf.c (ARGTYPE_FILE_OPEN / ARGTYPE_EXEC_CHECK). must stay in sync with those.
 const (
-	argTypeFileOpen  = uint8(1)
-	argTypeExecCheck = uint8(2)
+	PROG_TYPE_LSM_OPEN = "file_open"
+	PROG_TYPE_LSM_EXEC = "bprm_check_security"
 )
 
-//go:generate go tool bpf2go lsmGeneric ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmFileOpen ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmExecCheck ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
 type LsmEnforcer struct {
-	logger  *logr.Logger
-	bpfObjs *lsmGenericObjects
-	link    link.Link
+	logger *logr.Logger
+	link   link.Link
+	closer io.Closer
+
+	prog        *ebpf.Program
+	cgids       *ebpf.Map
+	banned      *ebpf.Map
+	allowed     *ebpf.Map
+	defaultDeny *ebpf.Map
+
+	// openEvents is a hash-of-maps keyed by cgroup id; each value is an inner
+	// path->count hash the kernel program bumps on every open/exec. innerSpec is
+	// the template for those inner maps.
+	openEvents *ebpf.Map
+	innerSpec  *ebpf.MapSpec
+
+	// observeMu guards observed, the inner maps this enforcer created.
+	observeMu sync.RWMutex
+	observed  map[uint64]*ebpf.Map
 }
 
 func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error) {
-	spec, err := loadLsmGeneric()
+	switch target {
+	case PROG_TYPE_LSM_OPEN:
+		return newForFileOpen(logger)
+	case PROG_TYPE_LSM_EXEC:
+		return newForExec(logger)
+	default:
+		return nil, fmt.Errorf("unknown lsm attach target %q", target)
+	}
+}
+
+// prepareOpenEvents clears the ELF-provided contents of the open_events
+// hash-of-maps, whose single entry is the template inner map at key 0 rather
+// than a real cgroup id, and returns a copy of that template. nil means
+// observation is unavailable for this program.
+func prepareOpenEvents(spec *ebpf.CollectionSpec) *ebpf.MapSpec {
+	outer := spec.Maps["open_events"]
+	if outer == nil {
+		return nil
+	}
+	outer.Contents = nil
+
+	inner := outer.InnerMap
+	if inner == nil {
+		inner = spec.Maps["inner_open_events"]
+	}
+	if inner == nil {
+		return nil
+	}
+	return inner.Copy()
+}
+
+func newForFileOpen(logger *logr.Logger) (*LsmEnforcer, error) {
+	l := &LsmEnforcer{logger: logger}
+
+	spec, err := loadLsmFileOpen()
 	if err != nil {
 		return nil, err
 	}
-	spec.Programs["generic_lsm_handler"].AttachTo = target
+	spec.Programs["generic_lsm_handler"].AttachTo = PROG_TYPE_LSM_OPEN
 	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
-	// make the open events map contents empty for now. we will populate
-	// them later when we decide learning mode should be enabled for a pod
-	spec.Maps["open_events"].Contents = nil
+	innerSpec := prepareOpenEvents(spec)
 
-	objs := &lsmGenericObjects{}
-
-	// this will load the program, but not attach it to anything
+	objs := &lsmFileOpenObjects{}
 	if err := spec.LoadAndAssign(objs, nil); err != nil {
 		return nil, err
 	}
-	zero := uint32(0)
+	l.innerSpec = innerSpec
+	// hoist the program-specific objects into generic fields so the rest of the
+	// code never has to ask which variant is loaded
+	l.closer = objs
+	l.prog = objs.GenericLsmHandler
+	l.cgids = objs.Cgids
+	l.banned = objs.Banned
+	l.allowed = objs.Allowed
+	l.defaultDeny = objs.DefaultDeny
+	l.openEvents = objs.OpenEvents
+	return l, nil
+}
 
-	switch target {
-	case "file_open":
-		if err := objs.Argtypes.Put(&zero, argTypeFileOpen); err != nil {
-			return nil, err
-		}
-	case "bprm_check_security":
-		if err := objs.Argtypes.Put(&zero, argTypeExecCheck); err != nil {
-			return nil, err
-		}
-	}
+func newForExec(logger *logr.Logger) (*LsmEnforcer, error) {
 
-	l := &LsmEnforcer{
-		logger:  logger,
-		bpfObjs: objs,
+	l := &LsmEnforcer{logger: logger}
+	spec, err := loadLsmExecCheck()
+	if err != nil {
+		return nil, err
 	}
+	spec.Programs["generic_lsm_handler"].AttachTo = PROG_TYPE_LSM_EXEC
+	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
+	innerSpec := prepareOpenEvents(spec)
+
+	objs := &lsmExecCheckObjects{}
+	if err := spec.LoadAndAssign(objs, nil); err != nil {
+		return nil, err
+	}
+	l.innerSpec = innerSpec
+	l.closer = objs
+	l.prog = objs.GenericLsmHandler
+	l.cgids = objs.Cgids
+	l.banned = objs.Banned
+	l.allowed = objs.Allowed
+	l.defaultDeny = objs.DefaultDeny
+	l.openEvents = objs.OpenEvents
 
 	return l, nil
 }
 
+func (l *LsmEnforcer) Close() error {
+	var retErr error
+	// release the observation inner maps first; the kernel keeps its own
+	// reference through open_events until the outer map goes away.
+	l.observeMu.Lock()
+	for cgid, inner := range l.observed {
+		if err := inner.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("closing observation map for cgid %d: %w", cgid, err)
+		}
+		delete(l.observed, cgid)
+	}
+	l.observeMu.Unlock()
+
+	if l.link != nil {
+		if err := l.link.Close(); err != nil {
+			retErr = err
+		}
+	}
+	if l.closer != nil {
+		if err := l.closer.Close(); err != nil && retErr == nil {
+			retErr = err
+		}
+	}
+	return retErr
+}
+
 func (l *LsmEnforcer) Attach() (link.Link, error) {
 	link, err := link.AttachLSM(link.LSMOptions{
-		Program: l.bpfObjs.GenericLsmHandler,
+		Program: l.prog,
 	})
 	if err != nil {
 		return nil, err
@@ -78,22 +171,23 @@ func (l *LsmEnforcer) Attach() (link.Link, error) {
 }
 
 func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
+	var errs []error
 	for _, cgid := range cgids {
-		if err := l.bpfObjs.Cgids.Put(&cgid, uint8(0)); err != nil {
-			l.logger.Error(err, "failed to add cgid to target map")
+		if err := l.cgids.Put(&cgid, uint8(0)); err != nil {
+			errs = append(errs, err)
 		}
 	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
+	var errs []error
 	for _, cgid := range cgids {
-		if err := l.bpfObjs.Cgids.Delete(&cgid); err != nil {
-			l.logger.Error(err, "failed to remove cgid from target map")
+		if err := l.cgids.Delete(&cgid); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
@@ -105,7 +199,7 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Banned.Put(&key, uint8(0)); err != nil {
+		if err := l.banned.Put(&key, uint8(0)); err != nil {
 			return err
 		}
 	}
@@ -117,7 +211,7 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Allowed.Put(&key, uint8(0)); err != nil {
+		if err := l.allowed.Put(&key, uint8(0)); err != nil {
 			return err
 		}
 	}
@@ -133,7 +227,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Banned.Delete(&key); err != nil {
+		if err := l.banned.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from banned map")
 		}
 	}
@@ -146,7 +240,7 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 		key := [maxPathLen]byte{}
 		copy(key[:], p)
 
-		if err := l.bpfObjs.Allowed.Delete(&key); err != nil {
+		if err := l.allowed.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from allowed map")
 		}
 	}
@@ -156,85 +250,13 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
 func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
 	k := uint32(0)
 	if val {
-		err := l.bpfObjs.DefaultDeny.Put(&k, uint8(0))
+		err := l.defaultDeny.Put(&k, uint8(0))
 		if err != nil {
 			return err
 		}
 		return nil
 	}
 
-	// key deletions may error if the key doesn't exist. but thats fine
-	// we don't care about that
-	_ = l.bpfObjs.DefaultDeny.Delete(&k)
-	return nil
-}
-
-func (l *LsmEnforcer) SetLearningModeForCgids(cgids []uint64, val bool) error {
-	for _, cgid := range cgids {
-		if val {
-			innerSpec := &ebpf.MapSpec{
-				Name:       "inner",
-				KeySize:    128,
-				Type:       ebpf.Hash,
-				MaxEntries: 1024,
-			}
-			innerMap, err := ebpf.NewMap(innerSpec)
-			if err != nil {
-				l.logger.Error(err, "failed to create inner open events map", "cgid", cgid)
-				continue
-			}
-
-			if err := l.bpfObjs.OpenEvents.Put(&cgid, uint32(innerMap.FD())); err != nil {
-				l.logger.Error(err, "failed to enable learning mode for cgid", "cgid", cgid)
-			}
-
-			if err := innerMap.Close(); err != nil {
-				l.logger.Error(err, "failed to close inner open events map", "cgid", cgid)
-			}
-			continue
-		}
-		// val was false, delete the entry
-		if err := l.bpfObjs.OpenEvents.Delete(&cgid); err != nil {
-			l.logger.Error(err, "failed to disable learning mode for cgid", "cgid", cgid)
-		}
-	}
-	return nil
-}
-
-// pass a collector map because we will end up calling this function for many programs
-// and we just wanna get the end result
-func (l *LsmEnforcer) GetLearningModeForCgids(retMap map[string]uint32, cgids []uint64) error {
-	for _, cgid := range cgids {
-		var mapID ebpf.MapID
-		if err := l.bpfObjs.OpenEvents.Lookup(&cgid, &mapID); err != nil {
-			return fmt.Errorf("failed to lookup inner map id for cgid %d", cgid)
-		}
-
-		openCountMap, err := ebpf.NewMapFromID(mapID)
-		if err != nil {
-			return err
-		}
-
-		var (
-			k string
-			v uint32
-		)
-
-		iter := openCountMap.Iterate()
-		for iter.Next(&k, &v) {
-			retMap[k] += v
-		}
-		if err := iter.Err(); err != nil {
-			// we're already returning an error from the iteration itself; a failure
-			// to close here isn't worth reporting on top of that
-			_ = openCountMap.Close()
-			return fmt.Errorf("failed to iterate open count map for cgid %d: %w", cgid, err)
-		}
-
-		if err := openCountMap.Close(); err != nil {
-			l.logger.Error(err, "failed to close open count map", "cgid", cgid)
-		}
-	}
-
+	_ = l.defaultDeny.Delete(&k)
 	return nil
 }

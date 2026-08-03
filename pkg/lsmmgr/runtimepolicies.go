@@ -5,158 +5,294 @@ import (
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"k8s.io/apimachinery/pkg/labels"
 )
 
+// progSpec pairs a bpf lsm attach target with the compiled behavior that drives
+// it. Iterated in a fixed order so enforcer construction is deterministic.
+type progSpec struct {
+	progType string
+	files    *compiler.AllowDenyPair
+}
+
+func progSpecs(compiledRp *compiler.EvaluationResult) []progSpec {
+	return []progSpec{
+		{progType: lsm.PROG_TYPE_LSM_OPEN, files: compiledRp.Open},
+		// exec behaviors are enforced through bprm_check_security
+		{progType: lsm.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec},
+	}
+}
+
 func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
-	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID)
-	if compiledRp.Mode != "enforce" {
+	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID, "mode", compiledRp.Mode)
+	observe := compiler.IsObserveMode(compiledRp.Mode)
+	if compiledRp.Mode != compiler.ModeEnforce && !observe {
+		l.logger.V(2).Info("runtime policy mode needs no lsm attachment", "uid", compiledRp.UID, "mode", compiledRp.Mode)
 		return nil
 	}
-	// rp contains no files to ban opening. do nothing with it
-	if len(compiledRp.Open.Allow) == 0 && len(compiledRp.Open.Deny) == 0 {
-		l.logger.V(2).Info("runtime policy has no open files to enforce, skipping", "uid", compiledRp.UID)
+
+	progMap := make(map[string]*progState)
+	for _, spec := range progSpecs(compiledRp) {
+		if !spec.files.HasEntries() {
+			continue
+		}
+		enf, err := l.createForProgType(spec.files, spec.progType, observe)
+		if err != nil {
+			// nothing else references the enforcers built so far
+			l.closeProgs(compiledRp.UID, progMap)
+			return err
+		}
+		progMap[spec.progType] = &progState{files: spec.files, enf: enf}
+	}
+
+	if len(progMap) == 0 {
+		l.logger.V(2).Info("runtime policy created but has no open or exec entries", "uid", compiledRp.UID)
 		return nil
-	}
-	// create the lsm enforcer
-	enf, err := lsm.NewForAttachTarget(&l.logger, "file_open")
-	if err != nil {
-		return err
-	}
-	// add the banned files
-	err = enf.AddTargets(compiledRp.Open)
-	if err != nil {
-		return err
-	}
-
-	// set default deny if the compiled policy had the * in its list of files
-	defaultDeny := slices.Contains(compiledRp.Open.Deny, "*")
-	l.logger.V(2).Info("setting default deny", "uid", compiledRp.UID, "defaultDeny", defaultDeny)
-	if err := enf.SetDefaultDeny(defaultDeny); err != nil {
-		return err
-	}
-
-	_, err = enf.Attach()
-	if err != nil {
-		return err
 	}
 
 	la := &lsmAttachment{
-		enf:          enf,
+		progs:        progMap,
 		attachedPods: make(map[string]*podRepresentation),
 		selector:     compiledRp.Selector,
-		files:        compiledRp.Open,
+		observe:      observe,
 	}
 	l.lsmAttachments[compiledRp.UID] = la
 
-	// set the target pods (cgid)
 	targetCgids := []uint64{}
 	for podUid, pod := range l.pods {
 		if compiledRp.Selector.Matches(labels.Set(pod.labels)) {
-			// add a pointer to this attached pod
-			la.attachedPods[podUid] = pod
+			attach(compiledRp.UID, la, podUid, pod)
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
 	}
-	if len(targetCgids) > 0 {
-		l.logger.V(2).Info("adding matched cgids to new attachment", "uid", compiledRp.UID, "cgids", targetCgids)
-		err := enf.AddCgids(targetCgids)
-		if err != nil {
-			return err
-		}
+	if len(targetCgids) == 0 {
+		return nil
 	}
+
+	for progType, prog := range la.progs {
+		l.addPodCgids(compiledRp.UID, progType, prog, targetCgids)
+	}
+
 	return nil
 }
 
 func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
-	l.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID)
-	if compiledRp.Mode != "enforce" {
+	l.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID, "mode", compiledRp.Mode)
+	observe := compiler.IsObserveMode(compiledRp.Mode)
+	if compiledRp.Mode != compiler.ModeEnforce && !observe {
 		l.rpDeleted(compiledRp)
 		return nil
 	}
-	// a selector change, or a target change. just compute the diff on the target pods and on the banned files
 	la, ok := l.lsmAttachments[compiledRp.UID]
 	if !ok {
-		// no existing attachment. if the update introduced open targets, this is the first
-		// time the policy needs enforcement, so run it through the creation path.
-		if len(compiledRp.Open.Allow) == 0 && len(compiledRp.Open.Deny) == 0 {
+		// an update that introduces targets for an unattached policy is the first
+		// time it needs enforcement, so run it through the creation path
+		if !compiledRp.Open.HasEntries() && !compiledRp.Exec.HasEntries() {
 			l.logger.V(2).Info("runtime policy update has no open files to enforce and no existing attachment, skipping", "uid", compiledRp.UID)
 			return nil
 		}
-		l.logger.V(2).Info("runtime policy update introduced open targets for a previously unattached policy, creating attachment", "uid", compiledRp.UID)
+		l.logger.V(2).Info("runtime policy update introduced targets for an unattached policy, creating attachment", "uid", compiledRp.UID)
 		return l.rpCreated(compiledRp)
 	}
-	// diff the existing and new files. delete what must be deleted
-	// todo: instead of calling this function twice we can call it once and have it return both array
-	toAddAllow := utils.DiffSlice(la.files.Allow, compiledRp.Open.Allow)
-	toRemoveAllow := utils.DiffSlice(compiledRp.Open.Allow, la.files.Allow)
 
-	toAddDeny := utils.DiffSlice(la.files.Deny, compiledRp.Open.Deny)
-	toRemoveDeny := utils.DiffSlice(compiledRp.Open.Deny, la.files.Deny)
-
-	l.logger.V(2).Info("computed file diff for runtime policy update", "uid", compiledRp.UID,
-		"toAddAllow", toAddAllow, "toRemoveAllow", toRemoveAllow, "toAddDeny", toAddDeny, "toRemoveDeny", toRemoveDeny)
-
-	if len(toAddAllow) > 0 || len(toAddDeny) > 0 {
-		err := la.enf.AddTargets(&compiler.AllowDenyPair{Allow: toAddAllow, Deny: toAddDeny})
-		if err != nil {
-			return err
-		}
+	if la.observe != observe {
+		// the mode crossed the observe/enforce line, which changes which bpf maps
+		// are populated at all: an observe enforcer holds no deny entries and an
+		// enforce one cannot start from an observer's empty maps
+		l.logger.V(2).Info("runtime policy mode crossed the observe/enforce line, rebuilding attachment",
+			"uid", compiledRp.UID, "mode", compiledRp.Mode)
+		l.rpDeleted(compiledRp)
+		return l.rpCreated(compiledRp)
 	}
-	if len(toRemoveAllow) > 0 || len(toRemoveDeny) > 0 {
-		err := la.enf.DeleteTargets(&compiler.AllowDenyPair{Allow: toRemoveAllow, Deny: toRemoveDeny})
-		if err != nil {
+
+	la.selector = compiledRp.Selector
+	for _, spec := range progSpecs(compiledRp) {
+		if err := l.syncProgType(compiledRp.UID, la, spec.files, spec.progType); err != nil {
 			return err
 		}
 	}
 
-	defaultDeny := slices.Contains(compiledRp.Open.Deny, "*")
-	l.logger.V(2).Info("setting default deny", "uid", compiledRp.UID, "defaultDeny", defaultDeny)
-	if err := la.enf.SetDefaultDeny(defaultDeny); err != nil {
-		return err
+	if len(la.progs) == 0 {
+		l.rpDeleted(compiledRp)
+		return nil
 	}
 
-	// set the lsm attachment's file to the incoming compiled rp's open files
-	la.files = compiledRp.Open
-	for podUid, pod := range l.pods {
-		if compiledRp.Selector.Matches(labels.Set(pod.labels)) {
-			_, ok := la.attachedPods[podUid]
-			if ok {
-				// we are already attached to this pod cgid. nothing to do
-				continue
-			}
-			// we aren't attached
-			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", compiledRp.UID, "podUid", podUid, "cgids", pod.cgids)
-			err := la.enf.AddCgids(pod.cgids)
-			if err != nil {
-				l.logger.Error(err, "failed to add cgids for pod", "podUid", podUid)
-				continue
-			}
-		} else {
-			// we don't match that pod. did we previously match it ?
-			_, ok := la.attachedPods[podUid]
-			if ok {
-				// yes we did. remove its cgids from the enforcer before dropping the attachment
-				l.logger.V(2).Info("pod no longer matches runtime policy, removing cgids", "uid", compiledRp.UID, "podUid", podUid, "cgids", pod.cgids)
-				if err := la.enf.DeleteCgids(pod.cgids); err != nil {
-					l.logger.Error(err, "failed to remove cgids for pod", "podUid", podUid)
-				}
-				delete(la.attachedPods, podUid)
-				continue
-			}
-		}
-	}
+	l.syncPodAttachment(compiledRp.UID, la)
 	return nil
 }
 
 func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
-	l.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
-	// delete the pointer from the lsm map
-	// and delete it from any pods that may have it
+	la, ok := l.lsmAttachments[compiledRp.UID]
+	if !ok {
+		return
+	}
+	for _, prog := range la.progs {
+		if err := prog.enf.Close(); err != nil {
+			l.logger.Error(err, "failed to close bpf lsm enforcer")
+		}
+	}
 	delete(l.lsmAttachments, compiledRp.UID)
 	for _, pod := range l.pods {
 		delete(pod.attachedLsms, compiledRp.UID)
 	}
+}
+
+// closeProgs releases a half built prog map that was never published.
+func (l *LsmManager) closeProgs(rpUID string, progs map[string]*progState) {
+	for progType, prog := range progs {
+		if err := prog.enf.Close(); err != nil {
+			l.logger.Error(err, "failed to cleanup lsm enforcer on error", "uid", rpUID, "progType", progType)
+		}
+	}
+}
+
+// createForProgType loads, programs and attaches one enforcer. In observe mode
+// the banned and allowed maps are left empty and default-deny is unset, so the
+// program cannot return -EPERM: matching happens in userspace over the counts
+// CollectObservations reads back.
+func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType string, observe bool) (lsmEnforcer, error) {
+	cleanup := false
+	enf, err := l.newEnforcer(&l.logger, progType)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if cleanup {
+			if err := enf.Close(); err != nil {
+				l.logger.Error(err, "failed to cleanup lsm enforcer on error")
+			}
+		}
+	}()
+	cleanup = true
+
+	if !observe {
+		err = enf.AddTargets(pair)
+		if err != nil {
+			return nil, err
+		}
+
+		defaultDeny := slices.Contains(pair.Deny, compiler.StarTarget)
+		if err := enf.SetDefaultDeny(defaultDeny); err != nil {
+			return nil, err
+		}
+	}
+
+	_, err = enf.Attach()
+	if err != nil {
+		return nil, err
+	}
+	cleanup = false
+	return enf, nil
+}
+
+func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
+	prog, ok := la.progs[progType]
+	if !ok {
+		// no enforcer loaded for this program type and no files to enforce
+		if !newFiles.HasEntries() {
+			return nil
+		}
+
+		enforcer, err := l.createForProgType(newFiles, progType, la.observe)
+		if err != nil {
+			return err
+		}
+		ps := &progState{
+			enf:   enforcer,
+			files: newFiles,
+		}
+		for _, pod := range la.attachedPods {
+			l.addPodCgids(rpUID, progType, ps, pod.cgids)
+		}
+
+		la.progs[progType] = ps
+		prog = ps
+	}
+
+	// no entries left to enforce, so the enforcer for this program type goes away
+	if !newFiles.HasEntries() {
+		closeErr := prog.enf.Close()
+		// drop the prog state even if the close failed: keeping a closed enforcer
+		// would make every later sync operate on dead bpf maps
+		delete(la.progs, progType)
+		if closeErr != nil {
+			return closeErr
+		}
+		return nil
+	}
+
+	// observe-mode enforcers hold no targets: record what the policy asks for,
+	// which is what userspace matching reads, and program nothing
+	if la.observe {
+		prog.files = newFiles
+		return nil
+	}
+
+	var toAddPair, toRemovePair *compiler.AllowDenyPair
+	toAddPair = prog.files.DiffPair(newFiles)
+	toRemovePair = newFiles.DiffPair(prog.files)
+
+	hasFileChanges := (toAddPair != nil && toAddPair.HasEntries()) || (toRemovePair != nil && toRemovePair.HasEntries())
+
+	if hasFileChanges {
+		if toAddPair.HasEntries() {
+			if err := prog.enf.AddTargets(toAddPair); err != nil {
+				return err
+			}
+		}
+		if toRemovePair.HasEntries() {
+			if err := prog.enf.DeleteTargets(toRemovePair); err != nil {
+				return err
+			}
+		}
+		defaultDeny := slices.Contains(newFiles.Deny, compiler.StarTarget)
+		if err := prog.enf.SetDefaultDeny(defaultDeny); err != nil {
+			return err
+		}
+	}
+
+	prog.files = newFiles
+	return nil
+}
+
+func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
+	for podUid, pod := range l.pods {
+		// la.selector has to already carry the selector from the update, otherwise
+		// the match below runs against the stale one
+		if la.selector.Matches(labels.Set(pod.labels)) {
+			_, ok := la.attachedPods[podUid]
+			if ok {
+				continue
+			}
+			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
+			for progType, prog := range la.progs {
+				l.addPodCgids(uid, progType, prog, pod.cgids)
+			}
+
+			attach(uid, la, podUid, pod)
+		} else {
+			podAttachment, ok := la.attachedPods[podUid]
+			if ok {
+				// the cgids leave the enforcer before the attachment is dropped
+				l.logger.V(2).Info("pod stopped matching runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
+				for progType, prog := range la.progs {
+					l.removePodCgids(uid, progType, prog, pod.cgids)
+				}
+
+				detach(uid, la, podUid, podAttachment)
+			}
+		}
+	}
+}
+
+func attach(policyUid string, la *lsmAttachment, podUid string, pod *podRepresentation) {
+	la.attachedPods[podUid] = pod
+	pod.attachedLsms[policyUid] = la
+}
+
+func detach(policyUid string, la *lsmAttachment, podUid string, pod *podRepresentation) {
+	delete(la.attachedPods, podUid)
+	delete(pod.attachedLsms, policyUid)
 }

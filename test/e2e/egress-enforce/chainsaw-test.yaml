@@ -1,0 +1,140 @@
+# E2E BEHAVIORAL ASSERTION -- egress enforcement (issue #60, non-LSM half).
+#
+# This is a real assertion, not a gate: it proves the cgroup egress program is
+# loaded, attached to the client pod's cgroup, and actually drops packets.
+#
+# Both directions are asserted deliberately (per issue #60): a test that only
+# checks "denied target is unreachable" would also pass against a program that
+# drops everything, or against a broken cluster network. So the SAME client pod
+# is used three times:
+#   1. before any policy       -> both targets reachable   (baseline)
+#   2. after DEFAULT_DENY+allow -> allowed target reachable (not over-blocking)
+#   3. after DEFAULT_DENY+allow -> denied target blocked    (enforcement works)
+#
+# Two ordinary pod IPs in the same namespace are used as targets, so no NAT, no
+# DNS and no ClusterIP translation sits between the client and the eBPF hook.
+#
+# Kernel requirements: cgroup v2 + BPF (CAP_BPF). BPF-LSM is NOT required, which
+# is why this can run on a GitHub hosted runner while ../dispatch-only cannot.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: egress-enforce
+spec:
+  steps:
+  - name: start-two-target-servers-and-the-client
+    try:
+    - apply:
+        file: targets.yaml
+    - apply:
+        file: client.yaml
+    - assert:
+        file: targets-ready.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: egress-client
+          status:
+            phase: Running
+
+  - name: baseline-client-reaches-both-targets-without-a-policy
+    # Establishes the baseline the enforcement assertions depend on. If this
+    # fails, the cluster network is broken and "denied" below would be
+    # meaningless.
+    try:
+    - script:
+        content: |
+          set -eu
+          allowed=$(kubectl -n "$NAMESPACE" get pod egress-target-allowed -o jsonpath='{.status.podIP}')
+          denied=$(kubectl -n "$NAMESPACE" get pod egress-target-denied -o jsonpath='{.status.podIP}')
+          test -n "$allowed" && test -n "$denied" && test "$allowed" != "$denied"
+          echo "allowed=$allowed denied=$denied"
+
+          for ip in "$allowed" "$denied"; do
+            ok=0
+            for _ in $(seq 1 15); do
+              if kubectl -n "$NAMESPACE" exec egress-client -- \
+                   wget -q -T 3 -O /dev/null "http://${ip}:8080/" 2>/dev/null; then
+                ok=1; break
+              fi
+              sleep 2
+            done
+            [ "$ok" -eq 1 ] || { echo "FAIL: baseline connectivity to ${ip} is broken (no policy applied yet)"; exit 1; }
+          done
+          echo "OK: baseline -- both targets reachable"
+
+  - name: apply-default-deny-with-one-allowed-ip
+    try:
+    - script:
+        content: |
+          set -eu
+          allowed=$(kubectl -n "$NAMESPACE" get pod egress-target-allowed -o jsonpath='{.status.podIP}')
+          sed "s/ALLOWED_IP/${allowed}/" policy.tmpl.yaml | tee /tmp/e2e-egress-policy.yaml
+          kubectl apply -f /tmp/e2e-egress-policy.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-egress-enforce
+          spec:
+            mode: enforce
+
+  - name: enforced-client-reaches-allowed-and-not-denied
+    try:
+    - script:
+        content: |
+          set -eu
+          allowed=$(kubectl -n "$NAMESPACE" get pod egress-target-allowed -o jsonpath='{.status.podIP}')
+          denied=$(kubectl -n "$NAMESPACE" get pod egress-target-denied -o jsonpath='{.status.podIP}')
+
+          # The denied target must become unreachable within a bounded window.
+          # Poll rather than sleep blindly: the daemon programs maps on its own
+          # schedule.
+          blocked=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec egress-client -- \
+                 wget -q -T 3 -O /dev/null "http://${denied}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          if [ "$blocked" -ne 1 ]; then
+            echo "FAIL: denied target ${denied} still reachable -- egress enforcement did not take effect"
+            exit 1
+          fi
+          echo "OK: denied target ${denied} blocked"
+
+          # ...and the allow-listed target must STILL be reachable under
+          # DEFAULT_DENY. An allow-list that blocks its own entries is worse
+          # than no policy, and this is what makes the test above meaningful.
+          if ! kubectl -n "$NAMESPACE" exec egress-client -- \
+                 wget -q -T 5 -O /dev/null "http://${allowed}:8080/" 2>/dev/null; then
+            echo "FAIL: allowed target ${allowed} is unreachable under DEFAULT_DENY (over-blocking)"
+            exit 1
+          fi
+          echo "OK: allowed target ${allowed} still reachable"
+
+          # Re-check the denied target once more so a transient failure above
+          # cannot be mistaken for enforcement.
+          if kubectl -n "$NAMESPACE" exec egress-client -- \
+               wget -q -T 3 -O /dev/null "http://${denied}:8080/" 2>/dev/null; then
+            echo "FAIL: denied target ${denied} became reachable again"
+            exit 1
+          fi
+          echo "OK: enforcement stable"
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=200 || true
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl get runtimepolicy e2e-egress-enforce -o yaml || true
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-enforce

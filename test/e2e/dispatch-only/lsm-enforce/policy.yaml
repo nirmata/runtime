@@ -1,0 +1,18 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-lsm-enforce
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: lsm-client
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /etc/shadow
+  - exec:
+      deny:
+        values:
+        - /bin/nc

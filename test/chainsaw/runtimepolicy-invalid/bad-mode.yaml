@@ -1,0 +1,12 @@
+# Invalid: spec.mode must be one of the enum values monitor|enforce.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-invalid-mode
+spec:
+  mode: audit
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /etc/shadow

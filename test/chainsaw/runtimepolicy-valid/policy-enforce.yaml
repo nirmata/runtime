@@ -1,0 +1,28 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-valid-enforce
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: chainsaw-target
+  behaviors:
+  # One behavior kind per list item (the XValidation rule requires exactly one).
+  - network:
+      allow:
+        values:
+        - 10.0.0.1
+      deny:
+        values:
+        - 10.0.0.7
+        - 192.168.1.0/24
+  - open:
+      deny:
+        values:
+        - /etc/shadow
+        - /root/.ssh/id_rsa
+  - exec:
+      deny:
+        values:
+        - /usr/bin/curl

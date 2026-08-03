@@ -1,8 +1,6 @@
 package events
 
 import (
-	"time"
-
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 
@@ -19,15 +17,20 @@ type Event[T any] struct {
 	OldObj T
 }
 
-type EventIface interface {
+// PodEventHandler receives the pod stream from the pod watcher. Handlers that
+// only care about policies implement RuntimePolicyEventHandler instead.
+type PodEventHandler interface {
+	// PodEvent delivers create and update. Deletes arrive via PodDeleted.
 	PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error
-	RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error
+	// PodDeleted announces that the pod with the given UID is gone. Only the
+	// UID is delivered: the object itself may no longer exist anywhere, and
+	// handing out a synthesized pod would invite reads of fields that are
+	// silently empty on the delete path only.
+	PodDeleted(uid string) error
 }
 
-type LearningIface interface {
-	// start learning the behaviors for pods that match `labels` for `dur` and the UID
-	// of the workload profile is `uid`
-	Start(uid string, labels map[string]string, dur time.Duration)
-	// stop any on going learning for workload profile with `uid`
-	Stop(uid string)
+// RuntimePolicyEventHandler receives the RuntimePolicy stream from the policy
+// informer.
+type RuntimePolicyEventHandler interface {
+	RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType string) error
 }

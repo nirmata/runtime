@@ -1,0 +1,33 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-gate-enforce
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: e2e-gate-nonexistent
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /etc/shadow
+  - network:
+      deny:
+        values:
+        - 10.254.254.254
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-gate-monitor
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: e2e-gate-nonexistent
+  behaviors:
+  - exec:
+      deny:
+        values:
+        - /usr/bin/curl
