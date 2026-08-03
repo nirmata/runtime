@@ -54,6 +54,11 @@ type NetSummary struct {
 // ProcessSummary summarizes the process of an exec/open finding.
 type ProcessSummary struct {
 	Comm string
+	// Argv is the command line as a single string, empty for sources that
+	// observe the exec without its arguments. It reaches a Report through
+	// sanitize like every other property, which is what bounds it and scrubs
+	// the credentials command lines routinely carry.
+	Argv string
 }
 
 // Severity values accepted by OpenReports.
