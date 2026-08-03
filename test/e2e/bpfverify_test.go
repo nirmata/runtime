@@ -51,10 +51,13 @@ var bpfObjects = []bpfObjectSpec{
 			attach:     ebpf.AttachCGroupInetEgress,
 			insnBudget: 1000,
 		}, {
-			name:       "cgroup_dns_ingress",
-			typ:        ebpf.CGroupSKB,
-			attach:     ebpf.AttachCGroupInetIngress,
-			insnBudget: 6000,
+			name:   "cgroup_dns_ingress",
+			typ:    ebpf.CGroupSKB,
+			attach: ebpf.AttachCGroupInetIngress,
+			// The DNS parser's unrolled label and answer walks put this two
+			// orders of magnitude above the egress program: ~15.3k processed,
+			// on both a 6.12 arm64 kernel and the amd64 runner.
+			insnBudget: 32000,
 		}},
 	},
 	{

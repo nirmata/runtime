@@ -40,7 +40,7 @@ var (
 	ErrServiceFormNetworkValue = errors.New(`a cluster Service must be named "<service>.<namespace>.svc.<cluster-domain>"`)
 	// ErrServiceDomainNetworkValue reports a Service-shaped name whose suffix is
 	// some other cluster's DNS domain.
-	ErrServiceDomainNetworkValue = errors.New("Service name is not in this cluster's DNS domain")
+	ErrServiceDomainNetworkValue = errors.New("this Service name is not in the cluster's DNS domain")
 	// ErrServiceLabelNetworkValue reports a canonical Service name whose service
 	// or namespace label is malformed.
 	ErrServiceLabelNetworkValue = errors.New(`invalid cluster Service name: the service label must start with a letter and the namespace label with a letter or digit, both continuing with alphanumerics or "-" and at most 63 characters`)
