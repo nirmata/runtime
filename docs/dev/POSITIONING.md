@@ -147,7 +147,7 @@ workload for anything.
 
 | Control | Effect |
 | --- | --- |
-| `network` default deny with `serviceRefs` | The pod reaches DNS and the proxy and nothing else. Ignoring `HTTPS_PROXY` does not help: there is nowhere else to go. This is the enforcement a proxy cannot perform on itself |
+| `network` default deny allowing only the DNS and proxy Service names | The pod reaches DNS and the proxy and nothing else. Ignoring `HTTPS_PROXY` does not help: there is nowhere else to go. This is the enforcement a proxy cannot perform on itself |
 | `protocol` default deny | Only named protocols leave. SSH on 443, an h2c tunnel, a custom binary channel and a split ClientHello all classify as something other than `tls` and are dropped |
 | `quic` denied | HTTP/3 is opaque to every proxy. Denying it costs almost nothing — no provider SDK speaks h3 — and forces the workload into a lane something can observe |
 | `exec` default deny | The pod runs its own binaries and no others, enforced at `bprm_check_security` |
@@ -233,11 +233,9 @@ spec:
   behaviors:
   - network:
       allow:
-        serviceRefs:
-        - name: aicontrols
-          namespace: nirmata-aicontrols
-        - name: kube-dns
-          namespace: kube-system
+        values:
+        - aicontrols.nirmata-aicontrols.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
       deny:
         values: ["*"]
   - protocol:
@@ -246,6 +244,13 @@ spec:
       deny:
         values: ["*"]
 ```
+
+A cluster Service is named by its full DNS name. The short form `aicontrols.nirmata-aicontrols`
+is read as an external domain and never matches anything the egress hook observes. The full
+form resolves from the Service and EndpointSlice informers — the ClusterIP plus the ready
+endpoint addresses — so it holds whether or not the pod ever queries for it. An external
+domain such as `api.payments.example.com` is a valid entry too, learned instead from the
+pod's own DNS answers.
 
 `allow: [tls, dns]` is deliberately narrow. `quic` is excluded, so an HTTP/3 client is
 denied rather than tunnelling past inspection; cleartext `http/1.1` is excluded, so a
