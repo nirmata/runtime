@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 
@@ -50,21 +51,21 @@ func TestUnenforceablePathsSurfaceOnPolicyStatus(t *testing.T) {
 		execPair:   pair(nil, []string{"/bin/sh", tooLong}),
 		wantExec:   metav1.ConditionFalse,
 		wantOpen:   metav1.ConditionTrue,
-		wantReason: ReasonUnsupportedPaths,
+		wantReason: v1alpha1.ReasonUnsupportedPaths,
 	}, {
 		name:       "NUL-bearing exec value",
 		mode:       compiler.ModeEnforce,
 		execPair:   pair([]string{"/bin/sh\x00"}, nil),
 		wantExec:   metav1.ConditionFalse,
 		wantOpen:   metav1.ConditionTrue,
-		wantReason: ReasonUnsupportedPaths,
+		wantReason: v1alpha1.ReasonUnsupportedPaths,
 	}, {
 		name:       "observe mode reports the same values it can never match",
 		mode:       compiler.ModeMonitor,
 		execPair:   pair(nil, []string{tooLong}),
 		wantExec:   metav1.ConditionFalse,
 		wantOpen:   metav1.ConditionTrue,
-		wantReason: ReasonUnsupportedPaths,
+		wantReason: v1alpha1.ReasonUnsupportedPaths,
 	}, {
 		name:       "every value supported",
 		mode:       compiler.ModeEnforce,
@@ -72,7 +73,7 @@ func TestUnenforceablePathsSurfaceOnPolicyStatus(t *testing.T) {
 		execPair:   pair([]string{"/bin/ls"}, []string{compiler.StarTarget}),
 		wantExec:   metav1.ConditionTrue,
 		wantOpen:   metav1.ConditionTrue,
-		wantReason: ReasonAllPathsSupported,
+		wantReason: v1alpha1.ReasonAllPathsSupported,
 	}}
 
 	for _, tt := range tests {
@@ -83,19 +84,19 @@ func TestUnenforceablePathsSurfaceOnPolicyStatus(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			execCond := condOfType(t, h.status, "rp1", ConditionExecRulesValid)
+			execCond := condOfType(t, h.status, "rp1", v1alpha1.ConditionExecRulesValid)
 			if execCond.Status != tt.wantExec {
-				t.Errorf("%s = %v, want %v (message %q)", ConditionExecRulesValid, execCond.Status, tt.wantExec, execCond.Message)
+				t.Errorf("%s = %v, want %v (message %q)", v1alpha1.ConditionExecRulesValid, execCond.Status, tt.wantExec, execCond.Message)
 			}
 			if execCond.Reason != tt.wantReason {
-				t.Errorf("%s reason = %q, want %q", ConditionExecRulesValid, execCond.Reason, tt.wantReason)
+				t.Errorf("%s reason = %q, want %q", v1alpha1.ConditionExecRulesValid, execCond.Reason, tt.wantReason)
 			}
 			if execCond.LastTransitionTime.Time != fixedTime {
 				t.Errorf("%s LastTransitionTime = %v, want the injected clock %v",
-					ConditionExecRulesValid, execCond.LastTransitionTime.Time, fixedTime)
+					v1alpha1.ConditionExecRulesValid, execCond.LastTransitionTime.Time, fixedTime)
 			}
-			if got := condOfType(t, h.status, "rp1", ConditionOpenRulesValid).Status; got != tt.wantOpen {
-				t.Errorf("%s = %v, want %v", ConditionOpenRulesValid, got, tt.wantOpen)
+			if got := condOfType(t, h.status, "rp1", v1alpha1.ConditionOpenRulesValid).Status; got != tt.wantOpen {
+				t.Errorf("%s = %v, want %v", v1alpha1.ConditionOpenRulesValid, got, tt.wantOpen)
 			}
 
 			if tt.mode != compiler.ModeEnforce || tt.execPair == nil {
@@ -123,34 +124,38 @@ func TestPathRulesConditionClearsWhenValuesBecomeEnforceable(t *testing.T) {
 	if err := h.l.RuntimePolicyEvent(create, events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if got := condOfType(t, h.status, "rp1", ConditionExecRulesValid).Status; got != metav1.ConditionFalse {
-		t.Fatalf("%s = %v, want False", ConditionExecRulesValid, got)
+	if got := condOfType(t, h.status, "rp1", v1alpha1.ConditionExecRulesValid).Status; got != metav1.ConditionFalse {
+		t.Fatalf("%s = %v, want False", v1alpha1.ConditionExecRulesValid, got)
 	}
 
 	update := result("rp1", compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/sh"}))
 	if err := h.l.RuntimePolicyEvent(update, events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
-	cond := condOfType(t, h.status, "rp1", ConditionExecRulesValid)
-	if cond.Status != metav1.ConditionTrue || cond.Reason != ReasonAllPathsSupported {
-		t.Errorf("%s = %v/%q, want True/%s", ConditionExecRulesValid, cond.Status, cond.Reason, ReasonAllPathsSupported)
+	cond := condOfType(t, h.status, "rp1", v1alpha1.ConditionExecRulesValid)
+	if cond.Status != metav1.ConditionTrue || cond.Reason != v1alpha1.ReasonAllPathsSupported {
+		t.Errorf("%s = %v/%q, want True/%s", v1alpha1.ConditionExecRulesValid, cond.Status, cond.Reason, v1alpha1.ReasonAllPathsSupported)
 	}
 }
 
-// the default-deny sentinel is recognized by the same grammar that keys the
-// maps, so a value the parser accepts as "*" can never be dropped as neither a
-// key nor a sentinel.
-func TestPaddedStarStillSetsDefaultDeny(t *testing.T) {
+// a value that trims to "*" without being it must not flip the policy to
+// default deny; it is surfaced on the policy status like any other value the
+// grammar refuses, so the author corrects it instead of guessing.
+func TestPaddedStarIsRejectedNotDefaultDeny(t *testing.T) {
 	h := newHarness(t)
 	rp := result("rp1", compiler.ModeEnforce, labels.Everything(), nil, pair([]string{"/bin/ls"}, []string{" * \n"}))
 	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	execEnf := h.enf("rp1", exec)
-	if !execEnf.denyAll {
-		t.Error("exec default deny = false, want true")
+	if execEnf.denyAll {
+		t.Error("exec default deny = true, want false")
 	}
 	if got := execEnf.denySet(); len(got) != 0 {
 		t.Errorf("exec deny set = %v, want empty", got)
+	}
+	cond := condOfType(t, h.status, "rp1", v1alpha1.ConditionExecRulesValid)
+	if cond.Status != metav1.ConditionFalse || cond.Reason != v1alpha1.ReasonUnsupportedPaths {
+		t.Errorf("%s = %v/%q, want False/%s", v1alpha1.ConditionExecRulesValid, cond.Status, cond.Reason, v1alpha1.ReasonUnsupportedPaths)
 	}
 }

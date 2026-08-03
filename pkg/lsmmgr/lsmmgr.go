@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -19,18 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// Condition types and reasons the manager writes onto a RuntimePolicy's status.
-// Exec and open get a condition each because conditions are keyed by type and
-// last-write-wins: one shared type would report whichever behavior was recorded
-// last.
-const (
-	ConditionExecRulesValid  = "ExecRulesValid"
-	ConditionOpenRulesValid  = "OpenRulesValid"
-	ReasonUnsupportedPaths   = "UnsupportedPaths"
-	ReasonAllPathsSupported  = "AllPathsSupported"
-	ReasonNoPaths            = "NoPaths"
-	maxReportedRejectedPaths = 10
-)
+const maxReportedRejectedPaths = 10
 
 // enforcerFactory builds an enforcer for a bpf lsm attach target.
 type enforcerFactory func(logger *logr.Logger, target string) (lsmEnforcer, error)
@@ -167,9 +157,9 @@ func (l *LsmManager) observationUnavailable(rpUID, progType, msg string, err err
 		l.logger.Error(err, msg, "uid", rpUID, "progType", progType)
 	}
 	l.recordCondition(rpUID, metav1.Condition{
-		Type:    "ObservationAvailable",
+		Type:    v1alpha1.ConditionObservationAvailable,
 		Status:  metav1.ConditionFalse,
-		Reason:  "ObservationUnavailable",
+		Reason:  v1alpha1.ReasonObservationUnavailable,
 		Message: msg + " for " + progType + ": " + err.Error(),
 	})
 }
@@ -183,7 +173,7 @@ func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *comp
 		l.recordCondition(rpUID, metav1.Condition{
 			Type:               condType,
 			Status:             metav1.ConditionTrue,
-			Reason:             ReasonNoPaths,
+			Reason:             v1alpha1.ReasonNoPaths,
 			Message:            "the policy declares no paths for this behavior",
 			LastTransitionTime: metav1.NewTime(l.clock()),
 		})
@@ -197,7 +187,7 @@ func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *comp
 		l.recordCondition(rpUID, metav1.Condition{
 			Type:               condType,
 			Status:             metav1.ConditionTrue,
-			Reason:             ReasonAllPathsSupported,
+			Reason:             v1alpha1.ReasonAllPathsSupported,
 			Message:            fmt.Sprintf("all %d paths are supported", len(pair.Allow)+len(pair.Deny)),
 			LastTransitionTime: metav1.NewTime(l.clock()),
 		})
@@ -210,7 +200,7 @@ func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *comp
 	l.recordCondition(rpUID, metav1.Condition{
 		Type:               condType,
 		Status:             metav1.ConditionFalse,
-		Reason:             ReasonUnsupportedPaths,
+		Reason:             v1alpha1.ReasonUnsupportedPaths,
 		Message:            rejectionMessage(rejected),
 		LastTransitionTime: metav1.NewTime(l.clock()),
 	})

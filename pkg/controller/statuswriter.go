@@ -20,17 +20,6 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-// Condition types and reasons written by the StatusWriter. TargetsValid and
-// ObservationAvailable are produced by the managers and merged verbatim.
-const (
-	// ConditionApplied reports that this node's daemon has the policy loaded,
-	// with the reason naming the mode it is running in.
-	ConditionApplied = "Applied"
-
-	ReasonEnforcing  = "Enforcing"
-	ReasonMonitoring = "Monitoring"
-)
-
 // DefaultStatusFlushInterval is the flush cadence used by the daemon.
 const DefaultStatusFlushInterval = 30 * time.Second
 
@@ -128,7 +117,7 @@ func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventT
 		st.name = res.Name
 	}
 	st.mode = res.Mode
-	st.conditions[ConditionApplied] = s.appliedCondition(res.Mode)
+	st.conditions[v1alpha1.ConditionApplied] = s.appliedCondition(res.Mode)
 	st.touch()
 	return nil
 }
@@ -153,15 +142,15 @@ func (s *StatusWriter) RecordCondition(policyUID string, cond metav1.Condition) 
 }
 
 func (s *StatusWriter) appliedCondition(mode string) metav1.Condition {
-	reason := ReasonEnforcing
+	reason := v1alpha1.ReasonEnforcing
 	message := "the policy is being enforced on this node"
 	switch mode {
 	case compiler.ModeMonitor:
-		reason = ReasonMonitoring
+		reason = v1alpha1.ReasonMonitoring
 		message = "the policy is observed and reported but never blocks"
 	}
 	return metav1.Condition{
-		Type:               ConditionApplied,
+		Type:               v1alpha1.ConditionApplied,
 		Status:             metav1.ConditionTrue,
 		Reason:             reason,
 		Message:            message,

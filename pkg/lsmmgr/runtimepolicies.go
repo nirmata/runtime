@@ -1,6 +1,7 @@
 package lsmmgr
 
 import (
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 
@@ -19,9 +20,9 @@ type progSpec struct {
 
 func progSpecs(compiledRp *compiler.EvaluationResult) []progSpec {
 	return []progSpec{
-		{progType: lsm.PROG_TYPE_LSM_OPEN, files: compiledRp.Open, condition: ConditionOpenRulesValid},
+		{progType: lsm.PROG_TYPE_LSM_OPEN, files: compiledRp.Open, condition: v1alpha1.ConditionOpenRulesValid},
 		// exec behaviors are enforced through bprm_check_security
-		{progType: lsm.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec, condition: ConditionExecRulesValid},
+		{progType: lsm.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec, condition: v1alpha1.ConditionExecRulesValid},
 	}
 }
 

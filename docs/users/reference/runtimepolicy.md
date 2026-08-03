@@ -217,7 +217,8 @@ current limits, not rounding errors:
   value. A CIDR of `/24` or narrower is expanded into individual addresses.
 - **`open` and `exec` values are absolute literal paths, bounded at 127 bytes.** They are never
   split into tokens and never treated as globs; only the whole value `"*"` is the default-deny
-  sentinel. A longer value, an empty one, one carrying a NUL byte, or a relative one is rejected
+  sentinel, and it must be written exactly — `" * "` is rejected, not treated as the wildcard. A
+  longer value, an empty one, one carrying a NUL byte, or a relative one is rejected
   at admission and reported through `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives
   from an `expression`.
 - **`exec` selects a binary, never a command.** The key is the resolved program path, so allowing

@@ -27,7 +27,8 @@ func TestParsePathValue(t *testing.T) {
 		{name: "trailing newline from a YAML block scalar", in: "/bin/sh\n", wantPath: "/bin/sh"},
 		{name: "carriage return and newline", in: "/bin/sh\r\n", wantPath: "/bin/sh"},
 		{name: "default deny sentinel", in: StarTarget, wantStar: true},
-		{name: "padded sentinel", in: " * ", wantStar: true},
+		{name: "padded sentinel rejected", in: " * ", wantErr: ErrPaddedStarValue},
+		{name: "sentinel with trailing newline rejected", in: "*\n", wantErr: ErrPaddedStarValue},
 		{name: "longest accepted path", in: "/" + strings.Repeat("a", MaxPathValueLen-1), wantPath: "/" + strings.Repeat("a", MaxPathValueLen-1)},
 
 		{name: "empty rejected", in: "", wantErr: ErrEmptyPathValue},

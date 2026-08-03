@@ -28,6 +28,10 @@ var (
 	// kernel resolves every path it can match with bpf_d_path, which always
 	// yields one, so a relative value programs a key nothing can ever produce.
 	ErrRelativePathValue = errors.New("path must be absolute: the kernel matches resolved paths, so a bare program name never matches")
+	// ErrPaddedStarValue reports a value that trims to the StarTarget sentinel
+	// without being exactly it. The sentinel switches the whole behavior to
+	// default deny, so a near-miss is corrected by the author, not normalized.
+	ErrPaddedStarValue = errors.New(`the default-deny wildcard must be written exactly as "*"`)
 )
 
 // PathValue is the parsed form of one exec or open path value. Exactly one of the
@@ -49,7 +53,8 @@ type PathValue struct {
 // The value is trimmed of surrounding whitespace — quotes and brackets are not
 // trimmed, unlike ParseNetworkValue, because they are legal path bytes. Then:
 //
-//   - StarTarget ("*") yields Star
+//   - StarTarget ("*"), written exactly, yields Star; a value that merely
+//     trims to it is an error
 //   - anything else yields Path, a literal never split into tokens and never
 //     interpreted as a glob
 //   - an empty, NUL-bearing, over-long or relative value is an error
@@ -61,6 +66,9 @@ func ParsePathValue(raw string) (PathValue, error) {
 		return PathValue{}, ErrEmptyPathValue
 
 	case cleaned == StarTarget:
+		if raw != StarTarget {
+			return PathValue{}, ErrPaddedStarValue
+		}
 		return PathValue{Star: true}, nil
 
 	case strings.IndexByte(cleaned, 0) >= 0:
