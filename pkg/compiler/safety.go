@@ -35,15 +35,16 @@ func validateNetworkBehavior(path *field.Path, b *v1alpha1.Behavior) field.Error
 	})
 }
 
-// validateExecBehavior validates the hardcoded allow/deny values of an exec
-// behavior against ParseExecValue.
+// validatePathBehavior validates the hardcoded allow/deny values of an exec or
+// open behavior against ParsePathValue. Both are programmed into the same kernel
+// maps, so both are held to the same grammar here.
 //
 // Unlike the network case there is no narrowing at program time: lsm.ParsePaths
 // applies exactly this grammar, so a value accepted here is a value the kernel
 // maps can hold.
-func validateExecBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
+func validatePathBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
 	return validateBehaviorValues(path, b, func(v string) error {
-		_, err := ParseExecValue(v)
+		_, err := ParsePathValue(v)
 		return err
 	})
 }

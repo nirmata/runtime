@@ -35,7 +35,7 @@ func condOfType(t *testing.T, s *fakeStatus, policyUID, condType string) metav1.
 // forbids: a value the kernel maps cannot hold is never programmed, and the
 // policy says so instead of looking healthy.
 func TestUnenforceablePathsSurfaceOnPolicyStatus(t *testing.T) {
-	tooLong := "/" + strings.Repeat("a", compiler.MaxExecPathLen)
+	tooLong := "/" + strings.Repeat("a", compiler.MaxPathValueLen)
 	tests := []struct {
 		name       string
 		mode       string
@@ -115,7 +115,7 @@ func TestUnenforceablePathsSurfaceOnPolicyStatus(t *testing.T) {
 // a policy whose values become enforceable again must stop reporting the
 // failure, so the condition follows the spec rather than latching.
 func TestPathRulesConditionClearsWhenValuesBecomeEnforceable(t *testing.T) {
-	tooLong := "/" + strings.Repeat("a", compiler.MaxExecPathLen)
+	tooLong := "/" + strings.Repeat("a", compiler.MaxPathValueLen)
 	h := newHarness(t)
 	sel := labels.Everything()
 

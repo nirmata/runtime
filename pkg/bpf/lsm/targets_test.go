@@ -19,14 +19,14 @@ func key(path string) PathKey {
 // the kernel key: bpf_probe_read_kernel_str always leaves a NUL terminator, so
 // the longest usable path is one byte shorter than the key.
 func TestPathKeyHoldsEveryValueTheGrammarAccepts(t *testing.T) {
-	if compiler.MaxExecPathLen != maxPathLen-1 {
-		t.Errorf("compiler.MaxExecPathLen = %d, want %d (char[%d] key minus its NUL terminator)",
-			compiler.MaxExecPathLen, maxPathLen-1, maxPathLen)
+	if compiler.MaxPathValueLen != maxPathLen-1 {
+		t.Errorf("compiler.MaxPathValueLen = %d, want %d (char[%d] key minus its NUL terminator)",
+			compiler.MaxPathValueLen, maxPathLen-1, maxPathLen)
 	}
 }
 
 func TestParsePaths(t *testing.T) {
-	tooLong := "/" + strings.Repeat("a", compiler.MaxExecPathLen)
+	tooLong := "/" + strings.Repeat("a", compiler.MaxPathValueLen)
 	tests := []struct {
 		name         string
 		values       []string
@@ -99,7 +99,7 @@ func TestParsePaths(t *testing.T) {
 // bound or a skip on either side alone leaks an entry nothing can delete.
 func TestAddAndDeleteTargetsKeyTheSameValues(t *testing.T) {
 	pair := &compiler.AllowDenyPair{
-		Allow: []string{"/usr/bin/python3", "", "*", "/" + strings.Repeat("a", compiler.MaxExecPathLen)},
+		Allow: []string{"/usr/bin/python3", "", "*", "/" + strings.Repeat("a", compiler.MaxPathValueLen)},
 		Deny:  []string{"/bin/sh", "/bin/sh\x00", " /usr/bin/curl ", "*"},
 	}
 

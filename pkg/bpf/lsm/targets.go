@@ -16,7 +16,7 @@ type PathKey = [maxPathLen]byte
 var (
 	ReasonEmptyPath   = "empty path value"
 	ReasonNULInPath   = "path contains a NUL byte: kernel paths are NUL-terminated strings"
-	ReasonPathTooLong = fmt.Sprintf("path is longer than %d bytes: the kernel path maps cannot hold it", compiler.MaxExecPathLen)
+	ReasonPathTooLong = fmt.Sprintf("path is longer than %d bytes: the kernel path maps cannot hold it", compiler.MaxPathValueLen)
 )
 
 // RejectedTarget is a path value that could not be turned into a map key,
@@ -35,7 +35,7 @@ func (r RejectedTarget) String() string {
 // ParsePaths converts policy-authored path values into the keys the banned and
 // allowed maps hold.
 //
-// The grammar is defined once, in compiler.ParseExecValue. ParsePaths is the
+// The grammar is defined once, in compiler.ParsePathValue. ParsePaths is the
 // only place a value becomes a key, so AddTargets and DeleteTargets cannot
 // disagree about which values are programmed; a value that cannot become a key
 // comes back in rejected rather than being skipped.
@@ -45,7 +45,7 @@ func (r RejectedTarget) String() string {
 func ParsePaths(values []string) (keys []PathKey, star bool, rejected []RejectedTarget) {
 	seen := make(map[PathKey]struct{}, len(values))
 	for _, raw := range values {
-		v, err := compiler.ParseExecValue(raw)
+		v, err := compiler.ParsePathValue(raw)
 		if err != nil {
 			rejected = append(rejected, RejectedTarget{Value: raw, Reason: rejectionReason(err)})
 			continue
@@ -67,11 +67,11 @@ func ParsePaths(values []string) (keys []PathKey, star bool, rejected []Rejected
 
 func rejectionReason(err error) string {
 	switch {
-	case errors.Is(err, compiler.ErrEmptyExecValue):
+	case errors.Is(err, compiler.ErrEmptyPathValue):
 		return ReasonEmptyPath
-	case errors.Is(err, compiler.ErrNULInExecValue):
+	case errors.Is(err, compiler.ErrNULInPathValue):
 		return ReasonNULInPath
-	case errors.Is(err, compiler.ErrExecValueTooLong):
+	case errors.Is(err, compiler.ErrPathValueTooLong):
 		return ReasonPathTooLong
 	default:
 		return err.Error()

@@ -90,7 +90,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		}
 		if b.Exec != nil {
 			errPath := path.Index(i).Child("exec")
-			if errs := validateExecBehavior(errPath, b.Exec); len(errs) != 0 {
+			if errs := validatePathBehavior(errPath, b.Exec); len(errs) != 0 {
 				return nil, errs.ToAggregate()
 			}
 			compiledExec, err := c.compileBehavior(b.Exec)
@@ -101,9 +101,12 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 			compiledExecs = append(compiledExecs, compiledExec)
 		}
 		if b.Open != nil {
+			errPath := path.Index(i).Child("open")
+			if errs := validatePathBehavior(errPath, b.Open); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
 			compiledOpen, err := c.compileBehavior(b.Open)
 			if err != nil {
-				errPath := path.Index(i).Child("open")
 				return nil, field.Invalid(errPath, b.Open, err.Error())
 			}
 

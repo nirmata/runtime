@@ -23,7 +23,7 @@ var valueCorpus = []string{
 	"",
 	"   ",
 	"/bin/sh\x00/etc",
-	"/" + strings.Repeat("a", compiler.MaxExecPathLen),
+	"/" + strings.Repeat("a", compiler.MaxPathValueLen),
 	strings.Repeat("/deep", 200),
 }
 
@@ -41,7 +41,7 @@ var observedCorpus = []string{
 	"/usr/bin/*",
 	"/usr/bin/anything",
 	"kubectl",
-	"/" + strings.Repeat("a", compiler.MaxExecPathLen),
+	"/" + strings.Repeat("a", compiler.MaxPathValueLen),
 	"",
 	compiler.StarTarget,
 }

@@ -100,7 +100,7 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 
 // open and exec targets are paths, not addresses: they must not be run through
 // the network validation.
-func TestCompile_DoesNotValidateOpenAndExecValuesAsNetworkTargets(t *testing.T) {
+func TestCompile_DoesNotValidateOpenAndPathValuesAsNetworkTargets(t *testing.T) {
 	c := newTestCompiler(t)
 
 	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
@@ -127,11 +127,13 @@ func TestCompile_DoesNotValidateOpenAndExecValuesAsNetworkTargets(t *testing.T) 
 	}
 }
 
-// TestCompile_RejectsBadExecValuesWithFieldPath pins the admission-time half for
-// exec: a value the kernel maps cannot hold is rejected with the field path of
-// the exact offender rather than being dropped when it reaches those maps.
-func TestCompile_RejectsBadExecValuesWithFieldPath(t *testing.T) {
-	tooLong := "/" + strings.Repeat("a", MaxExecPathLen)
+// TestCompile_RejectsBadPathValuesWithFieldPath pins the admission-time half for
+// exec and open: a value the kernel maps cannot hold is rejected with the field
+// path of the exact offender rather than being dropped when it reaches those
+// maps. Both behaviors are checked because both program the same maps, so a
+// grammar enforced for only one of them is not a chokepoint.
+func TestCompile_RejectsBadPathValuesWithFieldPath(t *testing.T) {
+	tooLong := "/" + strings.Repeat("a", MaxPathValueLen)
 	tests := []struct {
 		name      string
 		behaviors []v1alpha1.PolicyBehavior
@@ -157,6 +159,27 @@ func TestCompile_RejectsBadExecValuesWithFieldPath(t *testing.T) {
 				{Exec: &v1alpha1.Behavior{Deny: behaviorRule([]string{"/bin/sh\x00"}, "")}},
 			},
 			wantPaths: []string{"spec.behaviors[0].exec.deny.values[0]"},
+		},
+		{
+			name: "over-length path in open deny values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Open: &v1alpha1.Behavior{Deny: behaviorRule([]string{"/etc/shadow", tooLong}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].open.deny.values[1]"},
+		},
+		{
+			name: "NUL byte in open deny values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Open: &v1alpha1.Behavior{Deny: behaviorRule([]string{"/etc/shadow\x00"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].open.deny.values[0]"},
+		},
+		{
+			name: "relative path in open allow values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Open: &v1alpha1.Behavior{Allow: behaviorRule([]string{"etc/hosts"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].open.allow.values[0]"},
 		},
 		{
 			name: "offenders in both allow and deny of the second behavior",
