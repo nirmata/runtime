@@ -26,19 +26,6 @@ CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 CONTROLLER_GEN_VERSION ?= v0.20.0
 CHAINSAW_VERSION ?= v0.2.15
 
-CRDS := crd/runtimepolicies.runtime.nirmata.io crd/reports.openreports.io crd/clusterreports.openreports.io
-
-# A CRD accepted a moment ago can still have a nil status.conditions, and
-# `kubectl wait` reports that as an accessor error instead of waiting for the
-# field to appear, so the wait is retried rather than trusted once.
-define wait_crds_established
-	ok=0; for _ in 1 2 3 4 5; do \
-		if kubectl wait --for=condition=Established --timeout=60s $(CRDS); then ok=1; break; fi; \
-		sleep 2; \
-	done; \
-	if [ "$$ok" != 1 ]; then echo "CRDs did not become Established"; exit 1; fi
-endef
-
 generate-crds:
 	go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
 
@@ -144,8 +131,29 @@ test-examples:
 # and no eBPF-capable kernel.
 test-chainsaw:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	@$(call wait_crds_established)
+	$(MAKE) wait-crds
 	chainsaw test --config test/chainsaw/.chainsaw.yaml --test-dir test/chainsaw/
+
+CRDS := runtimepolicies.runtime.nirmata.io reports.openreports.io clusterreports.openreports.io
+
+# `kubectl wait --for=condition=X` errors instead of retrying when .status.conditions
+# does not exist yet, which the CRD applied last reliably hits: "accessor error: <nil>
+# is of the type <nil>, expected []interface{}". Poll for the field first, then wait on
+# the condition so a CRD that never establishes still fails the target.
+wait-crds:
+	@for crd in $(CRDS); do \
+		i=0; \
+		while [ "$$i" -lt 60 ]; do \
+			[ -n "$$(kubectl get crd $$crd -o jsonpath='{.status.conditions}' 2>/dev/null)" ] && break; \
+			i=$$((i + 1)); \
+			sleep 1; \
+		done; \
+		if [ "$$i" -ge 60 ]; then \
+			echo "ERROR: crd/$$crd published no .status.conditions within 60s; it may not exist."; \
+			exit 1; \
+		fi; \
+		kubectl wait --for=condition=Established --timeout=60s crd/$$crd || exit 1; \
+	done
 
 fmt:
 	gofmt -l -w .
@@ -192,7 +200,7 @@ kind-install-prebuilt:
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
-	@$(call wait_crds_established)
+	$(MAKE) wait-crds
 	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
 		--namespace kyverno-runtime --create-namespace \
 		--set image.repository=$(IMAGE_REPOSITORY) \
@@ -229,11 +237,14 @@ kind-install-manifests:
 		echo "Skipping default policy verification: templates/default-policies.yaml not present"; \
 	fi
 
-# Run the Chainsaw e2e suite against a kind cluster with kyverno-runtime
-# installed. test/e2e/dispatch-only is excluded: it needs a kernel booted with
-# lsm=...,bpf, which hosted CI runners do not have (issue #60).
+# Run the whole Chainsaw e2e suite against a kind cluster with kyverno-runtime
+# installed, LSM tests included. Those need a host booted with lsm=...,bpf and
+# fail loudly on one that is not -- which is the point, and is why no CI job
+# calls this target: hosted runners do not qualify and run the narrower
+# test-e2e-gate / test-e2e-egress instead. Docker Desktop's LinuxKit VM does
+# qualify, so this is the target to run on a developer machine.
 test-e2e:
-	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/ --exclude-test-regex '^lsm-'
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
 
 # Install gate only: image builds, chart installs, daemonset Ready, policies
 # accepted. Asserts nothing about eBPF -- see test/e2e/install-gate.
@@ -244,7 +255,7 @@ test-e2e-gate:
 test-e2e-egress:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-enforce/
 
-# Service-reference resolution and enforcement. Same kernel requirements as
+# Cluster Service target resolution and enforcement. Same kernel requirements as
 # test-e2e-egress.
 test-e2e-svcref:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-svcref/
@@ -260,14 +271,24 @@ test-e2e-dns:
 test-e2e-overlap:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-overlap/
 
-# BPF-LSM open/exec enforcement behavior. REQUIRES a host booted with BPF-LSM
-# ('bpf' in /sys/kernel/security/lsm). Not part of test-e2e; see issue #60.
+# BPF-LSM open/exec enforcement behavior on its own. REQUIRES a host booted with
+# BPF-LSM ('bpf' in /sys/kernel/security/lsm); test-e2e runs it alongside the
+# rest of the suite.
 test-e2e-lsm:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/dispatch-only/
 
-# BPF program load / verifier smoke test. Needs Linux + root; skips elsewhere.
+# Loads every committed BPF object and fails with the verifier log if the kernel
+# rejects one. Needs Linux + root; skips elsewhere. A new program joins this lane
+# by adding an entry to the table in test/e2e/bpfverify_test.go -- never by
+# editing a workflow. Programs the kernel only accepts with BPF-LSM active skip
+# unless NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1, which turns the skip into a failure.
+test-bpf-verify:
+	go test -count=1 -v ./test/e2e/ -run TestBPFVerify
+
+# Map round trips and LSM attach against a live kernel: what the verifier lane
+# deliberately does not do. Needs Linux + root; skips elsewhere.
 test-bpf-smoke:
-	go test -count=1 -v ./test/e2e/ -run TestBPF
+	go test -count=1 -v ./test/e2e/ -run 'TestBPFEgress|TestBPFLsm'
 
 smoke-quickstart: test-e2e-gate
 
@@ -307,4 +328,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
