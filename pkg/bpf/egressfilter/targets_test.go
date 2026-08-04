@@ -4,8 +4,9 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // addrStrings renders addresses for comparison: netip.Addr has unexported
