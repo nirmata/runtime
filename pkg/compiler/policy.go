@@ -23,6 +23,7 @@ type EvaluationResult struct {
 	IPs      *AllowDenyPair
 	Open     *AllowDenyPair
 	Exec     *AllowDenyPair
+	DNS      *AllowDenyPair
 	Selector labels.Selector
 	Mode     string
 
@@ -90,6 +91,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	net := &AllowDenyPair{}
 	open := &AllowDenyPair{}
 	exec := &AllowDenyPair{}
+	dns := &AllowDenyPair{}
 
 	for _, compiledNet := range c.compiledNets {
 		err := evalCompiledBehavior(ctx, net, compiledNet, data)
@@ -118,12 +120,20 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		}
 	}
 
+	for _, compiledDNS := range c.compiledDNS {
+		err := evalCompiledBehavior(ctx, dns, compiledDNS, data)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &EvaluationResult{
 		UID:                c.UID,
 		Name:               c.Name,
 		IPs:                net,
 		Open:               open,
 		Exec:               exec,
+		DNS:                dns,
 		Selector:           selector,
 		Mode:               c.mode,
 		UnresolvedServices: unresolved,

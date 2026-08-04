@@ -158,6 +158,9 @@ func TestRedactionChokepoint(t *testing.T) {
 			DestIP:   "1.2.3.4 " + canaries[0].value,
 			DestHost: "api.example.com " + canaries[8].value,
 		},
+		DNS: &DNSSummary{
+			QName: "api.example.com " + canaries[7].value,
+		},
 		Process: &ProcessSummary{
 			Comm: "curl " + canaries[1].value,
 		},
@@ -229,7 +232,7 @@ func TestRedactionChokepoint(t *testing.T) {
 func TestRedactionChokepointCoversEveryFindingStringField(t *testing.T) {
 	wantFindingFields := []string{
 		"PolicyName", "PolicyUID", "Behavior", "Severity", "Result", "Enforced", "Message",
-		"Pod", "Net", "Process", "Timestamp",
+		"Pod", "Net", "DNS", "Process", "Timestamp",
 	}
 	if diff := cmp.Diff(wantFindingFields, structFieldNames(Finding{})); diff != "" {
 		t.Errorf("Finding fields changed (-want +got):\n%s\nplant the new field in TestRedactionChokepoint and emit it via buildResult", diff)
@@ -238,6 +241,11 @@ func TestRedactionChokepointCoversEveryFindingStringField(t *testing.T) {
 	wantNet := []string{"DestIP", "DestHost"}
 	if diff := cmp.Diff(wantNet, structFieldNames(NetSummary{})); diff != "" {
 		t.Errorf("NetSummary fields changed (-want +got):\n%s", diff)
+	}
+
+	wantDNS := []string{"QName"}
+	if diff := cmp.Diff(wantDNS, structFieldNames(DNSSummary{})); diff != "" {
+		t.Errorf("DNSSummary fields changed (-want +got):\n%s", diff)
 	}
 
 	wantProcess := []string{"Comm"}
@@ -255,6 +263,7 @@ func TestFindingHasNoFreeFormFields(t *testing.T) {
 	}{
 		{"Finding", Finding{}},
 		{"NetSummary", NetSummary{}},
+		{"DNSSummary", DNSSummary{}},
 		{"ProcessSummary", ProcessSummary{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

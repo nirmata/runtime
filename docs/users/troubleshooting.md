@@ -57,6 +57,61 @@ Work through these in order.
 - A finding for a pod whose namespace is not a valid DNS-1123 label is dropped rather
   than written to an invalid object name.
 
+## A DNS name I expected to see is not reported
+
+Work down this list; the first three are far more common than a bug.
+
+1. **The answer was cached, so no question was asked.** A resolution is not a connection,
+   and a connection does not imply a resolution. If the workload's resolver, its libc, or a
+   sidecar already held the address, nothing went on the wire. Restart the pod after the
+   policy is applied and look again — a cold resolver asks.
+
+2. **The name is covered by the allow list.** `dns.allow` is the expected set, so a name in
+   it is deliberately silent. That includes a name a left-wildcard covers. To see everything
+   the workload resolves, add a second policy over the same pods with
+   `deny.values: ["*"]` and no allow list.
+
+3. **The question is not one this hook reads.** Only UDP datagrams to port 53 are read. DNS
+   over HTTPS, DNS over TLS, and DNS over TCP/53 produce no observation, and a workload that
+   dials an address it never resolved asks nothing at all.
+
+4. **The pod is not selected.** A pod is observed exactly while some policy with a `dns`
+   behavior selects it, and a behavior with no `allow` and no `deny` entry is inert — it
+   selects nothing and observes nothing. Check the selector against the pod's labels:
+
+   ```bash
+   kubectl get rpol <name> -o jsonpath='{.spec.podSelector}'
+   kubectl get pod <pod> --show-labels
+   ```
+
+5. **The policy did not compile.** `mode: enforce` with a `dns` behavior, an address or a
+   misplaced wildcard as a value: each fails the whole policy, so no behavior in it is in
+   force. See [Applied is False](#applied-is-false).
+
+6. **The question was lost, and counted.** Check the DNS loss counters before concluding
+   nothing was asked:
+
+   ```bash
+   curl -s localhost:9090/metrics | grep 'events_dropped_total{source="dnsquery"'
+   ```
+
+   `ringbuf_full` means the daemon fell behind; `name_unreadable` means the name exceeded
+   the 128-byte width. Both are in [Metrics](reference/metrics.md#dns-question-loss).
+
+7. **The program never loaded.** DNS observation is best effort: a kernel that will not load
+   the `cgroup_skb` program leaves every other behavior working and logs the reason once at
+   startup.
+
+   ```bash
+   kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime | grep -i 'dns question observation disabled'
+   ```
+
+Two more things that look like a miss and are not: the name is reported as the pod's
+resolver asked it, so `search`-domain expansions such as
+`api.example.com.default.svc.cluster.local` appear under their expanded form rather than the
+name in your policy; and a wildcard never matches its own apex, so `*.example.com` leaves
+`example.com` reported as unexpected.
+
 ## TargetsValid is False
 
 `status.conditions` type `TargetsValid` goes `False` for one of two reasons, and the

@@ -38,11 +38,12 @@ rather than glossed over.
 
 ## Overview
 
-kyverno-runtime enforces and observes pod behavior — file opens, process execution, and network
-egress — using eBPF, driven by a single cluster-scoped CRD:
+kyverno-runtime enforces and observes pod behavior — file opens, process execution, network
+egress, and DNS resolution — using eBPF, driven by a single cluster-scoped CRD:
 
 - `RuntimePolicy` (`api/v1alpha1/runtimepolicy_types.go`): selects pods and declares allow/deny
-  rules for `network`, `exec`, and `open` behaviors.
+  rules for `network`, `exec`, `open`, and `dns` behaviors. The first three are enforced or
+  observed; `dns` is observed only.
 
 There is no admission webhook in this project; policies are enforced entirely at runtime via
 eBPF programs attached from a per-node daemon.
@@ -70,6 +71,9 @@ On startup it wires together:
 - `pkg/lsmmgr.LsmManager` and `pkg/egressmgr.EgressManager`: both an `events.PodEventHandler` and
   an `events.RuntimePolicyEventHandler`; they drive the actual eBPF attachments (see
   [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
+- `pkg/dnsmgr.Manager`: the same pair of interfaces for the DNS question observer, deciding which
+  pods it is attached to and gated in for (see [The event plane](#the-event-plane)). Wired only if
+  `pkg/bpf/dnsquery` loads; a kernel that refuses the program leaves every other behavior working.
 - `pkg/attribution.Index` is a `PodEventHandler`; `pkg/controller.StatusWriter` and
   `pkg/monitor.Monitor` are `RuntimePolicyEventHandler`s — the cgroup→pod index, the status writer,
   and the monitor-mode evaluator (see [The event plane](#the-event-plane)).
@@ -86,9 +90,11 @@ controller.NewStatusWriter(nodeName, 30s)   -> Run in errgroup
 egressmgr.NewEgressManager(log, statusWriter)
 lsmmgr.NewLsmManager(log, statusWriter)
 monitor.New(log, reporter, metrics)
-podHandlers    = [em, lsmm, attrIdx]
-policyHandlers = [em, lsmm, statusWriter, monitor]
+podHandlers    = [em, lsmm, attrIdx]        (+ dm when dnsquery loaded)
+policyHandlers = [em, lsmm, statusWriter, monitor]  (+ dm when dnsquery loaded)
+dnsquery.New() -> dnsmgr.New(dm) + dnsquery.NewSource(WithLossFunc -> EventsDropped)
 collector: PollSource(egress-observe, 10s) + PollSource(lsm-observe, 10s)
+           + Source(dnsquery, ring buffer)
            -> Stage(attrIdx) -> Sink(monitor)                -> Run in errgroup
 RuntimePolicy informer -> wait for cache sync -> pod watcher  -> both in errgroup
 ```
@@ -112,19 +118,31 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
 | `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. `enforce` programs the deny/allow maps; `monitor` attaches the same programs with empty maps and evaluates observations in userspace (see [The event plane](#the-event-plane)). Optional with no default: a policy that omits `mode` is inert — see [Known Gaps](#known-gaps--future-work). |
 
-Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, or `open`, enforced by
-an `XValidation` rule: `(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1`.
+Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, `open`, or `dns`,
+enforced by an `XValidation` rule:
+`(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) + (has(self.dns) ? 1 : 0) == 1`.
 Each behavior (`Behavior` type) has an optional `allow` and/or `deny` (`BehaviorRule`), and each
 rule has a literal `values []string` and/or a CEL `expression string` — the compiler unions the
 two (`pkg/compiler/compiler.go: compileBehavior`, `pkg/compiler/policy.go: evalCompiledBehavior`).
 
 Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference with examples):
 
-- `network` values are IPv4 addresses (egress), `exec` values are command names/paths, `open`
-  values are file paths.
+- `network` values are IPv4 addresses, CIDRs, cluster Service DNS names and external domain names
+  (egress), `exec` values are command names/paths, `open` values are file paths, `dns` values are
+  hostnames or left-wildcards.
 - `deny.values: ["*"]` (or an expression producing `["*"]`) is a **default-deny** sentinel for that
   behavior type: that behavior becomes deny-all-except-allowed for matched pods, instead of the
-  default allow-all-except-denied.
+  default allow-all-except-denied. On a `dns` behavior it means "report every name" instead, and
+  short-circuits the allow list rather than exempting it.
+- A `dns` behavior is observation only, and `pkg/compiler.validateDNSBehavior` rejects it in
+  `enforce` mode with a message naming `monitor` and the `network` behavior. The two grammars are
+  one function apart on purpose: `ParseDNSValue` accepts a left-wildcard and `ParseNetworkValue`
+  rejects one, because a `network` target has to be resolved to addresses and programmed into a
+  kernel map while a `dns` value is only ever compared against an observed question name. What a
+  hostname *is* comes from a single `validHostname`, so nothing else can drift between them.
+  Enforcing a destination named by domain is the `network` behavior's job
+  (`egressfilter.ParseTargets` → the domain maps), which is why accepting `enforce` on `dns` would
+  be a second spelling of one intent with only one of them working.
 - `docs/users/reference/runtimepolicy.md` specifies the multi-policy case as a **union across all `RuntimePolicy`
   objects matching a pod** — any matching policy asserting default-deny flips the behavior, and the
   effective allow (or deny) list is the union of every matching policy's entries. **That is only
@@ -151,7 +169,8 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
 3. `CompiledRuntimePolicy.Evaluate(ctx)` (`pkg/compiler/policy.go`) evaluates the variables (lazily,
    via `k8s.io/apiserver/pkg/cel/lazy.MapValue`) and each compiled behavior, unions literal
    `values` with the CEL expression's result, and returns an `EvaluationResult{UID, Name, Mode, IPs,
-   Open, Exec, Selector}` where `IPs`/`Open`/`Exec` are each an `AllowDenyPair{Allow, Deny []string}`.
+   Open, Exec, DNS, Selector}` where `IPs`/`Open`/`Exec`/`DNS` are each an
+   `AllowDenyPair{Allow, Deny []string}`.
 
 Both compile and evaluate run inside `utils.Guard`, which converts a panic from user-authored CEL
 (or from a library binding reached through it) into an ordinary error carrying the operation name. `resource.toGVR` returns an error instead of panicking on an unparsable `apiVersion`, and
@@ -277,14 +296,35 @@ pods pointing at stale IP data.
 
 Enforcement is a kernel-side map lookup and produces no userspace output. Monitor mode needs the
 opposite: a stream of what a workload actually did, attributed to a pod, matched against policy
-in userspace. That is the event plane. It is built on the counters the **existing** BPF objects
-already keep — no new kernel programs, no ring buffers, no new `.o` files.
+in userspace. That is the event plane. Most of it rides the counters the enforcement BPF objects
+already keep; the DNS question observer is the one source with a program and a ring buffer of its
+own.
+
+### Choosing a transport: counter map or ring buffer
+
+The two source shapes are not interchangeable, and the deciding question is what the observation
+*is*:
+
+- **A bounded enum rides a counter map.** An address, a resolved path, an exec filename, each
+  paired with the kernel's decision: the key set is bounded by what the workload touches, the
+  interesting quantity is "how many times", and a read-and-reset drain turns the map into deltas.
+  Nothing is lost between polls that the counter does not record, and the kernel side costs one
+  map update per event.
+- **A variable-length string needs a ring buffer.** A DNS question name is the payload, not a key:
+  its value is the whole observation, aggregation would destroy it, and a map keyed on it would be
+  a map keyed on unbounded user data. Each occurrence is its own record, delivered as it happens,
+  with `Count` fixed at 1.
+
+The cost of the second shape is that a full buffer loses observations where a full counter map
+merely stops distinguishing them, which is why the ring buffer source carries loss counters and
+the poll sources do not.
 
 ### Normalized events (`pkg/runtimeevent`)
 
 `runtimeevent.Event` is the single currency of the plane: a `Kind`
-(`net|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
-(observations are deltas, not individual occurrences), two deliberately distinct deny flags —
+(`net|dns|exec|open`), a timestamp, an optional cgroup ID / PID / comm, a `Count`
+(a poll source's observations are deltas, not individual occurrences; a `dns` record is always
+one question), two deliberately distinct deny flags —
 `KernelDenied`, the kernel's actual enforcement decision, set only by the BPF poll sources from
 the decision dimension of the observation maps, and `WouldDeny`, monitor mode's counterfactual,
 set only by `pkg/monitor` on its per-policy copy — one non-nil facts struct
@@ -294,7 +334,7 @@ Three interfaces define the plumbing, all in `pkg/runtimeevent/iface.go`:
 
 | Interface | Implemented by | Role |
 | --- | --- | --- |
-| `Source` | `collector.NewPollSource` | Produces events until its context ends. |
+| `Source` | `collector.NewPollSource`, `dnsquery.Source` | Produces events until its context ends. |
 | `Sink` | `monitor.Monitor` | Consumes fully-annotated events; must be fast and must not panic outward. |
 | `PolicyStatusRecorder` | `controller.StatusWriter` | Receives status conditions from anywhere in the plane. |
 
@@ -327,19 +367,100 @@ a filter with `OBSERVE` set (egress). Crossing the observe/enforce line rebuilds
 rather than mutating it, so an observing enforcer can never inherit deny entries and an enforcing
 one never starts from an observer's empty maps.
 
+### The DNS question observer (`pkg/bpf/dnsquery`)
+
+`cgroup_dnsegress` (`_cprog/query.bpf.c`) is a `cgroup_skb/egress` program that reads the QNAME
+out of every UDP datagram a gated cgroup sends to port 53 and submits one ring buffer record per
+question. Every path returns 1: a question this program cannot parse must still leave the pod.
+
+The first thing it does is look the skb's cgroup id up in the `cgids` hash, and return if it is
+absent. That gate is the whole reason the program can be attached to a container cgroup without
+paying for it: an unselected pod's questions are never read, never reserved, never decoded.
+`bpf_skb_cgroup_id` is preferred over `bpf_get_current_cgroup_id` because the socket's cgroup
+stays correct when the skb is transmitted from softirq context; the current task's cgroup is the
+fallback for an skb with no socket, and a question is sent from process context.
+
+Two things about the name read are worth recording, because neither is visible from the code:
+
+- **The name is read straight into the ring buffer record, not through a stack buffer.** A
+  128-byte local plus the unrolled read's spill slots does not fit BPF's 512-byte stack. So the
+  record is reserved *before* the name is known to be parseable, and an unparseable name is
+  discarded rather than never reserved. The consequence is the `__builtin_memset` immediately
+  after the reserve: ring buffer memory is recycled and mapped into userspace, so a partially
+  filled record would otherwise hand a reader the tail of the previous one.
+- **The record carries the same wire encoding `pkg/bpf/egressfilter` interns policy-named domains
+  into**, from the same `struct domain_key` in `pkg/bpf/include/dnsname.h`. Length-prefixed
+  labels, ASCII-lowercased, zero padded, one 128-byte width. In the egress snooper that means a
+  map lookup needs no re-encoding on either side; here it means the width that bounds a decodable
+  question is the same width that bounds a policy value, so a question this drops is a question no
+  policy could have named.
+
+`read_qname` is one flat pass over the wire bytes rather than a loop per label: `remaining` counts
+down the current label, so a byte read with `remaining == 0` is the next length byte. Bounding the
+pass at the key width bounds the label count too, and leaves the verifier a single unrolled loop
+with constant indices. It uses `bpf_skb_load_bytes` rather than direct packet access because an
+skb may be non-linear, and `data_end` would then cut the name off mid-way and lose it silently.
+
+`Observer` (`dnsquery.go`) is deliberately a single instance for the whole daemon. `cgroup_skb`
+programs attach per cgroup, so observing N pods means N links — but one loaded object means one
+ring buffer and one reader goroutine instead of N of each, and one `cgids` gate every attachment
+shares. `dnsquery.Source` (`source.go`) is that reader: it drains the buffer into the collector,
+stamping each event's time on arrival (the record carries no timestamp), and closes the reader to
+unblock the in-kernel `Read` on context cancellation. A record the decoder rejects is counted and
+dropped rather than fatal — the Go and C layouts would have to disagree for that to happen, and
+returning would lose every subsequent question too.
+
+Loss is counted in three places, never silent, because a lost observation and an absent one are
+indistinguishable at the sink:
+
+| Reason | Side | Cause |
+| --- | --- | --- |
+| `ringbuf_full` | kernel | `bpf_ringbuf_reserve` failed; the reader is behind |
+| `name_unreadable` | kernel | truncated, compressed, or over the key width |
+| `undecodable` | userspace | `DecodeQueryEvent` rejected the record's bytes |
+
+The two kernel counters live in a per-CPU array, are cumulative and never reset; `pollStats` sums
+them across CPUs every 30 seconds and reports the delta through the `LossFunc` the daemon wires to
+`EventsDropped{source="dnsquery"}`.
+
+### Gating observation (`pkg/dnsmgr`)
+
+`dnsmgr.Manager` decides which pods the observer sees, from both event streams: it is an
+`events.PodEventHandler` and an `events.RuntimePolicyEventHandler`, and every decision is
+recomputed from the same predicate — a pod is observed exactly while some policy with a `dns`
+behavior, in a mode the detection engine reports in, selects it.
+
+That is an efficiency boundary and a privacy boundary at once. An unselected pod's questions never
+enter the ring buffer, so they cannot be dropped, decoded, or reported, and no node-wide firehose
+of every pod's questions exists to fall behind.
+
+Attachment and gate admission are separate steps because they fail differently. A link is per
+container cgroup and its absence means no packets are seen at all; a cgroup id in `cgids` is what
+lets an attached program emit. The ordering is asymmetric on purpose: `attach` links first and
+admits after, so a cgroup that failed to attach never sits in the gate reading as "observed" while
+producing nothing; `detach` revokes first and closes after, because an id left admitted after its
+link is gone is harmless while a link left open after revocation runs the program for nothing.
+
+`podState.cgInfos` is retained even while a pod is unobserved: the policy informer delivers no
+container information, so a policy that starts selecting an existing pod would otherwise have
+nothing to attach to. `reports(mode)` mirrors the engine's own mode switch rather than testing for
+"not empty", so a mode added to the API without an engine branch does not silently start
+observation.
+
 ### Collector (`pkg/collector`)
 
 `Collector` is a small fan-in/fan-out pipeline: N `Source`s → a buffered channel → an ordered
 list of `Stage`s → N `Sink`s, all driven by `Run(ctx)`.
 
 - `NewPollSource(name, interval, poll)` adapts the managers' `CollectObservations` into a
-  `Source`. Poll-based collection is a deliberate consequence of decision 2 above: the existing
-  programs expose counters, not a stream.
+  `Source`. Poll-based collection is a deliberate consequence of decision 2 above: the enforcement
+  programs expose counters, not a stream. `dnsquery.Source` implements `Source` directly, because
+  its transport already is one.
 - A `Stage` (`Name() string; Process(*Event) bool`) may annotate an event and returns false to
   drop it. Stages run in insertion order; the daemon installs exactly one, `attribution.Index`.
-- Drops are always counted, labeled by source and reason (`buffer_full`, `unattributed`), and
-  exposed via `Dropped()` and `nirmata_runtime_events_dropped_total`. A full buffer drops the
-  newest event rather than blocking a source.
+- Drops are always counted, labeled by source and reason (`buffer_full`, `unattributed`, and the
+  DNS source's three), and exposed via `Dropped()` and `nirmata_runtime_events_dropped_total`. A
+  full buffer drops the newest event rather than blocking a source.
 - Sources are restarted with backoff if they fail.
 
 ### Attribution (`pkg/attribution`)
@@ -367,9 +488,9 @@ read-only so the plane does not copy a label map per event. Sinks must not mutat
 
 `Monitor` is the `Sink` that turns observations into findings. It tracks monitor- AND
 enforce-mode policies in a per-event-ready form (`trackedPolicy`: mode, compiled selector plus
-`netBehavior`/`pathBehavior` matchers), replacing the whole value on every `RuntimePolicyEvent`
-rather than mutating it — both so `HandleEvent` can read one outside the lock and so it is immune
-to `egressmgr` mutating the `EvaluationResult` it shares (#53).
+`netBehavior`/`pathBehavior`/`nameBehavior` matchers), replacing the whole value on every
+`RuntimePolicyEvent` rather than mutating it — both so `HandleEvent` can read one outside the lock
+and so it is immune to `egressmgr` mutating the `EvaluationResult` it shares.
 
 Per event it gates on `Kind`, then on the policy's selector against `ev.Pod.Labels`, then
 evaluates the matching behavior with the same semantics the kernel would apply: an explicit deny
@@ -387,6 +508,41 @@ the kernel. Those findings say the operation *was* denied (`Finding.Enforced` is
 deny that no tracked enforce-mode policy explains bumps
 `nirmata_runtime_events_dropped_total{source="monitor",reason="unattributed_kernel_deny"}` and is
 logged at V(2): a kernel deny must never vanish silently.
+
+#### The name matcher and the advisory finding
+
+`nameBehavior` is the third matcher shape, and its `eval` is not a variant of the other two. For
+`netBehavior` and `pathBehavior` the allow list only matters under `deny.star`; for `nameBehavior`
+the allow list is the expected set, so a name matching none of its entries is a violation on its
+own:
+
+```text
+deny.star || deny.matches(name)                    -> violation
+allow.empty() || allow.star || allow.matches(name)  -> no violation
+otherwise                                           -> violation
+```
+
+Two consequences follow from that order. `deny.star` short-circuits, so `deny: ["*"]` reports every
+name and an allow list alongside it is ignored rather than exempted — the discovery form is a
+different request, not a default deny with holes. And a behavior with nothing on either side is
+inert rather than all-reporting, because an empty expected set means "nothing declared yet", not
+"every name is a surprise"; `compileNameBehavior` returns nil for it and `dnsmgr` never selects the
+pod.
+
+`newNameMatcher` stores a wildcard as `".<name>"`, including the separating dot. That single
+leading dot is what confines a wildcard to subdomains: `*.openai.azure.com` matches
+`foo.openai.azure.com` and neither the apex `openai.azure.com` nor `evilopenai.azure.com`. Both
+sides of every comparison are lowercase without further work — policy values through
+`ParseDNSValue`, observed names through the kernel program that lowercases them on the wire.
+
+The finding shape is the other divergence. `handleEvent` special-cases `BehaviorDNS` before the
+mode switch, so a `dns` violation takes neither branch: not the monitor-mode counterfactual
+(`WouldDeny` is never set on it) and not the enforce-mode kernel-deny attribution (there is no
+enforcing form of this behavior to attribute). `result()` grades it `warn` rather than `fail`, and
+`message()` writes "resolved unexpected DNS name ..., not expected by policy ..." with no
+"would have been denied" wording. `reporter.DNSSummary{QName}` carries the observed name into the
+`dnsName` property, and no `ProcessSummary` is attached: a `cgroup_skb` program may not call
+`bpf_get_current_comm`, so a question is attributed to a pod and not to a process.
 
 ### Reporter (`pkg/reporter`)
 
@@ -452,8 +608,9 @@ An empty value disables the endpoint without disabling the counters.
 namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,reason}`,
 `attribution_misses_total`, `findings_emitted_total{policy,behavior,severity}`, and
 `report_writes_total{result}`. The `reason` values something produces are `buffer_full`
-(`pkg/collector`), `unattributed` (`pkg/monitor`, `pkg/reporter`), and
-`unattributed_kernel_deny` (`pkg/monitor`).
+(`pkg/collector`), `unattributed` (`pkg/monitor`, `pkg/reporter`),
+`unattributed_kernel_deny` (`pkg/monitor`), and `ringbuf_full` / `name_unreadable` /
+`undecodable` (`pkg/bpf/dnsquery`, all under `source="dnsquery"`).
 
 ## Helm chart / deployment shape
 
@@ -485,17 +642,23 @@ future `PLAN.md`.
   [The event plane](#the-event-plane)), but a policy that omits the field enforces nothing and
   reports nothing. Untracked; a `+kubebuilder:default=enforce` or an admission-time requirement is
   the obvious fix and is a breaking change either way.
-- **Monitor-mode observation is poll-based and lossy at the edges.** This is a deliberate
-  consequence of shipping monitor mode on the already-compiled `.o` files rather than new kernel
-  programs:
-  - Counters are drained every 10 seconds, so findings lag behavior by up to that interval and
-    only counts survive — not per-occurrence ordering or timing.
+- **Monitor-mode observation has two transports, and both are lossy at their own edges.** The
+  `network`/`open`/`exec` observations ride the counters the enforcement objects already keep; the
+  DNS question observer is a program and a ring buffer of its own
+  (see [Choosing a transport](#choosing-a-transport-counter-map-or-ring-buffer)):
+  - Counters are drained every 10 seconds, so those findings lag behavior by up to that interval
+    and only counts survive — not per-occurrence ordering or timing.
   - The per-cgroup `open_events` inner map holds 2048 `(path, decision)` keys; a workload touching
     more than that within one interval loses the excess (read-and-reset mitigates, does not
     eliminate).
   - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
-  - No DNS, TLS SNI, or HTTP visibility exists, and no new kernel programs are loaded by this
-    code.
+  - A DNS question is one record delivered as it happens, so ordering and per-occurrence timing do
+    survive there — at the cost of a bounded buffer. It holds roughly 450 records, and a reader
+    that falls behind loses questions to `ringbuf_full` rather than merging them into a count.
+  - There is no TLS SNI or HTTP visibility. DNS visibility is the queried name and nothing else:
+    only UDP datagrams to port 53 are read, so DNS over HTTPS, DNS over TLS and DNS over TCP/53
+    produce no observation, no answer or query type is recorded, and a cached or shared answer
+    means no question was asked at all. A resolution is also not a connection.
 - **`open`/`exec` rules from separate policies intersect instead of unioning.**
   `docs/users/reference/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
   policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each
@@ -511,8 +674,12 @@ future `PLAN.md`.
   Userspace only enables the egress flag for pods with an observe-mode policy, but the LSM path
   counting is unconditional in the C, so an enforce-only deployment still pays for it (and the outer
   map is only populated for cgroups an observing enforcer knows about, so most lookups miss).
-  Removing the cost requires a `#ifdef`-gated build or a mode flag in the C — i.e. recompiling the
-  BPF objects, which this repository cannot do on the current toolchain.
+  Removing the cost requires a `#ifdef`-gated build or a mode flag in the C. Recompiling is not
+  the obstacle: `make generate-bpf` builds every object in `hack/bpf-builder` and `make verify-bpf`
+  gates drift in CI, so this is unbuilt work rather than an unavailable toolchain. The DNS
+  observer shows the shape a gate should take: the program returns before
+  reading anything when the skb's cgroup is absent from its `cgids` map, so an unselected pod pays
+  one hash lookup per datagram and nothing else.
 - **Container attribution is best-effort per runtime.** `pkg/containers.buildCandidatePaths` now
   generates candidates for `cri-containerd`/`crio`/`docker` scopes across systemd and cgroupfs
   layouts with a cgroup v1 fallback, and `ResolveCgInfos` returns partial results plus a joined
@@ -534,7 +701,19 @@ future `PLAN.md`.
   matching, attribution, status sharding, reporting) and the manager bookkeeping through seam
   interfaces, and a kind-based lane covers egress enforcement and program load. LSM-behavioral
   tests need `lsm=bpf` in the kernel command line, which hosted runners do not provide, so that job
-  is `workflow_dispatch`-gated (#60).
+  is `workflow_dispatch`-gated. The DNS question observer sits on the same line: the verify
+  lane proves the object loads and `TestDNSQueryMapsRoundTrip` proves its maps are usable through
+  the calls `dnsmgr` makes, but no lane asserts end to end that a question from a real pod becomes
+  a finding.
+- **A `dns` value's shape is decided by the compiler, not by admission.** The CRD carries two
+  `dns` rules — the behavior-kind count, and a spec-level rule refusing `mode: enforce` alongside a
+  `dns` behavior — but `values` is `[]string`, so an address as a `dns` value or a misplaced
+  wildcard is well-formed OpenAPI and accepted by the apiserver; the daemon refuses it at compile
+  time and reports `Applied=False` with reason `CompileFailed`. There is no admission webhook to
+  close that gap, so a `kubectl apply` of a malformed value succeeds and the operator has to read
+  the status. Pinned by `test/chainsaw/runtimepolicy-dns`, which asserts the current split so that
+  moving value validation into admission turns those steps red.
+
 - **No promotion workflow.** There is no code path that turns observed behavior into a proposed
   `RuntimePolicy` allow/deny list. The intent is for that promotion step to become a separate,
   LLM-assisted project rather than a CLI command added to this repository.

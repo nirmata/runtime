@@ -4,7 +4,8 @@ Nirmata Runtime extends Kyverno policy-as-code from admission into runtime. A
 `kyverno-runtime daemon` runs as a DaemonSet on every node; each instance watches the
 pods on its own node and the cluster-scoped `RuntimePolicy` objects, and attaches eBPF
 programs to the pods a policy's `podSelector` matches. Three behavior kinds can be
-enforced or observed: file `open`, process `exec`, and network egress.
+enforced or observed: file `open`, process `exec`, and network egress. A fourth, `dns`,
+is observed only.
 
 ## How enforcement works
 
@@ -62,6 +63,29 @@ of what each program allows, not a union.
 A policy that omits `spec.mode` is loaded but inert: it neither enforces nor reports
 anything. There is no default mode.
 
+## What DNS reporting tells you
+
+A `dns` behavior declares the names a workload is expected to resolve, and reports the
+questions it asks that the declaration does not cover. Its allow list is inverted relative
+to the other behaviors: `dns.allow` is the expected set, so a name matching none of its
+entries is reported without any `deny` entry, and `deny.values: ["*"]` asks for every name —
+the inventory an operator reads before there is an expected set to write.
+
+It reports and does not block. Blocking a destination named by domain is a `network`
+behavior, which programs the addresses the daemon learns from the pod's own answers for
+that name; a policy pairing a `dns` behavior with `mode: enforce` fails to compile and the
+error points there. The two are complementary: a `network` behavior decides about
+destinations a policy already named, and only the question observation supplies a name no
+policy named, because a connection to an address that was never associated with a
+policy-named domain carries no name.
+
+What `dns` tells you is intent, not traffic. A resolution is not a connection: the workload
+asked for a name and may never have dialled the answer, an answer already cached or shared
+produces no question at all, and a workload that dials a bare address asks nothing. Use it
+to learn which providers and endpoints a workload reaches for, and a `network` behavior in
+`enforce` mode to constrain where it actually goes. The full list is in
+[limits of DNS reporting](reference/runtimepolicy.md#limits-of-dns-reporting).
+
 ## Scoping with podSelector
 
 `spec.podSelector` is an optional label selector. Omitted, it matches every pod on the
@@ -71,13 +95,17 @@ policy attachments without recreating the pod.
 
 ## What monitor mode sees (and does not)
 
-- Observation is poll-based: counters are drained every `--observe-interval` (default
-  10s), so a finding can lag the behavior by up to that interval.
+- `network`, `open`, and `exec` observation is poll-based: counters are drained every
+  `--observe-interval` (default 10s), so a finding can lag the behavior by up to that
+  interval. A `dns` question is delivered as it happens, so only the reporter's 10-second
+  flush applies to it.
 - Only counts are kept per poll window, not the ordering or timing of individual
   occurrences.
 - Network observation is IPv4 only, with no ports, protocols, or TLS/HTTP visibility. A
   destination is reported by address, plus the domain it was answered for when the DNS
   snooper learned it from a name some policy already names.
+- `dns` observation reads the question name out of UDP/53 queries and nothing else: no
+  answers, no query types, no DNS over TLS, HTTPS, or TCP.
 - The per-cgroup open/exec path counter caps at 2048 distinct `(path, decision)` keys
   per poll interval; a workload touching more than that loses the excess.
 - Observations that cannot be attributed to a pod are dropped and counted in

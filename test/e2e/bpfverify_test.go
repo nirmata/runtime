@@ -82,6 +82,19 @@ var bpfObjects = []bpfObjectSpec{
 			insnBudget: 2000,
 		}},
 	},
+	{
+		// The budget is an order of magnitude above the other objects because the
+		// question name is read by an unrolled per-byte pass. It needs no
+		// precondition: a cgroup_skb program loads on any kernel this project
+		// supports.
+		object: "pkg/bpf/dnsquery/dnsquery_bpfel.o",
+		progs: []progCheck{{
+			name:       "cgroup_dns_egress",
+			typ:        ebpf.CGroupSKB,
+			attach:     ebpf.AttachCGroupInetEgress,
+			insnBudget: 13000,
+		}},
+	},
 }
 
 // precondition answers three ways, and the third is the point: "I could not

@@ -114,6 +114,45 @@ func TestPathMatcher(t *testing.T) {
 	}
 }
 
+func TestNameMatcher(t *testing.T) {
+	tests := []struct {
+		name     string
+		values   []string
+		qname    string
+		want     bool
+		wantStar bool
+	}{
+		{name: "exact name", values: []string{"api.openai.com"}, qname: "api.openai.com", want: true},
+		{name: "different name", values: []string{"api.openai.com"}, qname: "api.anthropic.com"},
+		{name: "exact entry does not cover a subdomain", values: []string{"openai.azure.com"}, qname: "foo.openai.azure.com"},
+		{name: "wildcard covers one label", values: []string{"*.openai.azure.com"}, qname: "foo.openai.azure.com", want: true},
+		{name: "wildcard covers several labels", values: []string{"*.openai.azure.com"}, qname: "a.b.openai.azure.com", want: true},
+		{name: "wildcard does not cover the apex", values: []string{"*.openai.azure.com"}, qname: "openai.azure.com"},
+		{name: "wildcard matches on a label boundary not a prefix", values: []string{"*.openai.azure.com"}, qname: "evilopenai.azure.com"},
+		{name: "policy value case is normalized", values: []string{"API.OpenAI.COM."}, qname: "api.openai.com", want: true},
+		{name: "wildcard policy value case is normalized", values: []string{"*.OpenAI.Azure.COM"}, qname: "foo.openai.azure.com", want: true},
+		{name: "star is not an explicit match", values: []string{compiler.StarTarget}, qname: "api.openai.com", wantStar: true},
+		{name: "star plus explicit value", values: []string{compiler.StarTarget, "api.openai.com"}, qname: "api.openai.com", want: true, wantStar: true},
+		{name: "rejected value is skipped", values: []string{"a.*.openai.com", "10.0.0.5", "not_a_host"}, qname: "api.openai.com"},
+		{name: "rejected value does not hide a valid one", values: []string{"a.*.b", "api.openai.com"}, qname: "api.openai.com", want: true},
+		{name: "empty value never matches", values: []string{"", "  "}, qname: "api.openai.com"},
+		{name: "empty question never matches", values: []string{"api.openai.com"}, qname: ""},
+		{name: "no values", values: nil, qname: "api.openai.com"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newNameMatcher(tc.values)
+			if got := m.matches(tc.qname); got != tc.want {
+				t.Errorf("matches(%q) = %v, want %v", tc.qname, got, tc.want)
+			}
+			if m.star != tc.wantStar {
+				t.Errorf("star = %v, want %v", m.star, tc.wantStar)
+			}
+		})
+	}
+}
+
 func TestBehaviorsWithoutEntriesAreAbsent(t *testing.T) {
 	for _, p := range []*compiler.AllowDenyPair{nil, {}, {Allow: nil, Deny: nil}} {
 		nb := compileNetBehavior(p)
@@ -129,6 +168,13 @@ func TestBehaviorsWithoutEntriesAreAbsent(t *testing.T) {
 		}
 		if pb.eval("/etc/shadow").violation {
 			t.Errorf("absent path behavior for %+v reported a violation", p)
+		}
+		mb := compileNameBehavior(p)
+		if mb != nil {
+			t.Errorf("name behavior for %+v = %+v, want nil", p, mb)
+		}
+		if mb.eval("api.openai.com").violation {
+			t.Errorf("absent name behavior for %+v reported a violation", p)
 		}
 	}
 }
@@ -214,5 +260,96 @@ func TestPathBehaviorEval(t *testing.T) {
 					tc.path, got, tc.wantViolation, tc.wantDefaultDeny)
 			}
 		})
+	}
+}
+
+func TestNameBehaviorEval(t *testing.T) {
+	tests := []struct {
+		name          string
+		allow, deny   []string
+		qname         string
+		wantViolation bool
+	}{
+		{
+			// the inversion: an allow list is the expected set, so a name it
+			// does not cover is reportable without any deny entry
+			name:  "undeclared name is reported against an allow list alone",
+			allow: []string{"api.openai.com"}, qname: "api.anthropic.com", wantViolation: true,
+		},
+		{name: "declared name is not reported", allow: []string{"api.openai.com"}, qname: "api.openai.com"},
+		{
+			name:  "declared wildcard covers a subdomain",
+			allow: []string{"*.openai.azure.com"}, qname: "foo.openai.azure.com",
+		},
+		{
+			name:  "declared wildcard does not cover its apex",
+			allow: []string{"*.openai.azure.com"}, qname: "openai.azure.com", wantViolation: true,
+		},
+		{
+			name:  "declared wildcard does not cover a prefix of its suffix",
+			allow: []string{"*.openai.azure.com"}, qname: "evilopenai.azure.com", wantViolation: true,
+		},
+		{
+			name:  "deny entry is reported despite the allow list",
+			allow: []string{"api.openai.com"}, deny: []string{"api.openai.com"}, qname: "api.openai.com",
+			wantViolation: true,
+		},
+		{
+			name: "deny star reports every name",
+			deny: []string{compiler.StarTarget}, qname: "api.openai.com", wantViolation: true,
+		},
+		{
+			// Narrowing a discovery policy is additive: an entry moves into
+			// allow and stops being reported without the "*" coming out.
+			name:  "an expected name is exempt from deny star",
+			allow: []string{"api.openai.com"}, deny: []string{compiler.StarTarget}, qname: "api.openai.com",
+		},
+		{
+			name:  "deny star still reports a name outside the allow list",
+			allow: []string{"api.anthropic.com"}, deny: []string{compiler.StarTarget}, qname: "api.openai.com",
+			wantViolation: true,
+		},
+		{
+			// An explicit deny entry is more specific than the expected set.
+			name:  "an explicit deny beats the allow list",
+			allow: []string{"api.openai.com"}, deny: []string{"api.openai.com"}, qname: "api.openai.com",
+			wantViolation: true,
+		},
+		{
+			name:  "allow star declares every name",
+			allow: []string{compiler.StarTarget}, qname: "api.openai.com",
+		},
+		{
+			name:  "behavior whose values were all rejected is inert",
+			allow: []string{"a.*.openai.com"}, qname: "api.openai.com",
+		},
+		{
+			name: "deny only reports nothing outside the deny list",
+			deny: []string{"api.openai.com"}, qname: "api.anthropic.com",
+		},
+		{name: "empty question is never reported", deny: []string{compiler.StarTarget}, qname: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := compileNameBehavior(&compiler.AllowDenyPair{Allow: tc.allow, Deny: tc.deny})
+			got := b.eval(tc.qname)
+			if got.violation != tc.wantViolation {
+				t.Errorf("eval(%q) = %+v, want violation %v", tc.qname, got, tc.wantViolation)
+			}
+			if got.defaultDeny {
+				t.Errorf("eval(%q) reported defaultDeny, which a dns behavior never has", tc.qname)
+			}
+		})
+	}
+}
+
+func TestNameBehaviorWithEmptyExpectedSetIsInert(t *testing.T) {
+	b := compileNameBehavior(&compiler.AllowDenyPair{Allow: []string{}})
+	if b != nil {
+		t.Fatalf("behavior with no values = %+v, want nil", b)
+	}
+	if b.eval("api.openai.com").violation {
+		t.Error("a dns behavior declaring nothing reported a name")
 	}
 }

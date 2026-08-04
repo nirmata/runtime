@@ -6,10 +6,12 @@ import (
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/attribution"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/dnsquery"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/collector"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
+	"github.com/nirmata/kyverno-runtime/pkg/dnsmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
@@ -180,6 +182,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	col.AddSource(collector.NewPollSource("lsm-observe", observeInterval, lsmm.CollectObservations))
 	col.AddStage(attrIdx)
 	col.AddSink(mon)
+
+	// DNS observation is best effort: a kernel that will not load the
+	// cgroup_skb program leaves every other behavior working.
+	if dnsObs, err := dnsquery.New(); err != nil {
+		logger.Error(err, "dns question observation disabled")
+	} else {
+		defer func() { _ = dnsObs.Close() }()
+		dm := dnsmgr.New(logger.WithName("dnsmgr"), dnsObs)
+		podHandlers = append(podHandlers, dm)
+		policyHandlers = append(policyHandlers, dm)
+		col.AddSource(dnsquery.NewSource(logger.WithName(dnsquery.SourceName), dnsObs,
+			dnsquery.WithLossFunc(func(reason string, delta uint64) {
+				m.EventsDropped.WithLabelValues(dnsquery.SourceName, reason).Add(float64(delta))
+			})))
+	}
 
 	// runtime policy informer. Constructing it registers its service change
 	// handler on the resolver, which has to happen before the resolver starts.

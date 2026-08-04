@@ -462,6 +462,70 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 	}
 }
 
+func TestEvaluate_MergesHardcodedAndExpressionDNSValues(t *testing.T) {
+	c := newTestCompiler(t)
+
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{DNS: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{"api.openai.com"}, `["*.anthropic.com"]`),
+					Deny:  behaviorRule([]string{"*"}, ""),
+				}},
+				{DNS: &v1alpha1.Behavior{Allow: behaviorRule([]string{"pypi.org"}, "")}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+
+	want := &AllowDenyPair{
+		Allow: []string{"*.anthropic.com", "api.openai.com", "pypi.org"},
+		Deny:  []string{"*"},
+	}
+	if diff := cmp.Diff(want, res.DNS); diff != "" {
+		t.Errorf("DNS mismatch (-want +got):\n%s", diff)
+	}
+	// The dns accumulator stays independent of the other kinds.
+	if res.IPs.HasEntries() || res.Open.HasEntries() || res.Exec.HasEntries() {
+		t.Errorf("dns values leaked into another kind: IPs = %+v, Open = %+v, Exec = %+v", res.IPs, res.Open, res.Exec)
+	}
+}
+
+// A policy with no dns behavior has to be indistinguishable from one whose dns
+// behavior is empty, so a consumer only has HasEntries to check.
+func TestEvaluate_AbsentDNSBehaviorHasNoEntries(t *testing.T) {
+	c := newTestCompiler(t)
+
+	for name, behaviors := range map[string][]v1alpha1.PolicyBehavior{
+		"no behaviors":          nil,
+		"network behavior only": {{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"1.1.1.1"}, "")}}},
+		"empty dns behavior":    {{DNS: &v1alpha1.Behavior{Allow: behaviorRule(nil, "")}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+				Spec: v1alpha1.RuntimePolicySpec{Behaviors: behaviors},
+			})
+			if err != nil {
+				t.Fatalf("Compile() unexpected error = %v", err)
+			}
+			res, err := compiled.Evaluate(t.Context())
+			if err != nil {
+				t.Fatalf("Evaluate() unexpected error = %v", err)
+			}
+			if res.DNS.HasEntries() {
+				t.Errorf("DNS = %+v, want no entries", res.DNS)
+			}
+		})
+	}
+}
+
 func TestEvaluate_MultipleBehaviorsOfSameKindAccumulate(t *testing.T) {
 	c := newTestCompiler(t)
 

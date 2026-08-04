@@ -25,17 +25,17 @@ kubectl get rpol <name> -o yaml
 | `spec.mode` | `monitor` \| `enforce` | What the daemon does with a matched pod. Optional, with no default. |
 | `spec.evaluationInterval` | duration | How often matched pods are re-evaluated. Required to pick up changes behind a `resource` or `http` expression. |
 | `spec.variables` | list of `name` + `expression` | Named CEL expressions, referenced as `variables.<name>` from any other expression. |
-| `spec.behaviors` | list | One entry per behavior kind; each entry configures exactly one of `network`, `exec`, `open`. Each `allow`/`deny` rule takes `values` and `expression`. |
+| `spec.behaviors` | list | One entry per behavior kind; each entry configures exactly one of `network`, `exec`, `open`, `dns`. Each `allow`/`deny` rule takes `values` and `expression`. |
 
-Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, or `open`.
-Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
+Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, `open`, or
+`dns`. Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
 `values` list, a CEL `expression` that evaluates to `list(string)`, or both (the results
 are unioned):
 
 ```yaml
 spec:
   behaviors:
-  - network:            # exactly one of network | exec | open per list item
+  - network:            # exactly one of network | exec | open | dns per list item
       allow:
         values: [...]        # literal list of allowed items
         expression: "..."    # CEL expression returning list(string), unioned with values
@@ -48,8 +48,11 @@ spec:
   domain names for egress.
 - `exec`: command names/paths.
 - `open`: file paths.
+- `dns`: the DNS names a workload is expected to resolve. Observation only, and its allow
+  list is inverted relative to the other three — see [DNS reporting](#dns-reporting).
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a
-  **default deny** for that behavior (`network`, `exec`, or `open`). This is
+  **default deny** for that behavior (`network`, `exec`, or `open`); on a `dns` behavior
+  the same sentinel means "report every name". This is
   evaluated across all `RuntimePolicy` objects matching a pod: if any one of
   them sets a default deny for a behavior, that behavior becomes
   deny-all-except-allowed, and the allow list is the union of `allow` entries
@@ -70,7 +73,7 @@ spec:
 - `spec.mode` selects `enforce` or `monitor` (see below). It is optional; a policy that omits
   it neither enforces nor reports.
 
-An entry that sets more than one of `network`, `exec`, `open` — or none of them — is
+An entry that sets more than one of `network`, `exec`, `open`, `dns` — or none of them — is
 rejected at admission by a CEL validation rule on the CRD.
 
 Expression syntax, the available CEL libraries, and the `resource`/`http`/`json` helpers
@@ -294,6 +297,190 @@ current limits:
 - **IPv4 only, on both sides.** Only A records are read, and only from answers carried
   over IPv4, matching the IPv4-only egress maps.
 
+## DNS reporting
+
+A `dns` behavior declares the DNS names a selected workload is *expected* to resolve, and
+reports the questions it asks that the declaration does not cover. It is the one behavior
+that only ever observes.
+
+It is not the way to block a destination named by domain — that is a domain value on a
+`network` behavior, enforced against the addresses the daemon learns from the pod's answers
+(see [Domain name targets](#domain-name-targets)). The two answer different questions and
+are complementary. A `network` behavior decides about destinations a policy already named;
+only the question observation supplies a name the policy did *not* name, because a
+connection to an address no policy-named answer covered carries no name at all.
+
+```yaml
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: report-unexpected-dns
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: dns-client
+  behaviors:
+  - dns:
+      allow:
+        values:
+        - api.openai.com
+        - api.anthropic.com
+        - "*.openai.azure.com"
+```
+
+A pod is observed exactly while some policy with a `dns` behavior selects it. The daemon
+attaches a `cgroup_skb/egress` program to that pod's container cgroups and admits their
+cgroup ids to a gate, so an unselected pod's questions are never read at all — they cannot
+be dropped, decoded, or reported, and no node-wide stream of every pod's questions exists.
+Relabeling a pod starts or stops observation like any other selector change.
+
+### The allow list is inverted
+
+For `network`, `exec`, and `open`, an `allow` entry only matters under a default deny. For
+`dns`, `allow` *is* the expected set, so a name matching none of its entries is reported on
+its own:
+
+| `allow` | `deny` | What is reported |
+| --- | --- | --- |
+| empty | empty | Nothing. The behavior is inert and the pod is not observed. |
+| names | empty | Every observed name that matches no `allow` entry. |
+| empty | names | Only names that match a `deny` entry. |
+| names | names | A name matching a `deny` entry, or matching no `allow` entry. |
+| any | `["*"]` | Every observed name. `allow` has no effect. |
+| `["*"]` | empty | Nothing, but the pod is still observed. |
+
+`deny.values: ["*"]` is the discovery form: it reports every name the workload resolves,
+which is how an operator learns what to put in `allow` in the first place. It is not a
+default deny with exemptions — an `allow` list alongside it is ignored, not applied.
+
+An empty behavior is inert rather than all-reporting, because an undeclared expected set
+means "nothing declared yet", not "every name is a surprise".
+
+### Value forms
+
+| Value | Matches |
+| --- | --- |
+| `api.openai.com` | exactly that name |
+| `*.openai.azure.com` | any subdomain: `eastus.openai.azure.com`, `a.b.openai.azure.com` |
+| `*` | every observed name (in `deny`), or nothing reported (in `allow`) |
+
+A name is compared case-insensitively and without a trailing root dot: `API.Example.COM.`
+and `api.example.com` are the same value. A value is at most 253 characters and may not
+contain a NUL byte.
+
+Wildcards are valid here and rejected as `network` values. The reason is the mechanism: a
+`dns` value is only ever compared against an observed question name, whereas a `network`
+target has to be resolved to addresses and programmed into a kernel map, and no finite set
+of addresses corresponds to a wildcard. What a hostname *is* comes from one definition
+shared by both, so the two cannot drift on anything else.
+
+A wildcard is only the leftmost label. `api.*.example.com` and `example.com.*` are refused
+with:
+
+```text
+a wildcard is only supported as the leftmost label: use "*.example.com", an exact name, or "*" to report every name
+```
+
+An address is not a name: `192.0.2.10` is refused as `not a hostname, a "*.<hostname>"
+wildcard or "*"`, because a numeric last label is a truncated address rather than a
+hostname.
+
+### A wildcard does not match its apex
+
+This is the authoring trap. `*.openai.azure.com` covers `eastus.openai.azure.com` and does
+**not** cover `openai.azure.com`. A wildcard is stored as the suffix `.openai.azure.com`,
+including the separating dot, which is also what keeps `evilopenai.azure.com` from
+matching it.
+
+If the apex is a name the workload really resolves, list it as its own value alongside the
+wildcard. Otherwise it is reported as unexpected, and the report is correct.
+
+### Enforce mode is refused
+
+A `dns` behavior in `enforce` mode is refused by the API server: the spec carries a validation rule
+for it, so the object is never created and `kubectl apply` fails with this message:
+
+```text
+a dns behavior reports the names a workload resolves, it does not block them: set spec.mode to "monitor", or express the destinations you want blocked as a network behavior, which enforces domain values
+```
+
+The daemon carries the same rule, so a cluster whose CRD predates it refuses the policy at compile
+time instead, reporting `Applied=False` with reason `CompileFailed` and the same message at
+`spec.behaviors[i].dns`.
+
+The reason is not that a name cannot be enforced; a domain value on a `network` behavior
+is enforced. It is that destinations belong to `network`, so honouring `enforce` here would
+give an author two ways to spell one intent with only one of them working — and the
+alternative, accepting `enforce` and quietly reporting, is worse still: an operator who
+asked for a block would get an audit trail and believe they had containment.
+
+To do both over one workload, use two policies over the same pods:
+one in `enforce` mode carrying the `network` behavior, one in `monitor` mode carrying the
+`dns` behavior. Policies compose per pod, so both are in force at once.
+
+### What a finding looks like
+
+A `dns` finding is advisory. It carries `rule: dns`, `result: warn` rather than `fail`,
+`enforced: "false"`, and the observed name in the `dnsName` property:
+
+```text
+resolved unexpected DNS name metrics.evil.example.com, not expected by policy report-unexpected-dns
+```
+
+A repeated occurrence increments `count` rather than appending a result, as with every
+other behavior. There is no `comm`: a `cgroup_skb` program may not call
+`bpf_get_current_comm`, so a question is attributed to a pod and not to a process.
+
+Unlike the `open`, `exec`, and `network` observations, questions are streamed rather than
+polled, so `--observe-interval` does not apply to them. The only latency is the reporter's
+10-second flush.
+
+## Limits of DNS reporting
+
+**A resolution is not a connection.** Everything below follows from that. A `dns` behavior
+tells you what a workload asked to resolve, which is evidence of intent and not evidence of
+traffic, and it is not a containment boundary. To constrain where a workload actually goes,
+name the destination as a domain (or an address, or a Service) on a `network` behavior in
+`enforce` mode. These are real, current limits:
+
+- **A cached or shared answer produces no question at all.** An address the workload's
+  resolver, its libc, or a sidecar already holds is used without asking, so a name the
+  workload uses constantly can be observed once and then never again — or never, if the
+  answer was warm before observation started.
+- **A workload dialling a bare address asks nothing.** An address in a config file, an
+  environment variable, or a hardcoded constant is reached with no question to observe. A
+  `network` behavior is what sees, and blocks, that connection.
+- **DNS over HTTPS and DNS over TLS are invisible.** Only UDP datagrams whose destination
+  port is 53 are read, so a resolution carried inside TLS is not one of them; to a
+  `network` behavior it is an ordinary encrypted connection to an address. A workload that
+  resolves over DoH reports no questions while resolving normally.
+- **DNS over TCP/53 is not observed.** Only UDP datagrams to port 53 are read. A large
+  question, a retry after a truncated answer, or a resolver configured for TCP produces no
+  observation.
+- **A question longer than 128 bytes on the wire is not observed.** That is the name
+  width of the kernel-side record, which is also the width policy names are interned into,
+  so a question this drops is a question no policy value could have named. It is counted,
+  not silent: see the `name_unreadable` loss reason in [Metrics](metrics.md).
+- **Ring buffer loss is counted, not silent.** The kernel-side buffer holds roughly 450
+  records; if userspace falls behind, the questions that do not fit are counted under the
+  `ringbuf_full` loss reason rather than disappearing. A monitoring gap that reads as
+  "nothing happened" is the failure mode this avoids.
+- **A wildcard does not match its apex.** `*.example.com` covers subdomains only, so
+  `example.com` is reported unless it is listed separately.
+- **The pod's search domains produce extra questions.** A resolver expands a name through
+  the `search` list in `/etc/resolv.conf` before, or after, asking for it absolutely, and
+  each expansion is its own question. `api.openai.com` used by a workload can therefore be
+  observed as `api.openai.com.default.svc.cluster.local` as well, which matches no `allow`
+  entry and is reported. Read the discovery form's output before writing an `allow` list,
+  rather than predicting the questions.
+- **The cgroup gate holds 1024 entries.** That is the node-wide bound on container cgroups
+  under DNS observation at one time.
+- **Only questions, never answers.** The record carries the queried name and the cgroup it
+  came from: no query type, no response code, no answer addresses, and no timing beyond the
+  timestamp userspace stamps on arrival. Attributing an address to a name is the separate
+  mechanism behind [domain name targets](#domain-name-targets).
+
 ## Modes: enforce and monitor
 
 `spec.mode` selects what the daemon does with a matched pod:
@@ -303,6 +490,10 @@ current limits:
 | `enforce` | yes | yes | yes | no |
 | `monitor` | yes | **no** (maps stay empty) | no | yes |
 | omitted | no | no | no | no |
+
+A `dns` behavior exists only on the `monitor` row. Pairing it with `enforce` fails the
+policy to compile and points at the `network` behavior, which is where a destination named
+by domain is enforced (see [Enforce mode is refused](#enforce-mode-is-refused)).
 
 ```yaml
 apiVersion: runtime.nirmata.io/v1alpha1
@@ -398,14 +589,18 @@ kubectl get report kyverno-runtime-node-1 -n default -o yaml
 ```
 
 Each result carries `policy` (the RuntimePolicy name), `rule` (the behavior: `network`,
-`open`, `exec`), `result: fail`, `severity: medium` (`RuntimePolicy` has no severity field yet),
+`open`, `exec`, `dns`), `severity: medium` (`RuntimePolicy` has no severity field yet),
 `source: kyverno-runtime`, `category: Runtime Security`, the offending pod as
 `subjects[0]`, and a fixed set of `properties`: `fingerprint`, `count`, `firstTimestamp`,
 `lastTimestamp`, `behavior`, `enforced`, `node`, `container`, `owner`, `serviceAccount`,
-and — where applicable — `destIP`, `destHost`, `comm`.
+and — where applicable — `destIP`, `destHost`, `dnsName`, `comm`.
+
+`result` is `fail` for `network`, `open`, and `exec`, and `warn` for `dns`: a question was
+observed, nothing was blocked, and nothing would have been.
 
 `enforced` distinguishes a blocked operation from one that only matched: it is `"false"` on
 findings from a `monitor` policy, where the behavior was observed but allowed to proceed.
+It is always `"false"` on a `dns` finding.
 
 Details worth knowing:
 
@@ -424,13 +619,16 @@ Counters for ingested observations, dropped observations, and emitted findings a
 
 ## Limits of monitor mode
 
-Monitor mode is built on the counters the existing eBPF programs already keep. It adds no new
-kernel programs, and it does not observe TLS SNI or HTTP. These are real, current limits,
-not rounding errors:
+The `network`, `open`, and `exec` observations are built on the counters the enforcement
+eBPF programs already keep, and none of them observes TLS SNI or HTTP. `dns` is the
+exception in shape — a program of its own, streamed rather than counted — and has its own
+[limits](#limits-of-dns-reporting). These are real, current limits, not rounding errors:
 
-- **Observation is poll-based, not streamed.** There is no ring buffer; counters are drained
-  every 10 seconds, so a finding can lag the behavior by up to that interval, and only counts
-  are preserved — not the ordering or timing of individual occurrences within a window.
+- **`network`, `open`, and `exec` observation is poll-based.** Counters are drained every 10
+  seconds, so a finding can lag the behavior by up to that interval, and only counts are
+  preserved — not the ordering or timing of individual occurrences within a window. A `dns`
+  question is a single record delivered as it happens, so only the reporter's flush
+  interval applies to it.
 - **Open/exec path counters cap per cgroup.** The per-cgroup path map holds 2048 distinct
   `(path, decision)` keys; a workload touching more than that within one poll interval loses
   the excess. The read-and-reset drain mitigates this but does not eliminate it.
@@ -469,6 +667,8 @@ distributions and hosted CI runners are typically not booted with it.
 | [egress-to-cluster-service](../../../examples/egress-to-cluster-service/) | Cluster Service DNS names in `allow.values` under default deny, with the API server denied by omission | `enforce` | cgroup v2 |
 | [egress-to-domain-name](../../../examples/egress-to-domain-name/) | An external domain name in `allow.values`, alongside cluster DNS named as a Service | `enforce` | cgroup v2 |
 | [monitor-egress](../../../examples/monitor-egress/) | Same policy shape observed instead of blocked | `monitor` | cgroup v2 |
+| [report-unexpected-dns](../../../examples/report-unexpected-dns/) | A `dns` allow list with a left-wildcard, plus the `deny: ["*"]` discovery form | `monitor` | cgroup v2 |
+| [detect-mcp-config-access](../../../examples/detect-mcp-config-access/) | `open` deny over absolute MCP configuration paths, reported not blocked | `monitor` | BPF-LSM |
 | [deny-sensitive-file-access](../../../examples/deny-sensitive-file-access/) | `open` deny with `values` unioned with a `variables` expression | `enforce` | BPF-LSM |
 | [restrict-exec-allowlist](../../../examples/restrict-exec-allowlist/) | Default-deny `exec` with an allow-list | `enforce` | BPF-LSM |
 | [monitor-workload-baseline](../../../examples/monitor-workload-baseline/) | `network`, `exec`, and `open` observed together | `monitor` | BPF-LSM for `open`/`exec`; egress findings alone need only cgroup v2 |

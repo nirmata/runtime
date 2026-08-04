@@ -31,6 +31,7 @@ type CompiledRuntimePolicy struct {
 	compiledNets  []*compiledBehavior
 	compiledOpens []*compiledBehavior
 	compiledExecs []*compiledBehavior
+	compiledDNS   []*compiledBehavior
 }
 
 type compiledBehavior struct {
@@ -74,6 +75,12 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	compiledNets := []*compiledBehavior{}
 	compiledOpens := []*compiledBehavior{}
 	compiledExecs := []*compiledBehavior{}
+	compiledDNS := []*compiledBehavior{}
+
+	mode := ""
+	if rp.Spec.Mode != nil {
+		mode = string(*rp.Spec.Mode)
+	}
 
 	// we use the path to propagate errors with context on which field's compilation errored
 	path := field.NewPath("spec").Child("behaviors")
@@ -112,16 +119,23 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 			compiledOpens = append(compiledOpens, compiledOpen)
 		}
+		if b.DNS != nil {
+			errPath := path.Index(i).Child("dns")
+			if errs := validateDNSBehavior(errPath, b.DNS, mode); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
+			compiledDNSBehavior, err := c.compileBehavior(b.DNS)
+			if err != nil {
+				return nil, field.Invalid(errPath, b.DNS, err.Error())
+			}
+
+			compiledDNS = append(compiledDNS, compiledDNSBehavior)
+		}
 	}
 
 	evalIntval := time.Duration(0)
 	if rp.Spec.EvaluationInterval != nil {
 		evalIntval = rp.Spec.EvaluationInterval.Duration
-	}
-
-	mode := ""
-	if rp.Spec.Mode != nil {
-		mode = string(*rp.Spec.Mode)
 	}
 
 	return &CompiledRuntimePolicy{
@@ -134,6 +148,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		compiledNets:   compiledNets,
 		compiledOpens:  compiledOpens,
 		compiledExecs:  compiledExecs,
+		compiledDNS:    compiledDNS,
 		variables:      variables,
 	}, nil
 }

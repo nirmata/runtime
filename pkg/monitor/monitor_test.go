@@ -137,6 +137,29 @@ func execEvent(filename string) runtimeevent.Event {
 	}
 }
 
+// dnsPolicy returns a monitor-mode EvaluationResult with only a dns behavior,
+// selecting app=ai pods.
+func dnsPolicy(t *testing.T, uid, name string, dns *compiler.AllowDenyPair) *compiler.EvaluationResult {
+	t.Helper()
+	return &compiler.EvaluationResult{
+		UID:      uid,
+		Name:     name,
+		DNS:      dns,
+		Selector: sel(t, map[string]string{"app": "ai"}),
+		Mode:     compiler.ModeMonitor,
+	}
+}
+
+func dnsEvent(qname string) runtimeevent.Event {
+	return runtimeevent.Event{
+		Kind:  runtimeevent.KindDNS,
+		Time:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+		Count: 1,
+		DNS:   &runtimeevent.DNSFacts{QName: qname},
+		Pod:   testPod(),
+	}
+}
+
 func testPod() runtimeevent.PodIdentity {
 	return runtimeevent.PodIdentity{
 		UID:       "pod-uid-1",
@@ -1009,4 +1032,87 @@ func TestHandleEvent_ConcurrentWithPolicyUpdates(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// --- dns observation --------------------------------------------------------
+
+func TestHandleEvent_UnexpectedDNSNameFindingContents(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := dnsPolicy(t, "uid-dns", "expected-names", pair([]string{"api.anthropic.com"}, nil))
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+	ev := dnsEvent("api.openai.com")
+	ev.Count = 3
+
+	m.HandleEvent(ev)
+
+	want := []reporter.Finding{{
+		PolicyName: "expected-names",
+		PolicyUID:  "uid-dns",
+		Behavior:   BehaviorDNS,
+		Severity:   reporter.SeverityMedium,
+		// a dns behavior cannot enforce, so the finding is advisory and never
+		// claims anything was or would have been blocked
+		Result:    reporter.ResultWarn,
+		Enforced:  false,
+		Message:   "resolved unexpected DNS name api.openai.com (3 occurrences), not expected by policy expected-names",
+		Pod:       testPod(),
+		DNS:       &reporter.DNSSummary{QName: "api.openai.com"},
+		Timestamp: time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+	}}
+	if diff := cmp.Diff(want, sink.all()); diff != "" {
+		t.Errorf("findings (-want +got):\n%s", diff)
+	}
+}
+
+func TestHandleEvent_ExpectedDNSNameProducesNoFinding(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := dnsPolicy(t, "uid-dns", "expected-names", pair([]string{"api.openai.com", "*.openai.azure.com"}, nil))
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(dnsEvent("api.openai.com"))
+	m.HandleEvent(dnsEvent("gpt.openai.azure.com"))
+
+	if got := sink.reports(); got != 0 {
+		t.Errorf("reports = %d, want 0", got)
+	}
+}
+
+func TestHandleEvent_DNSNameExpectedByOnePolicyIsStillReportedByAnother(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	expects := dnsPolicy(t, "uid-expects", "expects-openai", pair([]string{"api.openai.com"}, nil))
+	reportsIt := dnsPolicy(t, "uid-reports", "expects-anthropic", pair([]string{"api.anthropic.com"}, nil))
+	for _, rp := range []*compiler.EvaluationResult{expects, reportsIt} {
+		if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+			t.Fatalf("RuntimePolicyEvent: %v", err)
+		}
+	}
+
+	m.HandleEvent(dnsEvent("api.openai.com"))
+
+	if diff := cmp.Diff(map[string]int{"uid-reports": 1}, findingsPerPolicy(sink.all())); diff != "" {
+		t.Errorf("findings per policy (-want +got):\n%s", diff)
+	}
+}
+
+func TestHandleEvent_DNSDenyStarReportsEveryName(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := dnsPolicy(t, "uid-dns", "discover", pair(nil, []string{compiler.StarTarget}))
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(dnsEvent("api.openai.com"))
+	m.HandleEvent(dnsEvent("kubernetes.default.svc.cluster.local"))
+
+	var names []string
+	for _, f := range sink.all() {
+		names = append(names, f.DNS.QName)
+	}
+	if diff := cmp.Diff([]string{"api.openai.com", "kubernetes.default.svc.cluster.local"}, names); diff != "" {
+		t.Errorf("reported names (-want +got):\n%s", diff)
+	}
 }

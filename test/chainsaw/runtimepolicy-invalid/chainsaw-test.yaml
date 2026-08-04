@@ -26,7 +26,8 @@ spec:
 
   - name: two-behavior-kinds-in-one-item-is-rejected
     # PolicyBehavior carries the XValidation rule
-    #   (has(self.network)?1:0)+(has(self.exec)?1:0)+(has(self.open)?1:0) == 1
+    #   (has(self.network)?1:0)+(has(self.exec)?1:0)+(has(self.open)?1:0)
+    #     +(has(self.dns)?1:0) == 1
     # Without it, a single item with both network and open would compile to an
     # ambiguous behavior and one of the two would be silently dropped.
     try:
@@ -35,7 +36,7 @@ spec:
         expect:
         - check:
             "($error != null)": true
-            "(contains($error, 'exactly one of network, exec, or open must be specified'))": true
+            "(contains($error, 'exactly one of network, exec, open, or dns must be specified'))": true
 
   - name: zero-behavior-kinds-in-one-item-is-rejected
     # Same rule, other side: an empty behavior item is also invalid. Asserting
@@ -46,7 +47,7 @@ spec:
         expect:
         - check:
             "($error != null)": true
-            "(contains($error, 'exactly one of network, exec, or open must be specified'))": true
+            "(contains($error, 'exactly one of network, exec, open, or dns must be specified'))": true
 
   - name: unknown-spec-field-is-rejected
     # The CRD is structural with pruning; an unknown field submitted by a client

@@ -8,14 +8,7 @@
 #define DECISION_ALLOW 0
 #define DECISION_DENY 1
 
-/* The wire-format QNAME, lowercased and zero padded: length-prefixed labels
- * ending in a zero byte. Keeping the wire encoding means the snooper never has
- * to rewrite a name into dotted form to look it up. */
-#define MAX_DOMAIN_LEN 128
-
-struct domain_key {
-    __u8 name[MAX_DOMAIN_LEN];
-};
+#include <dnsname.h>
 
 /* Padding-free by construction: a hash key is compared as raw bytes, so any
  * uninitialized byte would split one logical key across separate entries.

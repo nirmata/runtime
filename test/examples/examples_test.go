@@ -94,8 +94,11 @@ func TestExampleAndDocumentedPoliciesAreValid(t *testing.T) {
 				if b.Open != nil {
 					n, kinds = n+1, append(kinds, "open")
 				}
+				if b.DNS != nil {
+					n, kinds = n+1, append(kinds, "dns")
+				}
 				if n != 1 {
-					t.Errorf("spec.behaviors[%d]: got %d of network/exec/open (%v), want exactly one; the CRD rejects anything else", i, n, kinds)
+					t.Errorf("spec.behaviors[%d]: got %d of network/exec/open/dns (%v), want exactly one; the CRD rejects anything else", i, n, kinds)
 				}
 			}
 			if rp.Spec.Mode == nil {

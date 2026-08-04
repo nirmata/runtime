@@ -7,7 +7,6 @@
 #define DNS_FLAG_RCODE 0x000f
 #define DNS_TYPE_A 1
 
-#define DNS_LABEL_PTR 0xc0
 
 #define MAX_ANSWER_RECORDS 8
 #define MAX_OWNER_LABELS 8
@@ -32,41 +31,6 @@ struct dns_rr {
 // layout pads this one to 12 for the __be32 -- which lands two bytes into the
 // RDATA and reads a mangled address, or none at all off the end of the packet.
 _Static_assert(sizeof(struct dns_rr) == 10, "dns_rr must match the wire layout");
-
-// One flat pass over the wire bytes instead of a loop per label: `remaining`
-// counts down the current label, so a byte read with remaining == 0 is the next
-// length byte. Bounding the pass at the key width bounds label count too, and
-// leaves the verifier a single unrolled loop with constant indices.
-static __always_inline int read_qname(struct __sk_buff *skb, __u32 off,
-                                      struct domain_key *key, __u32 *qname_len)
-{
-    __u32 remaining = 0;
-    __u8 b;
-
-#pragma unroll
-    for (__u32 i = 0; i < MAX_DOMAIN_LEN; i++) {
-        if (bpf_skb_load_bytes(skb, off + i, &b, sizeof(b)) < 0)
-            return -1;
-
-        if (remaining == 0) {
-            if (b == 0) {
-                *qname_len = i + 1;
-                return 0;
-            }
-            if (b & DNS_LABEL_PTR)
-                return -1;
-            remaining = b;
-        } else {
-            if (b >= 'A' && b <= 'Z')
-                b += 'a' - 'A';
-            remaining--;
-        }
-
-        key->name[i] = b;
-    }
-
-    return -1;
-}
 
 // domain_id comes from the question, not from each record's owner name: a CNAME
 // chain gives the A record a different owner, and policy names what the pod

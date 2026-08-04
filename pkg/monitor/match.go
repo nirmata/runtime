@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"net/netip"
+	"strings"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
@@ -122,6 +123,67 @@ func (m pathMatcher) matches(path string) bool {
 	return ok
 }
 
+// nameMatcher is the compiled form of one side of a dns behavior. Both sides of
+// every comparison it makes are lowercase: policy values through
+// compiler.ParseDNSValue, observed question names through the kernel program
+// that lowercases them on the wire.
+type nameMatcher struct {
+	star  bool
+	names map[string]struct{}
+	// suffixes holds each wildcard as ".<name>", including the separating dot.
+	suffixes []string
+}
+
+func newNameMatcher(values []string) nameMatcher {
+	m := nameMatcher{}
+	for _, raw := range values {
+		v, err := compiler.ParseDNSValue(raw)
+		if err != nil {
+			// a value the grammar rejects must never produce a match the
+			// enforcing side of that grammar would not have admitted
+			continue
+		}
+		switch {
+		case v.Star:
+			m.star = true
+		case v.Wildcard:
+			m.suffixes = append(m.suffixes, "."+v.Name)
+		default:
+			if m.names == nil {
+				m.names = make(map[string]struct{}, len(values))
+			}
+			m.names[v.Name] = struct{}{}
+		}
+	}
+	return m
+}
+
+// empty reports a side with nothing to match on, either because the policy
+// listed nothing or because every value it listed was rejected.
+func (m nameMatcher) empty() bool {
+	return !m.star && len(m.names) == 0 && len(m.suffixes) == 0
+}
+
+// matches reports whether name is covered by an explicit value. The "*"
+// sentinel is not an explicit match; nameBehavior.eval handles it.
+func (m nameMatcher) matches(name string) bool {
+	if name == "" {
+		return false
+	}
+	if _, ok := m.names[name]; ok {
+		return true
+	}
+	for _, s := range m.suffixes {
+		// The stored leading dot is what keeps a wildcard to subdomains:
+		// "*.openai.azure.com" covers "foo.openai.azure.com" but neither the
+		// apex "openai.azure.com" nor "evilopenai.azure.com".
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // netBehavior is a compiled network allow/deny pair.
 type netBehavior struct {
 	allow, deny netMatcher
@@ -130,6 +192,11 @@ type netBehavior struct {
 // pathBehavior is a compiled open or exec allow/deny pair.
 type pathBehavior struct {
 	allow, deny pathMatcher
+}
+
+// nameBehavior is a compiled dns allow/deny pair.
+type nameBehavior struct {
+	allow, deny nameMatcher
 }
 
 // compileNetBehavior returns nil for a pair with no entries: the behavior is
@@ -146,6 +213,13 @@ func compilePathBehavior(p *compiler.AllowDenyPair) *pathBehavior {
 		return nil
 	}
 	return &pathBehavior{allow: newPathMatcher(p.Allow), deny: newPathMatcher(p.Deny)}
+}
+
+func compileNameBehavior(p *compiler.AllowDenyPair) *nameBehavior {
+	if !p.HasEntries() {
+		return nil
+	}
+	return &nameBehavior{allow: newNameMatcher(p.Allow), deny: newNameMatcher(p.Deny)}
 }
 
 // eval implements the network half of DESIGN §2.10: the destination violates
@@ -177,4 +251,39 @@ func (b *pathBehavior) eval(path string) decision {
 		return decision{violation: true, defaultDeny: true}
 	}
 	return decision{}
+}
+
+// eval reports whether an observed question name is worth surfacing.
+//
+// The allow list is inverted here relative to open and exec: it is the set of
+// names the workload is expected to resolve, so a name matching none of its
+// entries is reportable on its own, with no "*" in deny. An allow list that
+// constrained nothing would make the whole behavior pointless, since observing
+// a declared name tells an operator nothing.
+//
+// A behavior with nothing to match on either side is inert rather than
+// all-reporting: an empty expected set is "nothing declared yet", not "every
+// name is a surprise". Reporting every name is what "*" in deny asks for, and
+// it is how an operator discovers a workload's names before writing the allow
+// list.
+//
+// "*" in deny keeps the exemption shape the other behaviors have: an expected
+// name stays silent. So narrowing a discovery policy is additive — entries move
+// into allow one at a time and the noise drops — rather than requiring the "*"
+// to come out in the same edit.
+func (b *nameBehavior) eval(name string) decision {
+	if b == nil || name == "" {
+		return decision{}
+	}
+	// An explicit deny entry is more specific than the expected set, so it wins.
+	if b.deny.matches(name) {
+		return decision{violation: true}
+	}
+	if b.allow.star || b.allow.matches(name) {
+		return decision{}
+	}
+	if b.allow.empty() && !b.deny.star {
+		return decision{}
+	}
+	return decision{violation: true}
 }

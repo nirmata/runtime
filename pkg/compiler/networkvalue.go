@@ -109,7 +109,7 @@ var ClusterDomain = "cluster.local"
 //     ErrServiceFormNetworkValue, ErrServiceDomainNetworkValue,
 //     ErrServiceLabelNetworkValue, or ErrNotAnIPNetworkValue
 func ParseNetworkValue(raw string) (NetworkValue, error) {
-	cleaned := strings.Trim(raw, " \t\r\n\"'[]")
+	cleaned := cleanValue(raw)
 
 	switch {
 	case cleaned == "":
@@ -193,31 +193,43 @@ func serviceFormError(diagnosis string) error {
 	return fmt.Errorf("%s: %w (cluster-domain is %q)", diagnosis, ErrServiceFormNetworkValue, ClusterDomain)
 }
 
+// cleanValue strips the surrounding whitespace, quotes and brackets that CEL
+// list rendering and hand-written YAML leak into a value.
+func cleanValue(raw string) string {
+	return strings.Trim(raw, " \t\r\n\"'[]")
+}
+
 func normalizeName(cleaned string) string {
 	return strings.ToLower(strings.TrimSuffix(cleaned, "."))
 }
 
-// host is already normalized: normalizing again here would strip a second root
-// dot and turn "example.com.." into a valid name.
 func parseHostname(host string) (string, error) {
-	if host == "" || len(host) > maxHostnameLen {
+	if !validHostname(host) {
 		return "", ErrNotAnIPNetworkValue
+	}
+	return host, nil
+}
+
+// host is already normalized: normalizing again here would strip a second root
+// dot and turn "example.com.." into a valid name. This is the one definition of
+// what a hostname is for every value grammar in this package, so a name the
+// network grammar accepts and one a dns behavior accepts cannot drift.
+func validHostname(host string) bool {
+	if host == "" || len(host) > maxHostnameLen {
+		return false
 	}
 	labels := strings.Split(host, ".")
 	if len(labels) < 2 {
-		return "", ErrNotAnIPNetworkValue
+		return false
 	}
 	for _, label := range labels {
 		if !validLabel(label) {
-			return "", ErrNotAnIPNetworkValue
+			return false
 		}
 	}
 	// A numeric last label means a truncated or over-long address ("10.0.0",
 	// "1.2.3.4.5"), which must stay an error rather than becoming a name.
-	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
-		return "", ErrNotAnIPNetworkValue
-	}
-	return host, nil
+	return strings.Trim(labels[len(labels)-1], "0123456789") != ""
 }
 
 func validServiceLabel(label string) bool {
