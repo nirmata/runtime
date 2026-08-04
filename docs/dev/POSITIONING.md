@@ -293,22 +293,31 @@ Observation at this granularity produces far more than an operator can read. Eve
 every selected pod, every flow's protocol and decision, every destination — a discovery
 policy across a busy node is a firehose, and a finding nobody reads is not a detection.
 
-The filter is a CEL predicate evaluated in userspace, per event, against the observed
-event itself. It is where a question too specific for the kernel gets asked: the kernel
-knows a pod executed `/usr/bin/kubectl`, and the predicate is what narrows that to the
-argument pattern actually worth a finding — a secret being read, a namespace being
-deleted, a provider endpoint being reached by a workload nobody declared as an agent.
+The filter is the declaration itself. A policy names what a workload is expected to touch
+— the DNS names it resolves, the program paths it executes, the protocols it speaks — and
+what reaches an operator is a *departure* from that set, not an event. The busiest pod in
+the cluster then produces one finding per novel destination rather than one per flow, which
+is what makes running discovery across a whole node affordable.
 
-This is the other half of the coarse/fine split, and it is why the enforcement limits above
-are not the whole story. `exec` cannot enforce on arguments; the argv is nonetheless
-observed, and a predicate over it turns a stream of every process start into the few that
-mean something.
+This is also why unsanctioned AI egress needs no AI-specific vocabulary. A policy that
+declares the names a workload legitimately resolves has already said everything: a provider
+endpoint reached by a workload nobody declared as an agent is a name outside the declared
+set, and the same matcher that serves `network`, `exec` and `open` produces the finding. An
+AI detection is a sample policy, not a schema.
 
-The environment a per-event predicate runs in deliberately excludes the `http`, `resource`
-and `json` libraries available elsewhere. A program evaluated at event rate must not be
-able to make a network call or read from the API server — the cost is unbounded and the
-failure mode is a daemon that stalls under load. Enrichment that needs either belongs on
-the `evaluationInterval` path, batched, where a slow answer delays a decision rather than a
+The narrowing this gives you is over *what* was touched, never over *how*. An exec event
+carries its argv — eight arguments, 128 bytes each, attached to the finding for whatever
+reads it downstream — but selection happens on the resolved program path, so
+`kubectl get secret` and `kubectl delete namespace` are the same event. "Alert on any
+`kubectl get secret` in the cluster" is therefore not expressible: a policy naming
+`/usr/bin/kubectl` reports every invocation in every selected pod, and the argument pattern
+has to be picked out by whatever consumes the reports. Selecting on argv at event time is
+the open piece here, and nothing in the tree does it yet.
+
+Whatever closes that gap has to run without a network call or an API read. A program
+evaluated at event rate cannot afford either — the cost is unbounded and the failure mode
+is a daemon that stalls under load. Enrichment that needs one belongs on the
+`evaluationInterval` path, batched, where a slow answer delays a decision rather than a
 packet.
 
 ## What this project does not do
