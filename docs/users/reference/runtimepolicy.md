@@ -118,6 +118,15 @@ spec:
         - egress-gateway.networking.svc.cluster.local
 ```
 
+Prefixing one more label names a single endpoint of that Service, which is how a
+StatefulSet replica is addressed:
+
+```yaml
+      allow:
+        values:
+        - web-0.web.default.svc.cluster.local
+```
+
 What a Service name resolves to:
 
 - the Service's ClusterIP, when it has one, plus the addresses of its **ready**
@@ -166,23 +175,31 @@ otherwise.
 | `api.payments.example.com` | external name, learned from the pod's DNS answers |
 | `redis.default` | external name — resolves nothing, see above |
 | `redis` | rejected: a single label is not a usable name |
-| `10-1-2-3.default.pod.cluster.local` | rejected: pod record, not a Service |
-| `web-0.web.default.svc.cluster.local` | rejected: headless per-pod record, not a Service |
-| `kube-dns.kube-system.svc.example.com` | rejected, naming the expected cluster domain |
+| `web-0.web.default.svc.cluster.local` | one endpoint of Service `web`, resolved from its EndpointSlice |
+| `api.prod.svc.example.com` | external name — `svc` is not reserved outside the cluster domain |
+| `redis` | rejected: a single label is not a usable name |
+| `redis.default.svc` | rejected: a cluster name missing its DNS domain |
+| `10-1-2-3.default.pod.cluster.local` | rejected: a pod record already carries its address |
 | `1redis.default.svc.cluster.local` | rejected: a service label must start with a letter |
 
-A name that ends in the cluster domain but is not a Service name — a pod record, a
-headless Service's per-pod record, a short form written with the cluster domain — is
-rejected rather than treated as external, because falling through would hand the operator
-the weaker of the two mechanisms for a destination that is plainly in-cluster. A name
-whose third label is `svc` is held to the same rule even when its suffix is some other
-domain, on the grounds that it is far more likely a mistyped cluster name than a real
-host. The collateral is real: an external destination genuinely named
-`api.prod.svc.mycompany.com` cannot be used as a target, and has to be reached by address.
+Naming one endpoint programs that backend's addresses alone — never the ClusterIP and
+never a sibling — so `web-0.web.default.svc.cluster.local` grants exactly what its name
+says. The endpoint is matched by the `hostname` its EndpointSlice carries, which is what
+the DNS record is built from. A replica that is not running resolves to nothing rather
+than being reported as unknown; a hostname no endpoint claims is `UnresolvedServices`,
+because falling back to the Service would program addresses the policy never named.
 
-The two labels have different rules, following Kubernetes' own: a service label is RFC
-1035, so it must start with a letter, while a namespace label is RFC 1123 and may start
-with a digit. Both are at most 63 characters of lowercase alphanumerics and `-`.
+A name is aimed at the cluster only by carrying the cluster's own domain. A name that
+ends in it but is neither of the two forms above is rejected rather than treated as
+external, because falling through would hand the operator the weaker of the two
+mechanisms for a destination that is plainly in-cluster. Outside that domain nothing is
+reserved, so an external destination genuinely named `api.prod.svc.mycompany.com` is a
+normal name. The cost of that choice is that a name carrying some *other* cluster's
+domain cannot be told apart from an external one, and is accepted as external.
+
+The labels follow Kubernetes' own rules: a service label is RFC 1035, so it must start
+with a letter, while namespace and endpoint hostname labels are RFC 1123 and may start
+with a digit. All are at most 63 characters of lowercase alphanumerics and `-`.
 
 A rejected literal fails the whole policy to compile, reported as `Applied=False` with
 reason `CompileFailed` and a message naming the field path, the value and the reason.

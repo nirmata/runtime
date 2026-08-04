@@ -56,6 +56,10 @@ func (resolveNothing) ResolveService(namespace, name string) ([]string, bool) {
 	return nil, false
 }
 
+func (resolveNothing) ResolveEndpoint(namespace, service, hostname string) ([]string, bool) {
+	return nil, false
+}
+
 func TestExampleAndDocumentedPoliciesAreValid(t *testing.T) {
 	root := repoRoot(t)
 

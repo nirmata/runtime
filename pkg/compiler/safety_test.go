@@ -80,9 +80,9 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 			wantPaths: []string{"spec.behaviors[0].network.allow.values[1]"},
 		},
 		{
-			name: "Service name in another cluster domain",
+			name: "cluster name missing its DNS domain",
 			behaviors: []v1alpha1.PolicyBehavior{
-				{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"foo.bar.svc.example.com"}, "")}},
+				{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"redis.default.svc"}, "")}},
 			},
 			wantPaths: []string{"spec.behaviors[0].network.allow.values[0]"},
 		},
@@ -184,8 +184,8 @@ func TestCompile_AcceptsCanonicalClusterServiceValues(t *testing.T) {
 func TestCompile_ClusterServiceErrorsComeFromTheOneGrammar(t *testing.T) {
 	values := []string{
 		"kube-dns.svc.cluster.local",
-		"pod-0.redis.default.svc.cluster.local",
-		"foo.bar.svc.example.com",
+		"redis.default.svc",
+		"10-1-2-3.default.pod.cluster.local",
 		"1redis.default.svc.cluster.local",
 	}
 

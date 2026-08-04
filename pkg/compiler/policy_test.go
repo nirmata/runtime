@@ -125,15 +125,22 @@ func TestAllowDenyPair_DiffPair(t *testing.T) {
 }
 
 // mapResolver resolves only the Services present in its map, keyed
-// "namespace/name". An entry with an empty address list is a Service that
-// exists with no ready endpoints, which the interface distinguishes from an
-// absent Service.
+// "namespace/name", and the endpoints in endpoints, keyed
+// "namespace/service/hostname". An entry with an empty address list is a target
+// that exists with no ready addresses, which the interface distinguishes from an
+// absent one.
 type mapResolver struct {
-	services map[string][]string
+	services  map[string][]string
+	endpoints map[string][]string
 }
 
 func (m mapResolver) ResolveService(namespace, name string) ([]string, bool) {
 	addrs, found := m.services[namespace+"/"+name]
+	return addrs, found
+}
+
+func (m mapResolver) ResolveEndpoint(namespace, service, hostname string) ([]string, bool) {
+	addrs, found := m.endpoints[namespace+"/"+service+"/"+hostname]
 	return addrs, found
 }
 
@@ -144,6 +151,11 @@ type recordingResolver struct {
 
 func (r *recordingResolver) ResolveService(namespace, name string) ([]string, bool) {
 	r.calls = append(r.calls, namespace+"/"+name)
+	return nil, false
+}
+
+func (r *recordingResolver) ResolveEndpoint(namespace, service, hostname string) ([]string, bool) {
+	r.calls = append(r.calls, namespace+"/"+service+"/"+hostname)
 	return nil, false
 }
 
@@ -714,5 +726,59 @@ func TestEvaluate_PanickingCELBindingBecomesError(t *testing.T) {
 				t.Errorf("Evaluate() error = %q, want it to carry the panic message", err.Error())
 			}
 		})
+	}
+}
+
+// A per-endpoint record resolves through ResolveEndpoint, so it is programmed
+// with that one backend's address rather than every address behind the Service.
+func TestEvaluate_PerEndpointValueResolvesToThatEndpointAlone(t *testing.T) {
+	resolver := mapResolver{
+		services:  map[string][]string{"default/web": {"10.96.0.7", "10.244.0.5", "10.244.0.6"}},
+		endpoints: map[string][]string{"default/web/web-0": {"10.244.0.5"}},
+	}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	value := "web-0.web.default.svc." + ClusterDomain
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{value}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := &AllowDenyPair{Allow: []string{"10.244.0.5"}}
+	if diff := cmp.Diff(want, res.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_UnknownPerEndpointValueIsReportedUnresolved(t *testing.T) {
+	c := newTestCompilerWithResolver(t, mapResolver{
+		services: map[string][]string{"default/web": {"10.244.0.5"}},
+	})
+
+	value := "web-9.web.default.svc." + ClusterDomain
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{value}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if !slices.Contains(res.UnresolvedServices, value) {
+		t.Errorf("UnresolvedServices = %v, want it to name %q", res.UnresolvedServices, value)
+	}
+	// The Service's own addresses must not stand in for an endpoint that does
+	// not exist.
+	if len(res.IPs.Allow) != 0 {
+		t.Errorf("IPs.Allow = %v, want empty", res.IPs.Allow)
 	}
 }

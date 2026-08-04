@@ -48,6 +48,10 @@ func TestParseNetworkValue(t *testing.T) {
 		{name: "namespace may start with a digit", in: "redis.2ns.svc.cluster.local", wantService: &ClusterService{Name: "redis", Namespace: "2ns"}},
 		{name: "service and namespace at the label length limit", in: "a" + strings.Repeat("b", 62) + "." + strings.Repeat("c", 63) + ".svc.cluster.local", wantService: &ClusterService{Name: "a" + strings.Repeat("b", 62), Namespace: strings.Repeat("c", 63)}},
 
+		{name: "per-endpoint record names one endpoint", in: "web-0.web.default.svc.cluster.local", wantService: &ClusterService{Name: "web", Namespace: "default", Hostname: "web-0"}},
+		{name: "endpoint hostname may start with a digit", in: "0web.web.default.svc.cluster.local", wantService: &ClusterService{Name: "web", Namespace: "default", Hostname: "0web"}},
+		{name: "per-endpoint record uppercased and padded", in: " \"Web-0.Web.Default.SVC.Cluster.Local.\" ", wantService: &ClusterService{Name: "web", Namespace: "default", Hostname: "web-0"}},
+
 		{name: "service starting with a digit rejected", in: "1redis.default.svc.cluster.local", wantErr: ErrServiceLabelNetworkValue},
 		{name: "over-long service label rejected", in: strings.Repeat("a", 64) + ".default.svc.cluster.local", wantErr: ErrServiceLabelNetworkValue},
 		{name: "over-long namespace label rejected", in: "redis." + strings.Repeat("a", 64) + ".svc.cluster.local", wantErr: ErrServiceLabelNetworkValue},
@@ -55,10 +59,15 @@ func TestParseNetworkValue(t *testing.T) {
 		{name: "short Service form with the cluster domain rejected", in: "kube-dns.svc.cluster.local", wantErr: ErrServiceFormNetworkValue},
 		{name: "namespaced short form with the cluster domain rejected", in: "kube-dns.kube-system.cluster.local", wantErr: ErrServiceFormNetworkValue},
 		{name: "pod record rejected", in: "10-1-2-3.default.pod.cluster.local", wantErr: ErrServiceFormNetworkValue},
-		{name: "headless per-pod record rejected", in: "pod-0.redis.default.svc.cluster.local", wantErr: ErrServiceFormNetworkValue},
 		{name: "bare svc label with the cluster domain rejected", in: "svc.cluster.local", wantErr: ErrServiceFormNetworkValue},
-		{name: "Service name in another cluster domain rejected", in: "foo.bar.svc.example.com", wantErr: ErrServiceDomainNetworkValue},
-		{name: "Service name in another cluster domain, single label suffix", in: "foo.bar.svc.internal", wantErr: ErrServiceDomainNetworkValue},
+		{name: "short cluster form rejected", in: "redis.default.svc", wantErr: ErrServiceShortFormNetworkValue},
+		{name: "endpoint hostname over the length limit rejected", in: strings.Repeat("a", 64) + ".redis.default.svc.cluster.local", wantErr: ErrServiceLabelNetworkValue},
+
+		// A name is aimed at the cluster only by carrying the cluster's own
+		// domain: an external destination may legitimately be called
+		// "<x>.<y>.svc.<domain>", and reserving that shape made it unusable.
+		{name: "external name with an svc label stays a host", in: "api.prod.svc.example.com", wantHost: "api.prod.svc.example.com"},
+		{name: "external name with an svc label and a short suffix", in: "foo.bar.svc.internal", wantHost: "foo.bar.svc.internal"},
 
 		{name: "external FQDN with a cluster-shaped prefix stays a host", in: "kube-dns.kube-system.example.com", wantHost: "kube-dns.kube-system.example.com"},
 		{name: "two label short form stays an external host", in: "redis.default", wantHost: "redis.default"},
@@ -156,11 +165,6 @@ func TestParseNetworkValueServiceErrorsNameTheRemedy(t *testing.T) {
 			wantText: []string{"pod DNS record", `"<service>.<namespace>.svc.<cluster-domain>"`, `"cluster.local"`},
 		},
 		{
-			in:       "pod-0.redis.default.svc.cluster.local",
-			wantErr:  ErrServiceFormNetworkValue,
-			wantText: []string{"per-pod DNS record", `"<service>.<namespace>.svc.<cluster-domain>"`, `"cluster.local"`},
-		},
-		{
 			in:       "kube-dns.svc.cluster.local",
 			wantErr:  ErrServiceFormNetworkValue,
 			wantText: []string{"incomplete", `"<service>.<namespace>.svc.<cluster-domain>"`, `"cluster.local"`},
@@ -171,14 +175,14 @@ func TestParseNetworkValueServiceErrorsNameTheRemedy(t *testing.T) {
 			wantText: []string{"incomplete", `"<service>.<namespace>.svc.<cluster-domain>"`, `"cluster.local"`},
 		},
 		{
-			in:       "foo.bar.svc.example.com",
-			wantErr:  ErrServiceDomainNetworkValue,
-			wantText: []string{`"<service>.<namespace>.svc.cluster.local"`},
+			in:       "redis.default.svc",
+			wantErr:  ErrServiceShortFormNetworkValue,
+			wantText: []string{"name it in full", `"<service>.<namespace>.svc.cluster.local"`},
 		},
 		{
 			in:       "1redis.default.svc.cluster.local",
 			wantErr:  ErrServiceLabelNetworkValue,
-			wantText: []string{"must start with a letter", "namespace label", "63"},
+			wantText: []string{"must start with a letter", "namespace and hostname labels", "63"},
 		},
 	}
 
@@ -213,9 +217,20 @@ func TestParseNetworkValueHonoursClusterDomain(t *testing.T) {
 		t.Errorf("Host = %q, want empty for a Service value", got.Host)
 	}
 
-	_, err = ParseNetworkValue("redis.default.svc.cluster.local")
-	if !errors.Is(err, ErrServiceDomainNetworkValue) {
-		t.Fatalf("error = %v, want %v", err, ErrServiceDomainNetworkValue)
+	// Another cluster's domain is indistinguishable from an external one, so it
+	// resolves by DNS answers rather than being rejected. This is the accepted
+	// cost of letting an external "<x>.<y>.svc.<domain>" be named at all.
+	got, err = ParseNetworkValue("redis.default.svc.cluster.local")
+	if err != nil {
+		t.Fatalf("unexpected error = %v", err)
+	}
+	if got.Host != "redis.default.svc.cluster.local" || got.Service != nil {
+		t.Errorf("got %+v, want a host value for a name outside this cluster's domain", got)
+	}
+
+	_, err = ParseNetworkValue("redis.default.svc")
+	if !errors.Is(err, ErrServiceShortFormNetworkValue) {
+		t.Fatalf("error = %v, want %v", err, ErrServiceShortFormNetworkValue)
 	}
 	if !strings.Contains(err.Error(), ClusterDomain) {
 		t.Errorf("error %q does not name the expected cluster domain %q", err, ClusterDomain)

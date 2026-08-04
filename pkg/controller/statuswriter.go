@@ -154,6 +154,12 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 		prev.Status == cond.Status && prev.Reason == cond.Reason && prev.Message == cond.Message {
 		return
 	}
+	// apimeta.SetStatusCondition would fill a zero timestamp from time.Now(),
+	// which is a second clock: the conditions this writer builds itself all come
+	// from s.clock(), and a test with a fake one would see the two disagree.
+	if cond.LastTransitionTime.IsZero() {
+		cond.LastTransitionTime = metav1.NewTime(s.clock())
+	}
 	st.conditions[cond.Type] = cond
 	st.touch()
 }

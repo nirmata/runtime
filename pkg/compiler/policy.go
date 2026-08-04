@@ -156,7 +156,7 @@ func (c *CompiledRuntimePolicy) resolveServiceValues(side []string, unresolved [
 			out = append(out, value)
 			continue
 		}
-		addrs, found := c.resolver.ResolveService(parsed.Service.Namespace, parsed.Service.Name)
+		addrs, found := c.resolveService(parsed.Service)
 		if !found {
 			if !slices.Contains(unresolved, value) {
 				unresolved = append(unresolved, value)
@@ -172,6 +172,15 @@ func (c *CompiledRuntimePolicy) resolveServiceValues(side []string, unresolved [
 		}
 	}
 	return out, unresolved
+}
+
+// resolveService picks the lookup the value's shape asks for: a per-endpoint
+// record resolves to that one endpoint, a Service name to all of its addresses.
+func (c *CompiledRuntimePolicy) resolveService(svc *ClusterService) ([]string, bool) {
+	if svc.Hostname != "" {
+		return c.resolver.ResolveEndpoint(svc.Namespace, svc.Name, svc.Hostname)
+	}
+	return c.resolver.ResolveService(svc.Namespace, svc.Name)
 }
 
 func isServiceValue(value string) bool {

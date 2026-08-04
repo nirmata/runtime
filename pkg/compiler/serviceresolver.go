@@ -13,4 +13,13 @@ type ServiceResolver interface {
 	// naming something nonexistent, the second is a policy whose target is
 	// scaled to zero.
 	ResolveService(namespace, name string) (addrs []string, found bool)
+
+	// ResolveEndpoint returns the addresses of the one endpoint of a Service
+	// whose DNS hostname is hostname, for a per-endpoint record such as
+	// "web-0.web.default.svc.cluster.local".
+	//
+	// found follows ResolveService: false when no endpoint of that Service
+	// carries the hostname, which covers both a missing Service and a replica
+	// that is not running.
+	ResolveEndpoint(namespace, service, hostname string) (addrs []string, found bool)
 }

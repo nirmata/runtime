@@ -32,18 +32,20 @@ var (
 	// label, an over-long or malformed label, a numeric last label).
 	ErrNotAnIPNetworkValue = errors.New(`not an IPv4 address, IPv4 CIDR, hostname or "*"`)
 	// ErrServiceFormNetworkValue reports a name in the cluster DNS domain that
-	// is not a Service name: a pod record, a headless Service's per-pod record,
-	// or a short form. Such a name is rejected instead of falling through to
+	// names neither a Service nor one of its endpoints: a pod A record, or an
+	// incomplete name. Such a name is rejected instead of falling through to
 	// Host, because resolving it from the pod's DNS answers is not what an
 	// operator naming a cluster address asked for. Callers prefix the specific
 	// diagnosis; see serviceFormError.
-	ErrServiceFormNetworkValue = errors.New(`a cluster Service must be named "<service>.<namespace>.svc.<cluster-domain>"`)
-	// ErrServiceDomainNetworkValue reports a Service-shaped name whose suffix is
-	// some other cluster's DNS domain.
-	ErrServiceDomainNetworkValue = errors.New("this Service name is not in the cluster's DNS domain")
-	// ErrServiceLabelNetworkValue reports a canonical Service name whose service
-	// or namespace label is malformed.
-	ErrServiceLabelNetworkValue = errors.New(`invalid cluster Service name: the service label must start with a letter and the namespace label with a letter or digit, both continuing with alphanumerics or "-" and at most 63 characters`)
+	ErrServiceFormNetworkValue = errors.New(`a cluster Service must be named "<service>.<namespace>.svc.<cluster-domain>", or one of its endpoints "<hostname>.<service>.<namespace>.svc.<cluster-domain>"`)
+	// ErrServiceShortFormNetworkValue reports a cluster name with no domain,
+	// such as "redis.default.svc". A pod's resolver expands it through the
+	// search domains, so the question is the full name and the authored value
+	// would match nothing.
+	ErrServiceShortFormNetworkValue = errors.New("this cluster name is missing its DNS domain")
+	// ErrServiceLabelNetworkValue reports a cluster name whose labels are
+	// malformed.
+	ErrServiceLabelNetworkValue = errors.New(`invalid cluster Service name: the service label must start with a letter and the namespace and hostname labels with a letter or digit, all continuing with alphanumerics or "-" and at most 63 characters`)
 )
 
 const (
@@ -76,10 +78,13 @@ type NetworkValue struct {
 	Service *ClusterService
 }
 
-// ClusterService is the Service named by a cluster DNS value.
+// ClusterService is the Service named by a cluster DNS value. Hostname is set
+// only for a per-endpoint record, and names one endpoint of that Service rather
+// than the Service as a whole.
 type ClusterService struct {
 	Name      string
 	Namespace string
+	Hostname  string
 }
 
 // ClusterDomain is the cluster's DNS domain, the suffix that makes a value a
@@ -102,11 +107,13 @@ var ClusterDomain = "cluster.local"
 //   - an IPv4 CIDR (or IPv4-mapped IPv6 CIDR) of any width yields Prefix,
 //     unmapped and masked
 //   - "<service>.<namespace>.svc.<ClusterDomain>" yields Service
+//   - "<hostname>.<service>.<namespace>.svc.<ClusterDomain>" yields Service
+//     with Hostname set, naming one endpoint of it
 //   - any other multi-label DNS name yields Host, lowercased and stripped of
 //     its root dot
 //   - everything else is an error: ErrEmptyNetworkValue,
 //     ErrIPv6NetworkValue, ErrWildcardNetworkValue,
-//     ErrServiceFormNetworkValue, ErrServiceDomainNetworkValue,
+//     ErrServiceFormNetworkValue, ErrServiceShortFormNetworkValue,
 //     ErrServiceLabelNetworkValue, or ErrNotAnIPNetworkValue
 func ParseNetworkValue(raw string) (NetworkValue, error) {
 	cleaned := cleanValue(raw)
@@ -159,34 +166,43 @@ func ParseNetworkValue(raw string) (NetworkValue, error) {
 // parseClusterService reports whether name is meant as a cluster DNS name at
 // all, separately from whether it is a usable one, so that a name aimed at the
 // cluster is never quietly downgraded to an external host.
+//
+// "Aimed at the cluster" is decided by the configured cluster domain, not by a
+// label named "svc" anywhere in the name: an external destination is free to be
+// called api.prod.svc.example.com, and reserving that shape made a legitimate
+// name unusable. The cost is that a name carrying some OTHER cluster's domain
+// cannot be told from an external one and is accepted as external.
 func parseClusterService(name string) (*ClusterService, bool, error) {
 	suffix := "." + ClusterDomain
-	labels := strings.Split(name, ".")
-	inClusterDomain := strings.HasSuffix(name, suffix)
-	svcPositioned := len(labels) > 3 && labels[2] == "svc"
-
-	if !inClusterDomain {
-		if !svcPositioned {
-			return nil, false, nil
+	if !strings.HasSuffix(name, suffix) {
+		if labels := strings.Split(name, "."); len(labels) > 1 && labels[len(labels)-1] == "svc" {
+			return nil, true, fmt.Errorf(`%w: name it in full, as "<service>.<namespace>.svc.%s"`,
+				ErrServiceShortFormNetworkValue, ClusterDomain)
 		}
-		return nil, true, fmt.Errorf(`%w: name a cluster Service as "<service>.<namespace>.svc.%s"`, ErrServiceDomainNetworkValue, ClusterDomain)
+		return nil, false, nil
 	}
 
 	head := strings.Split(strings.TrimSuffix(name, suffix), ".")
-	switch {
-	case len(head) == 3 && head[2] == "pod":
-		return nil, true, serviceFormError("a pod DNS record, not a Service")
-	case len(head) == 4 && head[3] == "svc":
-		return nil, true, serviceFormError("a headless Service's per-pod DNS record, not a Service")
-	case len(head) != 3 || head[2] != "svc":
-		return nil, true, serviceFormError("an incomplete cluster Service DNS name")
-	}
-	// A Service name is an RFC 1035 label, a namespace an RFC 1123 one: a
-	// Service cannot start with a digit, a namespace can.
-	if len(name) > maxHostnameLen || !validServiceLabel(head[0]) || !validLabel(head[1]) {
+	if len(name) > maxHostnameLen {
 		return nil, true, ErrServiceLabelNetworkValue
 	}
-	return &ClusterService{Name: head[0], Namespace: head[1]}, true, nil
+	// A Service name is an RFC 1035 label, a namespace and an endpoint hostname
+	// are RFC 1123 ones: a Service cannot start with a digit, those can.
+	switch {
+	case len(head) == 4 && head[3] == "svc":
+		if !validLabel(head[0]) || !validServiceLabel(head[1]) || !validLabel(head[2]) {
+			return nil, true, ErrServiceLabelNetworkValue
+		}
+		return &ClusterService{Hostname: head[0], Name: head[1], Namespace: head[2]}, true, nil
+	case len(head) == 3 && head[2] == "svc":
+		if !validServiceLabel(head[0]) || !validLabel(head[1]) {
+			return nil, true, ErrServiceLabelNetworkValue
+		}
+		return &ClusterService{Name: head[0], Namespace: head[1]}, true, nil
+	case len(head) == 3 && head[2] == "pod":
+		return nil, true, serviceFormError("a pod DNS record, whose name already carries the address it resolves to")
+	}
+	return nil, true, serviceFormError("an incomplete cluster DNS name")
 }
 
 func serviceFormError(diagnosis string) error {

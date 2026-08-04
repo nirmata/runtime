@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nirmata/kyverno-runtime/pkg/utils"
+
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -148,6 +150,53 @@ func (r *Resolver) ResolveService(namespace, name string) ([]string, bool) {
 	return addrs, true
 }
 
+// ResolveEndpoint returns the addresses of the single endpoint of a Service
+// whose DNS hostname is hostname.
+//
+// Only the endpoint's own addresses are returned, never the ClusterIP: a
+// per-endpoint record resolves to one backend, and adding the ClusterIP would
+// widen the grant to every backend behind it.
+func (r *Resolver) ResolveEndpoint(namespace, service, hostname string) ([]string, bool) {
+	objs, err := r.slices.GetIndexer().ByIndex(serviceNameIndex, namespace+"/"+service)
+	if err != nil {
+		panic(fmt.Sprintf("querying the EndpointSlice service-name index: %v", err))
+	}
+
+	set := make(map[string]struct{})
+	found := false
+	for _, obj := range objs {
+		slice, ok := obj.(*discoveryv1.EndpointSlice)
+		if !ok || slice.AddressType != discoveryv1.AddressTypeIPv4 {
+			continue
+		}
+		for _, endpoint := range slice.Endpoints {
+			if endpoint.Hostname == nil || *endpoint.Hostname != hostname {
+				continue
+			}
+			// The record exists as soon as the hostname is claimed, so an
+			// unready replica is found with no addresses rather than absent:
+			// that is a target scaled down, not a policy naming nothing.
+			found = true
+			if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
+				continue
+			}
+			for _, addr := range endpoint.Addresses {
+				r.addIPv4(set, addr)
+			}
+		}
+	}
+	if !found {
+		return nil, false
+	}
+
+	addrs := make([]string, 0, len(set))
+	for addr := range set {
+		addrs = append(addrs, addr)
+	}
+	sort.Strings(addrs)
+	return addrs, true
+}
+
 func (r *Resolver) addIPv4(set map[string]struct{}, raw string) {
 	addr, err := netip.ParseAddr(raw)
 	if err != nil {
@@ -187,7 +236,12 @@ func (r *Resolver) notify(namespace, name string) {
 	r.mu.RUnlock()
 
 	for _, h := range handlers {
-		h(namespace, name)
+		if err := utils.Guard("services: service change handler", func() error {
+			h(namespace, name)
+			return nil
+		}); err != nil {
+			r.log.Error(err, "a service change handler panicked", "namespace", namespace, "service", name)
+		}
 	}
 }
 

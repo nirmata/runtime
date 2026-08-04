@@ -140,11 +140,12 @@ kubectl -n <namespace> get svc <name>
 ```
 
 A Service name that is rejected outright rather than left unresolved reaches
-`UnsupportedTargets`, for one of three reasons: it is not the canonical
-`<service>.<namespace>.svc.cluster.local` form (a pod record, a headless Service's per-pod
-record, or a short form written with the cluster domain), its suffix is not this cluster's
-DNS domain, or one of its two labels is malformed — the service label must start with a
-letter, while the namespace label may also start with a digit.
+`UnsupportedTargets`, for one of three reasons: it carries the cluster domain but is
+neither `<service>.<namespace>.svc.<cluster-domain>` nor
+`<hostname>.<service>.<namespace>.svc.<cluster-domain>`; it is a cluster name written
+without its domain, such as `redis.default.svc`; or one of its labels is malformed — the
+service label must start with a letter, while namespace and hostname labels may also
+start with a digit.
 
 A value that resolves nothing and reports nothing is almost always a short form. `redis.default`
 is a valid external name, so no condition complains, but a pod's resolver expands short names

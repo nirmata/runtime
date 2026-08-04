@@ -39,7 +39,9 @@ Each behavior in `spec.behaviors` takes an optional `allow` and/or `deny`, each 
 `values`). A `network` value may be an address, a CIDR, or a name; a name in the form
 `<service>.<namespace>.svc.cluster.local` is an in-cluster Service, which the daemon
 resolves to its ClusterIP and ready endpoint addresses from Service and EndpointSlice
-informers, and any other fully qualified domain name is external. Setting
+informers; prefixing one more label,
+`<hostname>.<service>.<namespace>.svc.cluster.local`, names a single endpoint of it. Any
+other fully qualified domain name is external. Setting
 `deny.values: ["*"]` on a behavior is a default-deny
 sentinel: that behavior flips from allow-all-except-denied to deny-all-except-allowed. This is
 evaluated across every `RuntimePolicy` matching a pod: if any matching policy sets

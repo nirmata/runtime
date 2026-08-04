@@ -319,3 +319,55 @@ func TestStartReturnsNilOnCancel(t *testing.T) {
 		t.Fatal("Start did not return after the context was cancelled")
 	}
 }
+
+func named(hostname string, ready *bool, addresses ...string) discoveryv1.Endpoint {
+	e := endpoint(ready, addresses...)
+	e.Hostname = &hostname
+	return e
+}
+
+func TestResolveEndpointReturnsOnlyThatEndpoint(t *testing.T) {
+	r := started(t,
+		service("default", "web", "10.96.0.7"),
+		slice("default", "web-abc", "web", discoveryv1.AddressTypeIPv4,
+			named("web-0", ptr(true), "10.244.0.5"),
+			named("web-1", ptr(true), "10.244.0.6"),
+		),
+	)
+
+	addrs, found := r.ResolveEndpoint("default", "web", "web-0")
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	// Neither the sibling endpoint nor the ClusterIP: a per-endpoint record
+	// names one backend, and either would widen the grant.
+	if !reflect.DeepEqual(addrs, []string{"10.244.0.5"}) {
+		t.Errorf("addrs = %v, want [10.244.0.5]", addrs)
+	}
+}
+
+func TestResolveEndpointUnknownHostnameIsNotFound(t *testing.T) {
+	r := started(t,
+		slice("default", "web-abc", "web", discoveryv1.AddressTypeIPv4, named("web-0", ptr(true), "10.244.0.5")),
+	)
+
+	if addrs, found := r.ResolveEndpoint("default", "web", "web-9"); found || len(addrs) != 0 {
+		t.Errorf("ResolveEndpoint for an unclaimed hostname = (%v, %v), want (nil, false)", addrs, found)
+	}
+	if addrs, found := r.ResolveEndpoint("default", "web", ""); found || len(addrs) != 0 {
+		t.Errorf("ResolveEndpoint for an endpoint with no hostname = (%v, %v), want (nil, false)", addrs, found)
+	}
+}
+
+// An unready replica keeps its record, so it is found with no addresses: a
+// target scaled down, not a policy naming something that does not exist.
+func TestResolveEndpointUnreadyIsFoundAndEmpty(t *testing.T) {
+	r := started(t,
+		slice("default", "web-abc", "web", discoveryv1.AddressTypeIPv4, named("web-0", ptr(false), "10.244.0.5")),
+	)
+
+	addrs, found := r.ResolveEndpoint("default", "web", "web-0")
+	if !found || len(addrs) != 0 {
+		t.Errorf("ResolveEndpoint for an unready endpoint = (%v, %v), want (empty, true)", addrs, found)
+	}
+}
