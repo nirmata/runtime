@@ -131,7 +131,7 @@ func TestCompile_DoesNotValidateOpenAndExecValuesAsNetworkTargets(t *testing.T) 
 // exec and open: a value the kernel maps cannot hold is rejected with the field
 // path of the exact offender rather than being dropped when it reaches those
 // maps. Both behaviors are checked because both program the same maps, so a
-// grammar enforced for only one of them is not a chokepoint.
+// schema enforced for only one of them is not a chokepoint.
 func TestCompile_RejectsBadPathValuesWithFieldPath(t *testing.T) {
 	tooLong := "/" + strings.Repeat("a", MaxPathValueLen)
 	tests := []struct {

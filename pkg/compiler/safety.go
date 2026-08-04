@@ -19,53 +19,45 @@ func IsObserveMode(mode string) bool {
 	return mode == ModeMonitor
 }
 
-// validateNetworkBehavior validates the hardcoded allow/deny values of a
-// network behavior against ParseNetworkValue, reporting each offender as
-// field.Invalid at the exact value's field path.
-//
-// Note that the accepted CIDR prefix width is narrower at program time:
+// The accepted CIDR prefix width is narrower at program time:
 // egressfilter.ParseTargets expands only prefixes >= /24 and reports the rest
-// as rejected targets (surfaced as a policy condition). Admission-time
-// validation stays deliberately permissive here so it never rejects a value
-// the runtime would accept.
-func validateNetworkBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
-	return validateBehaviorValues(path, b, func(v string) error {
-		_, err := ParseNetworkValue(v)
-		return err
-	})
+// as rejected targets. Admission stays deliberately permissive so it never
+// rejects a value the runtime would accept.
+func networkValueErr(v string) error {
+	_, err := ParseNetworkValue(v)
+	return err
 }
 
-// validatePathBehavior validates the hardcoded allow/deny values of an exec or
-// open behavior against ParsePathValue. Both are programmed into the same kernel
-// maps, so both are held to the same grammar here.
-//
-// Unlike the network case there is no narrowing at program time: lsm.ParsePaths
-// applies exactly this grammar, so a value accepted here is a value the kernel
-// maps can hold.
-func validatePathBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
-	return validateBehaviorValues(path, b, func(v string) error {
-		_, err := ParsePathValue(v)
-		return err
-	})
+// Exec and open are programmed into the same kernel maps, so both are held to
+// this one schema, and lsm.PathKeys applies it unchanged: a value accepted here
+// is a value the kernel maps can hold.
+func pathValueErr(v string) error {
+	_, err := ParsePathValue(v)
+	return err
 }
 
-func validateBehaviorValues(path *field.Path, b *v1alpha1.Behavior, parse func(string) error) field.ErrorList {
+// validateBehavior reports every allow or deny value parse rejects, as a
+// field.Invalid at that value's own index.
+func validateBehavior(path *field.Path, b *v1alpha1.Behavior, parse func(string) error) field.ErrorList {
 	if b == nil {
 		return nil
 	}
 	var errs field.ErrorList
-	check := func(path *field.Path, values []string) {
-		for i, v := range values {
-			if err := parse(v); err != nil {
-				errs = append(errs, field.Invalid(path.Index(i), v, err.Error()))
-			}
-		}
-	}
 	if b.Allow != nil {
-		check(path.Child("allow").Child("values"), b.Allow.Values)
+		errs = append(errs, invalidValues(path.Child("allow", "values"), b.Allow.Values, parse)...)
 	}
 	if b.Deny != nil {
-		check(path.Child("deny").Child("values"), b.Deny.Values)
+		errs = append(errs, invalidValues(path.Child("deny", "values"), b.Deny.Values, parse)...)
+	}
+	return errs
+}
+
+func invalidValues(path *field.Path, values []string, parse func(string) error) field.ErrorList {
+	var errs field.ErrorList
+	for i, v := range values {
+		if err := parse(v); err != nil {
+			errs = append(errs, field.Invalid(path.Index(i), v, err.Error()))
+		}
 	}
 	return errs
 }

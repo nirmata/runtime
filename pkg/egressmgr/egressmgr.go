@@ -172,7 +172,7 @@ func (e *EgressManager) deleteIps(podUid, uid string, f egressFilter, pair *comp
 // surfaceRejected records every target the runtime cannot honor on the policy's
 // status. The per-pod log stays at V(2); recordTargetsCondition already reports
 // the same targets once per policy event.
-func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []egressfilter.RejectedTarget) {
+func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []compiler.RejectedTarget) {
 	if len(rejected) == 0 {
 		return
 	}
@@ -243,7 +243,7 @@ func (e *EgressManager) recordCondition(uid string, cond metav1.Condition) {
 	e.status.RecordCondition(uid, cond)
 }
 
-func rejectionMessage(rejected []egressfilter.RejectedTarget) string {
+func rejectionMessage(rejected []compiler.RejectedTarget) string {
 	parts := make([]string, 0, len(rejected))
 	for i, r := range rejected {
 		if i == maxReportedRejectedTargets {

@@ -123,9 +123,9 @@ func (f *fakeEnforcer) DeleteCgids(cgids []uint64) error {
 }
 
 // AddTargets and DeleteTargets model the real enforcer's effective map state by
-// deriving their keys the way it does, so a value lsm.ParsePaths rejects never
+// deriving their keys the way it does, so a value lsm.PathKeys rejects never
 // appears in the fake's allow or deny set either.
-func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]lsm.RejectedTarget, error) {
+func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addTargets = append(f.addTargets, clonePair(paths))
@@ -139,7 +139,7 @@ func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]lsm.Rejected
 	return rejected, f.note("AddTargets")
 }
 
-func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]lsm.RejectedTarget, error) {
+func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.delTargets = append(f.delTargets, clonePair(paths))
@@ -153,9 +153,9 @@ func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]lsm.Rejec
 	return rejected, f.note("DeleteTargets")
 }
 
-func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejected []lsm.RejectedTarget) {
-	allowKeys, _, allowRejected := lsm.ParsePaths(paths.Allow)
-	denyKeys, _, denyRejected := lsm.ParsePaths(paths.Deny)
+func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejected []compiler.RejectedTarget) {
+	allowKeys, _, allowRejected := lsm.PathKeys(paths.Allow)
+	denyKeys, _, denyRejected := lsm.PathKeys(paths.Deny)
 	for _, k := range allowKeys {
 		allow = append(allow, keyPath(k))
 	}
@@ -165,9 +165,9 @@ func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejecte
 	return allow, deny, append(denyRejected, allowRejected...)
 }
 
-// keyPath is the inverse of the NUL padding lsm.ParsePaths applies; paths hold
+// keyPath is the inverse of the NUL padding lsm.PathKeys applies; paths hold
 // no NUL byte, so the first one always ends the string.
-func keyPath(k lsm.PathKey) string {
+func keyPath(k [compiler.MaxPathValueLen + 1]byte) string {
 	if i := bytes.IndexByte(k[:], 0); i >= 0 {
 		return string(k[:i])
 	}

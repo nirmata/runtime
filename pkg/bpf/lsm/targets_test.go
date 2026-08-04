@@ -9,67 +9,70 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func key(path string) PathKey {
-	k := PathKey{}
+func key(path string) [maxPathLen]byte {
+	k := [maxPathLen]byte{}
 	copy(k[:], path)
 	return k
 }
 
-// TestPathKeyHoldsEveryValueTheGrammarAccepts pins the parser's length bound to
+// TestPathKeyHoldsEveryValueTheSchemaAccepts pins the parser's length bound to
 // the kernel key: bpf_probe_read_kernel_str always leaves a NUL terminator, so
 // the longest usable path is one byte shorter than the key.
-func TestPathKeyHoldsEveryValueTheGrammarAccepts(t *testing.T) {
+func TestPathKeyHoldsEveryValueTheSchemaAccepts(t *testing.T) {
 	if compiler.MaxPathValueLen != maxPathLen-1 {
 		t.Errorf("compiler.MaxPathValueLen = %d, want %d (char[%d] key minus its NUL terminator)",
 			compiler.MaxPathValueLen, maxPathLen-1, maxPathLen)
 	}
 }
 
-func TestParsePaths(t *testing.T) {
+func TestPathKeys(t *testing.T) {
 	tooLong := "/" + strings.Repeat("a", compiler.MaxPathValueLen)
 	tests := []struct {
 		name         string
 		values       []string
-		wantKeys     []PathKey
+		wantKeys     [][maxPathLen]byte
 		wantStar     bool
-		wantRejected []RejectedTarget
+		wantRejected []compiler.RejectedTarget
 	}{
 		{
 			name:     "literal paths become keys in order",
 			values:   []string{"/bin/sh", "/usr/bin/curl"},
-			wantKeys: []PathKey{key("/bin/sh"), key("/usr/bin/curl")},
+			wantKeys: [][maxPathLen]byte{key("/bin/sh"), key("/usr/bin/curl")},
 		},
 		{
 			name:     "star is the default deny sentinel, not a key",
 			values:   []string{"*", "/bin/sh"},
-			wantKeys: []PathKey{key("/bin/sh")},
+			wantKeys: [][maxPathLen]byte{key("/bin/sh")},
 			wantStar: true,
 		},
 		{
 			name:     "surrounding whitespace is trimmed before keying",
 			values:   []string{" /bin/sh\n"},
-			wantKeys: []PathKey{key("/bin/sh")},
+			wantKeys: [][maxPathLen]byte{key("/bin/sh")},
 		},
 		{
 			name:     "duplicates collapse to one key",
 			values:   []string{"/bin/sh", "/bin/sh ", "/bin/sh"},
-			wantKeys: []PathKey{key("/bin/sh")},
+			wantKeys: [][maxPathLen]byte{key("/bin/sh")},
 		},
 		{
 			name:         "over-length value is rejected, not truncated",
 			values:       []string{"/bin/sh", tooLong},
-			wantKeys:     []PathKey{key("/bin/sh")},
-			wantRejected: []RejectedTarget{{Value: tooLong, Reason: ReasonPathTooLong}},
+			wantKeys:     [][maxPathLen]byte{key("/bin/sh")},
+			wantRejected: []compiler.RejectedTarget{{Value: tooLong, Reason: compiler.ErrPathValueTooLong.Error()}},
 		},
 		{
-			name:         "empty value is rejected",
-			values:       []string{" ", ""},
-			wantRejected: []RejectedTarget{{Value: " ", Reason: ReasonEmptyPath}, {Value: "", Reason: ReasonEmptyPath}},
+			name:   "empty value is rejected",
+			values: []string{" ", ""},
+			wantRejected: []compiler.RejectedTarget{
+				{Value: " ", Reason: compiler.ErrEmptyPathValue.Error()},
+				{Value: "", Reason: compiler.ErrEmptyPathValue.Error()},
+			},
 		},
 		{
 			name:         "NUL-bearing value is rejected",
 			values:       []string{"/bin/sh\x00/etc"},
-			wantRejected: []RejectedTarget{{Value: "/bin/sh\x00/etc", Reason: ReasonNULInPath}},
+			wantRejected: []compiler.RejectedTarget{{Value: "/bin/sh\x00/etc", Reason: compiler.ErrNULInPathValue.Error()}},
 		},
 		{
 			name:   "no values",
@@ -79,7 +82,7 @@ func TestParsePaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			keys, star, rejected := ParsePaths(tt.values)
+			keys, star, rejected := PathKeys(tt.values)
 			if diff := cmp.Diff(tt.wantKeys, keys); diff != "" {
 				t.Errorf("keys mismatch (-want +got):\n%s", diff)
 			}
@@ -116,11 +119,11 @@ func TestAddAndDeleteTargetsKeyTheSameValues(t *testing.T) {
 		t.Errorf("rejections differ between add and delete (-add +delete):\n%s", diff)
 	}
 
-	wantDeny := []PathKey{key("/bin/sh"), key("/usr/bin/curl")}
+	wantDeny := [][maxPathLen]byte{key("/bin/sh"), key("/usr/bin/curl")}
 	if diff := cmp.Diff(wantDeny, addDeny); diff != "" {
 		t.Errorf("deny keys mismatch (-want +got):\n%s", diff)
 	}
-	wantAllow := []PathKey{key("/usr/bin/python3")}
+	wantAllow := [][maxPathLen]byte{key("/usr/bin/python3")}
 	if diff := cmp.Diff(wantAllow, addAllow); diff != "" {
 		t.Errorf("allow keys mismatch (-want +got):\n%s", diff)
 	}
@@ -133,12 +136,5 @@ func TestParsePairOnNilPair(t *testing.T) {
 	deny, allow, rejected := parsePair(nil)
 	if deny != nil || allow != nil || rejected != nil {
 		t.Errorf("parsePair(nil) = %v, %v, %v, want all nil", deny, allow, rejected)
-	}
-}
-
-func TestRejectedTargetNamesValueAndReason(t *testing.T) {
-	got := RejectedTarget{Value: "/bin/sh", Reason: ReasonPathTooLong}.String()
-	if !strings.Contains(got, "/bin/sh") || !strings.Contains(got, ReasonPathTooLong) {
-		t.Errorf("String() = %q, want it to name both the value and the reason", got)
 	}
 }

@@ -12,18 +12,18 @@ import (
 // 128-byte value would be programmed into a key no exec or open can produce.
 const MaxPathValueLen = 127
 
-// Sentinel errors returned by ParsePathValue. They are deliberately terse:
-// callers that surface them to operators (admission's field errors, the
-// enforcer's rejected-path conditions) map them into their own remedy-bearing
-// vocabulary.
+// Sentinel errors returned by ParsePathValue. Their text reaches operators
+// unchanged, through admission's field errors and through the rejected-path
+// policy conditions, so each one names the remedy and not just the fault.
 var (
 	// ErrEmptyPathValue reports a value that is empty after trimming.
-	ErrEmptyPathValue = errors.New("empty path")
-	// ErrNULInPathValue reports an interior NUL byte, which no kernel path can
-	// contain.
-	ErrNULInPathValue = errors.New("path contains a NUL byte")
+	ErrEmptyPathValue = errors.New("empty path value")
+	// ErrNULInPathValue reports an interior NUL byte. A path key is NUL-padded
+	// and read back with bpf_probe_read_kernel_str, so a value carrying its own
+	// NUL keys an entry no exec or open can ever produce.
+	ErrNULInPathValue = errors.New("path contains a NUL byte: kernel paths are NUL-terminated strings")
 	// ErrPathValueTooLong reports a value longer than MaxPathValueLen.
-	ErrPathValueTooLong = fmt.Errorf("path is longer than %d bytes", MaxPathValueLen)
+	ErrPathValueTooLong = fmt.Errorf("path is longer than %d bytes: the kernel path maps cannot hold it", MaxPathValueLen)
 	// ErrRelativePathValue reports a value that is not an absolute path. The
 	// kernel resolves every path it can match with bpf_d_path, which always
 	// yields one, so a relative value programs a key nothing can ever produce.
@@ -43,12 +43,11 @@ type PathValue struct {
 	Path string
 }
 
-// ParsePathValue parses one policy-authored exec or open path value. This is the
-// ONE definition of that grammar: admission validation (validatePathBehavior),
-// program-time key derivation (lsm.ParsePaths) and monitor-mode matching
-// (monitor.newPathMatcher) all consume it, so they cannot disagree about what a
-// value is. Exec and open share it because they are programmed into the same
-// kernel maps.
+// ParsePathValue parses one policy-authored exec or open path value. This is
+// the one definition of the exec and open value schema: admission validation,
+// program-time key derivation and monitor-mode matching all reach it through
+// ParsePathList, so they cannot disagree about what a value is. Exec and open
+// share it because they are programmed into the same kernel maps.
 //
 // The value is trimmed of surrounding whitespace — quotes and brackets are not
 // trimmed, unlike ParseNetworkValue, because they are legal path bytes. Then:
@@ -83,4 +82,31 @@ func ParsePathValue(raw string) (PathValue, error) {
 	default:
 		return PathValue{Path: cleaned}, nil
 	}
+}
+
+// ParsePathList splits one behavior's path values into the three groups every
+// consumer needs: the literal paths, whether the default-deny sentinel is
+// present, and the values that could not be parsed. Paths are de-duplicated,
+// preserving first-seen order.
+//
+// The kernel enforcer keys its maps off this, and monitor mode matches off it,
+// so neither can hold a path the other does not.
+func ParsePathList(values []string) (paths []string, star bool, rejected []RejectedTarget) {
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		v, err := ParsePathValue(raw)
+		switch {
+		case err != nil:
+			rejected = append(rejected, RejectedTarget{Value: raw, Reason: err.Error()})
+		case v.Star:
+			star = true
+		default:
+			if _, dup := seen[v.Path]; dup {
+				continue
+			}
+			seen[v.Path] = struct{}{}
+			paths = append(paths, v.Path)
+		}
+	}
+	return paths, star, rejected
 }

@@ -191,8 +191,8 @@ func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
 }
 
 // AddTargets programs a policy's paths into the banned and allowed maps and
-// returns every value ParsePaths could not key.
-func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+// returns every value PathKeys could not key.
+func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	deny, allow, rejected := parsePair(paths)
 
 	for _, key := range deny {
@@ -210,9 +210,9 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]RejectedTarge
 }
 
 // DeleteTargets removes what AddTargets programmed for the same pair. Both
-// derive their keys from ParsePaths, so a value one of them can key is a value
+// derive their keys from PathKeys, so a value one of them can key is a value
 // the other can key too.
-func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	deny, allow, rejected := parsePair(paths)
 
 	for _, key := range deny {
@@ -229,12 +229,12 @@ func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]RejectedTa
 	return rejected, nil
 }
 
-func parsePair(paths *compiler.AllowDenyPair) (deny, allow []PathKey, rejected []RejectedTarget) {
+func parsePair(paths *compiler.AllowDenyPair) (deny, allow [][maxPathLen]byte, rejected []compiler.RejectedTarget) {
 	if paths == nil {
 		return nil, nil, nil
 	}
-	deny, _, denyRejected := ParsePaths(paths.Deny)
-	allow, _, allowRejected := ParsePaths(paths.Allow)
+	deny, _, denyRejected := PathKeys(paths.Deny)
+	allow, _, allowRejected := PathKeys(paths.Allow)
 	return deny, allow, append(denyRejected, allowRejected...)
 }
 

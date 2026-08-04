@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -53,13 +54,13 @@ var observedCorpus = []string{
 func TestMonitorMatchesWhatTheKernelWouldMatch(t *testing.T) {
 	m := newPathMatcher(valueCorpus)
 
-	keys, star, rejected := lsm.ParsePaths(valueCorpus)
+	keys, star, rejected := lsm.PathKeys(valueCorpus)
 	if len(rejected) == 0 {
 		t.Fatal("the corpus no longer contains a value the kernel maps reject")
 	}
-	programmed := make(map[lsm.PathKey]struct{}, len(keys))
+	programmed := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
-		programmed[k] = struct{}{}
+		programmed[trimKey(k)] = struct{}{}
 	}
 
 	if m.star != star {
@@ -70,9 +71,7 @@ func TestMonitorMatchesWhatTheKernelWouldMatch(t *testing.T) {
 	}
 
 	for _, path := range observedCorpus {
-		key := lsm.PathKey{}
-		copy(key[:], path)
-		_, wantMatch := programmed[key]
+		_, wantMatch := programmed[path]
 		// the kernel never observes an empty path, and an all-NUL key is not a
 		// path the maps can hold
 		if path == "" {
@@ -92,10 +91,10 @@ func TestRejectedValuesLeaveTheRestEnforceable(t *testing.T) {
 	values := []string{"/bin/sh", strings.Repeat("/deep", 200), "/usr/bin/curl"}
 
 	m := newPathMatcher(values)
-	keys, _, rejected := lsm.ParsePaths(values)
+	keys, _, rejected := lsm.PathKeys(values)
 
 	if len(keys) != 2 || len(rejected) != 1 {
-		t.Fatalf("ParsePaths kept %d keys and rejected %d values, want 2 and 1", len(keys), len(rejected))
+		t.Fatalf("PathKeys kept %d keys and rejected %d values, want 2 and 1", len(keys), len(rejected))
 	}
 	for _, path := range []string{"/bin/sh", "/usr/bin/curl"} {
 		if !m.matches(path) {
@@ -105,4 +104,13 @@ func TestRejectedValuesLeaveTheRestEnforceable(t *testing.T) {
 	if m.matches(strings.Repeat("/deep", 200)) {
 		t.Error("the matcher matched a value the kernel maps cannot hold")
 	}
+}
+
+// trimKey is the inverse of the NUL padding lsm.PathKeys applies; a path holds
+// no NUL byte, so the first one always ends the string.
+func trimKey(k [compiler.MaxPathValueLen + 1]byte) string {
+	if i := bytes.IndexByte(k[:], 0); i >= 0 {
+		return string(k[:i])
+	}
+	return string(k[:])
 }

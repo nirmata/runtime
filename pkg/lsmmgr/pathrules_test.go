@@ -140,7 +140,7 @@ func TestPathRulesConditionClearsWhenValuesBecomeEnforceable(t *testing.T) {
 
 // a value that trims to "*" without being it must not flip the policy to
 // default deny; it is surfaced on the policy status like any other value the
-// grammar refuses, so the author corrects it instead of guessing.
+// schema refuses, so the author corrects it instead of guessing.
 func TestPaddedStarIsRejectedNotDefaultDeny(t *testing.T) {
 	h := newHarness(t)
 	rp := result("rp1", compiler.ModeEnforce, labels.Everything(), nil, pair([]string{"/bin/ls"}, []string{" * \n"}))

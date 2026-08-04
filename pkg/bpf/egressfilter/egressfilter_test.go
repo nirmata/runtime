@@ -85,7 +85,7 @@ func TestAddIps_ReturnsRejectedTargetsAsTypedValues(t *testing.T) {
 	tests := []struct {
 		name         string
 		pair         *compiler.AllowDenyPair
-		wantRejected []RejectedTarget
+		wantRejected []compiler.RejectedTarget
 	}{
 		{
 			name: "nil pair",
@@ -100,7 +100,7 @@ func TestAddIps_ReturnsRejectedTargetsAsTypedValues(t *testing.T) {
 				Allow: []string{"10.0.0.1", "allow.example.com"},
 				Deny:  []string{"2001:db8::1", "10.0.0.0/8"},
 			},
-			wantRejected: []RejectedTarget{
+			wantRejected: []compiler.RejectedTarget{
 				{Value: "allow.example.com", Reason: ReasonNotAnIP},
 				{Value: "2001:db8::1", Reason: ReasonIPv6},
 				{Value: "10.0.0.0/8", Reason: ReasonCIDRTooWide},

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
 // addrStrings renders addresses for comparison: netip.Addr has unexported
@@ -26,7 +27,7 @@ func TestParseTargets(t *testing.T) {
 		values       []string
 		wantAddrs    []string
 		wantStar     bool
-		wantRejected []RejectedTarget
+		wantRejected []compiler.RejectedTarget
 	}{
 		{
 			name: "nil input",
@@ -69,32 +70,32 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "slash 23 CIDR is rejected as too wide",
 			values:       []string{"10.0.0.0/23"},
-			wantRejected: []RejectedTarget{{Value: "10.0.0.0/23", Reason: ReasonCIDRTooWide}},
+			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.0/23", Reason: ReasonCIDRTooWide}},
 		},
 		{
 			name:         "slash 8 CIDR is rejected as too wide",
 			values:       []string{"10.0.0.0/8"},
-			wantRejected: []RejectedTarget{{Value: "10.0.0.0/8", Reason: ReasonCIDRTooWide}},
+			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.0/8", Reason: ReasonCIDRTooWide}},
 		},
 		{
 			name:         "slash 0 CIDR is rejected as too wide, not treated as default deny",
 			values:       []string{"0.0.0.0/0"},
-			wantRejected: []RejectedTarget{{Value: "0.0.0.0/0", Reason: ReasonCIDRTooWide}},
+			wantRejected: []compiler.RejectedTarget{{Value: "0.0.0.0/0", Reason: ReasonCIDRTooWide}},
 		},
 		{
 			name:         "IPv6 literal is rejected",
 			values:       []string{"2001:db8::1"},
-			wantRejected: []RejectedTarget{{Value: "2001:db8::1", Reason: ReasonIPv6}},
+			wantRejected: []compiler.RejectedTarget{{Value: "2001:db8::1", Reason: ReasonIPv6}},
 		},
 		{
 			name:         "IPv6 CIDR is rejected",
 			values:       []string{"2001:db8::/126"},
-			wantRejected: []RejectedTarget{{Value: "2001:db8::/126", Reason: ReasonIPv6}},
+			wantRejected: []compiler.RejectedTarget{{Value: "2001:db8::/126", Reason: ReasonIPv6}},
 		},
 		{
 			name:         "IPv6 loopback is rejected",
 			values:       []string{"::1"},
-			wantRejected: []RejectedTarget{{Value: "::1", Reason: ReasonIPv6}},
+			wantRejected: []compiler.RejectedTarget{{Value: "::1", Reason: ReasonIPv6}},
 		},
 		{
 			name:      "IPv4-mapped IPv6 literal is unmapped and accepted",
@@ -109,32 +110,32 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "hostname is rejected",
 			values:       []string{"api.example.com"},
-			wantRejected: []RejectedTarget{{Value: "api.example.com", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "api.example.com", Reason: ReasonNotAnIP}},
 		},
 		{
 			name:         "hostname with a path-like slash is rejected",
 			values:       []string{"api.example.com/v1"},
-			wantRejected: []RejectedTarget{{Value: "api.example.com/v1", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "api.example.com/v1", Reason: ReasonNotAnIP}},
 		},
 		{
 			name:         "truncated IPv4 is rejected",
 			values:       []string{"10.0.0."},
-			wantRejected: []RejectedTarget{{Value: "10.0.0.", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.", Reason: ReasonNotAnIP}},
 		},
 		{
 			name:         "out of range prefix length is rejected",
 			values:       []string{"10.0.0.1/33"},
-			wantRejected: []RejectedTarget{{Value: "10.0.0.1/33", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.1/33", Reason: ReasonNotAnIP}},
 		},
 		{
 			name:         "empty value is rejected, not ignored",
 			values:       []string{""},
-			wantRejected: []RejectedTarget{{Value: "", Reason: ReasonEmpty}},
+			wantRejected: []compiler.RejectedTarget{{Value: "", Reason: ReasonEmpty}},
 		},
 		{
 			name:         "whitespace-only value is rejected as empty",
 			values:       []string{"  \t"},
-			wantRejected: []RejectedTarget{{Value: "  \t", Reason: ReasonEmpty}},
+			wantRejected: []compiler.RejectedTarget{{Value: "  \t", Reason: ReasonEmpty}},
 		},
 		{
 			name:      "surrounding whitespace is trimmed",
@@ -169,7 +170,7 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "IPv4-mapped IPv6 CIDR wider than the mapped range stays IPv6",
 			values:       []string{"::ffff:10.0.0.0/64"},
-			wantRejected: []RejectedTarget{{Value: "::ffff:10.0.0.0/64", Reason: ReasonIPv6}},
+			wantRejected: []compiler.RejectedTarget{{Value: "::ffff:10.0.0.0/64", Reason: ReasonIPv6}},
 		},
 		{
 			name:     "star is the default deny sentinel and yields no address",
@@ -193,7 +194,7 @@ func TestParseTargets(t *testing.T) {
 			values:    []string{"10.0.0.1", "2001:db8::1", "10.0.0.0/8", "api.example.com", "10.0.0.2/32", "*"},
 			wantAddrs: []string{"10.0.0.1", "10.0.0.2"},
 			wantStar:  true,
-			wantRejected: []RejectedTarget{
+			wantRejected: []compiler.RejectedTarget{
 				{Value: "2001:db8::1", Reason: ReasonIPv6},
 				{Value: "10.0.0.0/8", Reason: ReasonCIDRTooWide},
 				{Value: "api.example.com", Reason: ReasonNotAnIP},
@@ -262,7 +263,7 @@ func TestParseTargets_ExpandsTopOfAddressSpaceWithoutWrapping(t *testing.T) {
 }
 
 func TestRejectedTarget_StringNamesValueAndReason(t *testing.T) {
-	got := RejectedTarget{Value: "2001:db8::1", Reason: ReasonIPv6}.String()
+	got := compiler.RejectedTarget{Value: "2001:db8::1", Reason: ReasonIPv6}.String()
 	want := `"2001:db8::1": ` + ReasonIPv6
 	if got != want {
 		t.Errorf("String() = %q, want %q", got, want)

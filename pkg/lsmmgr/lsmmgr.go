@@ -180,8 +180,8 @@ func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *comp
 		return
 	}
 
-	_, _, rejected := lsm.ParsePaths(pair.Deny)
-	_, _, allowRejected := lsm.ParsePaths(pair.Allow)
+	_, _, rejected := lsm.PathKeys(pair.Deny)
+	_, _, allowRejected := lsm.PathKeys(pair.Allow)
 	rejected = append(rejected, allowRejected...)
 	if len(rejected) == 0 {
 		l.recordCondition(rpUID, metav1.Condition{
@@ -209,14 +209,14 @@ func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *comp
 // logRejected reports what one enforcer refused to key. recordPathRulesCondition
 // already carries the same values onto the policy status, so this stays at V(2)
 // and only adds the program type.
-func (l *LsmManager) logRejected(rpUID, progType string, rejected []lsm.RejectedTarget) {
+func (l *LsmManager) logRejected(rpUID, progType string, rejected []compiler.RejectedTarget) {
 	for _, r := range rejected {
 		l.logger.V(2).Info("path was not programmed", "uid", rpUID, "progType", progType,
 			"path", r.Value, "reason", r.Reason)
 	}
 }
 
-func rejectionMessage(rejected []lsm.RejectedTarget) string {
+func rejectionMessage(rejected []compiler.RejectedTarget) string {
 	parts := make([]string, 0, len(rejected))
 	for i, r := range rejected {
 		if i == maxReportedRejectedPaths {

@@ -295,13 +295,13 @@ func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 }
 
 // denyHasStar reports whether a deny list carries the default-deny sentinel. It
-// reads the answer off lsm.ParsePaths so the sentinel is recognized by the same
-// grammar that decides which values become keys.
+// reads the answer off lsm.PathKeys so the sentinel is recognized by the same
+// schema that decides which values become keys.
 func denyHasStar(pair *compiler.AllowDenyPair) bool {
 	if pair == nil {
 		return false
 	}
-	_, star, _ := lsm.ParsePaths(pair.Deny)
+	_, star, _ := lsm.PathKeys(pair.Deny)
 	return star
 }
 

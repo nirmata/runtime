@@ -65,7 +65,7 @@ func New(l *logr.Logger) (*EgressFilter, error) {
 // AddIps programs the allow and deny targets of pair into the BPF maps.
 // Targets ParseTargets cannot represent are returned as typed rejections and
 // logged; err covers only map-write failures. Both may be non-empty at once.
-func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	if pair == nil {
 		return nil, nil
 	}
@@ -83,7 +83,7 @@ func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, e
 // DeleteIps removes the allow and deny targets of pair from the BPF maps.
 // Rejections are reported for symmetry with AddIps: a target that was never
 // programmed cannot be removed either.
-func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	if pair == nil {
 		return nil, nil
 	}
@@ -98,15 +98,15 @@ func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]RejectedTarget
 }
 
 // parsePair resolves both target lists of pair through the single target
-// grammar. rejected is nil when nothing was rejected.
-func parsePair(pair *compiler.AllowDenyPair) (allow, deny []netip.Addr, rejected []RejectedTarget) {
+// schema. rejected is nil when nothing was rejected.
+func parsePair(pair *compiler.AllowDenyPair) (allow, deny []netip.Addr, rejected []compiler.RejectedTarget) {
 	allow, _, allowRejected := ParseTargets(pair.Allow)
 	deny, _, denyRejected := ParseTargets(pair.Deny)
 	if len(allowRejected)+len(denyRejected) == 0 {
 		return allow, deny, nil
 	}
 
-	rejected = make([]RejectedTarget, 0, len(allowRejected)+len(denyRejected))
+	rejected = make([]compiler.RejectedTarget, 0, len(allowRejected)+len(denyRejected))
 	rejected = append(rejected, allowRejected...)
 	rejected = append(rejected, denyRejected...)
 	return allow, deny, rejected
@@ -161,7 +161,7 @@ func deleteAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
 	return errors.Join(errs...)
 }
 
-func (e *EgressFilter) logRejected(rejected []RejectedTarget) {
+func (e *EgressFilter) logRejected(rejected []compiler.RejectedTarget) {
 	if e.logger == nil {
 		return
 	}

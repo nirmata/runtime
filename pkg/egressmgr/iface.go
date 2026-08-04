@@ -10,8 +10,8 @@ import (
 // the subset of *egressfilter.EgressFilter the manager uses, so its bookkeeping
 // can be exercised without loading or attaching bpf programs.
 type egressFilter interface {
-	AddIps(pair *compiler.AllowDenyPair) ([]egressfilter.RejectedTarget, error)
-	DeleteIps(pair *compiler.AllowDenyPair) ([]egressfilter.RejectedTarget, error)
+	AddIps(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error)
+	DeleteIps(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error)
 	SetFlagIdx(idx uint8, val bool)
 	Attach(cgPath string) (link.Link, error)
 	ReadIPEvents() (map[egressfilter.IPEventKey]uint32, error)
