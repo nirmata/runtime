@@ -241,8 +241,8 @@ kind-install-manifests:
 # installed, LSM tests included. Those need a host booted with lsm=...,bpf and
 # fail loudly on one that is not -- which is the point, and is why no CI job
 # calls this target: hosted runners do not qualify and run the narrower
-# test-e2e-gate / test-e2e-egress instead. Docker Desktop's LinuxKit VM does
-# qualify, so this is the target to run on a developer machine.
+# test-e2e-gate / test-e2e-egress / test-e2e-protocol instead. Docker Desktop's
+# LinuxKit VM does qualify, so this is the target to run on a developer machine.
 test-e2e:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
 

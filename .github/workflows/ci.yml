@@ -252,7 +252,7 @@ jobs:
 
   # ------------------------------------------------- ASSERTION (kernel-bound)
   e2e-egress:
-    name: "Assert: egress allow/deny enforcement on kind (Linux)"
+    name: "Assert: egress and protocol allow/deny enforcement on kind (Linux)"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [unit]
@@ -330,6 +330,12 @@ jobs:
       # one-sided test would also pass a program that drops everything.
       - name: Egress enforcement behavior
         run: make test-e2e-egress
+
+      # Same kernel requirements as the egress assertion, and the same two-sided
+      # shape: the allowed protocol must stay reachable while the denied one is
+      # dropped on the same port.
+      - name: Protocol enforcement behavior
+        run: make test-e2e-protocol
 
       - name: Dump cluster state on failure
         if: failure()
