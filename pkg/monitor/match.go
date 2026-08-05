@@ -83,19 +83,16 @@ type pathMatcher struct {
 }
 
 func newPathMatcher(values []string) pathMatcher {
-	m := pathMatcher{}
-	for _, v := range values {
-		if v == compiler.StarTarget {
-			m.star = true
-			continue
-		}
-		if v == "" {
-			continue
-		}
-		if m.paths == nil {
-			m.paths = make(map[string]struct{}, len(values))
-		}
-		m.paths[v] = struct{}{}
+	// rejected values are dropped: lsm.PathKeys derives its keys from the same
+	// call, so matching one here would report a finding enforcement never acts on
+	paths, star, _ := compiler.ParsePathList(values)
+	m := pathMatcher{star: star}
+	if len(paths) == 0 {
+		return m
+	}
+	m.paths = make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		m.paths[p] = struct{}{}
 	}
 	return m
 }

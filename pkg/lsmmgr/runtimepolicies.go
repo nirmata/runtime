@@ -1,8 +1,7 @@
 package lsmmgr
 
 import (
-	"slices"
-
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 
@@ -14,13 +13,16 @@ import (
 type progSpec struct {
 	progType string
 	files    *compiler.AllowDenyPair
+	// condition is the status condition type reporting whether this behavior's
+	// values can be programmed.
+	condition string
 }
 
 func progSpecs(compiledRp *compiler.EvaluationResult) []progSpec {
 	return []progSpec{
-		{progType: lsm.PROG_TYPE_LSM_OPEN, files: compiledRp.Open},
+		{progType: lsm.PROG_TYPE_LSM_OPEN, files: compiledRp.Open, condition: v1alpha1.ConditionOpenRulesValid},
 		// exec behaviors are enforced through bprm_check_security
-		{progType: lsm.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec},
+		{progType: lsm.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec, condition: v1alpha1.ConditionExecRulesValid},
 	}
 }
 
@@ -34,10 +36,11 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 
 	progMap := make(map[string]*progState)
 	for _, spec := range progSpecs(compiledRp) {
+		l.recordPathRulesCondition(compiledRp.UID, spec.condition, spec.files)
 		if !spec.files.HasEntries() {
 			continue
 		}
-		enf, err := l.createForProgType(spec.files, spec.progType, observe)
+		enf, err := l.createForProgType(compiledRp.UID, spec.files, spec.progType, observe)
 		if err != nil {
 			// nothing else references the enforcers built so far
 			l.closeProgs(compiledRp.UID, progMap)
@@ -108,6 +111,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 
 	la.selector = compiledRp.Selector
 	for _, spec := range progSpecs(compiledRp) {
+		l.recordPathRulesCondition(compiledRp.UID, spec.condition, spec.files)
 		if err := l.syncProgType(compiledRp.UID, la, spec.files, spec.progType); err != nil {
 			return err
 		}
@@ -159,7 +163,7 @@ func (l *LsmManager) closeProgs(rpUID string, progs map[string]*progState) {
 // the banned and allowed maps are left empty and default-deny is unset, so the
 // program cannot return -EPERM: matching happens in userspace over the counts
 // CollectObservations reads back.
-func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType string, observe bool) (lsmEnforcer, error) {
+func (l *LsmManager) createForProgType(rpUID string, pair *compiler.AllowDenyPair, progType string, observe bool) (lsmEnforcer, error) {
 	cleanup := false
 	enf, err := l.newEnforcer(&l.logger, progType)
 	if err != nil {
@@ -176,13 +180,13 @@ func (l *LsmManager) createForProgType(pair *compiler.AllowDenyPair, progType st
 	cleanup = true
 
 	if !observe {
-		err = enf.AddTargets(pair)
+		rejected, err := enf.AddTargets(pair)
+		l.logRejected(rpUID, progType, rejected)
 		if err != nil {
 			return nil, err
 		}
 
-		defaultDeny := slices.Contains(pair.Deny, compiler.StarTarget)
-		if err := enf.SetDefaultDeny(defaultDeny); err != nil {
+		if err := enf.SetDefaultDeny(denyHasStar(pair)); err != nil {
 			return nil, err
 		}
 	}
@@ -203,7 +207,7 @@ func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *com
 			return nil
 		}
 
-		enforcer, err := l.createForProgType(newFiles, progType, la.observe)
+		enforcer, err := l.createForProgType(rpUID, newFiles, progType, la.observe)
 		if err != nil {
 			return err
 		}
@@ -246,17 +250,20 @@ func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *com
 
 	if hasFileChanges {
 		if toAddPair.HasEntries() {
-			if err := prog.enf.AddTargets(toAddPair); err != nil {
+			rejected, err := prog.enf.AddTargets(toAddPair)
+			l.logRejected(rpUID, progType, rejected)
+			if err != nil {
 				return err
 			}
 		}
 		if toRemovePair.HasEntries() {
-			if err := prog.enf.DeleteTargets(toRemovePair); err != nil {
+			rejected, err := prog.enf.DeleteTargets(toRemovePair)
+			l.logRejected(rpUID, progType, rejected)
+			if err != nil {
 				return err
 			}
 		}
-		defaultDeny := slices.Contains(newFiles.Deny, compiler.StarTarget)
-		if err := prog.enf.SetDefaultDeny(defaultDeny); err != nil {
+		if err := prog.enf.SetDefaultDeny(denyHasStar(newFiles)); err != nil {
 			return err
 		}
 	}
@@ -293,6 +300,17 @@ func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 			}
 		}
 	}
+}
+
+// denyHasStar reports whether a deny list carries the default-deny sentinel. It
+// reads the answer off lsm.PathKeys so the sentinel is recognized by the same
+// schema that decides which values become keys.
+func denyHasStar(pair *compiler.AllowDenyPair) bool {
+	if pair == nil {
+		return false
+	}
+	_, star, _ := lsm.PathKeys(pair.Deny)
+	return star
 }
 
 func attach(policyUid string, la *lsmAttachment, podUid string, pod *podRepresentation) {
