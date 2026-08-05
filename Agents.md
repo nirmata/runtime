@@ -73,7 +73,14 @@ Follow these rules when generating and updating code:
   belongs at the fan-out boundaries only (collector stages/sinks, informer handler fan-out). See the
   panic rule in [CLAUDE.md](CLAUDE.md).
 - anything a user authored that cannot be honored must reach a `V(0)` log **and** a status
-  condition. "Silently skipped" is the forbidden failure mode.
+  condition. "Silently skipped" is the forbidden failure mode. Do not write the level into the
+  comment above it — see the comment rule in [CLAUDE.md](CLAUDE.md).
+- a user-facing value has exactly one parser and one home for its rejection reasons, and the
+  chokepoint covers the whole list (dedupe and reject handling included), not just one value. Call
+  it a schema, never a "grammar". See "One schema, one home" in [CLAUDE.md](CLAUDE.md).
+- do not declare the same struct in two packages, alias a fixed-size array into a name that hides
+  its width, or wrap a one-line call in helper layers. See "Names and shapes" in
+  [CLAUDE.md](CLAUDE.md).
 - never regenerate or edit `*_bpfel.go`, `*_bpfeb.go`, or `.o` files unless you have the full BPF
   toolchain; new `_cprog/*.c` with a commented `go:generate` line is fine.
 

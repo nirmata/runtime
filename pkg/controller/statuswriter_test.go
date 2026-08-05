@@ -200,9 +200,9 @@ func TestStatusWriterMergesConditions(t *testing.T) {
 	if _, ok := byType["SomeOtherControllerSaysSo"]; !ok {
 		t.Error("the pre-existing condition was dropped instead of merged")
 	}
-	applied := byType[ConditionApplied]
-	if applied.Status != metav1.ConditionTrue || applied.Reason != ReasonMonitoring {
-		t.Errorf("Applied condition = (%s, %s), want (True, %s)", applied.Status, applied.Reason, ReasonMonitoring)
+	applied := byType[v1alpha1.ConditionApplied]
+	if applied.Status != metav1.ConditionTrue || applied.Reason != v1alpha1.ReasonMonitoring {
+		t.Errorf("Applied condition = (%s, %s), want (True, %s)", applied.Status, applied.Reason, v1alpha1.ReasonMonitoring)
 	}
 	tv := byType["TargetsValid"]
 	if tv.Status != metav1.ConditionFalse || tv.Reason != "UnsupportedTargets" {
@@ -218,10 +218,10 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 		mode string
 		want string
 	}{
-		{mode: compiler.ModeEnforce, want: ReasonEnforcing},
-		{mode: compiler.ModeMonitor, want: ReasonMonitoring},
-		{mode: "", want: ReasonEnforcing},
-		{mode: "something-new", want: ReasonEnforcing},
+		{mode: compiler.ModeEnforce, want: v1alpha1.ReasonEnforcing},
+		{mode: compiler.ModeMonitor, want: v1alpha1.ReasonMonitoring},
+		{mode: "", want: v1alpha1.ReasonEnforcing},
+		{mode: "something-new", want: v1alpha1.ReasonEnforcing},
 	}
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
@@ -235,7 +235,7 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 			got := getPolicy(t, client, "p")
 			var reason string
 			for _, c := range got.Status.Conditions {
-				if c.Type == ConditionApplied {
+				if c.Type == v1alpha1.ConditionApplied {
 					reason = c.Reason
 				}
 			}
@@ -353,7 +353,7 @@ func TestStatusWriterRecordersToleratePolicyEventOrdering(t *testing.T) {
 	for _, c := range got.Status.Conditions {
 		types = append(types, c.Type)
 	}
-	if diff := cmp.Diff([]string{ConditionApplied, "TargetsValid"}, types, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+	if diff := cmp.Diff([]string{v1alpha1.ConditionApplied, "TargetsValid"}, types, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("condition types mismatch (-want +got):\n%s", diff)
 	}
 }

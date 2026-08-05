@@ -78,7 +78,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 			// hardcoded network targets are validated at compile time so an
 			// unsupported literal is rejected loudly instead of being dropped
 			// silently when it reaches the BPF maps.
-			if errs := validateNetworkBehavior(errPath, b.Network); len(errs) != 0 {
+			if errs := validateBehavior(errPath, b.Network, networkValueErr); len(errs) != 0 {
 				return nil, errs.ToAggregate()
 			}
 			compiledNet, err := c.compileBehavior(b.Network)
@@ -89,18 +89,24 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 			compiledNets = append(compiledNets, compiledNet)
 		}
 		if b.Exec != nil {
+			errPath := path.Index(i).Child("exec")
+			if errs := validateBehavior(errPath, b.Exec, pathValueErr); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
 			compiledExec, err := c.compileBehavior(b.Exec)
 			if err != nil {
-				errPath := path.Index(i).Child("exec")
 				return nil, field.Invalid(errPath, b.Exec, err.Error())
 			}
 
 			compiledExecs = append(compiledExecs, compiledExec)
 		}
 		if b.Open != nil {
+			errPath := path.Index(i).Child("open")
+			if errs := validateBehavior(errPath, b.Open, pathValueErr); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
 			compiledOpen, err := c.compileBehavior(b.Open)
 			if err != nil {
-				errPath := path.Index(i).Child("open")
 				return nil, field.Invalid(errPath, b.Open, err.Error())
 			}
 

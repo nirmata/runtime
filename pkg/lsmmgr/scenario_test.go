@@ -108,8 +108,8 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 	if got := progTypes(h.l.lsmAttachments["rp1"]); !slices.Equal(got, []string{open}) {
 		t.Fatalf("rp1 prog types = %v, want [%s]", got, open)
 	}
-	if got := openEnf.denySet(); !slices.Equal(got, []string{"*", "/etc/passwd"}) {
-		t.Fatalf("open deny set = %v, want [* /etc/passwd]", got)
+	if got := openEnf.denySet(); !slices.Equal(got, []string{"/etc/passwd"}) {
+		t.Fatalf("open deny set = %v, want [/etc/passwd]", got)
 	}
 	if !openEnf.denyAll {
 		t.Fatal("open default deny = false, want true")
