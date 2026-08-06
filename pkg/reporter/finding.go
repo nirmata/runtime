@@ -54,6 +54,7 @@ type NetSummary struct {
 // ProcessSummary summarizes the process of an exec/open finding.
 type ProcessSummary struct {
 	Comm string
+	Argv string
 }
 
 // Severity values accepted by OpenReports.

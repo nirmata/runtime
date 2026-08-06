@@ -80,6 +80,12 @@ type NetFacts struct {
 // ExecFacts describes a process execution.
 type ExecFacts struct {
 	Filename string `json:"filename"`
+
+	// Argv is empty for sources that observe the exec without its arguments.
+	// It is attacker-controlled text and can carry credentials passed as
+	// flags, so it must not reach a Report without going through the
+	// reporter's redaction.
+	Argv []string `json:"argv,omitempty"`
 }
 
 // OpenFacts describes a file open.

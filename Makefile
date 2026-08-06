@@ -272,7 +272,7 @@ test-bpf-verify:
 # Map round trips and LSM attach against a live kernel: what the verifier lane
 # deliberately does not do. Needs Linux + root; skips elsewhere.
 test-bpf-smoke:
-	go test -count=1 -v ./test/e2e/ -run 'TestBPFEgress|TestBPFLsm'
+	go test -count=1 -v ./test/e2e/ -run 'TestBPFEgress|TestBPFLsm|TestBPFExecTrace'
 
 smoke-quickstart: test-e2e-gate
 
