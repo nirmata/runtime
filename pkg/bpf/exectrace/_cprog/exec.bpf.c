@@ -5,30 +5,9 @@
 #include <bpf/bpf_helpers.h>
 #include "maps.h"
 
-// Observation-only process execution tracer. pkg/bpf/lsm's bprm_check_security
-// program is the enforcing half; this one reports argv, which is what
-// identifies a stdio MCP server (`npx @modelcontextprotocol/...`, `uvx ...`)
-// and which the LSM hook does not carry.
-//
-// sched_process_exec is taken as a raw tracepoint rather than through its
-// ftrace format, because the raw form passes `struct linux_binprm *` as its
-// third argument and the fixed format does not. bprm->argc is the only
-// trustworthy bound on the argv walk below: mm->arg_end brackets argv and envp
-// together on some kernels, so a loop that stops at arg_end runs off the end of
-// argv and reports environment strings as arguments.
-
-static __always_inline void bump(__u32 stat)
-{
-    __u64 *v = bpf_map_lookup_elem(&stats, &stat);
-    if (v) {
-        *v += 1; // per-CPU value, so no atomic
-    }
-}
-
-// Ring buffer memory is recycled and arrives holding the previous record on
-// this CPU. Every byte reaches userspace, so a partly-filled record leaks one
-// pod's argv into another's event. clang rejects a __builtin_memset this large
-// and folds a plain store loop back into one, so the stores are volatile.
+// Recycled ring buffer memory still holds the previous record, which would
+// leak one pod's argv into another's event. Volatile stores: clang rejects a
+// __builtin_memset this large and folds a plain store loop back into one.
 static __always_inline void zero_event(struct exec_event *e)
 {
     volatile __u64 *w = (volatile __u64 *)e;
@@ -46,13 +25,19 @@ int trace_exec(struct bpf_raw_tracepoint_args *ctx)
         return 0;
     }
 
+    // raw tracepoint args are (task, old_pid, bprm); old_pid is the pid the
+    // task had before the exec, which nothing here needs.
     struct task_struct *task = (struct task_struct *)ctx->args[0];
     struct linux_binprm *bprm = (struct linux_binprm *)ctx->args[2];
 
-    // Too large for the 512 byte BPF stack, so reserve first and fill in place.
+    // too large for the 512 byte BPF stack, so reserve first and fill in place
     struct exec_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
-        bump(STAT_RINGBUF_FULL);
+        __u32 stat = STAT_RINGBUF_FULL;
+        __u64 *v = bpf_map_lookup_elem(&stats, &stat);
+        if (v) {
+            *v += 1; // per-CPU value, so no atomic
+        }
         return 0; // never block the exec
     }
     zero_event(e);
@@ -70,15 +55,17 @@ int trace_exec(struct bpf_raw_tracepoint_args *ctx)
     }
     if (argc > MAX_ARGS) {
         argc = MAX_ARGS;
-        bump(STAT_ARGV_OVERFLOW);
+        __u32 stat = STAT_ARGV_OVERFLOW;
+        __u64 *v = bpf_map_lookup_elem(&stats, &stat);
+        if (v) {
+            *v += 1;
+        }
     }
 
-    // argv is a run of NUL-terminated strings starting at mm->arg_start.
+    // argv is a run of NUL-terminated strings starting at mm->arg_start
     unsigned long p = BPF_CORE_READ(task, mm, arg_start);
 
-    // Left rolled: the argc bound is dynamic, so clang cannot unroll it, and
-    // the verifier proves the argv[i] store in bounds from the MAX_ARGS trip
-    // count without help.
+    // left unrolled: the argc bound is dynamic
     __u16 count = 0;
     for (int i = 0; i < MAX_ARGS; i++) {
         if (i >= argc) {
@@ -87,10 +74,6 @@ int trace_exec(struct bpf_raw_tracepoint_args *ctx)
         if (p == 0) {
             break;
         }
-        // An argument longer than MAX_ARG_LEN is truncated by the helper, which
-        // then returns MAX_ARG_LEN and leaves p short of the next argument; the
-        // following slot holds the tail of the same argument. Reported split
-        // rather than dropped.
         long n = bpf_probe_read_user_str(&e->argv[i][0], MAX_ARG_LEN, (void *)p);
         if (n <= 0) {
             break;
@@ -99,7 +82,11 @@ int trace_exec(struct bpf_raw_tracepoint_args *ctx)
         p += (unsigned long)n;
     }
     if (count < argc) {
-        bump(STAT_ARGV_UNREADABLE);
+        __u32 stat = STAT_ARGV_UNREADABLE;
+        __u64 *v = bpf_map_lookup_elem(&stats, &stat);
+        if (v) {
+            *v += 1;
+        }
     }
     e->argv_len = count;
 

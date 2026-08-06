@@ -20,13 +20,10 @@ type execRecord struct {
 	comm     []byte
 	filename []byte
 	argv     [][]byte
-	// argvLen overrides the slot count written to the record; when nil the
-	// number of argv entries is used.
-	argvLen *uint16
+	// argvLen, when nonzero, overrides the slot count written to the record.
+	argvLen uint16
 	pad     int
 }
-
-func u16(v uint16) *uint16 { return &v }
 
 func (r execRecord) bytes() []byte {
 	b := make([]byte, 1310+r.pad)
@@ -34,8 +31,8 @@ func (r execRecord) bytes() []byte {
 	binary.LittleEndian.PutUint32(b[8:12], r.pid)
 	copy(b[12:28], r.comm)
 	n := uint16(len(r.argv))
-	if r.argvLen != nil {
-		n = *r.argvLen
+	if r.argvLen != 0 {
+		n = r.argvLen
 	}
 	binary.LittleEndian.PutUint16(b[28:30], n)
 	copy(b[30:286], r.filename)
@@ -142,7 +139,7 @@ func TestDecodeExecEvent(t *testing.T) {
 				comm:     []byte("uvx"),
 				filename: []byte("/usr/bin/uvx"),
 				argv:     args("uvx", "mcp-server-git", "LEFTOVER", "GARBAGE"),
-				argvLen:  u16(2),
+				argvLen:  2,
 			},
 			want: runtimeevent.Event{
 				Kind:     runtimeevent.KindExec,
@@ -262,12 +259,12 @@ func TestDecodeExecEvent_Errors(t *testing.T) {
 		{name: "seven of eight argv slots", in: full[:offArgv+7*MaxArgLen], wantErr: ErrTruncated},
 		{
 			name:    "argv count one past the maximum",
-			in:      execRecord{argvLen: u16(MaxArgs + 1), argv: args("a")}.bytes(),
+			in:      execRecord{argvLen: MaxArgs + 1, argv: args("a")}.bytes(),
 			wantErr: ErrBadArgvLen,
 		},
 		{
 			name:    "argv count absurd",
-			in:      execRecord{argvLen: u16(0xffff), argv: args("a")}.bytes(),
+			in:      execRecord{argvLen: 0xffff, argv: args("a")}.bytes(),
 			wantErr: ErrBadArgvLen,
 		},
 	}
@@ -337,9 +334,11 @@ func TestDecodeExecEvent_NeverPanics(t *testing.T) {
 		counts = append(counts, n)
 	}
 	counts = append(counts, 1024, 0xffff)
+	base := execRecord{argv: args("a", "b")}.bytes()
 	for _, n := range counts {
-		rec := execRecord{argvLen: u16(uint16(n)), argv: args("a", "b")}
-		got, err := DecodeExecEvent(rec.bytes())
+		b := append([]byte(nil), base...)
+		binary.LittleEndian.PutUint16(b[offArgvLen:offArgvLen+2], uint16(n))
+		got, err := DecodeExecEvent(b)
 		switch {
 		case n <= MaxArgs:
 			if err != nil {

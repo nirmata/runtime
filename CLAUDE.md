@@ -62,6 +62,9 @@ has to be kept true.
   `.Info()` call; another documented an observation limit a later commit in the
   same PR had removed. Change behavior, then grep for comments describing the
   old behavior.
+- **BPF C files stay near-bare.** Document a kernel program's design in the Go
+  layer that loads it, or in the project docs — not in the `.bpf.c`. A C
+  comment is for the single line a reader would otherwise misread.
 
 The failure mode is not "too many comments" on its own — it is spending the
 reader's attention in the wrong place. The same review that cut thirty blocky

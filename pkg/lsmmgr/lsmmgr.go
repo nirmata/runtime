@@ -155,17 +155,9 @@ func (l *LsmManager) removePodCgids(rpUID, progType string, prog *progState, cgi
 	l.mirrorCgids(rpUID, progType, cgids, false)
 }
 
-// mirrorCgids forwards the exec program's cgroup set to the observation-only
-// sources that gate on the same pods.
-//
-// Only the exec attach target is mirrored. A pod can be attached for
-// file_open and for bprm_check_security independently, and the sinks hold one
-// unqualified set: mirroring both targets would let a file_open detach remove
-// a cgroup the exec target still wants.
-//
-// The same unqualified set means a detach must also survive other policies:
-// two exec policies can select one pod, so a removal only reaches the sinks for
-// the cgroups no other exec attachment still holds.
+// mirrorCgids forwards the exec target's cgroup set to the cgroup sinks. The
+// sinks hold one unqualified set, so only the exec target is mirrored, and a
+// removal reaches them only for cgroups no other exec attachment still holds.
 func (l *LsmManager) mirrorCgids(rpUID, progType string, cgids []uint64, add bool) {
 	if progType != lsm.PROG_TYPE_LSM_EXEC {
 		return

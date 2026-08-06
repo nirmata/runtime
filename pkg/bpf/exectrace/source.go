@@ -31,7 +31,16 @@ var statNames = [...]string{"argvOverflow", "ringbufFull", "argvUnreadable"}
 
 const statCount = len(statNames)
 
-// Source streams one event per execve in a selected cgroup.
+// Source streams one event per execve in a selected cgroup, with argv — the
+// observation-only counterpart to pkg/bpf/lsm's enforcing bprm_check_security
+// program, whose hook does not carry arguments. Argv is what identifies a
+// stdio MCP server (`npx @modelcontextprotocol/...`, `uvx ...`).
+//
+// The kernel side takes sched_process_exec as a raw tracepoint rather than
+// through its ftrace format because only the raw form passes the
+// `struct linux_binprm *`, whose argc is the only trustworthy bound on the
+// argv walk: mm->arg_end brackets argv and envp together on some kernels, so
+// a walk that stops at arg_end reports environment strings as arguments.
 type Source struct {
 	log   logr.Logger
 	objs  execTraceObjects

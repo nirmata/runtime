@@ -28,8 +28,10 @@ const (
 	// beyond it is dropped in the kernel: an exec with more arguments is
 	// reported truncated, never rejected.
 	MaxArgs = 8
-	// MaxArgLen is the size of one argv slot. An argument longer than this is
-	// stored unterminated and decodes to its first MaxArgLen bytes.
+	// MaxArgLen is the size of one argv slot. The kernel program's copy helper
+	// truncates a longer argument at MaxArgLen and resumes mid-argument, so the
+	// slot is unterminated and the next slot holds the tail of the same
+	// argument: reported split rather than dropped.
 	MaxArgLen = 128
 	// MaxFilename is the size of the filename field.
 	MaxFilename = 256
