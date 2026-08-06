@@ -10,8 +10,7 @@
 
 #include <dnsname.h>
 
-/* Padding-free by construction: a hash key is compared as raw bytes, so any
- * uninitialized byte would split one logical key across separate entries.
+/* Padding-free by construction: a hash key is compared as raw bytes.
  * domain_id is 0 when the address was never seen in a snooped DNS answer. */
 struct ip_event_key {
     __u32 daddr;
@@ -48,8 +47,8 @@ struct {
     __type(value, __u32);
 } ip_events SEC(".maps");
 
-/* Userspace interns every domain a policy names, so a name absent here was
- * never asked about and the snooper ignores the answer entirely. */
+/* A name absent here was never named by a policy; the snooper ignores its
+ * answers entirely. */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 256);
@@ -57,10 +56,8 @@ struct {
     __type(value, __u32);
 } domain_ids SEC(".maps");
 
-/* Written by the snooper from A records, read by the egress program. LRU
- * rather than plain hash: a rotating answer set would otherwise fill it and
- * start failing inserts, and eviction of a stale address is the safe direction
- * under default deny. Expiry is therefore approximate and not TTL-driven. */
+/* Written by the snooper, read by the egress program. LRU so a rotating answer
+ * set evicts stale addresses instead of failing inserts. */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 4096);

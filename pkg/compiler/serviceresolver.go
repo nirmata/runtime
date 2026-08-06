@@ -5,7 +5,7 @@ package compiler
 // a Service target resolves from watched cache state rather than from DNS.
 type ServiceResolver interface {
 	// ResolveService returns the addresses for one Service, in the value
-	// grammar ParseNetworkValue accepts.
+	// schema ParseNetworkValue accepts.
 	//
 	// found is false when the Service is absent from cache. That is reported
 	// separately from an empty address list so an unresolved name and a Service

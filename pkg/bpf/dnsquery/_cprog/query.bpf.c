@@ -2,10 +2,6 @@
 
 // Observation only: every path returns 1. A question this program cannot parse
 // must still leave the pod.
-//
-// The name a workload asks for is the signal, and it survives TLS. It is also
-// only a resolution: an answer may be cached, shared, or never arrive, and a
-// workload dialling a bare address asks nothing at all.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_endian.h>
@@ -38,8 +34,7 @@ struct udp_hdr_ {
 };
 
 // l4_offset returns the byte offset of the transport header, or 0 when this is
-// not a UDP datagram worth looking at. IPv4 header length is computed from IHL
-// rather than assumed, because a packet carrying options is not 20 bytes.
+// not a UDP datagram worth looking at.
 static __always_inline __u32 l4_offset(struct __sk_buff *skb)
 {
     __u8 first;
@@ -81,9 +76,7 @@ static __always_inline __u32 l4_offset(struct __sk_buff *skb)
 SEC("cgroup_skb/egress")
 int cgroup_dns_egress(struct __sk_buff *skb)
 {
-    // The socket's cgroup stays correct when the skb is transmitted from softirq
-    // context; the current task's cgroup is the fallback for an skb with no
-    // socket, and a question is sent from process context.
+    // The task cgroup is the fallback for an skb with no socket.
     __u64 cgid = bpf_skb_cgroup_id(skb);
     if (cgid == 0)
         cgid = bpf_get_current_cgroup_id();
@@ -110,24 +103,27 @@ int cgroup_dns_egress(struct __sk_buff *skb)
     if (bpf_ntohs(dns.qdcount) == 0)
         return 1;
 
-    // The name is read straight into the record rather than through a stack
-    // buffer: a 128-byte local plus the unrolled read's spill slots does not fit
-    // the 512-byte BPF stack. The cost is that an unparseable name has already
-    // reserved space, so it is discarded rather than never reserved.
+    // The name is read straight into the record: a 128-byte stack buffer plus
+    // the unrolled read's spill slots does not fit the 512-byte BPF stack.
     struct dns_query_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
-        bump(STAT_RINGBUF_FULL);
+        __u32 stat = STAT_RINGBUF_FULL;
+        __u64 *v = bpf_map_lookup_elem(&stats, &stat);
+        if (v)
+            *v += 1;
         return 1;
     }
-    // Ring buffer memory is recycled and mapped to userspace, so a partially
-    // filled record would otherwise carry the tail of the previous one.
+    // Recycled ring buffer memory would otherwise carry the previous record's tail.
     __builtin_memset(e, 0, sizeof(*e));
     e->cgroup_id = cgid;
 
     __u32 name_len = 0;
     if (read_qname(skb, dns_off + sizeof(dns), &e->name, &name_len) < 0) {
         bpf_ringbuf_discard(e, 0);
-        bump(STAT_NAME_UNREADABLE);
+        __u32 stat = STAT_NAME_UNREADABLE;
+        __u64 *v = bpf_map_lookup_elem(&stats, &stat);
+        if (v)
+            *v += 1;
         return 1;
     }
     e->name_len = name_len;

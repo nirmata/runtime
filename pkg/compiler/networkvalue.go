@@ -89,7 +89,7 @@ type ClusterService struct {
 
 // ClusterDomain is the cluster's DNS domain, the suffix that makes a value a
 // Service name rather than an external one. It is a cluster-wide constant that
-// every consumer of the grammar has to agree on, so it is set once from the
+// every consumer of the schema has to agree on, so it is set once from the
 // daemon's flag before any policy is compiled, never per call.
 var ClusterDomain = "cluster.local"
 
@@ -155,11 +155,10 @@ func ParseNetworkValue(raw string) (NetworkValue, error) {
 			}
 			return NetworkValue{Service: svc}, nil
 		}
-		host, err := parseHostname(name)
-		if err != nil {
-			return NetworkValue{}, err
+		if !validHostname(name) {
+			return NetworkValue{}, ErrNotAnIPNetworkValue
 		}
-		return NetworkValue{Host: host}, nil
+		return NetworkValue{Host: name}, nil
 	}
 }
 
@@ -219,17 +218,10 @@ func normalizeName(cleaned string) string {
 	return strings.ToLower(strings.TrimSuffix(cleaned, "."))
 }
 
-func parseHostname(host string) (string, error) {
-	if !validHostname(host) {
-		return "", ErrNotAnIPNetworkValue
-	}
-	return host, nil
-}
-
 // host is already normalized: normalizing again here would strip a second root
 // dot and turn "example.com.." into a valid name. This is the one definition of
-// what a hostname is for every value grammar in this package, so a name the
-// network grammar accepts and one a dns behavior accepts cannot drift.
+// what a hostname is for every value schema in this package, so a name the
+// network schema accepts and one a dns behavior accepts cannot drift.
 func validHostname(host string) bool {
 	if host == "" || len(host) > maxHostnameLen {
 		return false

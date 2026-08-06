@@ -338,9 +338,9 @@ func (r *RuntimePolicyMgr) reportCompileFailure(rp *v1alpha1.RuntimePolicy, err 
 		return
 	}
 	r.status.RecordCondition(string(rp.UID), rp.Name, metav1.Condition{
-		Type:    ConditionApplied,
+		Type:    v1alpha1.ConditionApplied,
 		Status:  metav1.ConditionFalse,
-		Reason:  ReasonCompileFailed,
+		Reason:  v1alpha1.ReasonCompileFailed,
 		Message: err.Error(),
 	})
 }

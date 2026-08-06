@@ -193,6 +193,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		podHandlers = append(podHandlers, dm)
 		policyHandlers = append(policyHandlers, dm)
 		col.AddSource(dnsquery.NewSource(logger.WithName(dnsquery.SourceName), dnsObs,
+			dnsquery.WithStatsInterval(observeInterval),
 			dnsquery.WithLossFunc(func(reason string, delta uint64) {
 				m.EventsDropped.WithLabelValues(dnsquery.SourceName, reason).Add(float64(delta))
 			})))

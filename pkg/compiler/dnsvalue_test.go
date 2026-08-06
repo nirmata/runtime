@@ -99,11 +99,11 @@ func TestParseDNSValueNamesAreLowercase(t *testing.T) {
 	}
 }
 
-// Both grammars share validHostname, so within the length a dns value may carry
+// Both schemas share validHostname, so within the length a dns value may carry
 // an exact name is accepted by one exactly when it is accepted by the other.
 // The wildcard and the length cap are the two deliberate differences, and each
 // has its own test below.
-func TestDNSAndNetworkGrammarsAgreeOnHostnames(t *testing.T) {
+func TestDNSAndNetworkSchemasAgreeOnHostnames(t *testing.T) {
 	names := []string{
 		"api.openai.com",
 		"example.com",
@@ -125,10 +125,10 @@ func TestDNSAndNetworkGrammarsAgreeOnHostnames(t *testing.T) {
 
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
-			_, netErr := parseHostname(normalizeName(cleanValue(name)))
+			netOK := validHostname(normalizeName(cleanValue(name)))
 			_, dnsErr := ParseDNSValue(name)
-			if (netErr == nil) != (dnsErr == nil) {
-				t.Errorf("parseHostname(%q) error = %v, ParseDNSValue error = %v: the two grammars disagree", name, netErr, dnsErr)
+			if netOK != (dnsErr == nil) {
+				t.Errorf("validHostname(%q) = %v, ParseDNSValue error = %v: the two schemas disagree", name, netOK, dnsErr)
 			}
 		})
 	}
@@ -183,8 +183,8 @@ func TestParseDNSValueErrorsNameTheRemedy(t *testing.T) {
 func TestParseDNSValueIsCappedByTheObservableWidth(t *testing.T) {
 	name := longHostname(MaxDNSNameLen + 1)
 
-	if _, err := parseHostname(normalizeName(cleanValue(name))); err != nil {
-		t.Fatalf("parseHostname(%d chars) error = %v, want nil: a network hostname is not capped here", len(name), err)
+	if !validHostname(normalizeName(cleanValue(name))) {
+		t.Fatalf("validHostname(%d chars) = false, want true: a network hostname is not capped here", len(name))
 	}
 	if _, err := ParseDNSValue(name); !errors.Is(err, ErrTooLongDNSValue) {
 		t.Errorf("ParseDNSValue(%d chars) error = %v, want %v", len(name), err, ErrTooLongDNSValue)

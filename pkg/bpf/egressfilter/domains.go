@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+
 	"github.com/cilium/ebpf"
 )
 
@@ -130,16 +132,16 @@ func (e *EgressFilter) domainMaps() (allowed, banned *ebpf.Map) {
 	return e.bpfObjs.AllowedDomains, e.bpfObjs.BannedDomains
 }
 
-func (e *EgressFilter) putDomains(m *ebpf.Map, name string, hosts []string) ([]RejectedTarget, error) {
+func (e *EgressFilter) putDomains(m *ebpf.Map, name string, hosts []string) ([]compiler.RejectedTarget, error) {
 	var (
-		rejected []RejectedTarget
+		rejected []compiler.RejectedTarget
 		errs     []error
 	)
 	for _, host := range hosts {
 		id, err := e.internDomain(host)
 		switch {
 		case errors.Is(err, errDomainTableFull):
-			rejected = append(rejected, RejectedTarget{Value: host, Reason: ReasonTooManyDomains})
+			rejected = append(rejected, compiler.RejectedTarget{Value: host, Reason: ReasonTooManyDomains})
 			continue
 		case err != nil:
 			errs = append(errs, err)

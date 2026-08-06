@@ -117,11 +117,20 @@ const (
 	ConditionApplied = "Applied"
 	ReasonEnforcing  = "Enforcing"
 	ReasonMonitoring = "Monitoring"
+	// ReasonNoMode reports a policy that sets no spec.mode, so no manager
+	// attached anything for it.
+	ReasonNoMode = "NoMode"
+	// ReasonCompileFailed reports a policy whose spec the compiler rejected,
+	// so nothing at all was programmed for it.
+	ReasonCompileFailed = "CompileFailed"
 
 	ConditionTargetsValid     = "TargetsValid"
 	ReasonUnsupportedTargets  = "UnsupportedTargets"
 	ReasonAllTargetsSupported = "AllTargetsSupported"
 	ReasonNoTargets           = "NoTargets"
+	// ReasonUnresolvedServices reports cluster DNS values whose Service or
+	// endpoint is absent from cache, so no address could be programmed.
+	ReasonUnresolvedServices = "UnresolvedServices"
 
 	// Exec and open get a condition each because conditions are keyed by type
 	// and last-write-wins: one shared type would report whichever behavior was

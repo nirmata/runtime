@@ -135,7 +135,7 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
   default allow-all-except-denied. On a `dns` behavior it means "report every name" instead, and
   short-circuits the allow list rather than exempting it.
 - A `dns` behavior is observation only, and `pkg/compiler.validateDNSBehavior` rejects it in
-  `enforce` mode with a message naming `monitor` and the `network` behavior. The two grammars are
+  `enforce` mode with a message naming `monitor` and the `network` behavior. The two schemas are
   one function apart on purpose: `ParseDNSValue` accepts a left-wildcard and `ParseNetworkValue`
   rejects one, because a `network` target has to be resolved to addresses and programmed into a
   kernel map while a `dns` value is only ever compared against an observed question name. What a
@@ -369,7 +369,7 @@ one never starts from an observer's empty maps.
 
 ### The DNS question observer (`pkg/bpf/dnsquery`)
 
-`cgroup_dnsegress` (`_cprog/query.bpf.c`) is a `cgroup_skb/egress` program that reads the QNAME
+`cgroup_dns_egress` (`_cprog/query.bpf.c`) is a `cgroup_skb/egress` program that reads the QNAME
 out of every UDP datagram a gated cgroup sends to port 53 and submits one ring buffer record per
 question. Every path returns 1: a question this program cannot parse must still leave the pod.
 
@@ -420,8 +420,8 @@ indistinguishable at the sink:
 | `undecodable` | userspace | `DecodeQueryEvent` rejected the record's bytes |
 
 The two kernel counters live in a per-CPU array, are cumulative and never reset; `pollStats` sums
-them across CPUs every 30 seconds and reports the delta through the `LossFunc` the daemon wires to
-`EventsDropped{source="dnsquery"}`.
+them across CPUs every `--observe-interval` and reports the delta through the `LossFunc` the
+daemon wires to `EventsDropped{source="dnsquery"}`.
 
 ### Gating observation (`pkg/dnsmgr`)
 

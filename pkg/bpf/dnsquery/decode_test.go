@@ -212,15 +212,15 @@ func TestDecodeQueryEventNeverPanics(t *testing.T) {
 	}
 }
 
-// The value grammar caps a policy-declared name at what this record can carry.
-// If the key width changes and the grammar does not, admission starts accepting
+// The value schema caps a policy-declared name at what this record can carry.
+// If the key width changes and the schema does not, admission starts accepting
 // names the observer can never produce, and a policy naming one matches nothing
 // while looking correct.
-func TestNameCapAgreesWithTheValueGrammar(t *testing.T) {
+func TestNameCapAgreesWithTheValueSchema(t *testing.T) {
 	// Wire form is two bytes longer than the dotted name: every dot becomes a
 	// length prefix, plus a leading prefix and a trailing root byte.
 	if got, want := compiler.MaxDNSNameLen+2, MaxName; got != want {
-		t.Errorf("the grammar admits %d-character names, needing %d bytes, but the record holds %d",
+		t.Errorf("the schema admits %d-character names, needing %d bytes, but the record holds %d",
 			compiler.MaxDNSNameLen, got, want)
 	}
 }

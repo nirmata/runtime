@@ -48,7 +48,7 @@ func TestNetMatcher(t *testing.T) {
 			values: []string{"api.example.com"}, addr: "10.0.0.5",
 		},
 		{
-			name:   "hostname value is normalized by the shared grammar",
+			name:   "hostname value is normalized by the shared schema",
 			values: []string{" \"API.Example.COM.\" "}, addr: "10.0.0.5", domain: "api.example.com", want: true,
 		},
 		{

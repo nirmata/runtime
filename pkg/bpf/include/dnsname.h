@@ -4,31 +4,22 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-/* The wire-format QNAME, lowercased and zero padded: length-prefixed labels
- * ending in a zero byte. Keeping the wire encoding means a reader never has to
- * rewrite a name into dotted form to look it up, and userspace interns policy
+/* The wire-format QNAME, lowercased and zero padded; userspace interns policy
  * names into these exact bytes. */
 #define MAX_DOMAIN_LEN 128
 
-/* The two high bits of a label length byte. Both set is a compression pointer;
- * either one alone is reserved. Neither is legal in a question. */
+/* Both high bits set is a compression pointer; either alone is reserved. */
 #define DNS_LABEL_PTR 0xc0
 
 struct domain_key {
     __u8 name[MAX_DOMAIN_LEN];
 };
 
-/* One flat pass over the wire bytes instead of a loop per label: `remaining`
- * counts down the current label, so a byte read with remaining == 0 is the next
- * length byte. Bounding the pass at the key width bounds label count too, and
- * leaves the verifier a single unrolled loop with constant indices.
- *
- * key must be zeroed by the caller: the terminating zero byte is never written,
- * it is the zero padding. qname_len counts it, so it is the offset of whatever
- * follows the name.
- *
- * bpf_skb_load_bytes rather than direct packet access: an skb may be non-linear,
- * and data_end would then cut the name off mid-way and silently lose it. */
+/* One flat pass instead of a loop per label: `remaining` counts down the current
+ * label, so a byte read with remaining == 0 is the next length byte, and the
+ * verifier sees a single unrolled loop with constant indices. key must be zeroed
+ * by the caller: the terminating zero byte is the padding, never written, and
+ * qname_len counts it. bpf_skb_load_bytes because an skb may be non-linear. */
 static __always_inline int read_qname(struct __sk_buff *skb, __u32 off,
                                       struct domain_key *key, __u32 *qname_len)
 {

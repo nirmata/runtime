@@ -110,11 +110,10 @@ func (m *Manager) RuntimePolicyEvent(rp *compiler.EvaluationResult, eventType st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// A policy with no `dns` behavior never selects a pod for observation, and
-	// one that loses its last `dns` entry on update must stop selecting. A mode the detection engine does nothing in is treated
-	// the same way: observing a pod whose findings would be discarded is cost
-	// with no output.
-	if eventType == events.EventTypeDelete || !rp.DNS.HasEntries() || !reports(rp.Mode) {
+	// Only a monitor-mode policy with `dns` entries selects pods for
+	// observation: enforce is refused at compile time, and a mode the
+	// detection engine does nothing in must not start observation either.
+	if eventType == events.EventTypeDelete || !rp.DNS.HasEntries() || rp.Mode != compiler.ModeMonitor {
 		delete(m.rps, rp.UID)
 	} else {
 		m.rps[rp.UID] = rp
@@ -213,14 +212,6 @@ func (m *Manager) detach(uid string, ps *podState) error {
 		m.logger.Error(errors.Join(errs...), "detaching dns observation failed", "podUid", uid)
 	}
 	return errors.Join(errs...)
-}
-
-// reports is true for the modes a dns behavior produces findings in, which is
-// monitor alone: enforce is refused before a policy reaches here, and a policy
-// with no mode neither enforces nor reports. Testing the mode rather than "not
-// empty" keeps a mode added to the API from silently starting observation.
-func reports(mode string) bool {
-	return mode == compiler.ModeMonitor
 }
 
 func (m *Manager) selectedLocked(podLabels map[string]string) bool {

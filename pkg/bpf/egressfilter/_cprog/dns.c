@@ -87,9 +87,6 @@ static __always_inline void snoop_answers(struct __sk_buff *skb, __u32 off,
 SEC("cgroup_skb/ingress")
 int cgroup_dns_ingress(struct __sk_buff *skb)
 {
-    // bpf_skb_load_bytes rather than direct packet access: an ingress skb may
-    // be non-linear, and data_end would then cut the answer section off mid-way
-    // and silently lose the records.
     struct iphdr ip;
     if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip)) < 0)
         return 1;

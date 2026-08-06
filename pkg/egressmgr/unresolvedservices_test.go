@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 
@@ -28,28 +29,28 @@ func TestTargetsConditionReportsUnresolvedServices(t *testing.T) {
 			name:       "an unresolved service is the policy's only target",
 			res:        rpWithUnresolved("rp-1", nil, []string{"*"}, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServices,
+			wantReason: v1alpha1.ReasonUnresolvedServices,
 			wantIn:     []string{"api.prod.svc.cluster.local"},
 		},
 		{
 			name:       "resolved literals alongside an unresolved service",
 			res:        rpWithUnresolved("rp-1", []string{"1.1.1.1"}, []string{"*"}, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServices,
+			wantReason: v1alpha1.ReasonUnresolvedServices,
 			wantIn:     []string{"api.prod.svc.cluster.local"},
 		},
 		{
 			name:       "an unresolved service and a rejected literal are both reported",
 			res:        rpWithUnresolved("rp-1", []string{"2001:db8::1"}, nil, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServices,
+			wantReason: v1alpha1.ReasonUnresolvedServices,
 			wantIn:     []string{"api.prod.svc.cluster.local", "2001:db8::1"},
 		},
 		{
 			name:       "an unresolved service is not reported as an absence of targets",
 			res:        rpWithUnresolved("rp-1", nil, nil, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServices,
+			wantReason: v1alpha1.ReasonUnresolvedServices,
 			wantIn:     []string{"api.prod.svc.cluster.local"},
 		},
 		{
@@ -57,20 +58,20 @@ func TestTargetsConditionReportsUnresolvedServices(t *testing.T) {
 			res: rpWithUnresolved("rp-1", nil, nil,
 				"api.prod.svc.cluster.local", "cache.staging.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnresolvedServices,
+			wantReason: v1alpha1.ReasonUnresolvedServices,
 			wantIn:     []string{"api.prod.svc.cluster.local", "cache.staging.svc.cluster.local"},
 		},
 		{
 			name:       "no unresolved services keeps the supported reason",
 			res:        rpWithUnresolved("rp-1", []string{"1.1.1.1"}, nil),
 			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonAllTargetsSupported,
+			wantReason: v1alpha1.ReasonAllTargetsSupported,
 		},
 		{
 			name:       "no unresolved services and no targets keeps the empty reason",
 			res:        rpWithUnresolved("rp-1", nil, nil),
 			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonNoTargets,
+			wantReason: v1alpha1.ReasonNoTargets,
 		},
 	}
 
@@ -80,9 +81,9 @@ func TestTargetsConditionReportsUnresolvedServices(t *testing.T) {
 
 			mustRpEvent(t, e, tc.res, events.EventTypeCreate)
 
-			cond, ok := status.latest("rp-1", ConditionTargetsValid)
+			cond, ok := status.latest("rp-1", v1alpha1.ConditionTargetsValid)
 			if !ok {
-				t.Fatalf("no %s condition was recorded for rp-1 (all: %v)", ConditionTargetsValid, status.all("rp-1"))
+				t.Fatalf("no %s condition was recorded for rp-1 (all: %v)", v1alpha1.ConditionTargetsValid, status.all("rp-1"))
 			}
 			if cond.Status != tc.wantStatus {
 				t.Errorf("condition status: got %s, want %s (message %q)", cond.Status, tc.wantStatus, cond.Message)
@@ -107,12 +108,12 @@ func TestTargetsConditionClearsWhenAServiceResolves(t *testing.T) {
 	mustRpEvent(t, e, rpWithUnresolved("rp-1", nil, []string{"*"}, "api.prod.svc.cluster.local"), events.EventTypeCreate)
 	mustRpEvent(t, e, rpWithUnresolved("rp-1", []string{"10.0.0.1"}, []string{"*"}), events.EventTypeUpdate)
 
-	cond, ok := status.latest("rp-1", ConditionTargetsValid)
+	cond, ok := status.latest("rp-1", v1alpha1.ConditionTargetsValid)
 	if !ok {
-		t.Fatalf("no %s condition was recorded for rp-1", ConditionTargetsValid)
+		t.Fatalf("no %s condition was recorded for rp-1", v1alpha1.ConditionTargetsValid)
 	}
-	if cond.Status != metav1.ConditionTrue || cond.Reason != ReasonAllTargetsSupported {
+	if cond.Status != metav1.ConditionTrue || cond.Reason != v1alpha1.ReasonAllTargetsSupported {
 		t.Errorf("condition after the Service resolved: got %s/%s, want %s/%s",
-			cond.Status, cond.Reason, metav1.ConditionTrue, ReasonAllTargetsSupported)
+			cond.Status, cond.Reason, metav1.ConditionTrue, v1alpha1.ReasonAllTargetsSupported)
 	}
 }

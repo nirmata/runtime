@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
@@ -37,7 +38,7 @@ func TestRecordConditionSuppliesThePolicyName(t *testing.T) {
 	}
 
 	// an untracked uid has no name to resolve, and must not invent one
-	e.recordCondition("rp-unknown", metav1.Condition{Type: ConditionTargetsValid, Reason: ReasonNoTargets})
+	e.recordCondition("rp-unknown", metav1.Condition{Type: v1alpha1.ConditionTargetsValid, Reason: v1alpha1.ReasonNoTargets})
 	if got := status.recordedNames("rp-unknown"); !slices.Equal(got, []string{""}) {
 		t.Errorf("recorded names for an untracked policy = %v, want one empty name", got)
 	}

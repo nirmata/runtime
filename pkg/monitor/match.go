@@ -136,8 +136,8 @@ func newNameMatcher(values []string) nameMatcher {
 	for _, raw := range values {
 		v, err := compiler.ParseDNSValue(raw)
 		if err != nil {
-			// a value the grammar rejects must never produce a match the
-			// enforcing side of that grammar would not have admitted
+			// a value the schema rejects must never produce a match the
+			// enforcing side of that schema would not have admitted
 			continue
 		}
 		switch {

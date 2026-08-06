@@ -300,12 +300,18 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 		return
 	}
 
+	// A dns finding is advisory: nothing was blocked and nothing would have
+	// been, so it warns rather than failing the workload.
+	res := reporter.ResultFail
+	if behavior == BehaviorDNS {
+		res = reporter.ResultWarn
+	}
 	f := reporter.Finding{
 		PolicyName: tp.name,
 		PolicyUID:  tp.uid,
 		Behavior:   behavior,
 		Severity:   reporter.DefaultSeverity,
-		Result:     result(behavior),
+		Result:     res,
 		Enforced:   enforced,
 		Message:    message(tp.name, behavior, target, d, ev.Count, enforced),
 		Pod:        ev.Pod,
@@ -326,15 +332,6 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 	}); err != nil {
 		m.log.Error(err, "reporting finding failed", "policy", tp.name, "uid", tp.uid)
 	}
-}
-
-// result grades the finding. A dns finding is advisory: nothing was blocked and
-// nothing would have been, so it warns rather than failing the workload.
-func result(behavior string) string {
-	if behavior == BehaviorDNS {
-		return reporter.ResultWarn
-	}
-	return reporter.ResultFail
 }
 
 // targetOf maps an event to the behavior it is decided against and the target

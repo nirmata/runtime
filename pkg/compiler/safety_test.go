@@ -179,9 +179,9 @@ func TestCompile_AcceptsCanonicalClusterServiceValues(t *testing.T) {
 	}
 }
 
-// Admission owns no grammar of its own: the message an operator sees is the one
+// Admission owns no schema of its own: the message an operator sees is the one
 // ParseNetworkValue produced for the same value.
-func TestCompile_ClusterServiceErrorsComeFromTheOneGrammar(t *testing.T) {
+func TestCompile_ClusterServiceErrorsComeFromTheOneSchema(t *testing.T) {
 	values := []string{
 		"kube-dns.svc.cluster.local",
 		"redis.default.svc",
@@ -317,9 +317,9 @@ func TestCompile_RejectsBadDNSValuesWithFieldPath(t *testing.T) {
 	}
 }
 
-// Admission owns no grammar of its own here either: the message an operator
+// Admission owns no schema of its own here either: the message an operator
 // sees is the one ParseDNSValue produced for the same value.
-func TestCompile_DNSErrorsComeFromTheOneGrammar(t *testing.T) {
+func TestCompile_DNSErrorsComeFromTheOneSchema(t *testing.T) {
 	values := []string{"a.*.b.com", "*.", "localhost", "*.com", "1.2.3.4"}
 
 	c := newTestCompiler(t)

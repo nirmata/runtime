@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -178,7 +180,7 @@ func TestPutDomains_SurfacesExhaustionAsARejectedTarget(t *testing.T) {
 
 	rejected, _ := e.putDomains(nil, "allowed_domains", []string{"one.too.many"})
 
-	want := []RejectedTarget{{Value: "one.too.many", Reason: ReasonTooManyDomains}}
+	want := []compiler.RejectedTarget{{Value: "one.too.many", Reason: ReasonTooManyDomains}}
 	if diff := cmp.Diff(want, rejected); diff != "" {
 		t.Errorf("rejected mismatch (-want +got):\n%s", diff)
 	}

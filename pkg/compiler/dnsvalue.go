@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// Sentinel errors returned by ParseDNSValue, terse for the same reason the
-// network ones are: callers surface them inside their own vocabulary.
 // MaxDNSNameLen is the longest dotted name a dns value may carry.
 //
 // It is derived from the kernel's question-name key rather than from the DNS
@@ -18,6 +16,8 @@ import (
 // one would match nothing while looking correct.
 const MaxDNSNameLen = 126
 
+// Sentinel errors returned by ParseDNSValue, terse for the same reason the
+// network ones are: callers surface them inside their own vocabulary.
 var (
 	// ErrEmptyDNSValue reports a value that is empty after trimming.
 	ErrEmptyDNSValue = errors.New("empty dns name")
@@ -51,7 +51,7 @@ type DNSValue struct {
 // one narrowing point between the two: a dns value is only ever compared
 // against an observed question name, while a network target has to be resolved
 // to addresses and programmed into a kernel map, and no finite set of addresses
-// corresponds to a wildcard. Both grammars agree on what a hostname is, in
+// corresponds to a wildcard. Both schemas agree on what a hostname is, in
 // validHostname.
 //
 // Name is lowercased because observed names arrive lowercased, and a

@@ -311,7 +311,7 @@ func TestRpProcessNextWorkItemSurvivesHandlerPanic(t *testing.T) {
 }
 
 // invalidNetworkValue is the shape of error the compiler returns for a network
-// value the grammar rejects: a field path plus the offending value.
+// value the schema rejects: a field path plus the offending value.
 func invalidNetworkValue() error {
 	return field.Invalid(
 		field.NewPath("spec").Child("behaviors").Index(0).Child("network"),
@@ -362,14 +362,14 @@ func TestCompileFailureReportsOnPolicyStatus(t *testing.T) {
 			if got.name != "p" {
 				t.Errorf("name = %q, want p; without it the condition can never be flushed", got.name)
 			}
-			if got.cond.Type != ConditionApplied {
-				t.Errorf("condition type = %q, want %q", got.cond.Type, ConditionApplied)
+			if got.cond.Type != v1alpha1.ConditionApplied {
+				t.Errorf("condition type = %q, want %q", got.cond.Type, v1alpha1.ConditionApplied)
 			}
 			if got.cond.Status != metav1.ConditionFalse {
 				t.Errorf("condition status = %q, want False", got.cond.Status)
 			}
-			if got.cond.Reason != ReasonCompileFailed {
-				t.Errorf("condition reason = %q, want %q", got.cond.Reason, ReasonCompileFailed)
+			if got.cond.Reason != v1alpha1.ReasonCompileFailed {
+				t.Errorf("condition reason = %q, want %q", got.cond.Reason, v1alpha1.ReasonCompileFailed)
 			}
 			if !strings.Contains(got.cond.Message, "spec.behaviors[0].network") {
 				t.Errorf("condition message = %q, want the offending field path", got.cond.Message)
@@ -399,15 +399,15 @@ func TestCompileFailureConditionIsFlushable(t *testing.T) {
 	got := getPolicy(t, client, "p")
 	var applied *metav1.Condition
 	for i := range got.Status.Conditions {
-		if got.Status.Conditions[i].Type == ConditionApplied {
+		if got.Status.Conditions[i].Type == v1alpha1.ConditionApplied {
 			applied = &got.Status.Conditions[i]
 		}
 	}
 	if applied == nil {
 		t.Fatalf("conditions = %+v, want Applied written for the failed compile", got.Status.Conditions)
 	}
-	if applied.Status != metav1.ConditionFalse || applied.Reason != ReasonCompileFailed {
-		t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, ReasonCompileFailed)
+	if applied.Status != metav1.ConditionFalse || applied.Reason != v1alpha1.ReasonCompileFailed {
+		t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, v1alpha1.ReasonCompileFailed)
 	}
 	if !strings.Contains(applied.Message, "spec.behaviors[0].network") {
 		t.Errorf("Applied message = %q, want the offending field path", applied.Message)
