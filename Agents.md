@@ -96,7 +96,9 @@ is the one-line-per-package index.
 | `pkg/utils` | `Guard(op, fn)` — the panic barrier used at handler fan-out boundaries so one bad handler cannot take out its siblings. |
 | `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID) plus `StatusWriter`. |
 | `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
-| `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The two eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The enforcing eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/bpf/exectrace` | Observation-only `raw_tp/sched_process_exec` program streaming per-exec events with argv over a ring buffer; a `runtimeevent.Source`. |
+| `pkg/bpf/include` | The shared, hand-maintained `vmlinux.h` every `_cprog` compiles against. Committed, minimal, add only what a program reads. |
 | `pkg/lsmmgr`, `pkg/egressmgr` | The managers that attach those programs per matched pod and drain their observation counters (`CollectObservations`). |
 | `pkg/runtimeevent` | The normalized `Event` type, its `KernelDecision`, and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. |
 | `pkg/collector` | Sources → stages → sinks pipeline, with drop accounting and source restart. |
@@ -108,9 +110,10 @@ is the one-line-per-package index.
 
 ## Runtime event filtering policy
 
-There is one event pipeline: `pkg/collector`, fed by poll sources over the observation counters the
-two existing eBPF programs keep, annotated by `pkg/attribution`, consumed by `pkg/monitor`. There is
-no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency.
+There is one event pipeline: `pkg/collector`, fed by poll sources over the observation counters
+the enforcing eBPF programs keep and by the `pkg/bpf/exectrace` ring buffer stream, annotated by
+`pkg/attribution`, consumed by `pkg/monitor`. There is no `connect`/`tcpconnect` collector and no
+Inspektor Gadget dependency.
 
 The filtering rules that apply to that pipeline:
 

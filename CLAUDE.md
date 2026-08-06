@@ -155,6 +155,13 @@ When an event cannot be attributed, count it and log it. Never drop it silently:
 a monitoring gap that looks identical to "nothing happened" is worse than an
 error.
 
+## Zero what the kernel hands to userspace
+
+A reserved ring buffer record arrives holding whatever the last event on that
+CPU wrote, and every byte of it is mmapped to userspace. Fill every field or
+zero the record first: an unzeroed tail leaks one pod's argv into another
+pod's event, which is a confidentiality bug, not untidiness.
+
 ## Generated artifacts need a path back to their source
 
 Committed binaries — BPF objects, CRDs, clients — must be reproducible by a
