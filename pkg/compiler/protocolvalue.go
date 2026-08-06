@@ -5,13 +5,11 @@ import (
 	"strings"
 )
 
-// Protocol tokens a protocol behavior value may name. Classification happens
-// in the kernel against the first data segment of a flow, so the set is
-// limited to client-speaks-first protocols with a fixed signature. A token
-// names the outermost thing the classifier recognized, not a security
-// property: the tls/ prefix means a TLS record layer was observed on the
-// wire, and its absence says nothing about encryption (ssh and quic are both
-// encrypted).
+// Protocol tokens a protocol behavior value may name. The set is limited to
+// client-speaks-first protocols with a fixed signature, because classification
+// reads only a flow's first data segment. A token names what the classifier
+// recognized, not a security property: tls/ means a TLS record layer was on the
+// wire, and its absence says nothing (ssh and quic are both encrypted).
 const (
 	ProtocolSSH    = "ssh"
 	ProtocolTLS    = "tls"

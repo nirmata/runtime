@@ -6,14 +6,6 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
-// Rejection reasons. They are surfaced verbatim to operators (log at V(0) and
-// policy status conditions), so they explain the remedy, not just the fault.
-const (
-	ReasonEmpty        = "empty target value"
-	ReasonInvalidALPN  = `ALPN suffix must be 1-16 visible ASCII characters, e.g. "tls/h2"`
-	ReasonNotAProtocol = `not a protocol token: use "ssh", "tls", "tls/<alpn>", "dns", "http/1.1", "http/2", "quic", or "*" for default-deny`
-)
-
 // Target is one protocol the maps can hold. ALPN is non-empty only for a
 // tls/<alpn> value; an empty ALPN programmed for tls matches any ALPN.
 type Target struct {
@@ -22,9 +14,9 @@ type Target struct {
 }
 
 // ParseTargets converts policy-authored protocol target strings into the
-// targets the protocol maps can hold. The value grammar is defined once, in
+// targets the protocol maps can hold. The value schema is defined once, in
 // compiler.ParseProtocolValue, and every token it accepts is programmable, so
-// no narrowing happens here.
+// no narrowing happens here; a rejection carries the parser's own message.
 //
 //   - a protocol token (ssh, tls, tls/<alpn>, dns, http/1.1, http/2, quic)
 //     yields one target
@@ -35,21 +27,12 @@ type Target struct {
 // Targets are de-duplicated, preserving first-seen order.
 func ParseTargets(values []string) (targets []Target, star bool, rejected []compiler.RejectedTarget) {
 	seen := make(map[Target]struct{}, len(values))
-	reject := func(v, reason string) {
-		rejected = append(rejected, compiler.RejectedTarget{Value: v, Reason: reason})
-	}
 
 	for _, raw := range values {
 		v, err := compiler.ParseProtocolValue(raw)
 		switch {
-		case errors.Is(err, compiler.ErrEmptyProtocolValue):
-			reject(raw, ReasonEmpty)
-
-		case errors.Is(err, compiler.ErrInvalidALPNValue):
-			reject(raw, ReasonInvalidALPN)
-
 		case err != nil:
-			reject(raw, ReasonNotAProtocol)
+			rejected = append(rejected, compiler.RejectedTarget{Value: raw, Reason: err.Error()})
 
 		case v.Star:
 			star = true

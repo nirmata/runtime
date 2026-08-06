@@ -92,9 +92,6 @@ static __always_inline int proto_match(void *map, const struct proto_key *pk)
     return bpf_map_lookup_elem(map, &wild) != NULL;
 }
 
-// Ordered decision -> record -> cache -> return, so no enforcement return can
-// skip the observation branch. Runs once per flow, at classification; later
-// packets take the cached verdict without re-recording.
 static __always_inline int settle(struct flow_key *fk, __u32 proto, const char *alpn)
 {
     __u32 zero_key = 0;
@@ -192,9 +189,8 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
         __u32 alen = b8;
         if (3 + alen > ext_len)
             return PROTO_UNCLASSIFIED;
-        /* checked last so the verifier carries alen's unsigned [1,16] bounds
-         * into the variable-length load: a branch on a register derived from
-         * alen would sync away the range the helper call is checked against */
+        /* checked last: an earlier branch on a register derived from alen syncs
+         * away the [1,16] range the variable-length load is checked against */
         if (alen == 0 || alen > ALPN_MAX_LEN)
             return PROTO_TLS; /* an entry the policy grammar cannot name: bare tls */
 
@@ -228,12 +224,10 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
                                           __u32 payload_len, char *alpn)
 {
     __u8 buf[24] = {};
-    /* The verifier cannot carry payload_len > 0 across the skb->len
-     * subtraction, so the variable-length load is bounded here: the barrier
-     * stops clang from proving n != 0 and deleting the check, and the __u64
-     * type keeps every compare and the helper argument on one 64-bit
-     * register, where a range check folded onto a 32-bit copy would leave the
-     * passed register unbounded. */
+    /* payload_len's range does not survive the skb->len subtraction, so it is
+     * re-bounded here: barrier_var stops clang deleting the check as provable,
+     * and __u64 keeps the compares and the helper argument on one register --
+     * a range folded onto a 32-bit copy leaves the passed register unbounded */
     __u64 n = payload_len;
     barrier_var(n);
     if (n == 0)
@@ -303,10 +297,6 @@ static __always_inline int handle_tcp(struct __sk_buff *skb, struct flow_key *fk
     return settle(fk, proto, alpn);
 }
 
-/* Matches a cleartext DNS query by shape, on any port: the 12-byte header
- * (QR clear, opcode 0, QDCOUNT 1, ANCOUNT 0) followed by a QNAME whose label
- * chain terminates inside the segment. A response, a compression pointer in
- * the first name, or a name that runs past the segment is unclassified. */
 static __always_inline __u32 classify_dns(struct __sk_buff *skb, __u32 payload_off,
                                           __u32 payload_len)
 {
@@ -323,12 +313,7 @@ static __always_inline __u32 classify_dns(struct __sk_buff *skb, __u32 payload_o
     if (load_u16be(skb, payload_off + 6, &ancount) < 0 || ancount != 0)
         return PROTO_UNCLASSIFIED;
 
-    /* Single-exit loop body (break, not return) so clang can fully unroll it;
-     * mid-loop returns leave multiple exit blocks the unroller refuses.
-     * Falling out of the loop is unclassified: a name truncated by the segment
-     * end, a length over 63 (a compression pointer has no place in a query's
-     * first name), or a name deeper than 32 labels is classified honestly
-     * rather than guessed. */
+    /* break, not return: a mid-loop return leaves exit blocks the unroller refuses */
     __u32 off = 12;
     int terminated = 0;
 #pragma unroll
@@ -340,6 +325,7 @@ static __always_inline __u32 classify_dns(struct __sk_buff *skb, __u32 payload_o
             terminated = 1;
             break;
         }
+        /* over the 63-byte label cap: a compression pointer, which a query's first name never has */
         if (len > 63)
             break;
         off += 1 + len;
