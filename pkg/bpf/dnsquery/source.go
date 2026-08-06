@@ -95,7 +95,7 @@ func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 		}
 	}()
 
-	go s.pollStats(ctx)
+	go s.pollStats(ctx, done)
 
 	for {
 		rec, err := rd.Read()
@@ -108,7 +108,9 @@ func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 
 		ev, err := DecodeQueryEvent(rec.RawSample)
 		if err != nil {
-			s.log.V(2).Info("discarding undecodable dns record", "bytes", len(rec.RawSample), "err", err.Error())
+			// A record the kernel wrote but Go cannot parse means the layouts
+			// have drifted; dropping it silently would hide that.
+			s.log.Error(err, "discarding undecodable dns record", "bytes", len(rec.RawSample))
 			s.reportLoss("undecodable", 1)
 			continue
 		}
@@ -124,32 +126,39 @@ func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 
 // pollStats reports the increase in each kernel loss counter. The counters are
 // cumulative and never reset, so only deltas are reported.
-func (s *Source) pollStats(ctx context.Context) {
+func (s *Source) pollStats(ctx context.Context, done <-chan struct{}) {
 	t := time.NewTicker(s.statsInterval)
 	defer t.Stop()
 
-	var last [statCount]uint64
+	// Seeding from the current totals keeps a restarted drain loop from
+	// re-reporting every loss the counters have accumulated over their life.
+	last, err := s.obs.ReadStats()
+	if err != nil {
+		s.log.Error(err, "reading dns loss counters failed")
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-done:
+			return
 		case <-t.C:
-			cur, err := s.obs.ReadStats()
-			if err != nil {
-				s.log.V(2).Info("reading dns loss counters failed", "err", err.Error())
+		}
+		cur, err := s.obs.ReadStats()
+		if err != nil {
+			s.log.Error(err, "reading dns loss counters failed")
+			continue
+		}
+		for i := range cur {
+			if cur[i] <= last[i] {
 				continue
 			}
-			for i := range cur {
-				if cur[i] <= last[i] {
-					continue
-				}
-				delta := cur[i] - last[i]
-				s.log.Info("dns questions lost in the kernel",
-					"reason", StatNames[i], "count", delta)
-				s.reportLoss(StatNames[i], delta)
-			}
-			last = cur
+			delta := cur[i] - last[i]
+			s.log.Info("dns questions lost in the kernel",
+				"reason", StatNames[i], "count", delta)
+			s.reportLoss(StatNames[i], delta)
 		}
+		last = cur
 	}
 }
 

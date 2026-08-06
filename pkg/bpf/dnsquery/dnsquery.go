@@ -40,13 +40,8 @@ type Observer struct {
 }
 
 func New() (*Observer, error) {
-	spec, err := loadDnsQuery()
-	if err != nil {
-		return nil, err
-	}
-
-	objs := &dnsQueryObjects{} //nolint:typecheck
-	if err := spec.LoadAndAssign(objs, nil); err != nil {
+	objs := &dnsQueryObjects{}
+	if err := loadDnsQueryObjects(objs, nil); err != nil {
 		return nil, fmt.Errorf("dnsquery: load: %w", err)
 	}
 	return &Observer{objs: objs}, nil
