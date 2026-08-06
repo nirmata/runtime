@@ -55,7 +55,13 @@ spec:
               or monitoring behaviors.
             properties:
               behaviors:
-                description: Behaviors defines the allowed and denied runtime behaviors.
+                description: |-
+                  Behaviors defines the allowed and denied runtime behaviors.
+
+                  The bound is what keeps the per-item XValidation rule inside the CEL cost
+                  budget: an unbounded list makes the API server multiply that rule's cost by
+                  the largest number of items a request could carry, and the estimate then
+                  exceeds the budget and the CRD is refused at apply time.
                 items:
                   description: PolicyBehavior defines allow/deny rules for a specific
                     behavior type.
@@ -197,6 +203,7 @@ spec:
                     rule: '(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0)
                       + (has(self.open) ? 1 : 0) + (has(self.protocol) ? 1 : 0) ==
                       1'
+                maxItems: 64
                 type: array
               evaluationInterval:
                 description: EvaluationInterval specifies how frequently the policy

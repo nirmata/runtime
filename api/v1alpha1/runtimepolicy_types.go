@@ -23,7 +23,13 @@ type RuntimePolicySpec struct {
 	Variables []admissionregistrationv1.Variable `json:"variables,omitempty"`
 
 	// Behaviors defines the allowed and denied runtime behaviors.
+	//
+	// The bound is what keeps the per-item XValidation rule inside the CEL cost
+	// budget: an unbounded list makes the API server multiply that rule's cost by
+	// the largest number of items a request could carry, and the estimate then
+	// exceeds the budget and the CRD is refused at apply time.
 	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	Behaviors []PolicyBehavior `json:"behaviors,omitempty"`
 
 	// Mode defines the operational mode of the policy.
