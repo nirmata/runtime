@@ -200,7 +200,7 @@ func TestTargetsConditionCoversProtocolValues(t *testing.T) {
 }
 
 // TestPaddedStarSentinelSetsDefaultDeny pins that the manager's star detection
-// agrees with the value grammars, which trim the quotes and brackets CEL list
+// agrees with the value schemas, which trim the quotes and brackets CEL list
 // rendering leaks. A raw "*" comparison misses `" * "` and silently downgrades
 // a default-deny policy to allow-all-except-denied.
 func TestPaddedStarSentinelSetsDefaultDeny(t *testing.T) {

@@ -64,7 +64,7 @@ func invalidValues(path *field.Path, values []string, parse func(string) error) 
 
 // validateProtocolBehavior validates the hardcoded allow/deny values of a
 // protocol behavior against ParseProtocolValue, reporting each offender as
-// field.Invalid at the exact value's field path. Every value the grammar
+// field.Invalid at the exact value's field path. Every value the schema
 // accepts is programmable, so there is no narrower program-time check.
 func validateProtocolBehavior(path *field.Path, b *v1alpha1.Behavior) field.ErrorList {
 	if b == nil {

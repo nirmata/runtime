@@ -387,7 +387,7 @@ func TestHandleEvent_UnclassifiedFindingNamesUnclassified(t *testing.T) {
 func TestHandleEvent_NoPolicyValueCanAllowUnclassified(t *testing.T) {
 	m, sink, _ := testMonitor(t)
 	rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
-	// "unclassified" is not a value in the grammar; newProtoMatcher skips it,
+	// "unclassified" is not a value in the schema; newProtoMatcher skips it,
 	// so this allow list cannot cover the event.
 	rp.Protocols = pair([]string{compiler.ProtocolUnclassified}, []string{compiler.StarTarget})
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {

@@ -92,7 +92,7 @@ func (p *ProtoFilter) DeleteProtocols(pair *compiler.AllowDenyPair) ([]compiler.
 }
 
 // parsePair resolves both target lists of pair through the single target
-// grammar. rejected is nil when nothing was rejected.
+// schema. rejected is nil when nothing was rejected.
 func parsePair(pair *compiler.AllowDenyPair) (allow, deny []Target, rejected []compiler.RejectedTarget) {
 	allow, _, allowRejected := ParseTargets(pair.Allow)
 	deny, _, denyRejected := ParseTargets(pair.Deny)

@@ -1,8 +1,6 @@
 package protofilter
 
 import (
-	"errors"
-
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
@@ -69,7 +67,7 @@ const (
 	protoIDDNS          = 6
 )
 
-// protoID also encodes ProtocolUnclassified, which the grammar rejects: it can
+// protoID also encodes ProtocolUnclassified, which the schema rejects: it can
 // appear in an observation key (SeedProtoEvent) but never reaches the policy
 // maps, whose only feed is ParseTargets.
 func protoID(token string) (uint32, bool) {

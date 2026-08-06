@@ -112,9 +112,9 @@ func TestAddProtocols_ReturnsRejectedTargetsAsTypedValues(t *testing.T) {
 				Deny:  []string{"tls/", "unknown"},
 			},
 			wantRejected: []compiler.RejectedTarget{
-				{Value: "gopher", Reason: ReasonNotAProtocol},
-				{Value: "tls/", Reason: ReasonInvalidALPN},
-				{Value: "unknown", Reason: ReasonNotAProtocol},
+				{Value: "gopher", Reason: compiler.ErrNotAProtocolValue.Error()},
+				{Value: "tls/", Reason: compiler.ErrInvalidALPNValue.Error()},
+				{Value: "unknown", Reason: compiler.ErrNotAProtocolValue.Error()},
 			},
 		},
 		{

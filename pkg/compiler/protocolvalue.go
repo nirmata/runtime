@@ -25,19 +25,20 @@ const (
 // rule that covers unclassifiable traffic is a default deny.
 const ProtocolUnclassified = "unclassified"
 
-// MaxALPNLength is the size of the kernel's ALPN match buffer. The grammar
+// MaxALPNLength is the size of the kernel's ALPN match buffer. The schema
 // caps the tls/<alpn> suffix at this length so admission never accepts a value
 // the classifier cannot match.
 const MaxALPNLength = 16
 
-// Sentinel errors returned by ParseProtocolValue. Terse for the same reason as
-// the ParseNetworkValue set: callers wrap them into their own vocabulary.
+// Sentinel errors returned by ParseProtocolValue. Their messages reach
+// operators verbatim — admission's field errors, the rejected-target status
+// conditions — so each carries the remedy.
 var (
 	// ErrEmptyProtocolValue reports a value that is empty after trimming.
 	ErrEmptyProtocolValue = errors.New("empty protocol target")
 	// ErrInvalidALPNValue reports a tls/<alpn> suffix that is empty, longer
 	// than MaxALPNLength, or not visible ASCII.
-	ErrInvalidALPNValue = errors.New("ALPN must be 1-16 visible ASCII characters")
+	ErrInvalidALPNValue = errors.New(`ALPN must be 1-16 visible ASCII characters, e.g. "tls/h2"`)
 	// ErrNotAProtocolValue reports anything else: an unrecognized token, an
 	// ALPN suffix on a token other than tls, wrong case.
 	ErrNotAProtocolValue = errors.New(`not a protocol token ("ssh", "tls", "tls/<alpn>", "dns", "http/1.1", "http/2", "quic") or "*"`)
@@ -53,13 +54,13 @@ type ProtocolValue struct {
 }
 
 // ParseProtocolValue parses one policy-authored protocol target string. This
-// is the ONE definition of the protocol target value grammar: admission
+// is the one definition of the protocol target value schema: admission
 // validation, program-time map filling (protofilter.ParseTargets) and
 // monitor-mode matching all consume it, so they cannot disagree about what a
 // value is.
 //
 // The value is trimmed exactly as ParseNetworkValue trims, so the two
-// grammars agree about "*". Then:
+// schemas agree about "*". Then:
 //
 //   - StarTarget ("*") yields Star
 //   - a bare token (ssh, tls, dns, http/1.1, http/2, quic) yields Protocol

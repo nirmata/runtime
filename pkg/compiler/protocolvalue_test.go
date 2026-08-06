@@ -25,7 +25,7 @@ func TestParseProtocolValue(t *testing.T) {
 		{name: "tls with ALPN http/1.1", in: "tls/http/1.1", wantProto: ProtocolTLS, wantALPN: "http/1.1"},
 		{name: "ALPN case is preserved", in: "tls/H2", wantProto: ProtocolTLS, wantALPN: "H2"},
 		{name: "default deny sentinel", in: "*", wantStar: true},
-		{name: "quoted padded sentinel matches the network grammar", in: "\" * \"", wantStar: true},
+		{name: "quoted padded sentinel matches the network schema", in: "\" * \"", wantStar: true},
 		{name: "token with padding and quotes", in: " \"ssh\" ", wantProto: ProtocolSSH},
 		{name: "trailing newline from CEL list rendering", in: "tls\n", wantProto: ProtocolTLS},
 		{name: "max length ALPN", in: "tls/" + strings.Repeat("a", 16), wantProto: ProtocolTLS, wantALPN: strings.Repeat("a", 16)},
@@ -74,19 +74,19 @@ func TestParseProtocolValue(t *testing.T) {
 	}
 }
 
-// TestProtocolAndNetworkGrammarsAgreeOnStar pins the admission invariant that
-// the two value grammars cannot drift apart on the shared sentinel: any
+// TestProtocolAndNetworkSchemasAgreeOnStar pins the admission invariant that
+// the two value schemas cannot drift apart on the shared sentinel: any
 // rendering of "*" is a star in both, or an error in both.
-func TestProtocolAndNetworkGrammarsAgreeOnStar(t *testing.T) {
+func TestProtocolAndNetworkSchemasAgreeOnStar(t *testing.T) {
 	for _, in := range []string{"*", " * ", "\"*\"", "'*'", "[*]", "*\r\n", "**", "* *"} {
 		t.Run(in, func(t *testing.T) {
 			nv, nerr := ParseNetworkValue(in)
 			pv, perr := ParseProtocolValue(in)
 			if (nerr == nil) != (perr == nil) {
-				t.Fatalf("grammars disagree for %q: network err=%v, protocol err=%v", in, nerr, perr)
+				t.Fatalf("schemas disagree for %q: network err=%v, protocol err=%v", in, nerr, perr)
 			}
 			if nerr == nil && nv.Star != pv.Star {
-				t.Errorf("grammars disagree about Star for %q: network=%v, protocol=%v", in, nv.Star, pv.Star)
+				t.Errorf("schemas disagree about Star for %q: network=%v, protocol=%v", in, nv.Star, pv.Star)
 			}
 		})
 	}

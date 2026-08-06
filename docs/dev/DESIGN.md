@@ -128,8 +128,8 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
   `tls/` means a TLS record layer was observed on the wire, and its absence says nothing about
   encryption (`ssh` and `quic` are both encrypted). Traffic
   matching no signature is classified `unclassified` — observation vocabulary only, visible in
-  findings and metrics but rejected by the grammar, so only a default deny covers it. The
-  grammar is defined once, in `pkg/compiler/protocolvalue.go: ParseProtocolValue`, and consumed
+  findings and metrics but rejected by the schema, so only a default deny covers it. The
+  schema is defined once, in `pkg/compiler/protocolvalue.go: ParseProtocolValue`, and consumed
   by admission validation, program-time map filling (`protofilter.ParseTargets`) and
   monitor-mode matching.
 - `deny.values: ["*"]` (or an expression producing `["*"]`) is a **default-deny** sentinel for that

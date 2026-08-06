@@ -72,52 +72,52 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "empty value is rejected, not ignored",
 			values:       []string{""},
-			wantRejected: []compiler.RejectedTarget{{Value: "", Reason: ReasonEmpty}},
+			wantRejected: []compiler.RejectedTarget{{Value: "", Reason: compiler.ErrEmptyProtocolValue.Error()}},
 		},
 		{
 			name:         "whitespace-only value is rejected as empty",
 			values:       []string{"  \t"},
-			wantRejected: []compiler.RejectedTarget{{Value: "  \t", Reason: ReasonEmpty}},
+			wantRejected: []compiler.RejectedTarget{{Value: "  \t", Reason: compiler.ErrEmptyProtocolValue.Error()}},
 		},
 		{
 			name:         "ALPN longer than the kernel buffer is rejected",
 			values:       []string{"tls/" + strings.Repeat("a", compiler.MaxALPNLength+1)},
-			wantRejected: []compiler.RejectedTarget{{Value: "tls/" + strings.Repeat("a", compiler.MaxALPNLength+1), Reason: ReasonInvalidALPN}},
+			wantRejected: []compiler.RejectedTarget{{Value: "tls/" + strings.Repeat("a", compiler.MaxALPNLength+1), Reason: compiler.ErrInvalidALPNValue.Error()}},
 		},
 		{
 			name:         "ALPN with a non-visible byte is rejected",
 			values:       []string{"tls/h 2"},
-			wantRejected: []compiler.RejectedTarget{{Value: "tls/h 2", Reason: ReasonInvalidALPN}},
+			wantRejected: []compiler.RejectedTarget{{Value: "tls/h 2", Reason: compiler.ErrInvalidALPNValue.Error()}},
 		},
 		{
 			name:         "empty ALPN suffix is rejected",
 			values:       []string{"tls/"},
-			wantRejected: []compiler.RejectedTarget{{Value: "tls/", Reason: ReasonInvalidALPN}},
+			wantRejected: []compiler.RejectedTarget{{Value: "tls/", Reason: compiler.ErrInvalidALPNValue.Error()}},
 		},
 		{
 			name:         "unrecognized token is rejected",
 			values:       []string{"gopher"},
-			wantRejected: []compiler.RejectedTarget{{Value: "gopher", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "gopher", Reason: compiler.ErrNotAProtocolValue.Error()}},
 		},
 		{
 			name:         "unknown is not a protocol token",
 			values:       []string{"unknown"},
-			wantRejected: []compiler.RejectedTarget{{Value: "unknown", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "unknown", Reason: compiler.ErrNotAProtocolValue.Error()}},
 		},
 		{
 			name:         "h2c is not a protocol token",
 			values:       []string{"h2c"},
-			wantRejected: []compiler.RejectedTarget{{Value: "h2c", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "h2c", Reason: compiler.ErrNotAProtocolValue.Error()}},
 		},
 		{
 			name:         "ALPN suffix on a non-tls token is rejected",
 			values:       []string{"quic/h2"},
-			wantRejected: []compiler.RejectedTarget{{Value: "quic/h2", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "quic/h2", Reason: compiler.ErrNotAProtocolValue.Error()}},
 		},
 		{
 			name:         "wrong case is rejected",
 			values:       []string{"TLS"},
-			wantRejected: []compiler.RejectedTarget{{Value: "TLS", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "TLS", Reason: compiler.ErrNotAProtocolValue.Error()}},
 		},
 		{
 			name:        "mixed valid and invalid keeps the valid ones and reports the rest",
@@ -125,8 +125,8 @@ func TestParseTargets(t *testing.T) {
 			wantTargets: []Target{{Protocol: "ssh"}, {Protocol: "tls", ALPN: "h2"}},
 			wantStar:    true,
 			wantRejected: []compiler.RejectedTarget{
-				{Value: "gopher", Reason: ReasonNotAProtocol},
-				{Value: "tls/", Reason: ReasonInvalidALPN},
+				{Value: "gopher", Reason: compiler.ErrNotAProtocolValue.Error()},
+				{Value: "tls/", Reason: compiler.ErrInvalidALPNValue.Error()},
 			},
 		},
 	}
@@ -148,7 +148,7 @@ func TestParseTargets(t *testing.T) {
 	}
 }
 
-// protoID can encode ProtocolUnclassified for observation keys, so a grammar
+// protoID can encode ProtocolUnclassified for observation keys, so a schema
 // leak here would silently program a policy rule matching unclassifiable
 // traffic. The string must be rejected, never turned into a target.
 func TestParseTargets_UnclassifiedIsNotProgrammable(t *testing.T) {
@@ -162,7 +162,7 @@ func TestParseTargets_UnclassifiedIsNotProgrammable(t *testing.T) {
 	if len(targets) != 0 || star {
 		t.Errorf("ParseTargets = (%v, %v), want no targets and no star", targets, star)
 	}
-	want := []compiler.RejectedTarget{{Value: compiler.ProtocolUnclassified, Reason: ReasonNotAProtocol}}
+	want := []compiler.RejectedTarget{{Value: compiler.ProtocolUnclassified, Reason: compiler.ErrNotAProtocolValue.Error()}}
 	if diff := cmp.Diff(want, rejected); diff != "" {
 		t.Errorf("rejected mismatch (-want +got):\n%s", diff)
 	}

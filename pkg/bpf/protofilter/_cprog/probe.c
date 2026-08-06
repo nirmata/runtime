@@ -192,7 +192,7 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
         /* checked last: an earlier branch on a register derived from alen syncs
          * away the [1,16] range the variable-length load is checked against */
         if (alen == 0 || alen > ALPN_MAX_LEN)
-            return PROTO_TLS; /* an entry the policy grammar cannot name: bare tls */
+            return PROTO_TLS; /* an entry no policy value can name: bare tls */
 
         __u8 tmp[ALPN_MAX_LEN] = {};
         if (bpf_skb_load_bytes(skb, base + off + 3, tmp, alen) < 0)

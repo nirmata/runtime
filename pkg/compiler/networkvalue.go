@@ -14,14 +14,14 @@ import (
 const StarTarget = "*"
 
 // trimValue strips what CEL list rendering and hand-written YAML leak around a
-// value. Every value grammar trims identically, so they cannot disagree about
+// value. Every value schema trims identically, so they cannot disagree about
 // what a value is before they start deciding what it means.
 func trimValue(raw string) string {
 	return strings.Trim(raw, " \t\r\n\"'[]")
 }
 
 // IsStarTarget reports whether raw is the StarTarget sentinel under the same
-// trimming the value grammars apply. Consumers that translate the sentinel into
+// trimming the value schemas apply. Consumers that translate the sentinel into
 // a default-deny flag must use this rather than comparing against StarTarget:
 // a policy value of `" * "` is a default deny to every parser, and a raw
 // comparison would silently downgrade it to allow-all-except-denied.
