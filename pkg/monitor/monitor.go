@@ -321,7 +321,7 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 	case BehaviorNetwork:
 		f.Net = &reporter.NetSummary{DestIP: ev.Net.DestIP.String(), DestHost: ev.Net.Domain}
 	case BehaviorOpen, BehaviorExec:
-		f.Process = &reporter.ProcessSummary{Comm: ev.Comm}
+		f.Process = &reporter.ProcessSummary{Comm: ev.Comm, Argv: argvString(ev)}
 	case BehaviorDNS:
 		f.DNS = &reporter.DNSSummary{QName: ev.DNS.QName}
 	}
@@ -366,6 +366,16 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 		return BehaviorDNS, ev.DNS.QName
 	}
 	return "", ""
+}
+
+// argvString joins the observed command line for the finding's process summary.
+// Only the exec sources carry arguments; the LSM observation counters do not, so
+// this is empty for them and the property is omitted.
+func argvString(ev runtimeevent.Event) string {
+	if ev.Exec == nil || len(ev.Exec.Argv) == 0 {
+		return ""
+	}
+	return strings.Join(ev.Exec.Argv, " ")
 }
 
 // message renders the finding message. Every target it names is either a value

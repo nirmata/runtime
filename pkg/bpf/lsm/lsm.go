@@ -20,8 +20,8 @@ const (
 	PROG_TYPE_LSM_EXEC = "bprm_check_security"
 )
 
-//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmFileOpen ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmExecCheck ./_cprog/lsm.bpf.c -- -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmFileOpen ./_cprog/lsm.bpf.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmExecCheck ./_cprog/lsm.bpf.c -- -I../include -I./_cprog/include -I./_cprog
 type LsmEnforcer struct {
 	logger *logr.Logger
 	link   link.Link

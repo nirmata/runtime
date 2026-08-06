@@ -271,6 +271,12 @@ programs to the same hook, each with its own map set. The kernel denies if any o
 `open`/`exec` rules from separate policies intersect rather than union
 (see [Known Gaps](#known-gaps--future-work)).
 
+The two exec-related kernel programs have complementary, non-overlapping capabilities:
+`bprm_check_security` can return `-EPERM` but reads only `bprm->file->f_path`, so it cannot see
+arguments; `sched_process_exec` (`pkg/bpf/exectrace`) sees argv but has no return contract. The
+`exec` matcher is therefore path-only. There is no `args:` matcher, and adding one would ship a
+matcher that enforcement silently ignores.
+
 ### Network egress (`pkg/egressmgr`, `pkg/bpf/egressfilter`)
 
 `EgressManager` (`pkg/egressmgr/egressmgr.go`) is the pod and policy handler for the `network`
@@ -296,9 +302,9 @@ pods pointing at stale IP data.
 
 Enforcement is a kernel-side map lookup and produces no userspace output. Monitor mode needs the
 opposite: a stream of what a workload actually did, attributed to a pod, matched against policy
-in userspace. That is the event plane. Most of it rides the counters the enforcement BPF objects
-already keep; the DNS question observer is the one source with a program and a ring buffer of its
-own.
+in userspace. That is the event plane. Most of it rides the counters the enforcing BPF objects
+already keep; `pkg/bpf/exectrace` and `pkg/bpf/dnsquery` are the sources with a program and a ring
+buffer of their own.
 
 ### Choosing a transport: counter map or ring buffer
 
@@ -310,13 +316,13 @@ The two source shapes are not interchangeable, and the deciding question is what
   interesting quantity is "how many times", and a read-and-reset drain turns the map into deltas.
   Nothing is lost between polls that the counter does not record, and the kernel side costs one
   map update per event.
-- **A variable-length string needs a ring buffer.** A DNS question name is the payload, not a key:
-  its value is the whole observation, aggregation would destroy it, and a map keyed on it would be
-  a map keyed on unbounded user data. Each occurrence is its own record, delivered as it happens,
-  with `Count` fixed at 1.
+- **A variable-length string needs a ring buffer.** A DNS question name, or an exec's argv, is the
+  payload rather than a key: its value is the whole observation, aggregation would destroy it, and
+  a map keyed on it would be a map keyed on unbounded user data. Each occurrence is its own record,
+  delivered as it happens, with `Count` fixed at 1.
 
 The cost of the second shape is that a full buffer loses observations where a full counter map
-merely stops distinguishing them, which is why the ring buffer source carries loss counters and
+merely stops distinguishing them, which is why the ring buffer sources carry loss counters and
 the poll sources do not.
 
 ### Normalized events (`pkg/runtimeevent`)
@@ -334,7 +340,7 @@ Three interfaces define the plumbing, all in `pkg/runtimeevent/iface.go`:
 
 | Interface | Implemented by | Role |
 | --- | --- | --- |
-| `Source` | `collector.NewPollSource`, `dnsquery.Source` | Produces events until its context ends. |
+| `Source` | `collector.NewPollSource`, `exectrace.Source`, `dnsquery.Source` | Produces events until its context ends. |
 | `Sink` | `monitor.Monitor` | Consumes fully-annotated events; must be fast and must not panic outward. |
 | `PolicyStatusRecorder` | `controller.StatusWriter` | Receives status conditions from anywhere in the plane. |
 
@@ -366,6 +372,20 @@ changes in the kernel is that the pod's cgroup ID is in the `cgids` map (LSM) or
 a filter with `OBSERVE` set (egress). Crossing the observe/enforce line rebuilds the attachment
 rather than mutating it, so an observing enforcer can never inherit deny entries and an enforcing
 one never starts from an observer's empty maps.
+
+### Exec tracing (`pkg/bpf/exectrace`)
+
+`exectrace.Source` is the first streaming source: a `raw_tp/sched_process_exec` program that
+reports one ring buffer record per exec — pid, comm, filename, and up to 8 argv slots of 128
+bytes — decoded by `DecodeExecEvent` into an `Event` with `ExecFacts.Argv`. Production is gated
+in the kernel by a `cgids` map that `LsmManager` mirrors from its exec attachments (the
+`CgroupSink` seam), so a pod no exec policy selects produces no ring buffer traffic at all.
+Kernel-side losses (ring buffer full, argv truncated or unreadable) are counted in a per-CPU
+`stats` map and logged by the source's poller, because a record that was never written is
+invisible to everything downstream.
+
+Each reserved record is zeroed before it is filled: ring buffer memory is recycled and mmapped
+to userspace, so an unzeroed tail would leak one pod's argv into another pod's event.
 
 ### The DNS question observer (`pkg/bpf/dnsquery`)
 
@@ -453,9 +473,10 @@ observation.
 list of `Stage`s → N `Sink`s, all driven by `Run(ctx)`.
 
 - `NewPollSource(name, interval, poll)` adapts the managers' `CollectObservations` into a
-  `Source`. Poll-based collection is a deliberate consequence of decision 2 above: the enforcement
-  programs expose counters, not a stream. `dnsquery.Source` implements `Source` directly, because
-  its transport already is one.
+  `Source`. Poll-based collection is a deliberate consequence of decision 2 above for the
+  observation sources: the enforcing programs expose counters, not a stream. `exectrace.Source`
+  and `dnsquery.Source` implement `Source` directly over their ring buffers and join the same
+  pipeline.
 - A `Stage` (`Name() string; Process(*Event) bool`) may annotate an event and returns false to
   drop it. Stages run in insertion order; the daemon installs exactly one, `attribution.Index`.
 - Drops are always counted, labeled by source and reason (`buffer_full`, `unattributed`, and the
@@ -570,8 +591,15 @@ emitted.
 The argument is structural rather than procedural: there is no option, flag, or field that
 weakens the mechanism, and adding one is a reason to reject a PR
 ([Agents.md](../../Agents.md)). It is also tested: `reporter.TestRedactionChokepoint` fails if a
-new `Finding` field or property key escapes sanitization. The logging rule that completes it: only
+new `Finding` field or property key escapes sanitization. Adding a string field to `Finding`
+therefore forces two tests wider — `TestRedactionChokepointCoversEveryFindingStringField` and
+the closed property-key set in `result_test.go`. That widening is the review gate doing its
+job: widen it deliberately, never loosen it. The logging rule that completes it: only
 redacted accessor output may be logged — never a raw header map, body, or CEL variable value.
+
+The chokepoint has a kernel-side counterpart in `pkg/bpf/exectrace`: a reserved ring buffer
+record is recycled memory mmapped to userspace, so the program zeroes it before filling it —
+an unzeroed tail is a cross-pod argv leak, not untidiness.
 
 ## Status reporting
 
@@ -646,8 +674,9 @@ future `PLAN.md`.
   reports nothing. Untracked; a `+kubebuilder:default=enforce` or an admission-time requirement is
   the obvious fix and is a breaking change either way.
 - **Monitor-mode observation has two transports, and both are lossy at their own edges.** The
-  `network`/`open`/`exec` observations ride the counters the enforcement objects already keep; the
-  DNS question observer is a program and a ring buffer of its own
+  `network`/`open`/`exec` observations ride the counters the enforcing objects already keep;
+  `pkg/bpf/exectrace` additionally streams per-occurrence exec events with argv, and the DNS
+  question observer is a program and a ring buffer of its own
   (see [Choosing a transport](#choosing-a-transport-counter-map-or-ring-buffer)):
   - Counters are drained every 10 seconds, so those findings lag behavior by up to that interval
     and only counts survive — not per-occurrence ordering or timing.

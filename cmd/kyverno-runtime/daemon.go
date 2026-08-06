@@ -7,6 +7,7 @@ import (
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/attribution"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/dnsquery"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/exectrace"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/collector"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
@@ -164,7 +165,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"))
 
 	em := egressmgr.NewEgressManager(logger, sw)
-	lsmm := lsmmgr.NewLsmManager(logger, sw)
+
+	// The exec tracer is optional: a kernel without the ring buffer or the
+	// sched_process_exec raw tracepoint still runs everything else. A nil
+	// source is skipped by AddSource and mirrors no cgroups.
+	var execSinks []lsmmgr.CgroupSink
+	execSrc, err := exectrace.New(logger.WithName("exectrace"))
+	if err != nil {
+		logger.Error(err, "exec tracing unavailable; argv will not be observed")
+		execSrc = nil
+	} else {
+		defer func() { _ = execSrc.Close() }()
+		execSinks = append(execSinks, execSrc)
+	}
+
+	lsmm := lsmmgr.NewLsmManager(logger, sw, execSinks...)
 
 	// mon evaluates observed events against monitor-mode policies and turns
 	// matches into findings.
@@ -180,6 +195,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
 	col.AddSource(collector.NewPollSource("egress-observe", observeInterval, em.CollectObservations))
 	col.AddSource(collector.NewPollSource("lsm-observe", observeInterval, lsmm.CollectObservations))
+	// A typed nil in the Source interface is not nil, so the check is here
+	// rather than left to AddSource.
+	if execSrc != nil {
+		col.AddSource(execSrc)
+	}
 	col.AddStage(attrIdx)
 	col.AddSink(mon)
 

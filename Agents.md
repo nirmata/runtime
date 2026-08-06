@@ -96,8 +96,10 @@ is the one-line-per-package index.
 | `pkg/utils` | `Guard(op, fn)` — the panic barrier used at handler fan-out boundaries so one bad handler cannot take out its siblings. |
 | `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID) plus `StatusWriter`. |
 | `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
-| `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The two enforcement eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The enforcing eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/bpf/exectrace` | Observation-only `raw_tp/sched_process_exec` program streaming per-exec events with argv over a ring buffer; a `runtimeevent.Source`. |
 | `pkg/bpf/dnsquery` | The observation-only `cgroup_skb/egress` program that reads the QNAME out of UDP/53 questions from gated cgroups, plus its ring buffer reader, decoder, and per-CPU loss counters. One loaded instance per daemon, so N attachments share one buffer and one reader. |
+| `pkg/bpf/include` | The shared, hand-maintained `vmlinux.h` every `_cprog` compiles against. Committed, minimal, add only what a program reads. |
 | `pkg/lsmmgr`, `pkg/egressmgr` | The managers that attach those programs per matched pod and drain their observation counters (`CollectObservations`). |
 | `pkg/dnsmgr` | Decides which pods the DNS observer sees: attaches per container cgroup and admits cgroup ids to the kernel gate exactly while a policy with a `dns` behavior selects the pod. Both a `PodEventHandler` and a `RuntimePolicyEventHandler`. |
 | `pkg/runtimeevent` | The normalized `Event` type, its `KernelDecision`, and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. |
@@ -111,15 +113,17 @@ is the one-line-per-package index.
 ## Runtime event filtering policy
 
 There is one event pipeline: `pkg/collector`, annotated by `pkg/attribution`, consumed by
-`pkg/monitor`. It is fed by two source shapes — poll sources over the observation counters the two
-enforcement eBPF programs keep, and `pkg/bpf/dnsquery`'s ring buffer reader. There is no
-`connect`/`tcpconnect` collector and no Inspektor Gadget dependency.
+`pkg/monitor`. It is fed by two source shapes — poll sources over the observation counters the
+enforcing eBPF programs keep, and the ring buffer readers of `pkg/bpf/exectrace` and
+`pkg/bpf/dnsquery`. There is no `connect`/`tcpconnect` collector and no Inspektor Gadget
+dependency.
 
 Pick the shape from what the observation is, and do not mix them up: a bounded enum (an address, a
 path, an exec filename, each paired with the kernel's decision) rides a counter map and is drained
 into deltas; a variable-length string whose value *is* the observation needs a ring buffer, one
-record per occurrence. A ring buffer can lose records where a counter map only stops distinguishing
-them, so a ring buffer source without loss counters is not finished.
+record per occurrence — argv and a DNS question name are both that. A ring buffer can lose records
+where a counter map only stops distinguishing them, so a ring buffer source without loss counters
+is not finished.
 
 The filtering rules that apply to that pipeline:
 

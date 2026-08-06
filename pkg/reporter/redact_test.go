@@ -163,6 +163,7 @@ func TestRedactionChokepoint(t *testing.T) {
 		},
 		Process: &ProcessSummary{
 			Comm: "curl " + canaries[1].value,
+			Argv: "curl -H " + canaries[0].value + " " + canaries[7].value,
 		},
 		Timestamp: fixedTime,
 	}
@@ -248,7 +249,7 @@ func TestRedactionChokepointCoversEveryFindingStringField(t *testing.T) {
 		t.Errorf("DNSSummary fields changed (-want +got):\n%s", diff)
 	}
 
-	wantProcess := []string{"Comm"}
+	wantProcess := []string{"Comm", "Argv"}
 	if diff := cmp.Diff(wantProcess, structFieldNames(ProcessSummary{})); diff != "" {
 		t.Errorf("ProcessSummary fields changed (-want +got):\n%s", diff)
 	}

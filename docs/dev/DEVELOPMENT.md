@@ -145,6 +145,18 @@ and CI checks it.
   container runs as the invoking user so nothing ends up root-owned. `make verify-bpf` fails on
   any byte difference. Never hand-edit `*_bpfel.go`, `*_bpfeb.go`, or `.o` files — add
   `_cprog/*.c` with a `go:generate` line instead.
+  - The kernel type definitions live in one shared, hand-maintained
+    `pkg/bpf/include/vmlinux.h`, pulled in via `-I../include`. It is committed, never generated
+    or gitignored, and stays minimal: add only the types and fields your program reads (CO-RE
+    relocations tolerate the missing rest).
+  - Editing that shared header changes the size of committed `.o` files for programs that did
+    not change, because clang emits BTF only for the types a program references. Before pushing
+    such a diff, prove it is BTF-only: `llvm-objdump -d` the old and new objects (the builder
+    image ships `llvm-objdump-19`) and state in the PR whether the instruction stream changed
+    or only BTF.
+  - Every new BPF program must be registered in the verifier lane: add an entry with an
+    instruction budget to the table in `test/e2e/bpfverify_test.go`, which `make test-bpf-verify`
+    and the `BPF verifier smoke` CI job load-test on a real kernel.
 - **Typed client** (`pkg/client/`): `make generate-client`, `make generate-listers`,
   `make generate-informers`.
 

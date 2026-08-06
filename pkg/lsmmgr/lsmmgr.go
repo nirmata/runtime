@@ -35,6 +35,10 @@ type LsmManager struct {
 	newEnforcer enforcerFactory
 	clock       func() time.Time
 
+	// cgroupSinks gate observation-only sources on the pods the exec policies
+	// select. Set before the informers start and not mutated afterwards.
+	cgroupSinks []CgroupSink
+
 	// while each informer is serial, both the pod and the policy informers run in parallel.
 	// we need to guard against them both modifying the internal state concurrently
 	mu sync.Mutex
@@ -67,10 +71,11 @@ type lsmAttachment struct {
 	observe bool
 }
 
-func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder) *LsmManager {
+func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, cgroupSinks ...CgroupSink) *LsmManager {
 	return &LsmManager{
-		logger: logger,
-		status: status,
+		logger:      logger,
+		status:      status,
+		cgroupSinks: cgroupSinks,
 		newEnforcer: func(logger *logr.Logger, target string) (lsmEnforcer, error) {
 			enf, err := lsm.NewForAttachTarget(logger, target)
 			if err != nil {
@@ -133,6 +138,7 @@ func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids 
 	if err := prog.enf.EnableObservation(cgids); err != nil {
 		l.observationUnavailable(rpUID, progType, "failed to enable observation", err)
 	}
+	l.mirrorCgids(rpUID, progType, cgids, true)
 }
 
 // removePodCgids is addPodCgids' inverse, and pairs the same two calls.
@@ -146,6 +152,65 @@ func (l *LsmManager) removePodCgids(rpUID, progType string, prog *progState, cgi
 	if err := prog.enf.DisableObservation(cgids); err != nil {
 		l.observationUnavailable(rpUID, progType, "failed to disable observation", err)
 	}
+	l.mirrorCgids(rpUID, progType, cgids, false)
+}
+
+// mirrorCgids forwards the exec target's cgroup set to the cgroup sinks. The
+// sinks hold one unqualified set, so only the exec target is mirrored, and a
+// removal reaches them only for cgroups no other exec attachment still holds.
+func (l *LsmManager) mirrorCgids(rpUID, progType string, cgids []uint64, add bool) {
+	if progType != lsm.PROG_TYPE_LSM_EXEC {
+		return
+	}
+	if !add {
+		cgids = l.cgidsUnwantedByOtherExecPolicies(rpUID, cgids)
+		if len(cgids) == 0 {
+			return
+		}
+	}
+	for _, sink := range l.cgroupSinks {
+		var err error
+		if add {
+			err = sink.AddCgids(cgids)
+		} else {
+			err = sink.DeleteCgids(cgids)
+		}
+		if err != nil {
+			l.logger.Error(err, "failed to mirror cgids to observation source", "uid", rpUID, "add", add)
+		}
+	}
+}
+
+// cgidsUnwantedByOtherExecPolicies filters cgids down to those no exec
+// attachment other than excludeUID still selects.
+//
+// Callers run before their own bookkeeping is torn down — podDeleted and the
+// selector sync both remove the pod from attachedPods after the cgid removal —
+// so excluding the caller's own policy is what makes this answer the question
+// "does anyone else still need this cgroup".
+func (l *LsmManager) cgidsUnwantedByOtherExecPolicies(excludeUID string, cgids []uint64) []uint64 {
+	wanted := make(map[uint64]struct{})
+	for uid, la := range l.lsmAttachments {
+		if uid == excludeUID {
+			continue
+		}
+		if _, ok := la.progs[lsm.PROG_TYPE_LSM_EXEC]; !ok {
+			continue
+		}
+		for _, pod := range la.attachedPods {
+			for _, cgid := range pod.cgids {
+				wanted[cgid] = struct{}{}
+			}
+		}
+	}
+
+	unwanted := make([]uint64, 0, len(cgids))
+	for _, cgid := range cgids {
+		if _, ok := wanted[cgid]; !ok {
+			unwanted = append(unwanted, cgid)
+		}
+	}
+	return unwanted
 }
 
 // observationUnavailable records a policy condition for an observation failure:

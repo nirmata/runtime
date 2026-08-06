@@ -18,7 +18,7 @@ var allowedPropertyKeys = map[string]struct{}{
 	propFingerprint: {}, propCount: {}, propFirstTimestamp: {}, propLastTimestamp: {},
 	propBehavior: {}, propEnforced: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
 	propDestIP: {}, propDestHost: {}, propDNSName: {},
-	propComm: {},
+	propComm: {}, propArgv: {},
 }
 
 func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
@@ -27,7 +27,7 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 	f.Pod.OwnerName = "app"
 	f.Pod.ServiceAccount = "app-sa"
 	f.Pod.Labels = map[string]string{"team": "platform", "secret-label": "do-not-emit"}
-	f.Process = &ProcessSummary{Comm: "curl"}
+	f.Process = &ProcessSummary{Comm: "curl", Argv: "curl -sS https://example.com"}
 
 	first := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 	last := time.Date(2026, 7, 27, 9, 5, 0, 0, time.UTC)
@@ -62,6 +62,7 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 		propDestIP:         "1.2.3.4",
 		propDestHost:       "api.example.com",
 		propComm:           "curl",
+		propArgv:           "curl -sS https://example.com",
 	}
 	if diff := cmp.Diff(want, res.Properties); diff != "" {
 		t.Errorf("buildResult properties (-want +got):\n%s", diff)
