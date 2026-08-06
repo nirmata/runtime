@@ -58,7 +58,7 @@ func selfCgroupID(t *testing.T) uint64 {
 func TestBPFExecTraceReportsArgv(t *testing.T) {
 	requireBPFCapableHost(t)
 
-	src, err := exectrace.New(testr.New(t))
+	src, err := exectrace.New(testr.New(t), time.Second)
 	if err != nil {
 		// %+v renders *ebpf.VerifierError's full log.
 		t.Fatalf("loading exectrace objects: %+v", err)
@@ -132,7 +132,8 @@ func TestBPFExecTraceReportsArgv(t *testing.T) {
 func TestBPFExecTraceIgnoresUnadmittedCgroups(t *testing.T) {
 	requireBPFCapableHost(t)
 
-	src, err := exectrace.New(logr.Discard())
+	// 0 exercises the non-positive clamp; this test never reads the counters.
+	src, err := exectrace.New(logr.Discard(), 0)
 	if err != nil {
 		t.Fatalf("loading exectrace objects: %+v", err)
 	}
