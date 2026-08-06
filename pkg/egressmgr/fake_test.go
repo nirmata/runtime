@@ -81,7 +81,7 @@ func newFakeFilter() *fakeFilter {
 	}
 }
 
-func (f *fakeFilter) AddIps(p *compiler.AllowDenyPair) ([]egressfilter.RejectedTarget, error) {
+func (f *fakeFilter) AddIps(p *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.adds = append(f.adds, snapshotPair(p))
 	if p == nil {
 		return nil, nil
@@ -103,7 +103,7 @@ func (f *fakeFilter) AddIps(p *compiler.AllowDenyPair) ([]egressfilter.RejectedT
 	return append(allowRejected, denyRejected...), f.addErr
 }
 
-func (f *fakeFilter) DeleteIps(p *compiler.AllowDenyPair) ([]egressfilter.RejectedTarget, error) {
+func (f *fakeFilter) DeleteIps(p *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.deletes = append(f.deletes, snapshotPair(p))
 	if p == nil {
 		return nil, nil

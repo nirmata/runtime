@@ -585,14 +585,16 @@ Conditions:
 | Type | Reasons | Meaning |
 | --- | --- | --- |
 | `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for a policy that omits `spec.mode`, which is neither enforced nor reported. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in such a policy is applied, including the rules either side of the bad one. |
-| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServices` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServices` lists the Service names that are not in cache. |
+| `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServices` | Whether every `network` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServices` lists the Service and endpoint names that are not in cache. |
+| `ExecRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `exec` path could be programmed. `UnsupportedPaths` lists the rejected values and why. |
+| `OpenRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `open` path could be programmed. |
 | `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy would silently produce no findings. |
 
-A target the runtime cannot program is never silently skipped. Which condition carries it
-depends on where the value came from: a literal is checked when the policy compiles and a
-bad one reports `Applied=False` with `CompileFailed`, while a value an `expression` produced
-is checked when it is programmed and reports `TargetsValid=False`. Either way it also
-reaches an operator-visible log line.
+A target or path the runtime cannot program is never silently skipped, and which condition
+carries it depends on where the value came from: a literal is checked when the policy compiles
+and a bad one reports `Applied=False` with `CompileFailed`, while a value an `expression`
+produced is checked when it is programmed and reports the per-behavior condition. Either way it
+also reaches an operator-visible log line.
 
 ## Findings and Reports
 
@@ -657,10 +659,21 @@ exception in shape — a program of its own, streamed rather than counted — an
   reported by address alone.
 - **Unsupported `network` targets are rejected, not skipped.** A CIDR wider than `/24`, a
   name whose wire encoding exceeds 128 bytes, and a pod's 257th distinct domain are all
-  accepted by the grammar and refused when programmed, so they are reported per value
+  accepted by the schema and refused when programmed, so they are reported per value
   through `TargetsValid=False`. A CIDR of `/24` or narrower is expanded into individual
-  addresses. An IPv6 literal is refused earlier, by the grammar, so as a literal value it
+  addresses. An IPv6 literal is refused earlier, by the schema, so as a literal value it
   fails the policy to compile instead.
+- **`open` and `exec` values are absolute literal paths, bounded at 127 bytes.** They are never
+  split into tokens and never treated as globs; only the whole value `"*"` is the default-deny
+  sentinel, and it must be written exactly — `" * "` is rejected, not treated as the wildcard. A
+  longer value, an empty one, one carrying a NUL byte, or a relative one is rejected
+  at admission and reported through `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives
+  from an `expression`.
+- **`exec` selects a binary, never a command.** The key is the resolved program path, so allowing
+  `/usr/bin/kubectl` allows every subcommand it has; arguments are not part of the key and cannot
+  be enforced on. `kubectl` and `kubectl delete` are both rejected rather than accepted and then
+  silently never matched — the kernel resolves paths with `bpf_d_path`, which always yields an
+  absolute one.
 - **Observations that cannot be attributed to a pod are dropped** and counted in
   `nirmata_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.

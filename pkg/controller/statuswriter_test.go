@@ -200,9 +200,9 @@ func TestStatusWriterMergesConditions(t *testing.T) {
 	if _, ok := byType["SomeOtherControllerSaysSo"]; !ok {
 		t.Error("the pre-existing condition was dropped instead of merged")
 	}
-	applied := byType[ConditionApplied]
-	if applied.Status != metav1.ConditionTrue || applied.Reason != ReasonMonitoring {
-		t.Errorf("Applied condition = (%s, %s), want (True, %s)", applied.Status, applied.Reason, ReasonMonitoring)
+	applied := byType[v1alpha1.ConditionApplied]
+	if applied.Status != metav1.ConditionTrue || applied.Reason != v1alpha1.ReasonMonitoring {
+		t.Errorf("Applied condition = (%s, %s), want (True, %s)", applied.Status, applied.Reason, v1alpha1.ReasonMonitoring)
 	}
 	tv := byType["TargetsValid"]
 	if tv.Status != metav1.ConditionFalse || tv.Reason != "UnsupportedTargets" {
@@ -221,10 +221,10 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 		wantReason string
 		wantStatus metav1.ConditionStatus
 	}{
-		{mode: compiler.ModeEnforce, wantReason: ReasonEnforcing, wantStatus: metav1.ConditionTrue},
-		{mode: compiler.ModeMonitor, wantReason: ReasonMonitoring, wantStatus: metav1.ConditionTrue},
-		{mode: "", wantReason: ReasonNoMode, wantStatus: metav1.ConditionFalse},
-		{mode: "something-new", wantReason: ReasonEnforcing, wantStatus: metav1.ConditionTrue},
+		{mode: compiler.ModeEnforce, wantReason: v1alpha1.ReasonEnforcing, wantStatus: metav1.ConditionTrue},
+		{mode: compiler.ModeMonitor, wantReason: v1alpha1.ReasonMonitoring, wantStatus: metav1.ConditionTrue},
+		{mode: "", wantReason: v1alpha1.ReasonNoMode, wantStatus: metav1.ConditionFalse},
+		{mode: "something-new", wantReason: v1alpha1.ReasonEnforcing, wantStatus: metav1.ConditionTrue},
 	}
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 			got := getPolicy(t, client, "p")
 			var applied *metav1.Condition
 			for i := range got.Status.Conditions {
-				if got.Status.Conditions[i].Type == ConditionApplied {
+				if got.Status.Conditions[i].Type == v1alpha1.ConditionApplied {
 					applied = &got.Status.Conditions[i]
 				}
 			}
@@ -363,7 +363,7 @@ func TestStatusWriterRecordersToleratePolicyEventOrdering(t *testing.T) {
 	for _, c := range got.Status.Conditions {
 		types = append(types, c.Type)
 	}
-	if diff := cmp.Diff([]string{ConditionApplied, "TargetsValid"}, types, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
+	if diff := cmp.Diff([]string{v1alpha1.ConditionApplied, "TargetsValid"}, types, cmpopts.SortSlices(func(a, b string) bool { return a < b })); diff != "" {
 		t.Errorf("condition types mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -374,7 +374,7 @@ func TestStatusWriterRecordedNameMakesConditionFlushable(t *testing.T) {
 	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
 
 	sw.RecordCondition("uid-1", "p", metav1.Condition{
-		Type: ConditionApplied, Status: metav1.ConditionFalse, Reason: ReasonCompileFailed,
+		Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonCompileFailed,
 		Message: "spec.behaviors[0].network: Invalid value",
 	})
 	if err := sw.Flush(context.Background()); err != nil {
@@ -382,7 +382,7 @@ func TestStatusWriterRecordedNameMakesConditionFlushable(t *testing.T) {
 	}
 
 	got := getPolicy(t, client, "p")
-	if !hasCondition(got.Status.Conditions, ConditionApplied) {
+	if !hasCondition(got.Status.Conditions, v1alpha1.ConditionApplied) {
 		t.Fatalf("conditions = %+v, want Applied written without any policy event", got.Status.Conditions)
 	}
 	sw.mu.Lock()

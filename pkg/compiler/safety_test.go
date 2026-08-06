@@ -399,3 +399,91 @@ func TestCompile_DoesNotValidateOpenAndExecValuesAsNetworkTargets(t *testing.T) 
 		t.Errorf("Exec.Deny mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestCompile_RejectsBadPathValuesWithFieldPath pins the admission-time half for
+// exec and open: a value the kernel maps cannot hold is rejected with the field
+// path of the exact offender rather than being dropped when it reaches those
+// maps. Both behaviors are checked because both program the same maps, so a
+// schema enforced for only one of them is not a chokepoint.
+func TestCompile_RejectsBadPathValuesWithFieldPath(t *testing.T) {
+	tooLong := "/" + strings.Repeat("a", MaxPathValueLen)
+	tests := []struct {
+		name      string
+		behaviors []v1alpha1.PolicyBehavior
+		wantPaths []string
+	}{
+		{
+			name: "over-length path in exec deny values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Exec: &v1alpha1.Behavior{Deny: behaviorRule([]string{"/bin/sh", tooLong}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].exec.deny.values[1]"},
+		},
+		{
+			name: "empty value in exec allow values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Exec: &v1alpha1.Behavior{Allow: behaviorRule([]string{"  "}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].exec.allow.values[0]"},
+		},
+		{
+			name: "NUL byte in exec deny values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Exec: &v1alpha1.Behavior{Deny: behaviorRule([]string{"/bin/sh\x00"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].exec.deny.values[0]"},
+		},
+		{
+			name: "over-length path in open deny values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Open: &v1alpha1.Behavior{Deny: behaviorRule([]string{"/etc/shadow", tooLong}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].open.deny.values[1]"},
+		},
+		{
+			name: "NUL byte in open deny values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Open: &v1alpha1.Behavior{Deny: behaviorRule([]string{"/etc/shadow\x00"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].open.deny.values[0]"},
+		},
+		{
+			name: "relative path in open allow values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Open: &v1alpha1.Behavior{Allow: behaviorRule([]string{"etc/hosts"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].open.allow.values[0]"},
+		},
+		{
+			name: "offenders in both allow and deny of the second behavior",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Exec: &v1alpha1.Behavior{Deny: behaviorRule([]string{"*"}, "")}},
+				{Exec: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{""}, ""),
+					Deny:  behaviorRule([]string{"/bin/sh", tooLong}, ""),
+				}},
+			},
+			wantPaths: []string{
+				"spec.behaviors[1].exec.allow.values[0]",
+				"spec.behaviors[1].exec.deny.values[1]",
+			},
+		},
+	}
+
+	c := newTestCompiler(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := c.Compile(v1alpha1.RuntimePolicy{
+				Spec: v1alpha1.RuntimePolicySpec{Behaviors: tt.behaviors},
+			})
+			if err == nil {
+				t.Fatal("Compile() error = nil, want rejection of unsupported exec values")
+			}
+			for _, want := range tt.wantPaths {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Compile() error = %q, want it to name %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}

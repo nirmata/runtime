@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -19,15 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Condition type and reasons the manager writes onto a RuntimePolicy's status.
-const (
-	ConditionTargetsValid      = "TargetsValid"
-	ReasonUnsupportedTargets   = "UnsupportedTargets"
-	ReasonUnresolvedServices   = "UnresolvedServices"
-	ReasonAllTargetsSupported  = "AllTargetsSupported"
-	ReasonNoTargets            = "NoTargets"
-	maxReportedRejectedTargets = 10
-)
+const maxReportedRejectedTargets = 10
 
 // filterFactory builds the per-pod egress filter.
 type filterFactory func(logger *logr.Logger) (egressFilter, error)
@@ -186,7 +179,7 @@ func (e *EgressManager) deleteIps(podUid, uid string, pa *podAttachment, pair *c
 // surfaceRejected records every target the runtime cannot honor on the policy's
 // status. The per-pod log stays at V(2); recordTargetsCondition already reports
 // the same targets once per policy event.
-func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []egressfilter.RejectedTarget) {
+func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []compiler.RejectedTarget) {
 	if len(rejected) == 0 {
 		return
 	}
@@ -195,9 +188,9 @@ func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []egressfil
 			"podUid", podUid, "policy", uid, "target", r.Value, "reason", r.Reason)
 	}
 	e.recordCondition(uid, metav1.Condition{
-		Type:               ConditionTargetsValid,
+		Type:               v1alpha1.ConditionTargetsValid,
 		Status:             metav1.ConditionFalse,
-		Reason:             ReasonUnsupportedTargets,
+		Reason:             v1alpha1.ReasonUnsupportedTargets,
 		Message:            rejectionMessage(rejected),
 		LastTransitionTime: metav1.NewTime(e.clock()),
 	})
@@ -218,9 +211,9 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 	unresolved := rp.UnresolvedServices
 	if len(values) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
-			Type:               ConditionTargetsValid,
+			Type:               v1alpha1.ConditionTargetsValid,
 			Status:             metav1.ConditionTrue,
-			Reason:             ReasonNoTargets,
+			Reason:             v1alpha1.ReasonNoTargets,
 			Message:            "the policy declares no network targets",
 			LastTransitionTime: metav1.NewTime(e.clock()),
 		})
@@ -230,9 +223,9 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 	_, _, _, rejected := egressfilter.ParseTargets(values)
 	if len(rejected) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
-			Type:               ConditionTargetsValid,
+			Type:               v1alpha1.ConditionTargetsValid,
 			Status:             metav1.ConditionTrue,
-			Reason:             ReasonAllTargetsSupported,
+			Reason:             v1alpha1.ReasonAllTargetsSupported,
 			Message:            fmt.Sprintf("all %d network targets are supported", len(values)),
 			LastTransitionTime: metav1.NewTime(e.clock()),
 		})
@@ -254,13 +247,13 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 	// an unresolved Service programs nothing, so under deny "*" the destination
 	// is blocked outright: it names the condition even when literals were also
 	// rejected.
-	reason := ReasonUnsupportedTargets
+	reason := v1alpha1.ReasonUnsupportedTargets
 	if len(unresolved) > 0 {
-		reason = ReasonUnresolvedServices
+		reason = v1alpha1.ReasonUnresolvedServices
 		messages = append(messages, unresolvedMessage(unresolved))
 	}
 	e.recordCondition(rp.UID, metav1.Condition{
-		Type:               ConditionTargetsValid,
+		Type:               v1alpha1.ConditionTargetsValid,
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
 		Message:            strings.Join(messages, "; "),
@@ -282,7 +275,7 @@ func (e *EgressManager) recordCondition(uid string, cond metav1.Condition) {
 	e.status.RecordCondition(uid, name, cond)
 }
 
-func rejectionMessage(rejected []egressfilter.RejectedTarget) string {
+func rejectionMessage(rejected []compiler.RejectedTarget) string {
 	parts := make([]string, 0, len(rejected))
 	for i, r := range rejected {
 		if i == maxReportedRejectedTargets {
