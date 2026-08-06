@@ -1035,3 +1035,61 @@ func TestHandleEvent_ConcurrentWithPolicyUpdates(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestHandleEvent_ExecFindingCarriesArgv pins the consumer of the exec source's
+// argv: a violating exec is reported with the command line, and the LSM
+// observation counters, which carry no arguments, leave the field empty rather
+// than inventing one.
+func TestHandleEvent_ExecFindingCarriesArgv(t *testing.T) {
+	tests := []struct {
+		name     string
+		argv     []string
+		wantArgv string
+	}{
+		{
+			name:     "argv from the exec source is joined",
+			argv:     []string{"/usr/bin/python3", "-c", "import os"},
+			wantArgv: "/usr/bin/python3 -c import os",
+		},
+		{
+			name:     "a source without arguments leaves argv empty",
+			argv:     nil,
+			wantArgv: "",
+		},
+		{
+			name:     "a single-element argv is the program alone",
+			argv:     []string{"/bin/nc"},
+			wantArgv: "/bin/nc",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, sink, _ := testMonitor(t)
+			if err := m.RuntimePolicyEvent(
+				monitorPolicy(t, "uid-p", "p", nil, nil, pair(nil, []string{"/usr/bin/python3", "/bin/nc"})),
+				events.EventTypeCreate); err != nil {
+				t.Fatalf("RuntimePolicyEvent: %v", err)
+			}
+
+			ev := execEvent("/usr/bin/python3")
+			if tc.argv != nil {
+				ev = execEvent(tc.argv[0])
+				ev.Exec.Argv = tc.argv
+			}
+
+			m.HandleEvent(ev)
+
+			got := sink.all()
+			if len(got) != 1 {
+				t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
+			}
+			if got[0].Process == nil {
+				t.Fatal("finding has no process summary")
+			}
+			if got[0].Process.Argv != tc.wantArgv {
+				t.Errorf("Process.Argv = %q, want %q", got[0].Process.Argv, tc.wantArgv)
+			}
+		})
+	}
+}

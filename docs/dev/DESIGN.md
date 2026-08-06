@@ -262,6 +262,12 @@ programs to the same hook, each with its own map set. The kernel denies if any o
 `open`/`exec` rules from separate policies intersect rather than union
 (see [Known Gaps](#known-gaps--future-work)).
 
+The two exec-related kernel programs have complementary, non-overlapping capabilities:
+`bprm_check_security` can return `-EPERM` but reads only `bprm->file->f_path`, so it cannot see
+arguments; `sched_process_exec` (`pkg/bpf/exectrace`) sees argv but has no return contract. The
+`exec` matcher is therefore path-only. There is no `args:` matcher, and adding one would ship a
+matcher that enforcement silently ignores.
+
 ### Network egress (`pkg/egressmgr`, `pkg/bpf/egressfilter`)
 
 `EgressManager` (`pkg/egressmgr/egressmgr.go`) is the pod and policy handler for the `network`
@@ -319,8 +325,12 @@ kind rather than another value shape in `network`.
 
 Enforcement is a kernel-side map lookup and produces no userspace output. Monitor mode needs the
 opposite: a stream of what a workload actually did, attributed to a pod, matched against policy
-in userspace. That is the event plane. It is built on per-cgroup counters the BPF objects keep —
-no ring buffers, no per-event kernel-to-user traffic.
+in userspace. That is the event plane. Its sources come in two shapes: poll sources that drain
+the counters the enforcing BPF objects already keep, and streaming sources that read a ring
+buffer from an observation-only kernel program (`pkg/bpf/exectrace` is the first). A new source
+polls when the kernel side already counts what it needs; it streams only when it must carry
+per-occurrence payload a counter key cannot hold — argv is the canonical example. The protocol
+classifier counts, so it polls.
 
 ### Normalized events (`pkg/runtimeevent`)
 
@@ -336,7 +346,7 @@ Three interfaces define the plumbing, all in `pkg/runtimeevent/iface.go`:
 
 | Interface | Implemented by | Role |
 | --- | --- | --- |
-| `Source` | `collector.NewPollSource` | Produces events until its context ends. |
+| `Source` | `collector.NewPollSource`, `exectrace.Source` | Produces events until its context ends. |
 | `Sink` | `monitor.Monitor` | Consumes fully-annotated events; must be fast and must not panic outward. |
 | `PolicyStatusRecorder` | `controller.StatusWriter` | Receives status conditions from anywhere in the plane. |
 
@@ -370,14 +380,29 @@ a filter with `OBSERVE` set (egress). Crossing the observe/enforce line rebuilds
 rather than mutating it, so an observing enforcer can never inherit deny entries and an enforcing
 one never starts from an observer's empty maps.
 
+### Exec tracing (`pkg/bpf/exectrace`)
+
+`exectrace.Source` is the first streaming source: a `raw_tp/sched_process_exec` program that
+reports one ring buffer record per exec — pid, comm, filename, and up to 8 argv slots of 128
+bytes — decoded by `DecodeExecEvent` into an `Event` with `ExecFacts.Argv`. Production is gated
+in the kernel by a `cgids` map that `LsmManager` mirrors from its exec attachments (the
+`CgroupSink` seam), so a pod no exec policy selects produces no ring buffer traffic at all.
+Kernel-side losses (ring buffer full, argv truncated or unreadable) are counted in a per-CPU
+`stats` map and logged by the source's poller, because a record that was never written is
+invisible to everything downstream.
+
+Each reserved record is zeroed before it is filled: ring buffer memory is recycled and mmapped
+to userspace, so an unzeroed tail would leak one pod's argv into another pod's event.
+
 ### Collector (`pkg/collector`)
 
 `Collector` is a small fan-in/fan-out pipeline: N `Source`s → a buffered channel → an ordered
 list of `Stage`s → N `Sink`s, all driven by `Run(ctx)`.
 
 - `NewPollSource(name, interval, poll)` adapts the managers' `CollectObservations` into a
-  `Source`. Poll-based collection is a deliberate consequence of decision 2 above: the existing
-  programs expose counters, not a stream.
+  `Source`. Poll-based collection is a deliberate consequence of decision 2 above for the
+  observation sources: the enforcing programs expose counters, not a stream. `exectrace.Source`
+  implements `Source` directly over its ring buffer and joins the same pipeline.
 - A `Stage` (`Name() string; Process(*Event) bool`) may annotate an event and returns false to
   drop it. Stages run in insertion order; the daemon installs exactly one, `attribution.Index`.
 - Drops are always counted, labeled by source and reason (`buffer_full`, `unattributed`), and
@@ -457,8 +482,15 @@ emitted.
 The argument is structural rather than procedural: there is no option, flag, or field that
 weakens the mechanism, and adding one is a reason to reject a PR
 ([Agents.md](../../Agents.md)). It is also tested: `reporter.TestRedactionChokepoint` fails if a
-new `Finding` field or property key escapes sanitization. The logging rule that completes it: only
+new `Finding` field or property key escapes sanitization. Adding a string field to `Finding`
+therefore forces two tests wider — `TestRedactionChokepointCoversEveryFindingStringField` and
+the closed property-key set in `result_test.go`. That widening is the review gate doing its
+job: widen it deliberately, never loosen it. The logging rule that completes it: only
 redacted accessor output may be logged — never a raw header map, body, or CEL variable value.
+
+The chokepoint has a kernel-side counterpart in `pkg/bpf/exectrace`: a reserved ring buffer
+record is recycled memory mmapped to userspace, so the program zeroes it before filling it —
+an unzeroed tail is a cross-pod argv leak, not untidiness.
 
 ## Status reporting
 
@@ -531,17 +563,17 @@ future `PLAN.md`.
   [The event plane](#the-event-plane)), but a policy that omits the field enforces nothing and
   reports nothing. Untracked; a `+kubebuilder:default=enforce` or an admission-time requirement is
   the obvious fix and is a breaking change either way.
-- **Monitor-mode observation is poll-based and lossy at the edges.** This is a deliberate
-  consequence of shipping monitor mode on the already-compiled `.o` files rather than new kernel
-  programs:
+- **Monitor-mode observation of `network` and `open` is poll-based and lossy at the edges.**
+  This is a deliberate consequence of shipping those behaviors on the already-compiled
+  enforcement `.o` files rather than new kernel programs (`exec` additionally streams
+  per-occurrence events with argv from `pkg/bpf/exectrace`):
   - Counters are drained every 10 seconds, so findings lag behavior by up to that interval and
     only counts survive — not per-occurrence ordering or timing.
   - The per-cgroup `open_events` inner map holds 2048 `(path, decision)` keys; a workload touching
     more than that within one interval loses the excess (read-and-reset mitigates, does not
     eliminate).
   - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
-  - No DNS, TLS SNI, or HTTP visibility exists, and no new kernel programs are loaded by this
-    code.
+  - No DNS, TLS SNI, or HTTP visibility exists.
 - **`open`/`exec` rules from separate policies intersect instead of unioning.**
   `docs/users/reference/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
   policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each

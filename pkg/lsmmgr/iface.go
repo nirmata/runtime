@@ -7,6 +7,13 @@ import (
 	"github.com/cilium/ebpf/link"
 )
 
+// CgroupSink is an observation-only kernel source that must see events from
+// the same pods the exec policies select, and from no others.
+type CgroupSink interface {
+	AddCgids(cgids []uint64) error
+	DeleteCgids(cgids []uint64) error
+}
+
 // the subset of *lsm.LsmEnforcer the manager uses, so its state machine can be
 // exercised without loading bpf programs.
 type lsmEnforcer interface {

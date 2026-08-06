@@ -83,6 +83,19 @@ var bpfObjects = []bpfObjectSpec{
 			insnBudget: 2000,
 		}},
 	},
+	{
+		object: "pkg/bpf/exectrace/exectrace_bpfel.o",
+		progs: []progCheck{{
+			name: "trace_exec",
+			typ:  ebpf.RawTracepoint,
+			// The raw tracepoint carries struct linux_binprm, which the ftrace
+			// format does not, and bprm->argc is what bounds the argv walk.
+			attach: 0,
+			// Higher than the other programs because zeroing the 1312-byte
+			// ring buffer record costs one store per word.
+			insnBudget: 10000,
+		}},
+	},
 }
 
 // precondition answers three ways, and the third is the point: "I could not

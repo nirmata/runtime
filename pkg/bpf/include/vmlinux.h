@@ -1,9 +1,10 @@
-/* Minimal, hand-maintained stand-in for a bpftool-generated vmlinux.h.
+/* Minimal, hand-maintained stand-in for a bpftool-generated vmlinux.h, shared
+ * by every program under the per-package _cprog directories.
  *
  * A full `bpftool btf dump file /sys/kernel/btf/vmlinux format c` header is
  * ~3 MB and reflects whatever kernel the builder host happens to run, which
  * makes the committed objects unreproducible across hosts. This file instead
- * declares only the kernel types lsm.bpf.c and maps.h actually use.
+ * declares only the kernel types those programs actually use.
  *
  * Correctness does not depend on the layouts below matching any particular
  * kernel: every struct is marked __attribute__((preserve_access_index)), so
@@ -11,9 +12,11 @@
  * libbpf patches the real offset from the running kernel's BTF at load time.
  * The compile-time offsets here are placeholders.
  *
- * If lsm.bpf.c grows a new kernel-struct access, add just that struct (and the
- * fields on the access path) here, keep preserve_access_index, and run
- * `make generate-bpf`.
+ * One header rather than one per package: two copies of a kernel type drift,
+ * and a field spelled differently in two of them is a load-time failure in
+ * only one program. If a program grows a new kernel-struct access, add just
+ * that struct (and the fields on the access path) here, keep
+ * preserve_access_index, and run `make generate-bpf`.
  */
 #ifndef __VMLINUX_H__
 #define __VMLINUX_H__
@@ -36,7 +39,9 @@ typedef __u32 __wsum;
 enum bpf_map_type {
 	BPF_MAP_TYPE_UNSPEC = 0,
 	BPF_MAP_TYPE_HASH = 1,
+	BPF_MAP_TYPE_PERCPU_ARRAY = 6,
 	BPF_MAP_TYPE_HASH_OF_MAPS = 13,
+	BPF_MAP_TYPE_RINGBUF = 27,
 };
 
 /* bpf_map_update_elem flags (kernel anonymous enum). */
@@ -49,8 +54,9 @@ enum {
 /* Opaque handle returned by map-in-map lookups; never dereferenced. */
 struct bpf_map;
 
-/* Context for SEC("lsm/...") programs; accessed only via a cast, so the
- * flexible array member is declaration-of-record rather than load-bearing. */
+/* Context for SEC("lsm/...") and SEC("raw_tp/...") programs; accessed only via
+ * a cast, so the flexible array member is declaration-of-record rather than
+ * load-bearing. */
 struct bpf_raw_tracepoint_args {
 	__u64 args[0];
 };
@@ -69,6 +75,17 @@ struct file {
 
 struct linux_binprm {
 	struct file *file; /* bprm->file read in the bprm_check hook (CO-RE) */
+	int argc;
+	const char *filename;
+} __attribute__((preserve_access_index));
+
+/* arg_start begins the run of NUL-separated argv strings in the new mm. */
+struct mm_struct {
+	unsigned long arg_start;
+} __attribute__((preserve_access_index));
+
+struct task_struct {
+	struct mm_struct *mm;
 } __attribute__((preserve_access_index));
 
 #endif /* __VMLINUX_H__ */
