@@ -2,7 +2,6 @@ package protofilter
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
@@ -14,19 +13,6 @@ const (
 	ReasonInvalidALPN  = `ALPN suffix must be 1-16 visible ASCII characters, e.g. "tls/h2"`
 	ReasonNotAProtocol = `not a protocol token: use "ssh", "tls", "tls/<alpn>", "dns", "http/1.1", "http/2", "quic", or "*" for default-deny`
 )
-
-// RejectedTarget is a target value that could not be programmed, together with
-// the reason. Rejections are returned as typed values (never dropped, never
-// folded into an error) so callers can log them and attach them to policy
-// status.
-type RejectedTarget struct {
-	Value  string
-	Reason string
-}
-
-func (r RejectedTarget) String() string {
-	return fmt.Sprintf("%q: %s", r.Value, r.Reason)
-}
 
 // Target is one protocol the maps can hold. ALPN is non-empty only for a
 // tls/<alpn> value; an empty ALPN programmed for tls matches any ALPN.
@@ -47,10 +33,10 @@ type Target struct {
 //   - everything else is returned in rejected
 //
 // Targets are de-duplicated, preserving first-seen order.
-func ParseTargets(values []string) (targets []Target, star bool, rejected []RejectedTarget) {
+func ParseTargets(values []string) (targets []Target, star bool, rejected []compiler.RejectedTarget) {
 	seen := make(map[Target]struct{}, len(values))
 	reject := func(v, reason string) {
-		rejected = append(rejected, RejectedTarget{Value: v, Reason: reason})
+		rejected = append(rejected, compiler.RejectedTarget{Value: v, Reason: reason})
 	}
 
 	for _, raw := range values {

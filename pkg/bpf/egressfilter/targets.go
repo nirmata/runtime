@@ -3,7 +3,6 @@ package egressfilter
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net/netip"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
@@ -18,8 +17,8 @@ const MinCIDRPrefixBits = 24
 // MaxExpandedTargets bounds the number of addresses a single CIDR may expand to.
 const MaxExpandedTargets = 256
 
-// Rejection reasons. They are surfaced verbatim to operators (log at V(0) and
-// policy status conditions), so they explain the remedy, not just the fault.
+// Rejection reasons. They reach operators unchanged, through logs and policy
+// status conditions, so they explain the remedy and not just the fault.
 const (
 	ReasonEmpty       = "empty target value"
 	ReasonIPv6        = "IPv6 targets are not supported: the egress BPF maps are IPv4-only"
@@ -27,30 +26,15 @@ const (
 	ReasonNotAnIP     = "not an IPv4 address or CIDR: hostnames cannot be resolved at policy compile time"
 )
 
-// RejectedTarget is a target value that could not be programmed, together with
-// the reason. Rejections are returned as typed values (never dropped, never
-// folded into an error) so callers can log them and attach them to policy
-// status.
-type RejectedTarget struct {
-	Value  string
-	Reason string
-}
-
-func (r RejectedTarget) String() string {
-	return fmt.Sprintf("%q: %s", r.Value, r.Reason)
-}
-
 // ParseTargets converts policy-authored network target strings into the IPv4
 // addresses the egress maps can hold.
 //
-// The value grammar (trimming, star sentinel, IPv4/CIDR forms, IPv6
-// rejection) is defined once, in compiler.ParseNetworkValue; ParseTargets is
-// the SINGLE narrowing point where the program-time restriction is applied on
-// top of it: a CIDR wider than /MinCIDRPrefixBits is rejected as
-// ReasonCIDRTooWide instead of expanded, because the deny/allow maps are
-// plain hashes of individual /32 keys.
-// Admission validation deliberately does NOT apply this restriction, so it
-// never rejects a value the runtime would accept.
+// The value schema (trimming, star sentinel, IPv4/CIDR forms, IPv6 rejection)
+// is defined once, in compiler.ParseNetworkValue. ParseTargets is the single
+// narrowing point on top of it: a CIDR wider than /MinCIDRPrefixBits is
+// rejected as ReasonCIDRTooWide instead of expanded, because the deny/allow
+// maps are plain hashes of individual /32 keys. Admission does not apply that
+// narrowing, so it never rejects a value the runtime would accept.
 //
 //   - an IPv4 literal yields one address
 //   - an IPv4 CIDR with prefix >= /24 yields every address in the prefix
@@ -61,7 +45,7 @@ func (r RejectedTarget) String() string {
 //     returned in rejected
 //
 // Addresses are de-duplicated, preserving first-seen order.
-func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []RejectedTarget) {
+func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []compiler.RejectedTarget) {
 	seen := make(map[netip.Addr]struct{}, len(values))
 	add := func(a netip.Addr) {
 		if _, ok := seen[a]; ok {
@@ -71,7 +55,7 @@ func ParseTargets(values []string) (addrs []netip.Addr, star bool, rejected []Re
 		addrs = append(addrs, a)
 	}
 	reject := func(v, reason string) {
-		rejected = append(rejected, RejectedTarget{Value: v, Reason: reason})
+		rejected = append(rejected, compiler.RejectedTarget{Value: v, Reason: reason})
 	}
 
 	for _, raw := range values {

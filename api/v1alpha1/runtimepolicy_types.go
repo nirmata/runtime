@@ -99,6 +99,32 @@ type RuntimePolicyStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+// Condition types and reasons the daemons write onto a RuntimePolicy's status.
+const (
+	// ConditionApplied reports that a node's daemon has the policy loaded,
+	// with the reason naming the mode it is running in.
+	ConditionApplied = "Applied"
+	ReasonEnforcing  = "Enforcing"
+	ReasonMonitoring = "Monitoring"
+
+	ConditionTargetsValid     = "TargetsValid"
+	ReasonUnsupportedTargets  = "UnsupportedTargets"
+	ReasonAllTargetsSupported = "AllTargetsSupported"
+	ReasonNoTargets           = "NoTargets"
+
+	// Exec and open get a condition each because conditions are keyed by type
+	// and last-write-wins: one shared type would report whichever behavior was
+	// recorded last.
+	ConditionExecRulesValid = "ExecRulesValid"
+	ConditionOpenRulesValid = "OpenRulesValid"
+	ReasonUnsupportedPaths  = "UnsupportedPaths"
+	ReasonAllPathsSupported = "AllPathsSupported"
+	ReasonNoPaths           = "NoPaths"
+
+	ConditionObservationAvailable = "ObservationAvailable"
+	ReasonObservationUnavailable  = "ObservationUnavailable"
+)
+
 // NodePolicyStatus is one node's shard of a RuntimePolicy's status, written
 // only by that node's daemon.
 type NodePolicyStatus struct {

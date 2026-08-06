@@ -61,8 +61,8 @@ type NetworkValue struct {
 }
 
 // ParseNetworkValue parses one policy-authored network target string. This is
-// the ONE definition of the egress target value grammar: admission validation
-// (validateNetworkBehavior), program-time expansion (egressfilter.ParseTargets)
+// the one definition of the egress target value schema: admission validation
+// (validateBehavior), program-time expansion (egressfilter.ParseTargets)
 // and monitor-mode matching (monitor.newNetMatcher) all consume it, so they
 // cannot disagree about what a value is.
 //

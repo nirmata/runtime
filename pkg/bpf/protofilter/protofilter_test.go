@@ -96,7 +96,7 @@ func TestAddProtocols_ReturnsRejectedTargetsAsTypedValues(t *testing.T) {
 	tests := []struct {
 		name         string
 		pair         *compiler.AllowDenyPair
-		wantRejected []RejectedTarget
+		wantRejected []compiler.RejectedTarget
 	}{
 		{
 			name: "nil pair",
@@ -111,7 +111,7 @@ func TestAddProtocols_ReturnsRejectedTargetsAsTypedValues(t *testing.T) {
 				Allow: []string{"ssh", "gopher"},
 				Deny:  []string{"tls/", "unknown"},
 			},
-			wantRejected: []RejectedTarget{
+			wantRejected: []compiler.RejectedTarget{
 				{Value: "gopher", Reason: ReasonNotAProtocol},
 				{Value: "tls/", Reason: ReasonInvalidALPN},
 				{Value: "unknown", Reason: ReasonNotAProtocol},

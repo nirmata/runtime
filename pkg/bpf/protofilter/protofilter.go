@@ -59,7 +59,7 @@ func New(l *logr.Logger) (*ProtoFilter, error) {
 // AddProtocols programs the allow and deny targets of pair into the BPF maps.
 // Targets ParseTargets cannot represent are returned as typed rejections and
 // logged; err covers only map-write failures. Both may be non-empty at once.
-func (p *ProtoFilter) AddProtocols(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+func (p *ProtoFilter) AddProtocols(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	if pair == nil {
 		return nil, nil
 	}
@@ -77,7 +77,7 @@ func (p *ProtoFilter) AddProtocols(pair *compiler.AllowDenyPair) ([]RejectedTarg
 // DeleteProtocols removes the allow and deny targets of pair from the BPF maps.
 // Rejections are reported for symmetry with AddProtocols: a target that was
 // never programmed cannot be removed either.
-func (p *ProtoFilter) DeleteProtocols(pair *compiler.AllowDenyPair) ([]RejectedTarget, error) {
+func (p *ProtoFilter) DeleteProtocols(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	if pair == nil {
 		return nil, nil
 	}
@@ -93,14 +93,14 @@ func (p *ProtoFilter) DeleteProtocols(pair *compiler.AllowDenyPair) ([]RejectedT
 
 // parsePair resolves both target lists of pair through the single target
 // grammar. rejected is nil when nothing was rejected.
-func parsePair(pair *compiler.AllowDenyPair) (allow, deny []Target, rejected []RejectedTarget) {
+func parsePair(pair *compiler.AllowDenyPair) (allow, deny []Target, rejected []compiler.RejectedTarget) {
 	allow, _, allowRejected := ParseTargets(pair.Allow)
 	deny, _, denyRejected := ParseTargets(pair.Deny)
 	if len(allowRejected)+len(denyRejected) == 0 {
 		return allow, deny, nil
 	}
 
-	rejected = make([]RejectedTarget, 0, len(allowRejected)+len(denyRejected))
+	rejected = make([]compiler.RejectedTarget, 0, len(allowRejected)+len(denyRejected))
 	rejected = append(rejected, allowRejected...)
 	rejected = append(rejected, denyRejected...)
 	return allow, deny, rejected
@@ -155,7 +155,7 @@ func deleteTargets(m *ebpf.Map, name string, targets []Target) error {
 	return errors.Join(errs...)
 }
 
-func (p *ProtoFilter) logRejected(rejected []RejectedTarget) {
+func (p *ProtoFilter) logRejected(rejected []compiler.RejectedTarget) {
 	if p.logger == nil {
 		return
 	}

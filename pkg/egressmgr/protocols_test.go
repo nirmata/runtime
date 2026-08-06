@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
@@ -186,15 +187,15 @@ func TestTargetsConditionCoversProtocolValues(t *testing.T) {
 	e, _, _, status := newTestManagerWithProto()
 
 	mustRpEvent(t, e, rpWithProtos("rp-bad", "enforce", webLabels, []string{"unknown"}, nil), events.EventTypeCreate)
-	cond, ok := status.latest("rp-bad", ConditionTargetsValid)
-	if !ok || cond.Reason != ReasonUnsupportedTargets {
-		t.Fatalf("condition for an unprogrammable protocol token: got %+v, want reason %s", cond, ReasonUnsupportedTargets)
+	cond, ok := status.latest("rp-bad", v1alpha1.ConditionTargetsValid)
+	if !ok || cond.Reason != v1alpha1.ReasonUnsupportedTargets {
+		t.Fatalf("condition for an unprogrammable protocol token: got %+v, want reason %s", cond, v1alpha1.ReasonUnsupportedTargets)
 	}
 
 	mustRpEvent(t, e, rpWithProtos("rp-good", "enforce", webLabels, []string{"tls/h2"}, []string{"*"}), events.EventTypeCreate)
-	cond, ok = status.latest("rp-good", ConditionTargetsValid)
-	if !ok || cond.Reason != ReasonAllTargetsSupported {
-		t.Fatalf("condition for supported protocol values: got %+v, want reason %s", cond, ReasonAllTargetsSupported)
+	cond, ok = status.latest("rp-good", v1alpha1.ConditionTargetsValid)
+	if !ok || cond.Reason != v1alpha1.ReasonAllTargetsSupported {
+		t.Fatalf("condition for supported protocol values: got %+v, want reason %s", cond, v1alpha1.ReasonAllTargetsSupported)
 	}
 }
 

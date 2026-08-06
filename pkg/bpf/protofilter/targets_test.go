@@ -15,7 +15,7 @@ func TestParseTargets(t *testing.T) {
 		values       []string
 		wantTargets  []Target
 		wantStar     bool
-		wantRejected []RejectedTarget
+		wantRejected []compiler.RejectedTarget
 	}{
 		{
 			name: "nil input",
@@ -72,59 +72,59 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "empty value is rejected, not ignored",
 			values:       []string{""},
-			wantRejected: []RejectedTarget{{Value: "", Reason: ReasonEmpty}},
+			wantRejected: []compiler.RejectedTarget{{Value: "", Reason: ReasonEmpty}},
 		},
 		{
 			name:         "whitespace-only value is rejected as empty",
 			values:       []string{"  \t"},
-			wantRejected: []RejectedTarget{{Value: "  \t", Reason: ReasonEmpty}},
+			wantRejected: []compiler.RejectedTarget{{Value: "  \t", Reason: ReasonEmpty}},
 		},
 		{
 			name:         "ALPN longer than the kernel buffer is rejected",
 			values:       []string{"tls/" + strings.Repeat("a", compiler.MaxALPNLength+1)},
-			wantRejected: []RejectedTarget{{Value: "tls/" + strings.Repeat("a", compiler.MaxALPNLength+1), Reason: ReasonInvalidALPN}},
+			wantRejected: []compiler.RejectedTarget{{Value: "tls/" + strings.Repeat("a", compiler.MaxALPNLength+1), Reason: ReasonInvalidALPN}},
 		},
 		{
 			name:         "ALPN with a non-visible byte is rejected",
 			values:       []string{"tls/h 2"},
-			wantRejected: []RejectedTarget{{Value: "tls/h 2", Reason: ReasonInvalidALPN}},
+			wantRejected: []compiler.RejectedTarget{{Value: "tls/h 2", Reason: ReasonInvalidALPN}},
 		},
 		{
 			name:         "empty ALPN suffix is rejected",
 			values:       []string{"tls/"},
-			wantRejected: []RejectedTarget{{Value: "tls/", Reason: ReasonInvalidALPN}},
+			wantRejected: []compiler.RejectedTarget{{Value: "tls/", Reason: ReasonInvalidALPN}},
 		},
 		{
 			name:         "unrecognized token is rejected",
 			values:       []string{"gopher"},
-			wantRejected: []RejectedTarget{{Value: "gopher", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "gopher", Reason: ReasonNotAProtocol}},
 		},
 		{
 			name:         "unknown is not a protocol token",
 			values:       []string{"unknown"},
-			wantRejected: []RejectedTarget{{Value: "unknown", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "unknown", Reason: ReasonNotAProtocol}},
 		},
 		{
 			name:         "h2c is not a protocol token",
 			values:       []string{"h2c"},
-			wantRejected: []RejectedTarget{{Value: "h2c", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "h2c", Reason: ReasonNotAProtocol}},
 		},
 		{
 			name:         "ALPN suffix on a non-tls token is rejected",
 			values:       []string{"quic/h2"},
-			wantRejected: []RejectedTarget{{Value: "quic/h2", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "quic/h2", Reason: ReasonNotAProtocol}},
 		},
 		{
 			name:         "wrong case is rejected",
 			values:       []string{"TLS"},
-			wantRejected: []RejectedTarget{{Value: "TLS", Reason: ReasonNotAProtocol}},
+			wantRejected: []compiler.RejectedTarget{{Value: "TLS", Reason: ReasonNotAProtocol}},
 		},
 		{
 			name:        "mixed valid and invalid keeps the valid ones and reports the rest",
 			values:      []string{"ssh", "gopher", "tls/", "*", "tls/h2"},
 			wantTargets: []Target{{Protocol: "ssh"}, {Protocol: "tls", ALPN: "h2"}},
 			wantStar:    true,
-			wantRejected: []RejectedTarget{
+			wantRejected: []compiler.RejectedTarget{
 				{Value: "gopher", Reason: ReasonNotAProtocol},
 				{Value: "tls/", Reason: ReasonInvalidALPN},
 			},
@@ -162,17 +162,9 @@ func TestParseTargets_UnclassifiedIsNotProgrammable(t *testing.T) {
 	if len(targets) != 0 || star {
 		t.Errorf("ParseTargets = (%v, %v), want no targets and no star", targets, star)
 	}
-	want := []RejectedTarget{{Value: compiler.ProtocolUnclassified, Reason: ReasonNotAProtocol}}
+	want := []compiler.RejectedTarget{{Value: compiler.ProtocolUnclassified, Reason: ReasonNotAProtocol}}
 	if diff := cmp.Diff(want, rejected); diff != "" {
 		t.Errorf("rejected mismatch (-want +got):\n%s", diff)
-	}
-}
-
-func TestRejectedTarget_StringNamesValueAndReason(t *testing.T) {
-	got := RejectedTarget{Value: "gopher", Reason: ReasonNotAProtocol}.String()
-	want := `"gopher": ` + ReasonNotAProtocol
-	if got != want {
-		t.Errorf("String() = %q, want %q", got, want)
 	}
 }
 

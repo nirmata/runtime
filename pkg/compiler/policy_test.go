@@ -135,10 +135,10 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 						Deny:  behaviorRule([]string{"3.3.3.3"}, `["4.4.4.4"]`),
 					},
 					Open: &v1alpha1.Behavior{
-						Allow: behaviorRule([]string{"open-allow-hardcoded"}, ""),
+						Allow: behaviorRule([]string{"/open/allow/hardcoded"}, ""),
 					},
 					Exec: &v1alpha1.Behavior{
-						Deny: behaviorRule([]string{"exec-deny-hardcoded"}, ""),
+						Deny: behaviorRule([]string{"/exec/deny/hardcoded"}, ""),
 					},
 					Protocol: &v1alpha1.Behavior{
 						Allow: behaviorRule([]string{"tls/h2"}, `["quic"]`),
@@ -164,10 +164,10 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"2.2.2.2", "1.1.1.1"}, Deny: []string{"4.4.4.4", "3.3.3.3"}}, res.IPs); diff != "" {
 		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"open-allow-hardcoded"}}, res.Open); diff != "" {
+	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"/open/allow/hardcoded"}}, res.Open); diff != "" {
 		t.Errorf("Open mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(&AllowDenyPair{Deny: []string{"exec-deny-hardcoded"}}, res.Exec); diff != "" {
+	if diff := cmp.Diff(&AllowDenyPair{Deny: []string{"/exec/deny/hardcoded"}}, res.Exec); diff != "" {
 		t.Errorf("Exec mismatch (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"quic", "tls/h2"}, Deny: []string{"ssh", "*"}}, res.Protocols); diff != "" {

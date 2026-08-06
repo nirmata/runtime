@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
@@ -297,39 +298,39 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 			allow:      []string{"1.1.1.1", "10.0.0.0/24"},
 			deny:       []string{"*"},
 			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonAllTargetsSupported,
+			wantReason: v1alpha1.ReasonAllTargetsSupported,
 		},
 		{
 			name:       "no targets at all",
 			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonNoTargets,
+			wantReason: v1alpha1.ReasonNoTargets,
 		},
 		{
 			name:       "ipv6 target",
 			deny:       []string{"2001:db8::1"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
 			wantIn:     []string{"2001:db8::1", egressfilter.ReasonIPv6},
 		},
 		{
 			name:       "cidr wider than /24",
 			deny:       []string{"10.0.0.0/8"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
 			wantIn:     []string{"10.0.0.0/8", egressfilter.ReasonCIDRTooWide},
 		},
 		{
 			name:       "hostname",
 			allow:      []string{"api.example.com"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
 			wantIn:     []string{"api.example.com", egressfilter.ReasonNotAnIP},
 		},
 		{
 			name:       "mixed: the supported half is still programmed",
 			allow:      []string{"1.1.1.1", "api.example.com"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
 			wantIn:     []string{"api.example.com"},
 		},
 	}
@@ -341,9 +342,9 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 
 			mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, tc.allow, tc.deny), events.EventTypeCreate)
 
-			cond, ok := status.latest("rp-1", ConditionTargetsValid)
+			cond, ok := status.latest("rp-1", v1alpha1.ConditionTargetsValid)
 			if !ok {
-				t.Fatalf("no %s condition was recorded for rp-1 (all: %v)", ConditionTargetsValid, status.all("rp-1"))
+				t.Fatalf("no %s condition was recorded for rp-1 (all: %v)", v1alpha1.ConditionTargetsValid, status.all("rp-1"))
 			}
 			if cond.Status != tc.wantStatus {
 				t.Errorf("condition status: got %s, want %s (message %q)", cond.Status, tc.wantStatus, cond.Message)
