@@ -392,6 +392,7 @@ func TestHandleEvent_FindingContents(t *testing.T) {
 		PolicyName: "block-egress",
 		PolicyUID:  "uid-net",
 		Behavior:   BehaviorNetwork,
+		Target:     "10.0.0.5",
 		Severity:   reporter.SeverityMedium,
 		Result:     reporter.ResultFail,
 		Message:    "monitor mode: egress to 10.0.0.5 (7 occurrences) would have been denied by policy block-egress",
@@ -417,6 +418,7 @@ func TestHandleEvent_FindingNamesTheAttributedDomain(t *testing.T) {
 		PolicyName: "block-egress",
 		PolicyUID:  "uid-net",
 		Behavior:   BehaviorNetwork,
+		Target:     "api.example.com",
 		Severity:   reporter.SeverityMedium,
 		Result:     reporter.ResultFail,
 		Message:    "monitor mode: egress to api.example.com would have been denied by policy block-egress",
@@ -693,6 +695,7 @@ func TestHandleEvent_KernelDenyIsAttributedToEnforcePolicy(t *testing.T) {
 		PolicyName: "block-egress",
 		PolicyUID:  "uid-e",
 		Behavior:   BehaviorNetwork,
+		Target:     "10.0.0.5",
 		Severity:   reporter.SeverityMedium,
 		Result:     reporter.ResultFail,
 		Enforced:   true,
@@ -1109,6 +1112,7 @@ func TestHandleEvent_UnexpectedDNSNameFindingContents(t *testing.T) {
 		PolicyName: "expected-names",
 		PolicyUID:  "uid-dns",
 		Behavior:   BehaviorDNS,
+		Target:     "api.openai.com",
 		Severity:   reporter.SeverityMedium,
 		// a dns behavior cannot enforce, so the finding is advisory and never
 		// claims anything was or would have been blocked
@@ -1190,17 +1194,20 @@ func TestHandleEvent_ProtocolDefaultDenyCounterfactual(t *testing.T) {
 		name        string
 		ev          runtimeevent.Event
 		wantMessage string
+		wantTarget  string
 	}{
 		{
 			name:        "ssh is default-denied",
 			ev:          protocolEvent("ssh", ""),
 			wantMessage: "monitor mode: egress protocol ssh would have been denied by policy p (default deny)",
+			wantTarget:  "ssh",
 		},
 		{name: "tls with the allowed ALPN", ev: protocolEvent("tls", "h2")},
 		{
 			name:        "tls with another ALPN is default-denied",
 			ev:          protocolEvent("tls", "http/1.1"),
 			wantMessage: "monitor mode: egress protocol tls/http/1.1 would have been denied by policy p (default deny)",
+			wantTarget:  "tls/http/1.1",
 		},
 	}
 	for _, tc := range tests {
@@ -1226,6 +1233,9 @@ func TestHandleEvent_ProtocolDefaultDenyCounterfactual(t *testing.T) {
 			}
 			if got[0].Behavior != BehaviorProtocol {
 				t.Errorf("behavior = %q, want %q", got[0].Behavior, BehaviorProtocol)
+			}
+			if got[0].Target != tc.wantTarget {
+				t.Errorf("target = %q, want %q", got[0].Target, tc.wantTarget)
 			}
 			if got[0].Message != tc.wantMessage {
 				t.Errorf("message = %q, want %q", got[0].Message, tc.wantMessage)
@@ -1254,6 +1264,7 @@ func TestHandleEvent_KernelDenyIsAttributedToEnforceProtocolPolicy(t *testing.T)
 		PolicyName: "block-ssh",
 		PolicyUID:  "uid-e",
 		Behavior:   BehaviorProtocol,
+		Target:     "ssh",
 		Severity:   reporter.SeverityMedium,
 		Result:     reporter.ResultFail,
 		Enforced:   true,
@@ -1266,5 +1277,101 @@ func TestHandleEvent_KernelDenyIsAttributedToEnforceProtocolPolicy(t *testing.T)
 	}
 	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 0 {
 		t.Errorf("unattributed kernel deny counter = %v, want 0", got)
+	}
+}
+
+func TestHandleEvent_FindingCarriesTheTarget(t *testing.T) {
+	tests := []struct {
+		name       string
+		policy     func(*testing.T) *compiler.EvaluationResult
+		ev         runtimeevent.Event
+		wantTarget string
+	}{
+		{
+			name: "open names the path",
+			policy: func(t *testing.T) *compiler.EvaluationResult {
+				return monitorPolicy(t, "uid-open", "p", nil, pair(nil, []string{"/etc/shadow"}), nil)
+			},
+			ev:         openEvent("/etc/shadow"),
+			wantTarget: "/etc/shadow",
+		},
+		{
+			name: "exec names the binary",
+			policy: func(t *testing.T) *compiler.EvaluationResult {
+				return monitorPolicy(t, "uid-exec", "p", nil, nil, pair(nil, []string{"/usr/bin/curl"}))
+			},
+			ev:         execEvent("/usr/bin/curl"),
+			wantTarget: "/usr/bin/curl",
+		},
+		{
+			name: "network names the address",
+			policy: func(t *testing.T) *compiler.EvaluationResult {
+				return monitorPolicy(t, "uid-net", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
+			},
+			ev:         netEvent("10.0.0.5"),
+			wantTarget: "10.0.0.5",
+		},
+		{
+			name: "protocol names the protocol and its ALPN",
+			policy: func(t *testing.T) *compiler.EvaluationResult {
+				rp := monitorPolicy(t, "uid-proto", "p", nil, nil, nil)
+				rp.Protocols = pair(nil, []string{compiler.StarTarget})
+				return rp
+			},
+			ev:         protocolEvent("tls", "h2"),
+			wantTarget: "tls/h2",
+		},
+		{
+			name: "dns names the question",
+			policy: func(t *testing.T) *compiler.EvaluationResult {
+				return dnsPolicy(t, "uid-dns", "p", pair([]string{"api.anthropic.com"}, nil))
+			},
+			ev:         dnsEvent("api.openai.com"),
+			wantTarget: "api.openai.com",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, sink, _ := testMonitor(t)
+			if err := m.RuntimePolicyEvent(tc.policy(t), events.EventTypeCreate); err != nil {
+				t.Fatalf("RuntimePolicyEvent: %v", err)
+			}
+
+			m.HandleEvent(tc.ev)
+
+			got := sink.all()
+			if len(got) != 1 {
+				t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
+			}
+			if got[0].Target != tc.wantTarget {
+				t.Errorf("target = %q, want %q", got[0].Target, tc.wantTarget)
+			}
+		})
+	}
+}
+
+// A monitor policy denying several paths must yield one report result per
+// path, so the findings have to differ by fingerprint even though the
+// observation counters carry no comm and no destination to tell them apart.
+func TestHandleEvent_CounterSourcedOpenEventsKeepDistinctTargets(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := monitorPolicy(t, "uid-open", "block-secrets", nil, pair(nil, []string{"/etc/shadow", "/etc/passwd"}), nil)
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	for _, path := range []string{"/etc/shadow", "/etc/passwd"} {
+		ev := openEvent(path)
+		ev.Comm = ""
+		m.HandleEvent(ev)
+	}
+
+	got := sink.all()
+	if len(got) != 2 {
+		t.Fatalf("expected two findings, got %d: %+v", len(got), got)
+	}
+	if a, b := got[0].Fingerprint(), got[1].Fingerprint(); a == b {
+		t.Errorf("findings for %q and %q share a fingerprint %q", got[0].Target, got[1].Target, a)
 	}
 }

@@ -32,8 +32,11 @@ type Finding struct {
 	PolicyName string
 	PolicyUID  string
 	Behavior   string // "network"|"open"|"exec"|"protocol"|"dns"
-	Severity   string // info|low|medium|high|critical (default medium)
-	Result     string // "fail"|"warn" (observation-only findings are "warn")
+	// Target is the behavior's object: the destination, path, executed
+	// binary, protocol[/alpn], or question name the message names.
+	Target   string
+	Severity string // info|low|medium|high|critical (default medium)
+	Result   string // "fail"|"warn" (observation-only findings are "warn")
 	// Enforced is true when the kernel actually denied the operation (an
 	// enforce-mode policy's maps blocked it); false for monitor mode's
 	// "would have been denied" counterfactual findings.
@@ -113,8 +116,8 @@ func normalizeResult(res string) string {
 // Report result with a count instead of growing the report unboundedly.
 //
 // It deliberately excludes the message, timestamp, and every free-text field:
-// two occurrences of the same policy hitting the same destination from the
-// same pod are the same finding.
+// two occurrences of the same policy hitting the same target from the same
+// pod are the same finding.
 func (f Finding) Fingerprint() string {
 	var destHost, destIP string
 	if f.Net != nil {
@@ -133,6 +136,7 @@ func (f Finding) Fingerprint() string {
 		f.PolicyUID,
 		f.Pod.UID,
 		f.Behavior,
+		f.Target,
 		destHost,
 		destIP,
 		comm,

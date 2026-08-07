@@ -41,6 +41,7 @@ const (
 	propFirstTimestamp = "firstTimestamp"
 	propLastTimestamp  = "lastTimestamp"
 	propBehavior       = "behavior"
+	propTarget         = "target"
 	propEnforced       = "enforced"
 	propNode           = "node"
 	propContainer      = "container"
@@ -99,6 +100,7 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 	}
 
 	put(propBehavior, f.Behavior)
+	put(propTarget, f.Target)
 	put(propNode, f.Pod.NodeName)
 	put(propContainer, f.Pod.Container)
 	put(propServiceAccount, f.Pod.ServiceAccount)
