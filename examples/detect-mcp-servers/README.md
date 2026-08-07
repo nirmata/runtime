@@ -36,7 +36,7 @@ LinuxKit VM is, so a kind cluster on macOS runs this example.
 kubectl debug node/<node> -it --image=busybox:1.36 -- cat /host/sys/kernel/security/lsm
 ```
 
-Read it from the node, not from the agent pod: that image is distroless and has neither a
+Read it from the node, not from the daemon pod: that image is distroless and has neither a
 shell nor `cat`.
 
 Nirmata Runtime must be installed — see [installation](../../docs/users/installation.md).
