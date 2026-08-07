@@ -259,3 +259,46 @@ func TestPodCreatedReleasesLinksWhenProtoAttachFails(t *testing.T) {
 		t.Error("a pod whose attach failed is tracked in e.pods")
 	}
 }
+
+// The protocol maps are shared by every policy attached to a pod, so a
+// detaching policy must not revoke a protocol another one still denies. Before
+// the owners refcount this deleted the entry outright, which is a fail-open:
+// ssh stopped being denied while a policy denying it was still attached.
+func TestOverlappingProtoDenySurvivesOneDetach(t *testing.T) {
+	e, _, _, _ := newTestManagerWithProto()
+	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, nil, []string{"ssh"}), events.EventTypeCreate)
+	mustRpEvent(t, e, rpWithProtos("rp-2", "enforce", webLabels, nil, []string{"ssh"}), events.EventTypeCreate)
+	pf := protoFilterOf(t, e, "pod-1")
+
+	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
+	if !slices.Contains(pf.liveDeny(), "ssh") {
+		t.Errorf("ssh is no longer denied though rp-2 still denies it: %v", pf.liveDeny())
+	}
+
+	mustRpEvent(t, e, deleteEvent("rp-2"), events.EventTypeDelete)
+	if len(pf.liveDeny()) != 0 {
+		t.Errorf("the last owner detached but ssh is still programmed: %v", pf.liveDeny())
+	}
+}
+
+// The allow side of the same invariant, plus its converse: a target only the
+// detaching policy wanted must go.
+func TestOverlappingProtoAllowSurvivesOneDetach(t *testing.T) {
+	e, _, _, _ := newTestManagerWithProto()
+	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rpWithProtos("rp-1", "enforce", webLabels, []string{"tls", "dns"}, []string{"*"}), events.EventTypeCreate)
+	mustRpEvent(t, e, rpWithProtos("rp-2", "enforce", webLabels, []string{"tls"}, []string{"*"}), events.EventTypeCreate)
+	pf := protoFilterOf(t, e, "pod-1")
+
+	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
+	if !slices.Contains(pf.liveAllow(), "tls") {
+		t.Errorf("tls was removed though rp-2 still allows it: %v", pf.liveAllow())
+	}
+	if slices.Contains(pf.liveAllow(), "dns") {
+		t.Errorf("dns was kept though only the detached rp-1 wanted it: %v", pf.liveAllow())
+	}
+	if !pf.defaultDeny {
+		t.Error("the protocol default deny was cleared though rp-2 still denies *")
+	}
+}
