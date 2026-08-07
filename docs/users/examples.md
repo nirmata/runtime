@@ -34,6 +34,7 @@ If enforcement appears to do nothing, that distinction is the first thing to che
 | [default-deny-egress](../../examples/default-deny-egress/) | Contain a compromised pod: block all egress except one approved service | enforce | cgroup v2 |
 | [egress-to-cluster-service](../../examples/egress-to-cluster-service/) | Name the approved destinations by their cluster Service DNS names instead of addresses, leaving the API server unreachable by omission | enforce | cgroup v2 |
 | [egress-to-domain-name](../../examples/egress-to-domain-name/) | Allow an external fully qualified domain name, enforced from the pod's own DNS answers | enforce | cgroup v2 |
+| [tls-only-egress](../../examples/tls-only-egress/) | Force a workload to speak only TLS, whatever port it uses | enforce | cgroup v2 |
 
 `block-known-bad-egress` is the scenario the [quickstart](quickstart.md) walks through.
 

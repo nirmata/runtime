@@ -18,14 +18,15 @@ import (
 const varsKey = "variables"
 
 type EvaluationResult struct {
-	UID      string
-	Name     string
-	IPs      *AllowDenyPair
-	Open     *AllowDenyPair
-	Exec     *AllowDenyPair
-	DNS      *AllowDenyPair
-	Selector labels.Selector
-	Mode     string
+	UID       string
+	Name      string
+	IPs       *AllowDenyPair
+	Open      *AllowDenyPair
+	Exec      *AllowDenyPair
+	Protocols *AllowDenyPair
+	DNS       *AllowDenyPair
+	Selector  labels.Selector
+	Mode      string
 
 	// UnresolvedServices holds the Service DNS values whose Service is absent
 	// from cache, as authored.
@@ -91,6 +92,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	net := &AllowDenyPair{}
 	open := &AllowDenyPair{}
 	exec := &AllowDenyPair{}
+	protocols := &AllowDenyPair{}
 	dns := &AllowDenyPair{}
 
 	for _, compiledNet := range c.compiledNets {
@@ -120,6 +122,13 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		}
 	}
 
+	for _, compiledProtocol := range c.compiledProtocols {
+		err := evalCompiledBehavior(ctx, protocols, compiledProtocol, data)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	for _, compiledDNS := range c.compiledDNS {
 		err := evalCompiledBehavior(ctx, dns, compiledDNS, data)
 		if err != nil {
@@ -133,6 +142,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		IPs:                net,
 		Open:               open,
 		Exec:               exec,
+		Protocols:          protocols,
 		DNS:                dns,
 		Selector:           selector,
 		Mode:               c.mode,

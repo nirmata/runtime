@@ -487,3 +487,60 @@ func TestCompile_RejectsBadPathValuesWithFieldPath(t *testing.T) {
 		})
 	}
 }
+
+// TestCompile_RejectsBadProtocolValuesWithFieldPath pins the same admission
+// contract for protocol behaviors: an unsupported hardcoded protocol target is
+// rejected with the field path of the exact offending value.
+func TestCompile_RejectsBadProtocolValuesWithFieldPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		behaviors []v1alpha1.PolicyBehavior
+		wantPaths []string
+	}{
+		{
+			name: "unrecognized token in protocol deny values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Protocol: &v1alpha1.Behavior{Deny: behaviorRule([]string{"ssh", "grpc"}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].protocol.deny.values[1]"},
+		},
+		{
+			name: "over-length ALPN in protocol allow values",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Protocol: &v1alpha1.Behavior{Allow: behaviorRule([]string{"tls/" + strings.Repeat("a", 17)}, "")}},
+			},
+			wantPaths: []string{"spec.behaviors[0].protocol.allow.values[0]"},
+		},
+		{
+			name: "offenders in both allow and deny of the second behavior",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Protocol: &v1alpha1.Behavior{Deny: behaviorRule([]string{"*"}, "")}},
+				{Protocol: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{"TLS"}, ""),
+					Deny:  behaviorRule([]string{"quic", "quic/h3"}, ""),
+				}},
+			},
+			wantPaths: []string{
+				"spec.behaviors[1].protocol.allow.values[0]",
+				"spec.behaviors[1].protocol.deny.values[1]",
+			},
+		},
+	}
+
+	c := newTestCompiler(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := c.Compile(v1alpha1.RuntimePolicy{
+				Spec: v1alpha1.RuntimePolicySpec{Behaviors: tt.behaviors},
+			})
+			if err == nil {
+				t.Fatal("Compile() error = nil, want rejection of unsupported protocol values")
+			}
+			for _, want := range tt.wantPaths {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Compile() error = %q, want it to name %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}

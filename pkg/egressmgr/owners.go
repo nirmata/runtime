@@ -4,6 +4,7 @@ import (
 	"net/netip"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
 
@@ -96,4 +97,61 @@ func releaseKeys[K comparable](owners map[K]map[string]struct{}, uid string, key
 		}
 	}
 	return orphaned
+}
+
+// protoOwners holds, for one side of a pair, the policy uids that asked for
+// each programmed protocol target.
+type protoOwners map[protofilter.Target]map[string]struct{}
+
+func newProtoOwners() protoOwners {
+	return make(protoOwners)
+}
+
+// claimProtos records that uid wants every protocol target in pair programmed
+// on this pod.
+func (pa *podAttachment) claimProtos(uid string, pair *compiler.AllowDenyPair) {
+	if pair == nil {
+		return
+	}
+	claimProtoSide(pa.allowProtoOwners, uid, pair.Allow)
+	claimProtoSide(pa.denyProtoOwners, uid, pair.Deny)
+}
+
+// releaseProtos drops uid's claim on pair and returns only the protocol targets
+// no policy wants any more. The protocol maps are shared by every policy
+// attached to the pod, exactly as the address maps are, so deleting a detaching
+// policy's pair wholesale would revoke protocols another policy still allows or
+// denies.
+func (pa *podAttachment) releaseProtos(uid string, pair *compiler.AllowDenyPair) *compiler.AllowDenyPair {
+	if pair == nil {
+		return &compiler.AllowDenyPair{}
+	}
+	return &compiler.AllowDenyPair{
+		Allow: releaseProtoSide(pa.allowProtoOwners, uid, pair.Allow),
+		Deny:  releaseProtoSide(pa.denyProtoOwners, uid, pair.Deny),
+	}
+}
+
+// Ownership is keyed on the parsed target, so "tls/h2" and " tls/h2 " refcount
+// as one entry. compiler.StarTarget yields no target and is refcounted
+// separately, by the protocol default-deny uid set.
+func claimProtoSide(owners protoOwners, uid string, values []string) {
+	targets, _, _ := protofilter.ParseTargets(values)
+	claimKeys(owners, uid, targets)
+}
+
+// releaseProtoSide returns the canonical spelling of each orphaned target,
+// which ParseTargets accepts, so the result feeds straight back into the filter.
+func releaseProtoSide(owners protoOwners, uid string, values []string) []string {
+	targets, _, _ := protofilter.ParseTargets(values)
+
+	orphaned := releaseKeys(owners, uid, targets)
+	if len(orphaned) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(orphaned))
+	for _, t := range orphaned {
+		out = append(out, t.String())
+	}
+	return out
 }

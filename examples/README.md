@@ -34,6 +34,7 @@ DNS question reporting shares the cgroup v2 requirement and needs no BPF-LSM.
 | [default-deny-egress](default-deny-egress/) | Contain a compromised pod: block all egress except one approved service | `network` default deny with an allow-list, cross-policy union | enforce | cgroup v2 |
 | [egress-to-cluster-service](egress-to-cluster-service/) | Force egress through a gateway without hardcoding its addresses | Cluster Service DNS names resolved from Service and EndpointSlice informers | enforce | cgroup v2 |
 | [egress-to-domain-name](egress-to-domain-name/) | Allow an external destination by DNS name rather than address | A fully qualified domain name as a `network` value, matched from the pod's own DNS answers | enforce | cgroup v2 |
+| [tls-only-egress](tls-only-egress/) | Force a workload to speak only TLS, whatever port it uses | `protocol` default deny, classification from the first data segment | enforce | cgroup v2 |
 | [monitor-egress](monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor mode, Reports, metrics | monitor | cgroup v2 |
 | [deny-sensitive-file-access](deny-sensitive-file-access/) | Block reads of credential files (`/etc/shadow`, SSH keys) even from a shell inside the pod | `open` deny, `values` plus `expression`, `variables` | enforce | BPF-LSM |
 | [restrict-exec-allowlist](restrict-exec-allowlist/) | Prevent shell or netcat execution in a hardened pod: default-deny exec with an allow-list | `exec` default deny with an allow-list, `variables` | enforce | BPF-LSM |

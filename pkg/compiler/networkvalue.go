@@ -14,6 +14,15 @@ import (
 // default-deny flag.
 const StarTarget = "*"
 
+// IsStarTarget reports whether raw is the StarTarget sentinel under the same
+// cleaning the value schemas apply. Consumers that translate the sentinel into
+// a default-deny flag must use this rather than comparing against StarTarget:
+// a policy value of `" * "` is a default deny to every parser, and a raw
+// comparison would silently downgrade it to allow-all-except-denied.
+func IsStarTarget(raw string) bool {
+	return cleanValue(raw) == StarTarget
+}
+
 // Sentinel errors returned by ParseNetworkValue. They are deliberately terse:
 // callers that surface them to operators (admission's field errors, the egress
 // filter's rejected-target conditions) wrap or map them into their own

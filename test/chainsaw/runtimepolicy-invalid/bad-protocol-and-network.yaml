@@ -1,0 +1,16 @@
+# Invalid: one behavior item declares BOTH protocol and network.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-invalid-protocol-and-network
+spec:
+  mode: enforce
+  behaviors:
+  - protocol:
+      deny:
+        values:
+        - ssh
+    network:
+      deny:
+        values:
+        - 10.0.0.7

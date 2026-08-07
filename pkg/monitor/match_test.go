@@ -353,3 +353,84 @@ func TestNameBehaviorWithEmptyExpectedSetIsInert(t *testing.T) {
 		t.Error("a dns behavior declaring nothing reported a name")
 	}
 }
+
+func TestProtoMatcher(t *testing.T) {
+	tests := []struct {
+		name     string
+		values   []string
+		protocol string
+		alpn     string
+		want     bool
+		wantStar bool
+	}{
+		{name: "bare token matches", values: []string{"ssh"}, protocol: "ssh", want: true},
+		{name: "bare token miss", values: []string{"ssh"}, protocol: "tls"},
+		{name: "bare tls matches any ALPN", values: []string{"tls"}, protocol: "tls", alpn: "h2", want: true},
+		{name: "bare tls matches tls without ALPN", values: []string{"tls"}, protocol: "tls", want: true},
+		{name: "tls with ALPN matches exactly that ALPN", values: []string{"tls/h2"}, protocol: "tls", alpn: "h2", want: true},
+		{name: "tls with ALPN misses another ALPN", values: []string{"tls/h2"}, protocol: "tls", alpn: "http/1.1"},
+		{name: "tls with ALPN misses tls without ALPN", values: []string{"tls/h2"}, protocol: "tls"},
+		{name: "ALPN comparison is case-sensitive", values: []string{"tls/h2"}, protocol: "tls", alpn: "H2"},
+		{name: "unclassified is never an explicit match", values: []string{compiler.ProtocolUnclassified}, protocol: compiler.ProtocolUnclassified},
+		{name: "star is not an explicit match", values: []string{compiler.StarTarget}, protocol: "ssh", wantStar: true},
+		{name: "star plus explicit value", values: []string{compiler.StarTarget, "ssh"}, protocol: "ssh", want: true, wantStar: true},
+		{name: "unparseable value is skipped", values: []string{"grpc", "ssh"}, protocol: "ssh", want: true},
+		{name: "empty protocol never matches", values: []string{"ssh"}, protocol: ""},
+		{name: "no values", values: nil, protocol: "ssh"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newProtoMatcher(tc.values)
+			if got := m.matches(tc.protocol, tc.alpn); got != tc.want {
+				t.Errorf("matches(%q, %q) = %v, want %v", tc.protocol, tc.alpn, got, tc.want)
+			}
+			if m.star != tc.wantStar {
+				t.Errorf("star = %v, want %v", m.star, tc.wantStar)
+			}
+		})
+	}
+}
+
+func TestProtoBehaviorEval(t *testing.T) {
+	tests := []struct {
+		name            string
+		allow, deny     []string
+		protocol        string
+		alpn            string
+		wantViolation   bool
+		wantDefaultDeny bool
+	}{
+		{name: "explicit deny", deny: []string{"ssh"}, protocol: "ssh", wantViolation: true},
+		{
+			name: "default deny not allowed", allow: []string{"tls/h2"}, deny: []string{compiler.StarTarget},
+			protocol: "ssh", wantViolation: true, wantDefaultDeny: true,
+		},
+		{name: "default deny allowed by exact ALPN", allow: []string{"tls/h2"}, deny: []string{compiler.StarTarget}, protocol: "tls", alpn: "h2"},
+		{
+			name: "default deny with another ALPN", allow: []string{"tls/h2"}, deny: []string{compiler.StarTarget},
+			protocol: "tls", alpn: "http/1.1", wantViolation: true, wantDefaultDeny: true,
+		},
+		{name: "default deny with allowed bare tls covers any ALPN", allow: []string{"tls"}, deny: []string{compiler.StarTarget}, protocol: "tls", alpn: "h2"},
+		{
+			name: "unclassified is default-denied whatever the allow list holds", allow: []string{"tls", "dns", "quic", "ssh", "http/1.1", "http/2", "tls/h2"}, deny: []string{compiler.StarTarget},
+			protocol: compiler.ProtocolUnclassified, wantViolation: true, wantDefaultDeny: true,
+		},
+		{
+			name: "no value can allow unclassified", allow: []string{compiler.ProtocolUnclassified}, deny: []string{compiler.StarTarget},
+			protocol: compiler.ProtocolUnclassified, wantViolation: true, wantDefaultDeny: true,
+		},
+		{name: "allow only, no deny", allow: []string{"ssh"}, protocol: "tls"},
+		{name: "empty protocol", deny: []string{compiler.StarTarget}, protocol: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := compileProtocolBehavior(&compiler.AllowDenyPair{Allow: tc.allow, Deny: tc.deny})
+			got := b.eval(tc.protocol, tc.alpn)
+			if got.violation != tc.wantViolation || got.defaultDeny != tc.wantDefaultDeny {
+				t.Errorf("eval(%q, %q) = %+v, want {violation:%v defaultDeny:%v}",
+					tc.protocol, tc.alpn, got, tc.wantViolation, tc.wantDefaultDeny)
+			}
+		})
+	}
+}

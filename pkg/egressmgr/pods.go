@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 
@@ -17,23 +18,32 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	if err != nil {
 		return err
 	}
+	pf, err := e.newProtoFilter(&e.logger)
+	if err != nil {
+		return err
+	}
 
 	pa := &podAttachment{
-		cgs:             make(map[containers.ContainerCgroupInfo][]link.Link),
-		attachedFilters: make(map[string]*compiler.EvaluationResult),
-		defaultDeny:     make(map[string]struct{}),
-		labels:          pod.Labels,
-		filter:          filter,
-		allowOwners:     newSideOwners(),
-		denyOwners:      newSideOwners(),
+		cgs:              make(map[containers.ContainerCgroupInfo][]link.Link),
+		attachedFilters:  make(map[string]*compiler.EvaluationResult),
+		defaultDeny:      make(map[string]struct{}),
+		protoDefaultDeny: make(map[string]struct{}),
+		labels:           pod.Labels,
+		filter:           filter,
+		protoFilter:      pf,
+		allowOwners:      newSideOwners(),
+		denyOwners:       newSideOwners(),
+		allowProtoOwners: newProtoOwners(),
+		denyProtoOwners:  newProtoOwners(),
 	}
 
 	for _, cg := range cgInfos {
-		links, err := filter.Attach(cg.Path)
+		links, err := attachBoth(filter, pf, cg.Path)
 		if err != nil {
 			for _, attached := range pa.cgs {
 				e.closeLinks(string(pod.UID), attached)
 			}
+			e.closeLinks(string(pod.UID), links)
 			return err
 		}
 		pa.cgs[*cg] = links
@@ -56,18 +66,28 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		if rp.IPs.HasEntries() {
 			e.addIps(string(pod.UID), rp.UID, pa, rp.IPs)
 		}
+		if rp.Protocols.HasEntries() {
+			e.addProtos(string(pod.UID), rp.UID, pa, rp.Protocols)
+		}
 
 		if denyHasStar(rp.IPs) {
 			pa.defaultDeny[rp.UID] = struct{}{}
+		}
+		if denyHasStar(rp.Protocols) {
+			pa.protoDefaultDeny[rp.UID] = struct{}{}
 		}
 	}
 
 	if len(pa.defaultDeny) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 	}
+	if len(pa.protoDefaultDeny) > 0 {
+		pa.protoFilter.SetFlagIdx(protofilter.DEFAULT_DENY, true)
+	}
 	// every pod with an attached policy is observed, whatever mode it is in
 	if len(pa.attachedFilters) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
+		pa.protoFilter.SetFlagIdx(protofilter.OBSERVE, true)
 	}
 
 	e.pods[string(pod.UID)] = pa
@@ -92,8 +112,16 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	for _, cgInfo := range cgInfos {
 		links, exists := pa.cgs[*cgInfo]
 		if !exists {
-			newLinks, err := pa.filter.Attach(cgInfo.Path)
+			newLinks, err := attachBoth(pa.filter, pa.protoFilter, cgInfo.Path)
 			if err != nil {
+				// only the links this call created: the rest stay live under
+				// the untouched pa.cgs
+				for cg, created := range newCgs {
+					if _, reused := pa.cgs[cg]; !reused {
+						e.closeLinks(string(pod.UID), created)
+					}
+				}
+				e.closeLinks(string(pod.UID), newLinks)
 				return err
 			}
 			links = newLinks
@@ -135,7 +163,7 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabel
 			e.attachPolicy(podUid, pa, rp)
 		case !matches && attached:
 			e.logger.V(2).Info("relabelled pod stopped matching runtime policy, detaching", "podUid", podUid, "uid", uid)
-			e.detachPolicy(podUid, pa, uid, att.IPs)
+			e.detachPolicy(podUid, pa, uid, att.IPs, att.Protocols)
 		}
 	}
 }
@@ -152,4 +180,20 @@ func (e *EgressManager) podDeleted(podUid string) {
 		e.closeLinks(podUid, links)
 	}
 	delete(e.pods, podUid)
+}
+
+// attachBoth attaches the egress and protocol programs to one cgroup, returning
+// every link created so a caller that fails partway can close them together.
+// Both programs live on the same cgroup hook, so a pod is either covered by
+// both or by neither.
+func attachBoth(f egressFilter, pf protoFilter, cgPath string) ([]link.Link, error) {
+	links, err := f.Attach(cgPath)
+	if err != nil {
+		return links, err
+	}
+	pl, err := pf.Attach(cgPath)
+	if err != nil {
+		return links, err
+	}
+	return append(links, pl), nil
 }

@@ -19,10 +19,11 @@ import (
 
 // Behavior names emitted on findings; they match reporter.Finding.Behavior.
 const (
-	BehaviorNetwork = "network"
-	BehaviorOpen    = "open"
-	BehaviorExec    = "exec"
-	BehaviorDNS     = "dns"
+	BehaviorNetwork  = "network"
+	BehaviorOpen     = "open"
+	BehaviorExec     = "exec"
+	BehaviorProtocol = "protocol"
+	BehaviorDNS      = "dns"
 )
 
 // sinkName is the runtimeevent.Sink name, also used as the metric source label.
@@ -54,12 +55,12 @@ type trackedPolicy struct {
 	// attributes the kernel's actual denies.
 	mode     string
 	selector labels.Selector
-	// net, open, exec and dns are nil when the policy lists nothing for that
-	// behavior.
-	net  *netBehavior
-	open *pathBehavior
-	exec *pathBehavior
-	dns  *nameBehavior
+	// each is nil when the policy lists nothing for that behavior.
+	net      *netBehavior
+	open     *pathBehavior
+	exec     *pathBehavior
+	protocol *protoBehavior
+	dns      *nameBehavior
 }
 
 // Monitor implements events.RuntimePolicyEventHandler (policy tracking) and
@@ -126,10 +127,11 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 		net:      compileNetBehavior(rp.IPs),
 		open:     compilePathBehavior(rp.Open),
 		exec:     compilePathBehavior(rp.Exec),
+		protocol: compileProtocolBehavior(rp.Protocols),
 		dns:      compileNameBehavior(rp.DNS),
 	}
-	if tp.net == nil && tp.open == nil && tp.exec == nil && tp.dns == nil {
-		m.untrack(rp.UID, "policy has no network, open, exec or dns entries")
+	if tp.net == nil && tp.open == nil && tp.exec == nil && tp.protocol == nil && tp.dns == nil {
+		m.untrack(rp.UID, "policy has no network, open, exec, protocol or dns entries")
 		return nil
 	}
 	if tp.selector == nil {
@@ -144,7 +146,8 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 	m.mu.Unlock()
 
 	m.log.V(2).Info("tracking policy", "policy", tp.name, "uid", tp.uid, "mode", tp.mode,
-		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil, "dns", tp.dns != nil)
+		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil,
+		"protocol", tp.protocol != nil, "dns", tp.dns != nil)
 	return nil
 }
 
@@ -271,6 +274,8 @@ func (tp *trackedPolicy) eval(behavior string, ev runtimeevent.Event) decision {
 		return tp.open.eval(ev.Open.Path)
 	case BehaviorExec:
 		return tp.exec.eval(ev.Exec.Filename)
+	case BehaviorProtocol:
+		return tp.protocol.eval(ev.Protocol.Protocol, ev.Protocol.ALPN)
 	case BehaviorDNS:
 		return tp.dns.eval(ev.DNS.QName)
 	}
@@ -359,6 +364,15 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 			return "", ""
 		}
 		return BehaviorExec, ev.Exec.Filename
+	case runtimeevent.KindProtocol:
+		if ev.Protocol == nil || ev.Protocol.Protocol == "" {
+			return "", ""
+		}
+		target := ev.Protocol.Protocol
+		if ev.Protocol.ALPN != "" {
+			target += "/" + ev.Protocol.ALPN
+		}
+		return BehaviorProtocol, target
 	case runtimeevent.KindDNS:
 		if ev.DNS == nil || ev.DNS.QName == "" {
 			return "", ""
@@ -405,6 +419,8 @@ func message(policy, behavior, target string, d decision, count uint32, enforced
 		b.WriteString("open of ")
 	case BehaviorExec:
 		b.WriteString("exec of ")
+	case BehaviorProtocol:
+		b.WriteString("egress protocol ")
 	}
 	b.WriteString(target)
 	writeOccurrences(&b, count)

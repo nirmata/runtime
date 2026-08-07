@@ -31,7 +31,7 @@ import (
 type Finding struct {
 	PolicyName string
 	PolicyUID  string
-	Behavior   string // "network"|"open"|"exec"|"dns"
+	Behavior   string // "network"|"open"|"exec"|"protocol"|"dns"
 	Severity   string // info|low|medium|high|critical (default medium)
 	Result     string // "fail"|"warn" (observation-only findings are "warn")
 	// Enforced is true when the kernel actually denied the operation (an

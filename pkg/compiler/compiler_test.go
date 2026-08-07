@@ -97,6 +97,19 @@ func TestCompile_ValidBehaviors(t *testing.T) {
 			},
 		},
 		{
+			name: "hardcoded values only for protocol",
+			rp: v1alpha1.RuntimePolicy{
+				Spec: v1alpha1.RuntimePolicySpec{
+					Behaviors: []v1alpha1.PolicyBehavior{
+						{Protocol: &v1alpha1.Behavior{
+							Allow: behaviorRule([]string{"tls/h2", "tls/http/1.1"}, ""),
+							Deny:  behaviorRule([]string{"*", "ssh"}, ""),
+						}},
+					},
+				},
+			},
+		},
+		{
 			name: "valid CEL expression returning list<string>",
 			rp: v1alpha1.RuntimePolicy{
 				Spec: v1alpha1.RuntimePolicySpec{
@@ -213,6 +226,13 @@ func TestCompile_InvalidExpressionErrorPaths(t *testing.T) {
 				{Exec: &v1alpha1.Behavior{Allow: behaviorRule(nil, `this is + not valid cel`)}},
 			},
 			wantField: "spec.behaviors[0].exec",
+		},
+		{
+			name: "syntax error in protocol at index 0",
+			behaviors: []v1alpha1.PolicyBehavior{
+				{Protocol: &v1alpha1.Behavior{Deny: behaviorRule(nil, `this is + not valid cel`)}},
+			},
+			wantField: "spec.behaviors[0].protocol",
 		},
 		{
 			name: "syntax error at second index",

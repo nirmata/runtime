@@ -53,6 +53,31 @@ spec:
           kind: RuntimePolicy
           name: chainsaw-valid-enforce
 
+  - name: enforce-mode-protocol
+    try:
+    - apply:
+        file: policy-protocol.yaml
+    # Read the object back and prove nothing was pruned: the protocol kind
+    # survives with its allow/deny values, ALPN suffixes and the "*" sentinel
+    # intact.
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-valid-protocol
+          spec:
+            mode: enforce
+            (length(behaviors)): 1
+            (behaviors[0].protocol.allow.values): ["tls/h2", "tls/http/1.1", "dns"]
+            (behaviors[0].protocol.deny.values): ["*"]
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-valid-protocol
+
   - name: monitor-mode-with-variables-and-cel
     try:
     - apply:

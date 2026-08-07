@@ -284,3 +284,85 @@ func (b *nameBehavior) eval(name string) decision {
 	}
 	return decision{violation: true}
 }
+
+// protoMatcher is the compiled form of one side of a protocol behavior. A bare
+// token matches any event with that protocol, whatever its ALPN; a tls/<alpn>
+// value matches only tls with exactly that ALPN (case-sensitive, mirroring the
+// kernel classifier's byte comparison).
+type protoMatcher struct {
+	star   bool
+	tokens map[string]struct{}
+	alpns  map[string]struct{}
+}
+
+func newProtoMatcher(values []string) protoMatcher {
+	m := protoMatcher{}
+	for _, raw := range values {
+		v, err := compiler.ParseProtocolValue(raw)
+		if err != nil {
+			// a value the schema rejects must never produce a match the
+			// enforcing side of that schema would not have admitted
+			continue
+		}
+		switch {
+		case v.Star:
+			m.star = true
+		case v.ALPN != "":
+			if m.alpns == nil {
+				m.alpns = make(map[string]struct{}, len(values))
+			}
+			m.alpns[v.ALPN] = struct{}{}
+		default:
+			if m.tokens == nil {
+				m.tokens = make(map[string]struct{}, len(values))
+			}
+			m.tokens[v.Protocol] = struct{}{}
+		}
+	}
+	return m
+}
+
+// matches reports whether an explicit value covers the observed protocol. The
+// "*" sentinel is deliberately NOT a match here: it is the default-deny
+// marker, handled separately by eval. An observed "unclassified" protocol can
+// never match an explicit value — only a default deny covers it.
+func (m protoMatcher) matches(protocol, alpn string) bool {
+	if protocol == "" {
+		return false
+	}
+	if _, ok := m.tokens[protocol]; ok {
+		return true
+	}
+	if protocol == compiler.ProtocolTLS && alpn != "" {
+		_, ok := m.alpns[alpn]
+		return ok
+	}
+	return false
+}
+
+// protoBehavior is a compiled protocol allow/deny pair.
+type protoBehavior struct {
+	allow, deny protoMatcher
+}
+
+func compileProtocolBehavior(p *compiler.AllowDenyPair) *protoBehavior {
+	if !p.HasEntries() {
+		return nil
+	}
+	return &protoBehavior{allow: newProtoMatcher(p.Allow), deny: newProtoMatcher(p.Deny)}
+}
+
+// eval is the protocol form of netBehavior.eval, over the classified protocol
+// and its ALPN.
+func (b *protoBehavior) eval(protocol, alpn string) decision {
+	if b == nil || protocol == "" {
+		return decision{}
+	}
+	if b.deny.matches(protocol, alpn) {
+		return decision{violation: true}
+	}
+	if b.deny.star && !b.allow.matches(protocol, alpn) {
+		return decision{violation: true, defaultDeny: true}
+	}
+	return decision{}
+}

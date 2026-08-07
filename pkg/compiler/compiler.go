@@ -28,10 +28,11 @@ type CompiledRuntimePolicy struct {
 	resolver  ServiceResolver
 
 	// these are the hardcoded values in the api spec
-	compiledNets  []*compiledBehavior
-	compiledOpens []*compiledBehavior
-	compiledExecs []*compiledBehavior
-	compiledDNS   []*compiledBehavior
+	compiledNets      []*compiledBehavior
+	compiledOpens     []*compiledBehavior
+	compiledExecs     []*compiledBehavior
+	compiledProtocols []*compiledBehavior
+	compiledDNS       []*compiledBehavior
 }
 
 type compiledBehavior struct {
@@ -75,6 +76,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	compiledNets := []*compiledBehavior{}
 	compiledOpens := []*compiledBehavior{}
 	compiledExecs := []*compiledBehavior{}
+	compiledProtocols := []*compiledBehavior{}
 	compiledDNS := []*compiledBehavior{}
 
 	mode := ""
@@ -125,6 +127,19 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 			compiledOpens = append(compiledOpens, compiledOpen)
 		}
+		if b.Protocol != nil {
+			errPath := path.Index(i).Child("protocol")
+			if errs := validateProtocolBehavior(errPath, b.Protocol); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
+			compiledProtocol, err := c.compileBehavior(b.Protocol)
+			if err != nil {
+				return nil, field.Invalid(errPath, b.Protocol, err.Error())
+			}
+
+			compiledProtocols = append(compiledProtocols, compiledProtocol)
+		}
+
 		if b.DNS != nil {
 			errPath := path.Index(i).Child("dns")
 			if errs := validateDNSBehavior(errPath, b.DNS, mode); len(errs) != 0 {
@@ -145,17 +160,18 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	}
 
 	return &CompiledRuntimePolicy{
-		UID:            string(rp.UID),
-		Name:           rp.Name,
-		ReevalInterval: &evalIntval,
-		selector:       rp.Spec.PodSelector,
-		resolver:       c.resolver,
-		mode:           mode,
-		compiledNets:   compiledNets,
-		compiledOpens:  compiledOpens,
-		compiledExecs:  compiledExecs,
-		compiledDNS:    compiledDNS,
-		variables:      variables,
+		UID:               string(rp.UID),
+		Name:              rp.Name,
+		ReevalInterval:    &evalIntval,
+		selector:          rp.Spec.PodSelector,
+		resolver:          c.resolver,
+		mode:              mode,
+		compiledNets:      compiledNets,
+		compiledOpens:     compiledOpens,
+		compiledExecs:     compiledExecs,
+		compiledProtocols: compiledProtocols,
+		compiledDNS:       compiledDNS,
+		variables:         variables,
 	}, nil
 }
 

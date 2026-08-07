@@ -33,7 +33,7 @@ spec:
         expect:
         - check:
             "($error != null)": true
-            "(contains($error, 'exactly one of network, exec, open, or dns must be specified'))": true
+            "(contains($error, 'exactly one of network, exec, open, protocol, or dns must be specified'))": true
 
   - name: dns-behavior-in-monitor-mode-is-accepted
     # The positive case: read the object back and prove nothing was pruned. The

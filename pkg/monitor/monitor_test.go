@@ -1174,3 +1174,97 @@ func TestHandleEvent_DNSDenyStarReportsEveryName(t *testing.T) {
 		t.Errorf("reported names (-want +got):\n%s", diff)
 	}
 }
+
+func protocolEvent(protocol, alpn string) runtimeevent.Event {
+	return runtimeevent.Event{
+		Kind:     runtimeevent.KindProtocol,
+		Time:     time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+		Count:    1,
+		Protocol: &runtimeevent.ProtocolFacts{Protocol: protocol, ALPN: alpn},
+		Pod:      testPod(),
+	}
+}
+
+func TestHandleEvent_ProtocolDefaultDenyCounterfactual(t *testing.T) {
+	tests := []struct {
+		name        string
+		ev          runtimeevent.Event
+		wantMessage string
+	}{
+		{
+			name:        "ssh is default-denied",
+			ev:          protocolEvent("ssh", ""),
+			wantMessage: "monitor mode: egress protocol ssh would have been denied by policy p (default deny)",
+		},
+		{name: "tls with the allowed ALPN", ev: protocolEvent("tls", "h2")},
+		{
+			name:        "tls with another ALPN is default-denied",
+			ev:          protocolEvent("tls", "http/1.1"),
+			wantMessage: "monitor mode: egress protocol tls/http/1.1 would have been denied by policy p (default deny)",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, sink, _ := testMonitor(t)
+			rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
+			rp.Protocols = pair([]string{"tls/h2"}, []string{compiler.StarTarget})
+			if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+				t.Fatalf("RuntimePolicyEvent: %v", err)
+			}
+
+			m.HandleEvent(tc.ev)
+
+			got := sink.all()
+			if tc.wantMessage == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected no findings, got %d: %+v", len(got), got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
+			}
+			if got[0].Behavior != BehaviorProtocol {
+				t.Errorf("behavior = %q, want %q", got[0].Behavior, BehaviorProtocol)
+			}
+			if got[0].Message != tc.wantMessage {
+				t.Errorf("message = %q, want %q", got[0].Message, tc.wantMessage)
+			}
+			if got[0].Net != nil || got[0].Process != nil {
+				t.Errorf("protocol finding carries a summary: net=%+v process=%+v", got[0].Net, got[0].Process)
+			}
+		})
+	}
+}
+
+func TestHandleEvent_KernelDenyIsAttributedToEnforceProtocolPolicy(t *testing.T) {
+	m, sink, mtx := testMonitor(t)
+	rp := monitorPolicy(t, "uid-e", "block-ssh", nil, nil, nil)
+	rp.Mode = compiler.ModeEnforce
+	rp.Protocols = pair(nil, []string{"ssh"})
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	ev := protocolEvent("ssh", "")
+	ev.KernelDenied = true
+	m.HandleEvent(ev)
+
+	want := []reporter.Finding{{
+		PolicyName: "block-ssh",
+		PolicyUID:  "uid-e",
+		Behavior:   BehaviorProtocol,
+		Severity:   reporter.SeverityMedium,
+		Result:     reporter.ResultFail,
+		Enforced:   true,
+		Message:    "enforced: egress protocol ssh was denied by policy block-ssh",
+		Pod:        testPod(),
+		Timestamp:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+	}}
+	if diff := cmp.Diff(want, sink.all()); diff != "" {
+		t.Errorf("findings (-want +got):\n%s", diff)
+	}
+	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 0 {
+		t.Errorf("unattributed kernel deny counter = %v, want 0", got)
+	}
+}

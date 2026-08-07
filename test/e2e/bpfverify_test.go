@@ -61,6 +61,15 @@ var bpfObjects = []bpfObjectSpec{
 		}},
 	},
 	{
+		object: "pkg/bpf/protofilter/protoclassifier_bpfel.o",
+		progs: []progCheck{{
+			name:       "proto_egress",
+			typ:        ebpf.CGroupSKB,
+			attach:     ebpf.AttachCGroupInetEgress,
+			insnBudget: 8000,
+		}},
+	},
+	{
 		object: "pkg/bpf/lsm/lsmfileopen_bpfel.o",
 		pre:    needBPFLSM,
 		progs: []progCheck{{

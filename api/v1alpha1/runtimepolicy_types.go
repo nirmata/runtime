@@ -29,7 +29,13 @@ type RuntimePolicySpec struct {
 	Variables []admissionregistrationv1.Variable `json:"variables,omitempty"`
 
 	// Behaviors defines the allowed and denied runtime behaviors.
+	//
+	// The bound is what keeps the per-item XValidation rule inside the CEL cost
+	// budget: an unbounded list makes the API server multiply that rule's cost by
+	// the largest number of items a request could carry, and the estimate then
+	// exceeds the budget and the CRD is refused at apply time.
 	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	Behaviors []PolicyBehavior `json:"behaviors,omitempty"`
 
 	// Mode defines the operational mode of the policy.
@@ -58,7 +64,7 @@ type BehaviorRule struct {
 }
 
 // PolicyBehavior defines allow/deny rules for a specific behavior type.
-// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) + (has(self.dns) ? 1 : 0) == 1",message="exactly one of network, exec, open, or dns must be specified"
+// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) + (has(self.protocol) ? 1 : 0) + (has(self.dns) ? 1 : 0) == 1",message="exactly one of network, exec, open, protocol, or dns must be specified"
 type PolicyBehavior struct {
 	// Network defines network behavior rules.
 	// +optional
@@ -71,6 +77,11 @@ type PolicyBehavior struct {
 	// Open defines file open behavior rules.
 	// +optional
 	Open *Behavior `json:"open,omitempty"`
+
+	// Protocol defines application protocol behavior rules, evaluated
+	// against the first data segment of a connection.
+	// +optional
+	Protocol *Behavior `json:"protocol,omitempty"`
 
 	// DNS declares the DNS names a selected workload is expected to resolve.
 	// It is observation only: it reports, it never blocks, so a policy carrying

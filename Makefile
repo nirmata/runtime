@@ -241,8 +241,8 @@ kind-install-manifests:
 # installed, LSM tests included. Those need a host booted with lsm=...,bpf and
 # fail loudly on one that is not -- which is the point, and is why no CI job
 # calls this target: hosted runners do not qualify and run the narrower
-# test-e2e-gate / test-e2e-egress instead. Docker Desktop's LinuxKit VM does
-# qualify, so this is the target to run on a developer machine.
+# test-e2e-gate / test-e2e-egress / test-e2e-protocol instead. Docker Desktop's
+# LinuxKit VM does qualify, so this is the target to run on a developer machine.
 test-e2e:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
 
@@ -254,6 +254,11 @@ test-e2e-gate:
 # Egress enforcement behavior. Needs cgroup v2 + CAP_BPF; no BPF-LSM required.
 test-e2e-egress:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-enforce/
+
+# Application-protocol enforcement behavior. Same kernel requirements as
+# test-e2e-egress: cgroup v2 + CAP_BPF, no BPF-LSM.
+test-e2e-protocol:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/protocol-enforce/
 
 # Cluster Service target resolution and enforcement. Same kernel requirements as
 # test-e2e-egress.
@@ -328,4 +333,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

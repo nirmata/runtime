@@ -15,10 +15,11 @@ import (
 type Kind string
 
 const (
-	KindNet  Kind = "net"
-	KindDNS  Kind = "dns"
-	KindExec Kind = "exec"
-	KindOpen Kind = "open"
+	KindNet      Kind = "net"
+	KindDNS      Kind = "dns"
+	KindExec     Kind = "exec"
+	KindOpen     Kind = "open"
+	KindProtocol Kind = "protocol"
 )
 
 // KernelDecision mirrors the DECISION_ALLOW / DECISION_DENY defines in the C
@@ -50,10 +51,11 @@ type Event struct {
 	// in monitor mode. Written by pkg/monitor.
 	WouldDeny bool `json:"wouldDeny,omitempty"`
 
-	Net  *NetFacts  `json:"net,omitempty"`
-	DNS  *DNSFacts  `json:"dns,omitempty"`
-	Exec *ExecFacts `json:"exec,omitempty"`
-	Open *OpenFacts `json:"open,omitempty"`
+	Net      *NetFacts      `json:"net,omitempty"`
+	DNS      *DNSFacts      `json:"dns,omitempty"`
+	Exec     *ExecFacts     `json:"exec,omitempty"`
+	Open     *OpenFacts     `json:"open,omitempty"`
+	Protocol *ProtocolFacts `json:"protocol,omitempty"`
 
 	// Pod is filled by pkg/attribution. Sources may pre-fill Pod.UID as a
 	// hint when they know the pod but not the cgroup (egress poll source).
@@ -103,4 +105,11 @@ type ExecFacts struct {
 // OpenFacts describes a file open.
 type OpenFacts struct {
 	Path string `json:"path"`
+}
+
+// ProtocolFacts describes the application protocol classified from the first
+// data segment of an egress flow. ALPN is non-empty only for TLS.
+type ProtocolFacts struct {
+	Protocol string `json:"protocol"`
+	ALPN     string `json:"alpn,omitempty"`
 }

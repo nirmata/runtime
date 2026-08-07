@@ -37,6 +37,7 @@ macOS; the kernel-bound tests skip themselves there.
 | `make test-e2e` | Full Chainsaw e2e suite, LSM tests included; needs a host booted with `lsm=...,bpf` |
 | `make test-e2e-gate` | Install gate only: image builds, chart installs, DaemonSet Ready, policies accepted |
 | `make test-e2e-egress` | Egress allow/deny enforcement behavior |
+| `make test-e2e-protocol` | Application-protocol allow/deny enforcement behavior |
 | `make test-e2e-lsm` | BPF-LSM `open`/`exec` enforcement behavior |
 | `make test-bpf-verify` | Loads every committed BPF object and prints the verifier log on rejection; needs Linux and root |
 | `make test-bpf-smoke` | Map round trips and LSM attach against a live kernel; needs Linux and root |
@@ -77,6 +78,7 @@ make kind             # first time: create the cluster and install
 make kind-install     # subsequent iterations: rebuild, reload, upgrade
 make smoke-quickstart # install gate
 make test-e2e-egress  # egress enforcement behavior
+make test-e2e-protocol # protocol enforcement behavior
 ```
 
 `make kind-install` rebuilds and reloads the image every time. Running only the Chainsaw suites
@@ -109,9 +111,9 @@ File `open` and process `exec` enforcement require a kernel booted with BPF-LSM 
 must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock
 distributions are typically not booted with it, and GitHub-hosted `ubuntu-latest` reports
 `lockdown,capability,landlock,yama,apparmor,ima,evm` — no `bpf`. That is why no CI job runs
-`make test-e2e`: hosted lanes run the narrower `make test-e2e-gate` and `make test-e2e-egress`
-instead. Docker Desktop's LinuxKit VM does boot with BPF-LSM, so `make test-e2e` runs the whole
-suite on a developer machine.
+`make test-e2e`: hosted lanes run the narrower `make test-e2e-gate`, `make test-e2e-egress` and
+`make test-e2e-protocol` instead. Docker Desktop's LinuxKit VM does boot with BPF-LSM, so
+`make test-e2e` runs the whole suite on a developer machine.
 
 Network egress enforcement and observation require only a cgroup v2 host and BPF support; a
 stock kind cluster on a Linux host qualifies.
@@ -176,7 +178,7 @@ Runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
 | BPF object drift | gate | `make verify-bpf` |
 | CRD conformance | assertion | `make test-chainsaw` on a bare kind cluster |
 | BPF verifier smoke | assertion | Kernel preconditions, then `make test-bpf-verify` and `make test-bpf-smoke` as root |
-| Egress enforcement | assertion | `make kind-install`, `make test-e2e-gate`, `make test-e2e-egress` |
+| Egress and protocol enforcement | assertion | `make kind-install`, `make test-e2e-gate`, `make test-e2e-egress`, `make test-e2e-protocol` |
 | LSM enforcement | assertion | `workflow_dispatch` only, with `lsm_runner` set to a runner booted with `lsm=...,bpf`: `make test-bpf-verify`, `make test-bpf-smoke`, `make test-e2e-lsm` |
 
 `Build & Unit Test` is the required status check in the repository ruleset for `main`, matched by
