@@ -1,0 +1,41 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: detect-ai-sdks
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: ai-workload
+  behaviors:
+  # Observing every open is what puts paths in front of the filter. An SDK
+  # lives under a directory whose absolute path depends on the interpreter
+  # version and the virtualenv, and a model file has no fixed name at all, so
+  # neither can be written as a value.
+  - open:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: open-events-only
+      expression: 'has(event.open)'
+    - name: ai-sdk-model-or-credential
+      expression: >-
+        [
+          "/site-packages/anthropic/", "/site-packages/openai/",
+          "/site-packages/google/genai/", "/site-packages/mistralai/",
+          "/site-packages/cohere/", "/site-packages/litellm/",
+          "/site-packages/langchain/", "/site-packages/llama_index/",
+          "/site-packages/transformers/", "/site-packages/vllm/",
+          "/node_modules/@anthropic-ai/sdk/", "/node_modules/openai/",
+          "/node_modules/@google/genai/", "/node_modules/@langchain/",
+          "/.cache/huggingface/", "/.ollama/models/", "/.cache/lm-studio/",
+        ].exists(d, event.open.path.contains(d)) ||
+        [".safetensors", ".gguf", ".onnx", ".ckpt"].exists(x,
+          event.open.path.endsWith(x)) ||
+        [
+          "/.claude/.credentials.json", "/.codex/auth.json",
+          "/.gemini/oauth_creds.json", "/.continue/config.json",
+          "/.aider.conf.yml",
+          "/.config/gcloud/application_default_credentials.json",
+        ].exists(f, event.open.path.endsWith(f))

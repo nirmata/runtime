@@ -892,20 +892,20 @@ distributions and hosted CI runners are typically not booted with it.
 
 | Example | Pattern it demonstrates | Mode | Requires |
 | --- | --- | --- | --- |
-| [block-known-bad-egress](../../../examples/block-known-bad-egress/) | Deny a literal destination IPv4 with `deny.values` | `enforce` | cgroup v2 |
-| [default-deny-egress](../../../examples/default-deny-egress/) | `deny.values: ["*"]` plus an `allow` list | `enforce` | cgroup v2 |
-| [egress-to-cluster-service](../../../examples/egress-to-cluster-service/) | Cluster Service DNS names in `allow.values` under default deny, with the API server denied by omission | `enforce` | cgroup v2 |
-| [egress-to-domain-name](../../../examples/egress-to-domain-name/) | An external domain name in `allow.values`, alongside cluster DNS named as a Service | `enforce` | cgroup v2 |
-| [monitor-egress](../../../examples/monitor-egress/) | Same policy shape observed instead of blocked | `monitor` | cgroup v2 |
-| [report-unexpected-dns](../../../examples/report-unexpected-dns/) | A `dns` allow list with a left-wildcard, plus the `deny: ["*"]` discovery form | `monitor` | cgroup v2 |
-| [detect-mcp-config-access](../../../examples/detect-mcp-config-access/) | `open` deny over absolute MCP configuration paths, reported not blocked | `monitor` | BPF-LSM |
-| [deny-sensitive-file-access](../../../examples/deny-sensitive-file-access/) | `open` deny with `values` unioned with a `variables` expression | `enforce` | BPF-LSM |
-| [restrict-exec-allowlist](../../../examples/restrict-exec-allowlist/) | Default-deny `exec` with an allow-list | `enforce` | BPF-LSM |
-| [tls-only-egress](../../../examples/tls-only-egress/) | `protocol` default deny allowing only `tls` and `dns` | `enforce` | cgroup v2 |
-| [monitor-workload-baseline](../../../examples/monitor-workload-baseline/) | `network`, `exec`, and `open` observed together | `monitor` | BPF-LSM for `open`/`exec`; egress findings alone need only cgroup v2 |
-| [blocklist-from-configmap](../../../examples/blocklist-from-configmap/) | `resource.get` with `evaluationInterval` | `enforce` | cgroup v2 |
-| [blocklist-from-http](../../../examples/blocklist-from-http/) | `http.get` with the `dyn` coercion | `enforce` | cgroup v2 |
-| [blocklist-from-json](../../../examples/blocklist-from-json/) | `json.unmarshal` composed with `resource.get` | `monitor` | cgroup v2 |
-| [enforce-workload-baseline](../../../examples/enforce-workload-baseline/) | All three behaviors under default-deny with `evaluationInterval` | `enforce` | BPF-LSM |
+| [block-known-bad-egress](../../../examples/egress/block-known-bad-egress/) | Deny a literal destination IPv4 with `deny.values` | `enforce` | cgroup v2 |
+| [default-deny-egress](../../../examples/egress/default-deny-egress/) | `deny.values: ["*"]` plus an `allow` list | `enforce` | cgroup v2 |
+| [egress-to-cluster-service](../../../examples/egress/egress-to-cluster-service/) | Cluster Service DNS names in `allow.values` under default deny, with the API server denied by omission | `enforce` | cgroup v2 |
+| [egress-to-domain-name](../../../examples/egress/egress-to-domain-name/) | An external domain name in `allow.values`, alongside cluster DNS named as a Service | `enforce` | cgroup v2 |
+| [monitor-egress](../../../examples/monitoring/monitor-egress/) | Same policy shape observed instead of blocked | `monitor` | cgroup v2 |
+| [report-unexpected-dns](../../../examples/shadow-ai/report-unexpected-dns/) | A `dns` allow list with a left-wildcard, plus the `deny: ["*"]` discovery form | `monitor` | cgroup v2 |
+| [detect-mcp-config-access](../../../examples/shadow-ai/detect-mcp-config-access/) | `open` deny over absolute MCP configuration paths, reported not blocked | `monitor` | BPF-LSM |
+| [deny-sensitive-file-access](../../../examples/files-and-processes/deny-sensitive-file-access/) | `open` deny with `values` unioned with a `variables` expression | `enforce` | BPF-LSM |
+| [restrict-exec-allowlist](../../../examples/files-and-processes/restrict-exec-allowlist/) | Default-deny `exec` with an allow-list | `enforce` | BPF-LSM |
+| [tls-only-egress](../../../examples/egress/tls-only-egress/) | `protocol` default deny allowing only `tls` and `dns` | `enforce` | cgroup v2 |
+| [monitor-workload-baseline](../../../examples/monitoring/monitor-workload-baseline/) | `network`, `exec`, and `open` observed together | `monitor` | BPF-LSM for `open`/`exec`; egress findings alone need only cgroup v2 |
+| [blocklist-from-configmap](../../../examples/dynamic-lists/blocklist-from-configmap/) | `resource.get` with `evaluationInterval` | `enforce` | cgroup v2 |
+| [blocklist-from-http](../../../examples/dynamic-lists/blocklist-from-http/) | `http.get` with the `dyn` coercion | `enforce` | cgroup v2 |
+| [blocklist-from-json](../../../examples/dynamic-lists/blocklist-from-json/) | `json.unmarshal` composed with `resource.get` | `monitor` | cgroup v2 |
+| [enforce-workload-baseline](../../../examples/files-and-processes/enforce-workload-baseline/) | All three behaviors under default-deny with `evaluationInterval` | `enforce` | BPF-LSM |
 
 The full catalog, grouped by feature, is in [Examples](../examples.md).

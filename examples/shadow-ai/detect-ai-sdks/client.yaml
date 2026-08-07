@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ai-workload
+  labels:
+    app: ai-workload
+spec:
+  containers:
+  - name: workload
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      # Stand in for the layout a real AI image ships: an installed SDK, a
+      # cached model, a credential file, and one ordinary library that must
+      # not be reported.
+      mkdir -p /usr/lib/python3/site-packages/anthropic
+      mkdir -p /usr/lib/python3/site-packages/requests
+      mkdir -p /root/.ollama/models/blobs /root/.claude
+      printf 'x\n' > /usr/lib/python3/site-packages/anthropic/__init__.py
+      printf 'x\n' > /usr/lib/python3/site-packages/requests/__init__.py
+      printf 'x\n' > /root/.ollama/models/blobs/model.gguf
+      printf '{}' > /root/.claude/.credentials.json
+      sleep 900

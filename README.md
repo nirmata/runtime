@@ -75,7 +75,7 @@ Start a client and an HTTP server, and note the server's address:
 
 ```bash
 git clone https://github.com/nirmata/kyverno-runtime.git
-cd kyverno-runtime/examples/block-known-bad-egress
+cd kyverno-runtime/examples/egress/block-known-bad-egress
 kubectl apply -f client.yaml -f targets.yaml
 kubectl wait --for=condition=Ready pod/egress-client pod/egress-target-denied --timeout=90s
 DENIED=$(kubectl get pod egress-target-denied -o jsonpath='{.status.podIP}')
@@ -123,8 +123,8 @@ No CNI, iptables rule, or sidecar is involved, and nothing about the pod spec ch
 
 Full walkthroughs: [network egress](docs/users/quickstart.md), including how to flip a
 policy to `monitor` and read the resulting Report, plus
-[file reads](examples/deny-sensitive-file-access/) and
-[process exec](examples/restrict-exec-allowlist/), which need a BPF-LSM kernel.
+[file reads](examples/files-and-processes/deny-sensitive-file-access/) and
+[process exec](examples/files-and-processes/restrict-exec-allowlist/), which need a BPF-LSM kernel.
 
 ## 📚 Documentation
 

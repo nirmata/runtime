@@ -1,0 +1,39 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: detect-agent-cli
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: ai-workload
+  behaviors:
+  # Observing every exec is what turns argv streaming on for the pod. The
+  # filter below is what keeps the report readable.
+  - exec:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    # The guard. Without it the expression below would be evaluated against
+    # open and network observations too, where event.exec does not exist.
+    - name: exec-events-only
+      expression: 'has(event.exec)'
+    # An agent CLI is identified by the name it was invoked under or the
+    # package a launcher was asked to fetch, not by the binary that ran it:
+    # npx, uvx and python are all just interpreters.
+    - name: agent-cli-or-inference-server
+      expression: >-
+        event.exec.argv.exists(a, a in [
+          "claude", "codex", "gemini", "aider", "goose", "opencode", "crush",
+          "cursor-agent", "ollama", "litellm", "text-generation-launcher",
+        ]) ||
+        event.exec.argv.exists(a,
+          a.startsWith("@anthropic-ai/") ||
+          a.startsWith("@openai/") ||
+          a.startsWith("@google/gemini-cli")) ||
+        event.exec.argv.exists(a,
+          a == "vllm" ||
+          a.startsWith("vllm.") ||
+          a.startsWith("sglang.") ||
+          a.startsWith("llama_cpp."))

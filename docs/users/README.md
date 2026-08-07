@@ -11,8 +11,9 @@ Runtime and writing `RuntimePolicy` objects.
   daemon flags, and verifying an install.
 - [Examples](examples.md) — catalog of the scenarios under
   [`examples/`](../../examples/), grouped by feature.
-- [Detecting shadow MCP](shadow-mcp.md) — finding the MCP servers a workload launches,
-  the configuration and credentials it reads, and the endpoints it reaches.
+- [Detecting shadow AI](shadow-ai.md) — the model providers a workload resolves, the SDKs
+  and model files it reads, the agent CLIs and MCP servers it launches, and what stays
+  invisible inside TLS.
 - [Troubleshooting](troubleshooting.md) — why nothing is being blocked, missing Reports,
   rejected policy targets, and dropped events.
 

@@ -5,7 +5,7 @@ cluster. Five steps, and the only long wait is building the daemon image.
 
 This is the path that runs on any Linux host, which is why it is the quickstart. The
 `open` and `exec` samples enforce the same way but need a BPF-LSM kernel — see
-[block reads of credential files](../../examples/deny-sensitive-file-access/).
+[block reads of credential files](../../examples/files-and-processes/deny-sensitive-file-access/).
 
 ## Prerequisites
 
@@ -40,10 +40,10 @@ kubectl get pods -n kyverno-runtime
 
 Start a client and two HTTP servers. The rest of the commands run from the example's
 directory, so they match
-[`examples/block-known-bad-egress/`](../../examples/block-known-bad-egress/) exactly:
+[`examples/egress/block-known-bad-egress/`](../../examples/egress/block-known-bad-egress/) exactly:
 
 ```bash
-cd examples/block-known-bad-egress
+cd examples/egress/block-known-bad-egress
 kubectl apply -f client.yaml -f targets.yaml
 kubectl wait --for=condition=Ready pod/egress-client pod/egress-target-denied pod/egress-target-allowed --timeout=90s
 ```
@@ -149,7 +149,7 @@ kubectl get reports -n default -o yaml
 
 Each result names the policy, the behavior as its `rule`, the offending pod as its
 subject, and carries the destination address and an occurrence count.
-[`examples/monitor-egress/`](../../examples/monitor-egress/) is the full monitor-mode
+[`examples/monitoring/monitor-egress/`](../../examples/monitoring/monitor-egress/) is the full monitor-mode
 walkthrough.
 
 ## Clean up

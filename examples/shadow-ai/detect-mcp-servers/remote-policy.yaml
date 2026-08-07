@@ -1,0 +1,25 @@
+# The other MCP transport. A remote server is reached over HTTPS, so it leaves
+# a DNS question rather than an execve, and hosted providers overwhelmingly use
+# an "mcp." hostname — which a filter generalizes better than a list that has
+# to be maintained.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: detect-remote-mcp-endpoints
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: mcp-agent
+  behaviors:
+  - dns:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: mcp-endpoint-resolved
+      expression: >-
+        has(event.dns) && (
+          event.dns.qname.startsWith("mcp.") ||
+          event.dns.qname.contains(".mcp.")
+        )
