@@ -1,0 +1,18 @@
+# spec.mode: enforce together with a monitorFilter. The RuntimePolicySpec
+# XValidation rule refuses it: an enforce finding records what the kernel
+# actually blocked, and suppressing one destroys an audit record.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-monitorfilter-enforce
+spec:
+  mode: enforce
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /etc/shadow
+  monitorFilter:
+    expressions:
+    - name: open-events-only
+      expression: 'has(event.open)'

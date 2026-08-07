@@ -1,0 +1,15 @@
+# An empty expression list. MinItems=1 refuses it: a monitorFilter that narrows
+# nothing is a field with no effect, which reads as a filter that is working.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-monitorfilter-empty
+spec:
+  mode: monitor
+  behaviors:
+  - open:
+      deny:
+        values:
+        - "*"
+  monitorFilter:
+    expressions: []

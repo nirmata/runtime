@@ -1,0 +1,22 @@
+# Valid: a monitor-mode discovery policy narrowed by two expressions, the guard
+# first and the dereference it protects second.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-monitorfilter
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: chainsaw-target
+  behaviors:
+  - exec:
+      deny:
+        values:
+        - "*"
+  monitorFilter:
+    expressions:
+    - name: exec-events-only
+      expression: 'has(event.exec)'
+    - name: mcp-server-package
+      expression: 'event.exec.argv.exists(a, a.startsWith("mcp-server-"))'

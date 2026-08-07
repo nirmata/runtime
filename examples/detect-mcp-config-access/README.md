@@ -17,8 +17,10 @@ own literal entry. That enumeration is the whole cost of the approach, and it is
 `policy.yaml` rather than hidden behind a pattern that would silently match less than it
 looks like it matches.
 
-A project-scoped `.mcp.json` cannot be listed at all, because its absolute path depends on
-where the repository was checked out. Name the directories your images actually use.
+Some paths have no literal to list — a project-scoped `.mcp.json` sits wherever the repository
+was checked out. Those are reached the other way round, with a broad `deny` and a
+`monitorFilter` that decides which findings are worth reporting: see
+[Paths that cannot be enumerated](#paths-that-cannot-be-enumerated).
 
 ## Requires
 
@@ -104,6 +106,54 @@ by default) and findings are flushed every 10s, so allow up to about 20 seconds.
 
   `enforced: "false"` is what makes this a counterfactual: an enforcing form of the same
   policy would have returned `-EPERM` to that `cat`, and this one did not.
+
+## Paths that cannot be enumerated
+
+`policy.yaml` names every path it reports, which works exactly as far as the paths are
+predictable. Two MCP targets are not:
+
+- a project-scoped `.mcp.json`, whose absolute path depends on where the repository was
+  checked out;
+- the OAuth refresh-token cache under `~/.mcp-auth/`, whose filenames are hashes.
+
+For those, invert the policy: deny everything, and narrow the *findings* with a
+[monitorFilter](../../docs/users/reference/runtimepolicy.md#filtering-monitor-findings) — a CEL
+predicate evaluated against each observation, which does have prefix, suffix, substring, and
+regex matching. The alternatives here are a disjunction, so they belong in one expression:
+
+```yaml
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: report-mcp-config-or-credential-read
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: mcp-client
+  behaviors:
+  - open:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: mcp-config-or-credential-read
+      expression: >-
+        has(event.open) && (
+          event.open.path.contains("/.mcp-auth/") ||
+          event.open.path.endsWith("/.mcp.json") ||
+          [
+            "/mcp.json", "/mcp_config.json",
+            "/claude_desktop_config.json", "/.claude.json",
+          ].exists(f, event.open.path.endsWith(f))
+        )
+```
+
+Two things this does not change. The filter narrows findings, not observation: the kernel still
+records every path the pod opens, and the per-cgroup map is under the same pressure a bare
+`deny: ["*"]` would put it under. And it is monitor-only — an `enforce` policy carrying a
+`monitorFilter` is refused at admission, because an enforce finding is the record that
+something was actually blocked and is never suppressed.
 
 ## Turning it into enforcement
 

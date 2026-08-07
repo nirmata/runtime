@@ -15,6 +15,7 @@ import (
 // reported an unapplied condition is a policy an author has to go looking for.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'enforce' && has(self.behaviors) && self.behaviors.exists(b, has(b.dns)))",message="a dns behavior reports the names a workload resolves, it does not block them: set spec.mode to \"monitor\", or express the destinations you want blocked as a network behavior, which enforces domain values"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'enforce' && has(self.monitorFilter))",message="a monitorFilter narrows what a monitor-mode policy reports; an enforce-mode policy reports only operations the kernel actually denied, and those are never suppressed"
 type RuntimePolicySpec struct {
 	// PodSelector identifies the pods this policy applies to. An empty selector
 	// matches every pod on the node; omitting the field matches none, following
@@ -43,6 +44,37 @@ type RuntimePolicySpec struct {
 	// Mode defines the operational mode of the policy.
 	// +optional
 	Mode *RuntimePolicyMode `json:"mode,omitempty"`
+
+	// MonitorFilter narrows which findings a monitor-mode policy reports. It
+	// selects what is observed into a finding, never what the kernel blocks.
+	// +optional
+	MonitorFilter *MonitorFilter `json:"monitorFilter,omitempty"`
+}
+
+// MonitorFilter selects which findings are reported. Expressions are ANDed and
+// evaluated in order, short-circuiting on the first false. Each must evaluate
+// to bool over the event variable.
+type MonitorFilter struct {
+	// Expressions each state a condition a finding must satisfy to be reported.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	Expressions []MonitorFilterExpression `json:"expressions"`
+}
+
+// MonitorFilterExpression is one named condition on a candidate finding.
+type MonitorFilterExpression struct {
+	// Name identifies this expression in compile errors, status conditions and
+	// the eval-error metric. It is never emitted to a Report.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Expression is a CEL expression over the event variable that must evaluate
+	// to bool. event.kind selects the arm that is populated: event.open.path,
+	// event.exec.filename and .argv, event.net.destIP and .domain,
+	// event.dns.qname, event.protocol.protocol and .alpn. Every event also
+	// carries time, comm, pid, count, kernelDenied, wouldDeny, and pod.
+	// +kubebuilder:validation:MinLength=1
+	Expression string `json:"expression"`
 }
 
 // RuntimePolicyMode represents the operational mode for policy enforcement.

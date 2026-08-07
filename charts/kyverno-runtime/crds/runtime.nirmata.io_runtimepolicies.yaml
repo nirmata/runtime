@@ -258,6 +258,43 @@ spec:
                 - monitor
                 - enforce
                 type: string
+              monitorFilter:
+                description: |-
+                  MonitorFilter narrows which findings a monitor-mode policy reports. It
+                  selects what is observed into a finding, never what the kernel blocks.
+                properties:
+                  expressions:
+                    description: Expressions each state a condition a finding must
+                      satisfy to be reported.
+                    items:
+                      description: MonitorFilterExpression is one named condition
+                        on a candidate finding.
+                      properties:
+                        expression:
+                          description: |-
+                            Expression is a CEL expression over the event variable that must evaluate
+                            to bool. event.kind selects the arm that is populated: event.open.path,
+                            event.exec.filename and .argv, event.net.destIP and .domain,
+                            event.dns.qname, event.protocol.protocol and .alpn. Every event also
+                            carries time, comm, pid, count, kernelDenied, wouldDeny, and pod.
+                          minLength: 1
+                          type: string
+                        name:
+                          description: |-
+                            Name identifies this expression in compile errors, status conditions and
+                            the eval-error metric. It is never emitted to a Report.
+                          minLength: 1
+                          type: string
+                      required:
+                      - expression
+                      - name
+                      type: object
+                    maxItems: 64
+                    minItems: 1
+                    type: array
+                required:
+                - expressions
+                type: object
               podSelector:
                 description: |-
                   PodSelector identifies the pods this policy applies to. An empty selector
@@ -338,6 +375,10 @@ spec:
                 you want blocked as a network behavior, which enforces domain values'
               rule: '!(has(self.mode) && self.mode == ''enforce'' && has(self.behaviors)
                 && self.behaviors.exists(b, has(b.dns)))'
+            - message: a monitorFilter narrows what a monitor-mode policy reports;
+                an enforce-mode policy reports only operations the kernel actually
+                denied, and those are never suppressed
+              rule: '!(has(self.mode) && self.mode == ''enforce'' && has(self.monitorFilter))'
           status:
             description: RuntimePolicyStatus reflects the observed state of the policy.
             properties:

@@ -33,6 +33,8 @@ type CompiledRuntimePolicy struct {
 	compiledExecs     []*compiledBehavior
 	compiledProtocols []*compiledBehavior
 	compiledDNS       []*compiledBehavior
+
+	monitorFilter *MonitorFilter
 }
 
 type compiledBehavior struct {
@@ -42,8 +44,9 @@ type compiledBehavior struct {
 }
 
 type compiler struct {
-	env      *cel.Env
-	resolver ServiceResolver
+	env       *cel.Env
+	filterEnv *cel.Env
+	resolver  ServiceResolver
 }
 
 func NewCompiler(client dynamic.Interface, resolver ServiceResolver) (Compiler, error) {
@@ -64,7 +67,12 @@ func NewCompiler(client dynamic.Interface, resolver ServiceResolver) (Compiler, 
 	if err != nil {
 		return nil, err
 	}
-	return &compiler{env: env, resolver: resolver}, nil
+
+	filterEnv, err := newFilterEnv()
+	if err != nil {
+		return nil, err
+	}
+	return &compiler{env: env, filterEnv: filterEnv, resolver: resolver}, nil
 }
 
 func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
@@ -154,6 +162,11 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		}
 	}
 
+	monitorFilter, err := c.compileMonitorFilter(rp, mode)
+	if err != nil {
+		return nil, err
+	}
+
 	evalIntval := time.Duration(0)
 	if rp.Spec.EvaluationInterval != nil {
 		evalIntval = rp.Spec.EvaluationInterval.Duration
@@ -172,6 +185,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		compiledProtocols: compiledProtocols,
 		compiledDNS:       compiledDNS,
 		variables:         variables,
+		monitorFilter:     monitorFilter,
 	}, nil
 }
 

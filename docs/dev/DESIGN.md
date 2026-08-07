@@ -117,6 +117,7 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 | `variables` | `[]admissionregistrationv1.Variable` | Named CEL expressions reusable across behaviors via `variables.<name>`. |
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
 | `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. `enforce` programs the deny/allow maps; `monitor` attaches the same programs with empty maps and evaluates observations in userspace (see [The event plane](#the-event-plane)). Optional with no default: a policy that omits `mode` is inert — see [Known Gaps](#known-gaps--future-work). |
+| `monitorFilter` | optional, `expressions` list of `name`/`expression` | A per-event CEL predicate narrowing which monitor-mode observations become findings (see [Filtering findings](#filtering-findings-specmonitorfilter)). Bounded by `MinItems=1`/`MaxItems=64`, and refused alongside `mode: enforce`. |
 
 Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, `open`, `protocol`, or
 `dns`, enforced by an `XValidation` rule counting the five `has(self.*)` results. `spec.behaviors`
@@ -163,8 +164,18 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
   `podAttachment.defaultDeny` so the eBPF flag is cleared only once none remain. `pkg/lsmmgr` has no
   such bookkeeping: it attaches a separate LSM program per policy, so `open`/`exec` compose as an
   intersection rather than a union — see [Known Gaps](#known-gaps--future-work).
-- `expression` must evaluate to a statically-typed `list(string)`; the compiler rejects any other
-  output type at `Compile` time (`ast.OutputType().IsExactType(types.NewListType(types.StringType))`).
+- A `monitorFilter` is refused on an `enforce` policy by a spec-level `XValidation` rule and again
+  by the compiler. The asymmetry between the two kinds of finding is the reason: a monitor finding
+  is a counterfactual, and under `deny: ["*"]` that is every open and every exec, while an enforce
+  finding is the record that the kernel actually blocked something — bounded, individually
+  meaningful, and an audit record that suppression would destroy. Rejecting the combination rather
+  than ignoring the field also keeps it from being silently inert, since `handleEvent` sets
+  `Enforced` only in the `ModeEnforce` branch and a filter there would compile, apply, and change
+  nothing.
+- A behavior or `variables` `expression` must evaluate to a statically-typed `list(string)`; the
+  compiler rejects any other output type at `Compile` time
+  (`ast.OutputType().IsExactType(types.NewListType(types.StringType))`). A `monitorFilter`
+  expression is checked the same way against `types.BoolType`.
 
 ## Compilation and evaluation pipeline
 
@@ -182,7 +193,9 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
    via `k8s.io/apiserver/pkg/cel/lazy.MapValue`) and each compiled behavior, unions literal
    `values` with the CEL expression's result, and returns an `EvaluationResult{UID, Name, Mode, IPs,
    Open, Exec, DNS, Selector}` where `IPs`/`Open`/`Exec`/`DNS` are each an
-   `AllowDenyPair{Allow, Deny []string}`.
+   `AllowDenyPair{Allow, Deny []string}`. A policy carrying a `monitorFilter` also compiles each of
+   its expressions to a `bool`-typed program, which rides the evaluation result out to the monitor
+   like every other per-policy fact.
 
 Both compile and evaluate run inside `utils.Guard`, which converts a panic from user-authored CEL
 (or from a library binding reached through it) into an ordinary error carrying the operation name. `resource.toGVR` returns an error instead of panicking on an unparsable `apiVersion`, and
@@ -575,6 +588,33 @@ deny that no tracked enforce-mode policy explains bumps
 `nirmata_runtime_events_dropped_total{source="monitor",reason="unattributed_kernel_deny"}` and is
 logged at V(2): a kernel deny must never vanish silently.
 
+#### Filtering findings (`spec.monitorFilter`)
+
+`spec.monitorFilter.expressions` is compiled in `pkg/compiler` alongside the behavior
+expressions, each one type-checked to `bool` against an environment carrying the `event`
+variable and the base libraries but **not** the Kyverno SDK's `http`/`resource`/`json`: a
+cluster read or an HTTP fetch is affordable once per `evaluationInterval` and not once per
+kernel event. The compiled predicates travel to the monitor on the evaluation result and are
+held on `trackedPolicy` with the matchers.
+
+They are applied in `record()`, where the candidate finding is formed — before it reaches the
+reporter, because the reporter is the [redaction chokepoint](#redaction-chokepoint) and must
+not acquire policy logic. `event` is the observation itself, a discriminated union whose kind
+field is also the `has()` guard; `docs/users/reference/cel.md` is the schema.
+
+Expressions are ANDed in order and short-circuit on the first false one, which is what lets a
+`has(event.exec)` guard protect a later expression dereferencing `event.exec` on an `open`
+event. An eval error or a non-`bool` result **reports the finding anyway** and increments
+`nirmata_runtime_monitor_filter_eval_errors_total{policy,expression}`, labeled with the
+expression's `name`: the predicate selects what to show, so failing closed would turn a broken
+filter into a monitoring gap indistinguishable from silence. The `name` reaches compile errors,
+status conditions and that metric, and never a Report, so the reporter's fixed key set stays
+closed to user-controlled strings.
+
+There is no runtime mode guard. `mode: enforce` alongside a `monitorFilter` is refused both at
+admission and by the compiler, so the enforce branch of `handleEvent` can never reach a filter
+and a guard there would be unreachable.
+
 #### The name matcher and the advisory finding
 
 `nameBehavior` is the third matcher shape, and its `eval` is not a variant of the other two. For
@@ -680,9 +720,10 @@ log)` exposes `/metrics` and returns cleanly on context cancellation.
 `--metrics-addr=:{{ .Values.daemon.metrics.port }}` and declares the matching `containerPort`.
 An empty value disables the endpoint without disabling the counters.
 
-`pkg/metrics/metrics.go` registers exactly five collectors, all under the `nirmata_runtime`
+`pkg/metrics/metrics.go` registers exactly six collectors, all under the `nirmata_runtime`
 namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,reason}`,
-`attribution_misses_total`, `findings_emitted_total{policy,behavior,severity}`, and
+`attribution_misses_total`, `findings_emitted_total{policy,behavior,severity}`,
+`monitor_filter_eval_errors_total{policy,expression}`, and
 `report_writes_total{result}`. The `reason` values something produces are `buffer_full`
 (`pkg/collector`), `unattributed` (`pkg/monitor`, `pkg/reporter`),
 `unattributed_kernel_deny` (`pkg/monitor`), and `ringbuf_full` / `name_unreadable` /
