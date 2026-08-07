@@ -13,6 +13,8 @@ linters:
     - unparam
 
   exclusions:
+    paths:
+      - \.claude/worktrees/
     rules:
       - path: _test\.go
         linters:
@@ -23,6 +25,10 @@ formatters:
   enable:
     - gofmt
     - gci
+
+  exclusions:
+    paths:
+      - \.claude/worktrees/
 
   settings:
     gofmt:
