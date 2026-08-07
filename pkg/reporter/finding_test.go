@@ -118,6 +118,29 @@ func TestFingerprintSeparatesTargetsWithinOnePolicyAndPod(t *testing.T) {
 	}
 }
 
+// TestFingerprintEncodingIsUnambiguous covers a target that carries whatever
+// bytes a delimited encoding would use to separate fields: a path and a comm
+// are both attacker-influenced, so shifting the boundary between them must not
+// let one finding wear another's fingerprint.
+func TestFingerprintEncodingIsUnambiguous(t *testing.T) {
+	f := func(target, comm string) Finding {
+		return Finding{
+			PolicyUID: "policy-uid-1",
+			Behavior:  "open",
+			Target:    target,
+			Pod:       runtimeevent.PodIdentity{UID: "pod-uid-1"},
+			Process:   &ProcessSummary{Comm: comm},
+		}
+	}
+
+	if a, b := f("/a", "b|||c").Fingerprint(), f("/a|||b", "c").Fingerprint(); a == b {
+		t.Errorf("a shifted field boundary yields the same fingerprint: %q", a)
+	}
+	if a, b := f("/a\x00b", "").Fingerprint(), f("/a", "b").Fingerprint(); a == b {
+		t.Errorf("a NUL in the target yields the same fingerprint as a split field: %q", a)
+	}
+}
+
 func TestNormalizeSeverity(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"", DefaultSeverity},

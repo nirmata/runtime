@@ -19,6 +19,7 @@ package reporter
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 
@@ -132,7 +133,8 @@ func (f Finding) Fingerprint() string {
 		qname = f.DNS.QName
 	}
 
-	raw := strings.Join([]string{
+	h := sha256.New()
+	for _, part := range []string{
 		f.PolicyUID,
 		f.Pod.UID,
 		f.Behavior,
@@ -141,8 +143,12 @@ func (f Finding) Fingerprint() string {
 		destIP,
 		comm,
 		qname,
-	}, "|")
-
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
+	} {
+		// Length-prefixed, not delimited: a path and a comm may each hold any
+		// byte, so no delimiter is safe. Joining on one lets a target ending
+		// in the delimiter absorb the field after it and collide with a
+		// different finding.
+		fmt.Fprintf(h, "%d:%s", len(part), part)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
