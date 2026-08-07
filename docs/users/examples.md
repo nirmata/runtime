@@ -66,6 +66,7 @@ allow list is not a containment boundary. A cluster Service written short, as
 | [monitor-workload-baseline](../../examples/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
 | [monitor-static-pods](../../examples/monitor-static-pods/) | Confirm the daemon can observe kubeadm's static control-plane pods | monitor | cgroup v2 |
 | [detect-mcp-config-access](../../examples/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM |
+| [detect-mcp-servers](../../examples/detect-mcp-servers/) | Report every stdio MCP server a workload launches, identified by the package it was asked to run rather than the binary that ran it | monitor | BPF-LSM |
 
 Monitor mode reports through OpenReports `Report` objects and never blocks. What it can and
 cannot see is listed in

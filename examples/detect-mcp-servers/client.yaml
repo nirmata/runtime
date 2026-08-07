@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mcp-agent
+  labels:
+    app: mcp-agent
+spec:
+  containers:
+  - name: agent
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      # Stand in for the launchers a real agent image ships. Each execs a
+      # sleep, so the pod stays up and the argv is what matters.
+      mkdir -p /usr/local/bin
+      for tool in npx uvx; do
+        printf '#!/bin/sh\nexec sleep 60\n' > "/usr/local/bin/$tool"
+        chmod +x "/usr/local/bin/$tool"
+      done
+      sleep 900
