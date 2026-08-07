@@ -170,7 +170,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// sched_process_exec raw tracepoint still runs everything else. A nil
 	// source is skipped by AddSource and mirrors no cgroups.
 	var execSinks []lsmmgr.CgroupSink
-	execSrc, err := exectrace.New(logger.WithName("exectrace"))
+	execSrc, err := exectrace.New(logger.WithName("exectrace"), observeInterval)
 	if err != nil {
 		logger.Error(err, "exec tracing unavailable; argv will not be observed")
 		execSrc = nil

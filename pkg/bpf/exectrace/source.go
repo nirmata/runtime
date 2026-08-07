@@ -21,10 +21,8 @@ import (
 // the `source` label on its ingest and drop metrics.
 const SourceName = "exec-trace"
 
-// statInterval bounds how stale a kernel-side loss counter can be. The counters
-// only move when an observation was lost, so this ticker is idle in the normal
-// case.
-const statInterval = 30 * time.Second
+// defaultStatInterval is used when New is given a non-positive interval.
+const defaultStatInterval = 10 * time.Second
 
 // statNames is indexed by the `enum exec_stat` values in _cprog/maps.h.
 var statNames = [...]string{"argvOverflow", "ringbufFull", "argvUnreadable"}
@@ -42,16 +40,23 @@ const statCount = len(statNames)
 // argv walk: mm->arg_end brackets argv and envp together on some kernels, so
 // a walk that stops at arg_end reports environment strings as arguments.
 type Source struct {
-	log   logr.Logger
-	objs  execTraceObjects
-	link  link.Link
-	rd    *ringbuf.Reader
-	clock func() time.Time
+	log logr.Logger
+	// statInterval bounds how stale a kernel-side loss counter can be. The
+	// counters only move when an observation was lost, so the ticker reading
+	// them is idle in the normal case.
+	statInterval time.Duration
+	objs         execTraceObjects
+	link         link.Link
+	rd           *ringbuf.Reader
+	clock        func() time.Time
 }
 
 // New loads and attaches the kernel program. The caller owns Close.
-func New(log logr.Logger) (*Source, error) {
-	s := &Source{log: log, clock: time.Now}
+func New(log logr.Logger, statInterval time.Duration) (*Source, error) {
+	if statInterval <= 0 {
+		statInterval = defaultStatInterval
+	}
+	s := &Source{log: log, statInterval: statInterval, clock: time.Now}
 
 	if err := loadExecTraceObjects(&s.objs, nil); err != nil {
 		return nil, fmt.Errorf("%s: loading objects: %w", SourceName, err)
@@ -157,7 +162,7 @@ func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 // pollStats reports the kernel-side loss counters. They describe observations
 // that never became records, so nothing downstream can infer them.
 func (s *Source) pollStats(ctx context.Context, done <-chan struct{}) {
-	t := time.NewTicker(statInterval)
+	t := time.NewTicker(s.statInterval)
 	defer t.Stop()
 
 	var last [statCount]uint64
