@@ -57,7 +57,7 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 				Time:         now,
 				Count:        count,
 				KernelDenied: key.Decision == runtimeevent.DecisionDeny,
-				Net:          &runtimeevent.NetFacts{DestIP: key.Addr},
+				Net:          &runtimeevent.NetFacts{DestIP: key.Addr, Domain: key.Domain},
 				Pod:          runtimeevent.PodIdentity{UID: podUid, Labels: pa.labels},
 			})
 		}
@@ -66,8 +66,10 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 	return out, errors.Join(errs...)
 }
 
-// sortedIPEventKeys orders keys by address, with the decision as a tiebreaker
-// (allow before deny), so the emitted event slice is deterministic.
+// sortedIPEventKeys orders keys by address, then decision (allow before deny),
+// then domain, so the emitted event slice is deterministic. Every field of the
+// key is compared: one address can be reached under two domains, and leaving
+// either out would order those entries arbitrarily.
 func sortedIPEventKeys(counts map[egressfilter.IPEventKey]uint32) []egressfilter.IPEventKey {
 	keys := make([]egressfilter.IPEventKey, 0, len(counts))
 	for key := range counts {
@@ -77,7 +79,10 @@ func sortedIPEventKeys(counts map[egressfilter.IPEventKey]uint32) []egressfilter
 		if c := keys[i].Addr.Compare(keys[j].Addr); c != 0 {
 			return c < 0
 		}
-		return keys[i].Decision < keys[j].Decision
+		if keys[i].Decision != keys[j].Decision {
+			return keys[i].Decision < keys[j].Decision
+		}
+		return keys[i].Domain < keys[j].Domain
 	})
 	return keys
 }

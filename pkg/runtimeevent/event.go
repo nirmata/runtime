@@ -16,6 +16,7 @@ type Kind string
 
 const (
 	KindNet  Kind = "net"
+	KindDNS  Kind = "dns"
 	KindExec Kind = "exec"
 	KindOpen Kind = "open"
 )
@@ -50,6 +51,7 @@ type Event struct {
 	WouldDeny bool `json:"wouldDeny,omitempty"`
 
 	Net  *NetFacts  `json:"net,omitempty"`
+	DNS  *DNSFacts  `json:"dns,omitempty"`
 	Exec *ExecFacts `json:"exec,omitempty"`
 	Open *OpenFacts `json:"open,omitempty"`
 
@@ -75,6 +77,16 @@ type PodIdentity struct {
 // NetFacts describes an egress connection attempt.
 type NetFacts struct {
 	DestIP netip.Addr `json:"destIP"`
+	// Domain is the DNS name DestIP was resolved from, empty when the kernel
+	// never saw the address in a snooped answer.
+	Domain string `json:"domain,omitempty"`
+}
+
+// DNSFacts describes an observed DNS question. The name is what the workload
+// asked to resolve, which is not proof that it connected: an answer can be
+// cached or shared, and a workload dialling a bare address asks nothing.
+type DNSFacts struct {
+	QName string `json:"qname"`
 }
 
 // ExecFacts describes a process execution.

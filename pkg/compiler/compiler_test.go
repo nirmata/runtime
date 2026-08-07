@@ -20,9 +20,14 @@ import (
 // network/apiserver access happens during Compile/Evaluate.
 func newTestCompiler(t *testing.T) *compiler {
 	t.Helper()
+	return newTestCompilerWithResolver(t, mapResolver{})
+}
+
+func newTestCompilerWithResolver(t *testing.T, resolver ServiceResolver) *compiler {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	client := dynamicfake.NewSimpleDynamicClient(scheme)
-	c, err := NewCompiler(client)
+	c, err := NewCompiler(client, resolver)
 	if err != nil {
 		t.Fatalf("NewCompiler() error = %v", err)
 	}
@@ -35,6 +40,18 @@ func newTestCompiler(t *testing.T) *compiler {
 
 func behaviorRule(values []string, expr string) *v1alpha1.BehaviorRule {
 	return &v1alpha1.BehaviorRule{Values: values, Expression: expr}
+}
+
+func TestNewCompiler_NilResolverPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewCompiler() with a nil resolver did not panic")
+		}
+	}()
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	if _, err := NewCompiler(client, nil); err != nil {
+		t.Fatalf("NewCompiler() error = %v, want a panic", err)
+	}
 }
 
 func TestCompile_ValidBehaviors(t *testing.T) {

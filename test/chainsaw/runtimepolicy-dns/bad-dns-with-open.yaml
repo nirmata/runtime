@@ -1,0 +1,16 @@
+# Invalid: one behavior item declares BOTH dns and open.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-dns-two-kinds
+spec:
+  mode: monitor
+  behaviors:
+  - dns:
+      allow:
+        values:
+        - api.openai.com
+    open:
+      deny:
+        values:
+        - /etc/shadow

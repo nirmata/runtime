@@ -1,0 +1,16 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: report-unexpected-dns
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: dns-client
+  behaviors:
+  - dns:
+      allow:
+        values:
+        - api.openai.com
+        - api.anthropic.com
+        - "*.openai.azure.com"

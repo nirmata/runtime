@@ -42,7 +42,7 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
 - Egress matching is IPv4 destination addresses only.
 - File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are
 typically not booted with it.
-- Monitor mode reads eBPF counters on a poll interval rather than streaming events, and sees no DNS names, TLS SNI, or HTTP.
+- Monitor mode reads eBPF counters on a poll interval rather than streaming events, and sees no TLS SNI or HTTP. A destination is named by domain only when the pod's own DNS answer was observed.
 - Exceptions are not yet supported.
 
 ## 🏃 Quick Start

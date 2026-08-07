@@ -1,0 +1,23 @@
+# Template applied by chainsaw-test.yaml after substituting TEST_NAMESPACE, as
+# with policy.tmpl.yaml.
+#
+# The named Service does not exist. Nothing can be programmed for it, so under
+# default-deny the client has no allowed destination at all -- the state an
+# operator most needs surfaced rather than inferred from a silent outage.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-svcref-unresolved
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: svcref-client
+  behaviors:
+  - network:
+      allow:
+        values:
+        - svcref-does-not-exist.TEST_NAMESPACE.svc.cluster.local
+      deny:
+        values:
+        - "*"

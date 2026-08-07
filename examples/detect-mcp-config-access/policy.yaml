@@ -1,0 +1,22 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: detect-mcp-config-access
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: mcp-client
+  behaviors:
+  - open:
+      deny:
+        values:
+        # One absolute path per (home directory, config file) pair: the kernel
+        # maps are keyed on the resolved path string, so there is no glob form.
+        - /root/.cursor/mcp.json
+        - /root/.codeium/windsurf/mcp_config.json
+        - /root/.config/Claude/claude_desktop_config.json
+        - /home/node/.cursor/mcp.json
+        - /home/node/.codeium/windsurf/mcp_config.json
+        - /home/node/.config/Claude/claude_desktop_config.json
+        - /etc/mcp/config.json

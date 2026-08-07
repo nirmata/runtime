@@ -1,0 +1,60 @@
+# Three identical HTTP servers, distinguished only by which policies name them:
+#   shared -- named by both policies, so its map entry is refcounted by two
+#   single -- named by policy A alone
+#   unnamed -- named by neither
+apiVersion: v1
+kind: Pod
+metadata:
+  name: overlap-target-shared
+  labels:
+    app: overlap-target
+spec:
+  containers:
+  - name: httpd
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: overlap-target-single
+  labels:
+    app: overlap-target
+spec:
+  containers:
+  - name: httpd
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: overlap-target-unnamed
+  labels:
+    app: overlap-target
+spec:
+  containers:
+  - name: httpd
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/index.html && httpd -f -p 8080 -h /www"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 1
+      periodSeconds: 2
