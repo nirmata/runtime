@@ -17,7 +17,7 @@ import (
 var allowedPropertyKeys = map[string]struct{}{
 	propFingerprint: {}, propCount: {}, propFirstTimestamp: {}, propLastTimestamp: {},
 	propBehavior: {}, propEnforced: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
-	propDestIP: {}, propDestHost: {},
+	propDestIP: {}, propDestHost: {}, propDNSName: {},
 	propComm: {}, propArgv: {},
 }
 
@@ -276,5 +276,25 @@ func TestParseCountDefaultsToOne(t *testing.T) {
 		if got := parseCount(tc.in); got != tc.want {
 			t.Errorf("parseCount(%q) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestBuildResultEmitsTheObservedDNSName(t *testing.T) {
+	f := baseFinding()
+	f.Behavior = "dns"
+	f.Net = nil
+	f.Result = ResultWarn
+	f.DNS = &DNSSummary{QName: "api.openai.com"}
+
+	res := buildResult(&pending{finding: f, count: 1, first: f.Timestamp, last: f.Timestamp})
+
+	if got := res.Properties[propDNSName]; got != "api.openai.com" {
+		t.Errorf("%s = %q, want %q", propDNSName, got, "api.openai.com")
+	}
+	if got := res.Properties[propEnforced]; got != "false" {
+		t.Errorf("%s = %q, want \"false\"", propEnforced, got)
+	}
+	if got := string(res.Result); got != ResultWarn {
+		t.Errorf("result = %q, want %q", got, ResultWarn)
 	}
 }

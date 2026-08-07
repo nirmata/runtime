@@ -19,22 +19,26 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	}
 
 	pa := &podAttachment{
-		cgs:             make(map[containers.ContainerCgroupInfo]link.Link),
+		cgs:             make(map[containers.ContainerCgroupInfo][]link.Link),
 		attachedFilters: make(map[string]*compiler.EvaluationResult),
 		defaultDeny:     make(map[string]struct{}),
 		labels:          pod.Labels,
 		filter:          filter,
+		allowOwners:     newSideOwners(),
+		denyOwners:      newSideOwners(),
 	}
 
 	for _, cg := range cgInfos {
-		l, err := filter.Attach(cg.Path)
+		links, err := filter.Attach(cg.Path)
 		if err != nil {
+			for _, attached := range pa.cgs {
+				e.closeLinks(string(pod.UID), attached)
+			}
 			return err
 		}
-		pa.cgs[*cg] = l
+		pa.cgs[*cg] = links
 	}
 
-	ips := &compiler.AllowDenyPair{}
 	for rpName, rp := range e.rps {
 		if !selectorMatches(rp.Selector, pod.Labels) {
 			continue
@@ -47,9 +51,10 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 			continue
 		}
 
-		if rp.IPs != nil {
-			ips.Allow = append(ips.Allow, rp.IPs.Allow...)
-			ips.Deny = append(ips.Deny, rp.IPs.Deny...)
+		// programmed per policy rather than as one aggregate pair so each
+		// address records the policy that wants it
+		if rp.IPs.HasEntries() {
+			e.addIps(string(pod.UID), rp.UID, pa, rp.IPs)
 		}
 
 		if denyHasStar(rp.IPs) {
@@ -63,11 +68,6 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	// every pod with an attached policy is observed, whatever mode it is in
 	if len(pa.attachedFilters) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
-	}
-
-	// ban ips in case there was a rp that matched
-	if ips.HasEntries() {
-		e.addIps(string(pod.UID), "", pa.filter, ips)
 	}
 
 	e.pods[string(pod.UID)] = pa
@@ -88,22 +88,36 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	e.refreshLabels(string(pod.UID), pa, pod.Labels)
 
 	// check if there are new cgroup infos. if there is, create links for them.
-	// for the ones that are gone the attachment would be already deleted by the kernel
-	newCgs := make(map[containers.ContainerCgroupInfo]link.Link)
+	newCgs := make(map[containers.ContainerCgroupInfo][]link.Link)
 	for _, cgInfo := range cgInfos {
-		l, exists := pa.cgs[*cgInfo]
+		links, exists := pa.cgs[*cgInfo]
 		if !exists {
-			// new cgroup, attach and get a link
-			newLink, err := pa.filter.Attach(cgInfo.Path)
+			newLinks, err := pa.filter.Attach(cgInfo.Path)
 			if err != nil {
 				return err
 			}
-			l = newLink
+			links = newLinks
 		}
-		newCgs[*cgInfo] = l
+		newCgs[*cgInfo] = links
+	}
+	for cg, links := range pa.cgs {
+		if _, kept := newCgs[cg]; !kept {
+			e.closeLinks(string(pod.UID), links)
+		}
 	}
 	pa.cgs = newCgs
 	return nil
+}
+
+func (e *EgressManager) closeLinks(podUid string, links []link.Link) {
+	for _, l := range links {
+		if l == nil {
+			continue
+		}
+		if err := l.Close(); err != nil {
+			e.logger.Error(err, "failed to close an egress cgroup link", "podUid", podUid)
+		}
+	}
 }
 
 // refreshLabels stores the new label set and attaches/detaches every tracked
@@ -128,7 +142,14 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabel
 
 func (e *EgressManager) podDeleted(podUid string) {
 	e.logger.V(2).Info("pod deleted", "podUid", podUid)
-	// a pod being deleted means that its cgroup id is deleted. so any attached links
-	// will automatically die
+	pa, ok := e.pods[podUid]
+	if !ok {
+		return
+	}
+	// the kernel detaches the programs with the cgroup, but the link fds are
+	// ours and outlive it until they are closed
+	for _, links := range pa.cgs {
+		e.closeLinks(podUid, links)
+	}
 	delete(e.pods, podUid)
 }

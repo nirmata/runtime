@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -64,6 +66,7 @@ func newTestRpMgr(t *testing.T, c compiler.Compiler, hs []events.RuntimePolicyEv
 		rpThreadMap:   make(map[string]*rpWatch),
 		eventHandlers: hs,
 		compiler:      c,
+		status:        &fakeStatusRecorder{},
 		queue:         newRpQueue(),
 		lister:        lister,
 		log:           logr.Discard(),
@@ -82,9 +85,9 @@ func newTestRpMgr(t *testing.T, c compiler.Compiler, hs []events.RuntimePolicyEv
 }
 
 func TestRpProcessNextWorkItemRequeuesThenDropsAfterMaxRequeues(t *testing.T) {
-	boom := errors.New("compile boom")
-	c := &fakeCompiler{err: boom}
-	m, _ := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}), rp("p", "uid-1", nil))
+	c := &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}
+	h := &recordingRpHandler{name: "h", rpErr: errors.New("handler boom")}
+	m, _ := newTestRpMgr(t, c, rpHandlers(h), rp("p", "uid-1", nil))
 
 	key := queueKey{Type: events.EventTypeCreate, Key: "p"}
 	m.queue.Add(key)
@@ -124,8 +127,9 @@ func TestRpProcessNextWorkItemRequeuesThenDropsAfterMaxRequeues(t *testing.T) {
 // queue: the lister hands back a different object on every attempt and retries
 // must still be bounded.
 func TestRpRequeueCapSurvivesPointerChange(t *testing.T) {
-	c := &fakeCompiler{err: errors.New("compile boom")}
-	m, indexer := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{}), rp("p", "uid-1", nil))
+	c := &fakeCompiler{compiled: &compiler.CompiledRuntimePolicy{UID: "uid-1"}}
+	h := &recordingRpHandler{name: "h", rpErr: errors.New("handler boom")}
+	m, indexer := newTestRpMgr(t, c, rpHandlers(h), rp("p", "uid-1", nil))
 
 	key := queueKey{Type: events.EventTypeUpdate, Key: "p"}
 	m.queue.Add(key)
@@ -306,17 +310,128 @@ func TestRpProcessNextWorkItemSurvivesHandlerPanic(t *testing.T) {
 	}
 }
 
-func TestHandleCreateCompileErrorPropagates(t *testing.T) {
-	boom := errors.New("compile boom")
-	h := &recordingRpHandler{name: "h"}
-	m, _ := newTestRpMgr(t, &fakeCompiler{err: boom}, rpHandlers(h))
+// invalidNetworkValue is the shape of error the compiler returns for a network
+// value the schema rejects: a field path plus the offending value.
+func invalidNetworkValue() error {
+	return field.Invalid(
+		field.NewPath("spec").Child("behaviors").Index(0).Child("network"),
+		"*.example.com",
+		"wildcard host values are not supported",
+	)
+}
 
-	err := m.handleCreate(context.Background(), rp("p", "uid-1", nil))
-	if !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want %v", err, boom)
+func TestCompileFailureReportsOnPolicyStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		handle func(m *RuntimePolicyMgr) error
+	}{
+		{
+			name: "create",
+			handle: func(m *RuntimePolicyMgr) error {
+				return m.handleCreate(context.Background(), rp("p", "uid-1", nil))
+			},
+		},
+		{
+			name: "update",
+			handle: func(m *RuntimePolicyMgr) error {
+				return m.handleUpdate(context.Background(), rp("p", "uid-1", nil))
+			},
+		},
 	}
-	if got := len(h.runtimePolicyCalls()); got != 0 {
-		t.Errorf("handler was called %d times on a compile failure, want 0", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			boom := invalidNetworkValue()
+			h := &recordingRpHandler{name: "h"}
+			m, _ := newTestRpMgr(t, &fakeCompiler{err: boom}, rpHandlers(h))
+
+			if err := tc.handle(m); err != nil {
+				t.Fatalf("err = %v, want the failure reported rather than requeued", err)
+			}
+			if got := len(h.runtimePolicyCalls()); got != 0 {
+				t.Errorf("handler was called %d times on a compile failure, want 0", got)
+			}
+
+			recorded := m.status.(*fakeStatusRecorder).all()
+			if len(recorded) != 1 {
+				t.Fatalf("recorded conditions = %+v, want exactly one", recorded)
+			}
+			got := recorded[0]
+			if got.uid != "uid-1" {
+				t.Errorf("uid = %q, want uid-1", got.uid)
+			}
+			if got.name != "p" {
+				t.Errorf("name = %q, want p; without it the condition can never be flushed", got.name)
+			}
+			if got.cond.Type != v1alpha1.ConditionApplied {
+				t.Errorf("condition type = %q, want %q", got.cond.Type, v1alpha1.ConditionApplied)
+			}
+			if got.cond.Status != metav1.ConditionFalse {
+				t.Errorf("condition status = %q, want False", got.cond.Status)
+			}
+			if got.cond.Reason != v1alpha1.ReasonCompileFailed {
+				t.Errorf("condition reason = %q, want %q", got.cond.Reason, v1alpha1.ReasonCompileFailed)
+			}
+			if !strings.Contains(got.cond.Message, "spec.behaviors[0].network") {
+				t.Errorf("condition message = %q, want the offending field path", got.cond.Message)
+			}
+			if !strings.Contains(got.cond.Message, "*.example.com") {
+				t.Errorf("condition message = %q, want the offending value", got.cond.Message)
+			}
+		})
+	}
+}
+
+// The recorded condition is worthless unless it reaches the API, and only the
+// name makes the entry addressable: a policy that has never compiled produces
+// no RuntimePolicyEvent, so nothing else will ever supply one.
+func TestCompileFailureConditionIsFlushable(t *testing.T) {
+	m, _ := newTestRpMgr(t, &fakeCompiler{err: invalidNetworkValue()}, nil)
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	m.status = sw
+
+	if err := m.handleCreate(context.Background(), rp("p", "uid-1", nil)); err != nil {
+		t.Fatalf("handleCreate: %v", err)
+	}
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	got := getPolicy(t, client, "p")
+	var applied *metav1.Condition
+	for i := range got.Status.Conditions {
+		if got.Status.Conditions[i].Type == v1alpha1.ConditionApplied {
+			applied = &got.Status.Conditions[i]
+		}
+	}
+	if applied == nil {
+		t.Fatalf("conditions = %+v, want Applied written for the failed compile", got.Status.Conditions)
+	}
+	if applied.Status != metav1.ConditionFalse || applied.Reason != v1alpha1.ReasonCompileFailed {
+		t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, v1alpha1.ReasonCompileFailed)
+	}
+	if !strings.Contains(applied.Message, "spec.behaviors[0].network") {
+		t.Errorf("Applied message = %q, want the offending field path", applied.Message)
+	}
+}
+
+func TestCompileFailureIsNotRequeued(t *testing.T) {
+	c := &fakeCompiler{err: invalidNetworkValue()}
+	m, _ := newTestRpMgr(t, c, rpHandlers(&recordingRpHandler{name: "h"}), rp("p", "uid-1", nil))
+
+	key := queueKey{Type: events.EventTypeCreate, Key: "p"}
+	m.queue.Add(key)
+	if !m.processNextWorkItem(context.Background()) {
+		t.Fatal("processNextWorkItem returned false")
+	}
+
+	if got := m.queue.Len(); got != 0 {
+		t.Errorf("queue len = %d, want the item dropped: recompiling the same spec cannot succeed", got)
+	}
+	if got := m.queue.NumRequeues(key); got != 0 {
+		t.Errorf("NumRequeues = %d, want the item forgotten", got)
+	}
+	if got := c.callCount(); got != 1 {
+		t.Errorf("compiler called %d times, want 1", got)
 	}
 }
 

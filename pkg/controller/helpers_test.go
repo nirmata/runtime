@@ -7,8 +7,10 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // fakeCompiler is a stand in for compiler.Compiler that records the policies it
@@ -40,6 +42,33 @@ func (f *fakeCompiler) compiledPolicies() []v1alpha1.RuntimePolicy {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]v1alpha1.RuntimePolicy(nil), f.calls...)
+}
+
+// recordedCondition is one RecordCondition call, with the name the caller
+// supplied alongside it.
+type recordedCondition struct {
+	uid  string
+	name string
+	cond metav1.Condition
+}
+
+type fakeStatusRecorder struct {
+	mu       sync.Mutex
+	recorded []recordedCondition
+}
+
+var _ runtimeevent.PolicyStatusRecorder = (*fakeStatusRecorder)(nil)
+
+func (f *fakeStatusRecorder) RecordCondition(policyUID, policyName string, cond metav1.Condition) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recorded = append(f.recorded, recordedCondition{uid: policyUID, name: policyName, cond: cond})
+}
+
+func (f *fakeStatusRecorder) all() []recordedCondition {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]recordedCondition(nil), f.recorded...)
 }
 
 type rpCall struct {

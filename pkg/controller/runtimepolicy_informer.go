@@ -13,16 +13,25 @@ import (
 	v1alpha1listers "github.com/nirmata/kyverno-runtime/pkg/client/listers/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
+
+// ServiceChangeNotifier reports that the addresses behind a Service may have
+// changed. It is satisfied by *services.Resolver.
+type ServiceChangeNotifier interface {
+	AddChangeHandler(h func(namespace, name string))
+}
 
 type rpWatch struct {
 	compiled *compiler.CompiledRuntimePolicy
@@ -35,6 +44,10 @@ type RuntimePolicyMgr struct {
 	factory       v1alpha1informers.SharedInformerFactory
 	rpInformer    cache.SharedIndexInformer
 	compiler      compiler.Compiler
+
+	// status reports a spec the compiler rejected back onto the policy, which is
+	// the only place an operator can see it. It may be nil.
+	status runtimeevent.PolicyStatusRecorder
 
 	// threadMu guards rpThreadMap, read by every evaluateForInterval goroutine.
 	threadMu    sync.Mutex
@@ -71,7 +84,9 @@ func (m *RuntimePolicyMgr) HasSynced() bool {
 func NewRuntimePolicyMgr(cfg *rest.Config,
 	eventHandlers []events.RuntimePolicyEventHandler,
 	client v1alpha1client.Interface,
-	rpCompiler compiler.Compiler) (*RuntimePolicyMgr, error) {
+	rpCompiler compiler.Compiler,
+	resolver ServiceChangeNotifier,
+	status runtimeevent.PolicyStatusRecorder) (*RuntimePolicyMgr, error) {
 	factory := v1alpha1informers.NewSharedInformerFactory(client, 0)
 	rpInformer := factory.Runtime().V1alpha1().RuntimePolicies().Informer()
 
@@ -84,6 +99,7 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 		factory:       factory,
 		eventHandlers: eventHandlers,
 		compiler:      rpCompiler,
+		status:        status,
 		rpInformer:    rpInformer,
 		queue:         queue,
 		lister:        factory.Runtime().V1alpha1().RuntimePolicies().Lister(),
@@ -124,7 +140,53 @@ func NewRuntimePolicyMgr(cfg *rest.Config,
 		},
 	})
 
+	resolver.AddChangeHandler(m.serviceChanged)
+
 	return m, nil
+}
+
+// serviceChanged runs on the resolver's informer goroutine, so it only queues:
+// the worker recompiles and re-evaluates the policy, and the handlers diff the
+// result against what they programmed.
+func (m *RuntimePolicyMgr) serviceChanged(namespace, name string) {
+	policies, err := m.lister.List(labels.Everything())
+	if err != nil {
+		m.log.Error(err, "listing policies for a changed service", "service", namespace+"/"+name)
+		return
+	}
+	for _, rp := range policies {
+		if !referencesService(rp, namespace, name) {
+			continue
+		}
+		m.log.V(2).Info("service changed, requeueing the policies that reference it",
+			"service", namespace+"/"+name, "policy", rp.Name)
+		m.queue.Add(queueKey{Type: events.EventTypeUpdate, Key: rp.Name})
+	}
+}
+
+// Values are parsed rather than matched against the Service's DNS name so that
+// this cannot disagree with the compiler about which values name a Service.
+func referencesService(rp *v1alpha1.RuntimePolicy, namespace, name string) bool {
+	for _, behavior := range rp.Spec.Behaviors {
+		if behavior.Network == nil {
+			continue
+		}
+		for _, rule := range []*v1alpha1.BehaviorRule{behavior.Network.Allow, behavior.Network.Deny} {
+			if rule == nil {
+				continue
+			}
+			for _, value := range rule.Values {
+				parsed, err := compiler.ParseNetworkValue(value)
+				if err != nil || parsed.Service == nil {
+					continue
+				}
+				if parsed.Service.Namespace == namespace && parsed.Service.Name == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (m *RuntimePolicyMgr) runWorker(ctx context.Context) {
@@ -180,7 +242,8 @@ func (m *RuntimePolicyMgr) processNextWorkItem(ctx context.Context) bool {
 func (r *RuntimePolicyMgr) handleCreate(ctx context.Context, rp *v1alpha1.RuntimePolicy) error {
 	compiledRb, err := r.compiler.Compile(*rp)
 	if err != nil {
-		return err
+		r.reportCompileFailure(rp, err)
+		return nil
 	}
 
 	r.syncIntervalThread(ctx, rp, compiledRb)
@@ -248,7 +311,8 @@ func (r *RuntimePolicyMgr) syncIntervalThread(ctx context.Context, rp *v1alpha1.
 func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, rp *v1alpha1.RuntimePolicy) error {
 	compiledRb, err := r.compiler.Compile(*rp)
 	if err != nil {
-		return err
+		r.reportCompileFailure(rp, err)
+		return nil
 	}
 
 	r.syncIntervalThread(ctx, rp, compiledRb)
@@ -259,6 +323,26 @@ func (r *RuntimePolicyMgr) handleUpdate(ctx context.Context, rp *v1alpha1.Runtim
 	}
 
 	return r.fanOut(evalRes, events.EventTypeUpdate)
+}
+
+// reportCompileFailure puts the compiler's rejection on the policy's own status,
+// which is the only place the operator will look. It goes straight to the
+// recorder rather than through fanOut, because there is no evaluation result to
+// hand the other handlers.
+//
+// The caller does not requeue: Compile reads nothing but the spec, so every
+// retry fails identically, and a corrected spec arrives as its own update.
+func (r *RuntimePolicyMgr) reportCompileFailure(rp *v1alpha1.RuntimePolicy, err error) {
+	r.log.Error(err, "compiling RuntimePolicy failed, nothing is programmed for it", "policy", rp.Name)
+	if r.status == nil {
+		return
+	}
+	r.status.RecordCondition(string(rp.UID), rp.Name, metav1.Condition{
+		Type:    v1alpha1.ConditionApplied,
+		Status:  metav1.ConditionFalse,
+		Reason:  v1alpha1.ReasonCompileFailed,
+		Message: err.Error(),
+	})
 }
 
 func (r *RuntimePolicyMgr) handleDelete(uid string) error {

@@ -25,11 +25,13 @@ type CompiledRuntimePolicy struct {
 
 	variables map[string]cel.Program
 	selector  *metav1.LabelSelector
+	resolver  ServiceResolver
 
 	// these are the hardcoded values in the api spec
 	compiledNets  []*compiledBehavior
 	compiledOpens []*compiledBehavior
 	compiledExecs []*compiledBehavior
+	compiledDNS   []*compiledBehavior
 }
 
 type compiledBehavior struct {
@@ -39,10 +41,15 @@ type compiledBehavior struct {
 }
 
 type compiler struct {
-	env *cel.Env
+	env      *cel.Env
+	resolver ServiceResolver
 }
 
-func NewCompiler(client dynamic.Interface) (Compiler, error) {
+func NewCompiler(client dynamic.Interface, resolver ServiceResolver) (Compiler, error) {
+	if resolver == nil {
+		panic("compiler: NewCompiler: nil service resolver")
+	}
+
 	base, err := newEnv(client)
 	if err != nil {
 		return nil, err
@@ -56,7 +63,7 @@ func NewCompiler(client dynamic.Interface) (Compiler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &compiler{env: env}, nil
+	return &compiler{env: env, resolver: resolver}, nil
 }
 
 func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, error) {
@@ -68,6 +75,12 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	compiledNets := []*compiledBehavior{}
 	compiledOpens := []*compiledBehavior{}
 	compiledExecs := []*compiledBehavior{}
+	compiledDNS := []*compiledBehavior{}
+
+	mode := ""
+	if rp.Spec.Mode != nil {
+		mode = string(*rp.Spec.Mode)
+	}
 
 	// we use the path to propagate errors with context on which field's compilation errored
 	path := field.NewPath("spec").Child("behaviors")
@@ -112,6 +125,18 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 
 			compiledOpens = append(compiledOpens, compiledOpen)
 		}
+		if b.DNS != nil {
+			errPath := path.Index(i).Child("dns")
+			if errs := validateDNSBehavior(errPath, b.DNS, mode); len(errs) != 0 {
+				return nil, errs.ToAggregate()
+			}
+			compiledDNSBehavior, err := c.compileBehavior(b.DNS)
+			if err != nil {
+				return nil, field.Invalid(errPath, b.DNS, err.Error())
+			}
+
+			compiledDNS = append(compiledDNS, compiledDNSBehavior)
+		}
 	}
 
 	evalIntval := time.Duration(0)
@@ -119,20 +144,17 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		evalIntval = rp.Spec.EvaluationInterval.Duration
 	}
 
-	mode := ""
-	if rp.Spec.Mode != nil {
-		mode = string(*rp.Spec.Mode)
-	}
-
 	return &CompiledRuntimePolicy{
 		UID:            string(rp.UID),
 		Name:           rp.Name,
 		ReevalInterval: &evalIntval,
 		selector:       rp.Spec.PodSelector,
+		resolver:       c.resolver,
 		mode:           mode,
 		compiledNets:   compiledNets,
 		compiledOpens:  compiledOpens,
 		compiledExecs:  compiledExecs,
+		compiledDNS:    compiledDNS,
 		variables:      variables,
 	}, nil
 }

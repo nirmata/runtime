@@ -9,6 +9,12 @@ import (
 )
 
 // RuntimePolicySpec defines a runtime policy for enforcing or monitoring behaviors.
+//
+// The dns rule is enforced here rather than only at compile time so the API
+// server refuses the object outright: a policy that was accepted and then
+// reported an unapplied condition is a policy an author has to go looking for.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'enforce' && has(self.behaviors) && self.behaviors.exists(b, has(b.dns)))",message="a dns behavior reports the names a workload resolves, it does not block them: set spec.mode to \"monitor\", or express the destinations you want blocked as a network behavior, which enforces domain values"
 type RuntimePolicySpec struct {
 	// PodSelector identifies the pods this policy applies to.
 	// +optional
@@ -52,7 +58,7 @@ type BehaviorRule struct {
 }
 
 // PolicyBehavior defines allow/deny rules for a specific behavior type.
-// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) == 1",message="exactly one of network, exec, or open must be specified"
+// +kubebuilder:validation:XValidation:rule="(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0) + (has(self.open) ? 1 : 0) + (has(self.dns) ? 1 : 0) == 1",message="exactly one of network, exec, open, or dns must be specified"
 type PolicyBehavior struct {
 	// Network defines network behavior rules.
 	// +optional
@@ -65,6 +71,16 @@ type PolicyBehavior struct {
 	// Open defines file open behavior rules.
 	// +optional
 	Open *Behavior `json:"open,omitempty"`
+
+	// DNS declares the DNS names a selected workload is expected to resolve.
+	// It is observation only: it reports, it never blocks, so a policy carrying
+	// a dns behavior must use mode monitor and is rejected in mode enforce.
+	//
+	// Allow is the expected set. Deny names specific unwanted names, and the
+	// "*" sentinel in deny means "report every name", which is how an operator
+	// discovers what a workload resolves before writing an allow list.
+	// +optional
+	DNS *Behavior `json:"dns,omitempty"`
 }
 
 // Behavoior defines the allowed and denied entries of a given type.
@@ -101,11 +117,20 @@ const (
 	ConditionApplied = "Applied"
 	ReasonEnforcing  = "Enforcing"
 	ReasonMonitoring = "Monitoring"
+	// ReasonNoMode reports a policy that sets no spec.mode, so no manager
+	// attached anything for it.
+	ReasonNoMode = "NoMode"
+	// ReasonCompileFailed reports a policy whose spec the compiler rejected,
+	// so nothing at all was programmed for it.
+	ReasonCompileFailed = "CompileFailed"
 
 	ConditionTargetsValid     = "TargetsValid"
 	ReasonUnsupportedTargets  = "UnsupportedTargets"
 	ReasonAllTargetsSupported = "AllTargetsSupported"
 	ReasonNoTargets           = "NoTargets"
+	// ReasonUnresolvedServices reports cluster DNS values whose Service or
+	// endpoint is absent from cache, so no address could be programmed.
+	ReasonUnresolvedServices = "UnresolvedServices"
 
 	// Exec and open get a condition each because conditions are keyed by type
 	// and last-write-wins: one shared type would report whichever behavior was

@@ -13,10 +13,16 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type egressBlockDomainKey struct {
+	_    structs.HostLayout
+	Name [128]uint8
+}
+
 type egressBlockIpEventKey struct {
 	_        structs.HostLayout
 	Daddr    uint32
 	Decision uint32
+	DomainId uint32
 }
 
 // loadEgressBlock returns the embedded CollectionSpec for egressBlock.
@@ -61,17 +67,22 @@ type egressBlockSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type egressBlockProgramSpecs struct {
-	CgroupEgress *ebpf.ProgramSpec `ebpf:"cgroup_egress"`
+	CgroupDnsIngress *ebpf.ProgramSpec `ebpf:"cgroup_dns_ingress"`
+	CgroupEgress     *ebpf.ProgramSpec `ebpf:"cgroup_egress"`
 }
 
 // egressBlockMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type egressBlockMapSpecs struct {
-	AllowedIps *ebpf.MapSpec `ebpf:"allowed_ips"`
-	BannedIps  *ebpf.MapSpec `ebpf:"banned_ips"`
-	Flags      *ebpf.MapSpec `ebpf:"flags"`
-	IpEvents   *ebpf.MapSpec `ebpf:"ip_events"`
+	AllowedDomains *ebpf.MapSpec `ebpf:"allowed_domains"`
+	AllowedIps     *ebpf.MapSpec `ebpf:"allowed_ips"`
+	BannedDomains  *ebpf.MapSpec `ebpf:"banned_domains"`
+	BannedIps      *ebpf.MapSpec `ebpf:"banned_ips"`
+	DomainIds      *ebpf.MapSpec `ebpf:"domain_ids"`
+	Flags          *ebpf.MapSpec `ebpf:"flags"`
+	IpDomain       *ebpf.MapSpec `ebpf:"ip_domain"`
+	IpEvents       *ebpf.MapSpec `ebpf:"ip_events"`
 }
 
 // egressBlockVariableSpecs contains global variables before they are loaded into the kernel.
@@ -100,17 +111,25 @@ func (o *egressBlockObjects) Close() error {
 //
 // It can be passed to loadEgressBlockObjects or ebpf.CollectionSpec.LoadAndAssign.
 type egressBlockMaps struct {
-	AllowedIps *ebpf.Map `ebpf:"allowed_ips"`
-	BannedIps  *ebpf.Map `ebpf:"banned_ips"`
-	Flags      *ebpf.Map `ebpf:"flags"`
-	IpEvents   *ebpf.Map `ebpf:"ip_events"`
+	AllowedDomains *ebpf.Map `ebpf:"allowed_domains"`
+	AllowedIps     *ebpf.Map `ebpf:"allowed_ips"`
+	BannedDomains  *ebpf.Map `ebpf:"banned_domains"`
+	BannedIps      *ebpf.Map `ebpf:"banned_ips"`
+	DomainIds      *ebpf.Map `ebpf:"domain_ids"`
+	Flags          *ebpf.Map `ebpf:"flags"`
+	IpDomain       *ebpf.Map `ebpf:"ip_domain"`
+	IpEvents       *ebpf.Map `ebpf:"ip_events"`
 }
 
 func (m *egressBlockMaps) Close() error {
 	return _EgressBlockClose(
+		m.AllowedDomains,
 		m.AllowedIps,
+		m.BannedDomains,
 		m.BannedIps,
+		m.DomainIds,
 		m.Flags,
+		m.IpDomain,
 		m.IpEvents,
 	)
 }
@@ -125,11 +144,13 @@ type egressBlockVariables struct {
 //
 // It can be passed to loadEgressBlockObjects or ebpf.CollectionSpec.LoadAndAssign.
 type egressBlockPrograms struct {
-	CgroupEgress *ebpf.Program `ebpf:"cgroup_egress"`
+	CgroupDnsIngress *ebpf.Program `ebpf:"cgroup_dns_ingress"`
+	CgroupEgress     *ebpf.Program `ebpf:"cgroup_egress"`
 }
 
 func (p *egressBlockPrograms) Close() error {
 	return _EgressBlockClose(
+		p.CgroupDnsIngress,
 		p.CgroupEgress,
 	)
 }

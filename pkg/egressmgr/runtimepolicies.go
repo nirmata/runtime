@@ -111,8 +111,8 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 			// and update our tracking data structures
 			e.logger.V(2).Info("applying ip diff for updated runtime policy", "uid", compiledRp.UID, "podUid", podUid,
 				"toAddAllow", toAddPair.Allow, "toRemoveAllow", toRemovePair.Allow, "toAddDeny", toAddPair.Deny, "toRemoveDeny", toRemovePair.Deny)
-			e.addIps(podUid, compiledRp.UID, pod.filter, toAddPair)
-			e.deleteIps(podUid, compiledRp.UID, pod.filter, toRemovePair)
+			e.addIps(podUid, compiledRp.UID, pod, toAddPair)
+			e.deleteIps(podUid, compiledRp.UID, pod, toRemovePair)
 
 			// both operations are idempotent, so repeating them is harmless
 			if hasDefaultDeny {
