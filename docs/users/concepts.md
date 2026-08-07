@@ -90,8 +90,12 @@ to learn which providers and endpoints a workload reaches for, and a `network` b
 
 ## Scoping with podSelector
 
-`spec.podSelector` is an optional label selector. Omitted, it matches every pod on the
-node. Relabeling a running pod re-evaluates which policies match it: the daemon's pod
+`spec.podSelector` is an optional label selector, and the two ways of writing "no labels"
+mean opposite things. `podSelector: {}` matches every pod on the node. Omitting the field
+matches **none**, so the policy compiles, is tracked, and enforces nothing — write the
+empty selector when you mean the whole node.
+
+Relabeling a running pod re-evaluates which policies match it: the daemon's pod
 watcher fires on pod updates too, so a label change on a live pod picks up or drops
 policy attachments without recreating the pod.
 

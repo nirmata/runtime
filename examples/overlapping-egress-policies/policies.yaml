@@ -1,0 +1,38 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: overlap-a
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: overlap-client
+  behaviors:
+  - network:
+      allow:
+        values:
+        - overlap-shared.default.svc.cluster.local
+        - overlap-single.default.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
+      deny:
+        values:
+        - "*"
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: overlap-b
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: overlap-client
+  behaviors:
+  - network:
+      allow:
+        values:
+        - overlap-shared.default.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
+      deny:
+        values:
+        - "*"

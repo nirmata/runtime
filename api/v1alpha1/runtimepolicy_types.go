@@ -16,7 +16,9 @@ import (
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'enforce' && has(self.behaviors) && self.behaviors.exists(b, has(b.dns)))",message="a dns behavior reports the names a workload resolves, it does not block them: set spec.mode to \"monitor\", or express the destinations you want blocked as a network behavior, which enforces domain values"
 type RuntimePolicySpec struct {
-	// PodSelector identifies the pods this policy applies to.
+	// PodSelector identifies the pods this policy applies to. An empty selector
+	// matches every pod on the node; omitting the field matches none, following
+	// metav1.LabelSelectorAsSelector.
 	// +optional
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 

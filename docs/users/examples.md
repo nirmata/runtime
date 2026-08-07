@@ -35,6 +35,10 @@ If enforcement appears to do nothing, that distinction is the first thing to che
 | [egress-to-cluster-service](../../examples/egress-to-cluster-service/) | Name the approved destinations by their cluster Service DNS names instead of addresses, leaving the API server unreachable by omission | enforce | cgroup v2 |
 | [egress-to-domain-name](../../examples/egress-to-domain-name/) | Allow an external fully qualified domain name, enforced from the pod's own DNS answers | enforce | cgroup v2 |
 | [tls-only-egress](../../examples/tls-only-egress/) | Force a workload to speak only TLS, whatever port it uses | enforce | cgroup v2 |
+| [protocol-default-deny](../../examples/protocol-default-deny/) | The same default deny, with the allowed and denied protocols exercised on one port | enforce | cgroup v2 |
+| [egress-baseline-combined](../../examples/egress-baseline-combined/) | Every network-side field in one annotated policy, with the accepted values for each | enforce | cgroup v2 |
+| [overlapping-egress-policies](../../examples/overlapping-egress-policies/) | Two policies over one pod, and a pod that starts after them | enforce | cgroup v2 |
+| [trusted-and-untrusted-agents](../../examples/trusted-and-untrusted-agents/) | Give a declared agent a hard TLS-to-one-Service boundary, and report which LLM providers an undeclared one resolves | enforce and monitor | cgroup v2 |
 
 `block-known-bad-egress` is the scenario the [quickstart](quickstart.md) walks through.
 
@@ -60,6 +64,7 @@ allow list is not a containment boundary. A cluster Service written short, as
 | --- | --- | --- | --- |
 | [monitor-egress](../../examples/monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor | cgroup v2 |
 | [monitor-workload-baseline](../../examples/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
+| [monitor-static-pods](../../examples/monitor-static-pods/) | Confirm the daemon can observe kubeadm's static control-plane pods | monitor | cgroup v2 |
 | [detect-mcp-config-access](../../examples/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM |
 
 Monitor mode reports through OpenReports `Report` objects and never blocks. What it can and

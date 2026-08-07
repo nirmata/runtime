@@ -21,7 +21,7 @@ kubectl get rpol <name> -o yaml
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `spec.podSelector` | `LabelSelector` | Pods this policy applies to. Absent selects every pod on the node. Relabeling a pod re-evaluates the match. |
+| `spec.podSelector` | `LabelSelector` | Pods this policy applies to. `{}` selects every pod on the node; **absent selects none**, and the policy enforces nothing. Relabeling a pod re-evaluates the match. |
 | `spec.mode` | `monitor` \| `enforce` | What the daemon does with a matched pod. Optional, with no default. |
 | `spec.evaluationInterval` | duration | How often matched pods are re-evaluated. Required to pick up changes behind a `resource` or `http` expression. |
 | `spec.variables` | list of `name` + `expression` | Named CEL expressions, referenced as `variables.<name>` from any other expression. |

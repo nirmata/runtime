@@ -1,0 +1,14 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: monitor-static-pods
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      tier: control-plane
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"

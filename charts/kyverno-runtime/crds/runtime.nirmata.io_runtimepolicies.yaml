@@ -259,7 +259,10 @@ spec:
                 - enforce
                 type: string
               podSelector:
-                description: PodSelector identifies the pods this policy applies to.
+                description: |-
+                  PodSelector identifies the pods this policy applies to. An empty selector
+                  matches every pod on the node; omitting the field matches none, following
+                  metav1.LabelSelectorAsSelector.
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.

@@ -1,0 +1,38 @@
+# A trusted agent reaches exactly one Service, over TLS, and resolves names.
+# Both behaviors carry the "*" sentinel, so each is deny-all-except-allowed and
+# a connection must satisfy both: the right destination over the wrong protocol
+# is denied, and so is TLS to anywhere else.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: trusted-agent-tls-to-gateway
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      nirmata.io/agent: trusted
+  behaviors:
+  - network:
+      allow:
+        values:
+        # The Service the agent is allowed to reach, resolved from the Service
+        # and EndpointSlice informers to its ClusterIP plus the ready endpoint
+        # addresses. Swap in your own gateway Service; the name must be the
+        # full <name>.<namespace>.svc.cluster.local form.
+        - kubernetes.default.svc.cluster.local
+        # Without its resolver the agent cannot turn the name above into an
+        # address, so under default deny it reaches nothing at all.
+        - kube-dns.kube-system.svc.cluster.local
+      deny:
+        values:
+        - "*"
+  - protocol:
+      allow:
+        values:
+        # Any TLS handshake, whatever ALPN it offers. "tls/h2" would narrow it
+        # to HTTP/2 over TLS.
+        - "tls"
+        - "dns"
+      deny:
+        values:
+        - "*"
