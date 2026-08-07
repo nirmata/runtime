@@ -1,0 +1,31 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: detect-mcp-servers
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: mcp-agent
+  behaviors:
+  # Observing every exec is what turns argv streaming on for the pod. The
+  # filter below is what keeps the report readable.
+  - exec:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    # The guard. Without it the expression below would be evaluated against
+    # open and network observations too, where event.exec does not exist.
+    - name: exec-events-only
+      expression: 'has(event.exec)'
+    # A stdio MCP server is identified by the package it was asked to run, not
+    # by the binary that ran it: npx, uvx and docker are all just interpreters.
+    - name: mcp-server-package
+      expression: >-
+        event.exec.argv.exists(a, a.startsWith("@modelcontextprotocol/")) ||
+        event.exec.argv.exists(a, a.startsWith("mcp-server-")) ||
+        event.exec.argv.exists(a, a.startsWith("mcp_server")) ||
+        event.exec.argv.exists(a, a.startsWith("mcp/")) ||
+        event.exec.argv.exists(a, a in ["mcp-remote", "supergateway", "mcpo"]) ||
+        event.exec.argv.exists(a, !a.startsWith("-") && a.endsWith("-mcp"))
