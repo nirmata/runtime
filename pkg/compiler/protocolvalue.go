@@ -70,7 +70,7 @@ type ProtocolValue struct {
 //   - everything else is ErrEmptyProtocolValue, ErrInvalidALPNValue or
 //     ErrNotAProtocolValue
 func ParseProtocolValue(raw string) (ProtocolValue, error) {
-	cleaned := trimValue(raw)
+	cleaned := cleanValue(raw)
 
 	switch cleaned {
 	case "":

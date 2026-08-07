@@ -1,0 +1,130 @@
+# CRD conformance for the `dns` behavior: which shapes the apiserver decides, and
+# which it does not.
+#
+# The split matters, and it is the whole point of this file. Exactly one `dns`
+# rule lives in the CRD schema — the XValidation rule counting behavior kinds.
+# The rest of what makes a dns behavior valid (mode monitor, and the value
+# grammar) is decided by the daemon's compiler, which no schema rule can express:
+# `values` is `[]string` and `mode` is a two-value enum, so a policy pairing them
+# badly is well-formed OpenAPI. Those cases are applied here as positive tests,
+# asserting the real behavior, so that:
+#   a) nobody reads the suite and concludes the apiserver rejects them;
+#   b) if admission-time validation is ever added, these steps go red and must be
+#      converted into rejection cases.
+# The rejection itself is asserted where it happens, in pkg/compiler's tests
+# (TestCompile_RejectsDNSBehaviorInEnforceMode,
+# TestCompile_RejectsBadDNSValuesWithFieldPath), and reaches an operator as
+# Applied=False with reason CompileFailed.
+#
+# Requires: charts/kyverno-runtime/crds applied. No daemon, no eBPF.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: runtimepolicy-dns
+spec:
+  steps:
+  - name: dns-with-another-kind-in-one-item-is-rejected
+    # The behavior-kind count rule includes dns, so pairing it with open in one
+    # item is rejected exactly as network-plus-open is. Without dns in the count,
+    # a policy could declare both and have one of them silently dropped.
+    try:
+    - apply:
+        file: bad-dns-with-open.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'exactly one of network, exec, open, protocol, or dns must be specified'))": true
+
+  - name: dns-behavior-in-monitor-mode-is-accepted
+    # The positive case: read the object back and prove nothing was pruned. The
+    # left-wildcard survives as authored, and allow and deny coexist on the same
+    # dns behavior.
+    try:
+    - apply:
+        file: policy-dns-monitor.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-dns-monitor
+          spec:
+            mode: monitor
+            (length(behaviors)): 1
+            (behaviors[0].dns.allow.values): ["api.openai.com", "*.openai.azure.com"]
+            (behaviors[0].dns.allow.expression): 'variables.extraNames'
+            (behaviors[0].dns.deny.values): ["telemetry.example.com"]
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-dns-monitor
+
+  - name: enforce-with-a-dns-behavior-is-rejected-at-admission
+    # A dns behavior reports; blocking a destination is a network behavior, whose
+    # domain values are enforced against the addresses answer snooping
+    # associates with them. Accepting enforce here would give an author two
+    # spellings of one thing with only one of them working, so the apiserver
+    # refuses the object rather than letting it be created and then report an
+    # unapplied condition an author has to go looking for.
+    try:
+    - apply:
+        file: bad-dns-enforce.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'it does not block them'))": true
+            "(contains($error, 'network behavior'))": true
+
+  - name: compiler-refused-value-shapes-are-NOT-rejected-at-admission
+    # HONEST GAP, deliberately pinned as positive applies. The value grammar
+    # lives in the compiler, not in the CRD, so these three are accepted by the
+    # apiserver and refused when the daemon compiles the policy:
+    #   an address as a dns value  -- a dns value is a name; a numeric last label
+    #     is a truncated address, not a hostname
+    #   an interior wildcard       -- a wildcard is only the leftmost label
+    #   a trailing wildcard        -- likewise
+    try:
+    - apply:
+        file: compiler-refused.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-dns-address-value
+          spec:
+            (behaviors[0].dns.allow.values): ["192.0.2.10"]
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-dns-interior-wildcard
+          spec:
+            (behaviors[0].dns.allow.values): ["api.*.example.com"]
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-dns-trailing-wildcard
+          spec:
+            (behaviors[0].dns.allow.values): ["example.com.*"]
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-dns-address-value
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-dns-interior-wildcard
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-dns-trailing-wildcard

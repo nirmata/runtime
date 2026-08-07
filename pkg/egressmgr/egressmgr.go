@@ -26,7 +26,7 @@ const maxReportedRejectedTargets = 10
 // filterFactory builds the per-pod egress filter.
 type filterFactory func(logger *logr.Logger) (egressFilter, error)
 
-// protoFilterFactory builds the per-pod protocol classifier.
+// protoFilterFactory builds the per-pod protocol filter.
 type protoFilterFactory func(logger *logr.Logger) (protoFilter, error)
 
 type EgressManager struct {
@@ -50,14 +50,22 @@ type EgressManager struct {
 
 type podAttachment struct {
 	defaultDeny      map[string]struct{} // the group of runtime policy uids that contained a default deny
-	protoDefaultDeny map[string]struct{} // same refcount for the protocol behavior's star
+	protoDefaultDeny map[string]struct{} // the same, for protocol behaviors
 
 	labels          map[string]string
-	cgs             map[containers.ContainerCgroupInfo]link.Link
-	protoCgs        map[containers.ContainerCgroupInfo]link.Link
+	cgs             map[containers.ContainerCgroupInfo][]link.Link
 	filter          egressFilter
 	protoFilter     protoFilter
 	attachedFilters map[string]*compiler.EvaluationResult
+
+	// the policy uids that asked for each programmed target, per side
+	allowOwners sideOwners
+	denyOwners  sideOwners
+
+	// the same, for protocol targets: they live in their own kernel maps and
+	// so are refcounted separately from addresses and hosts
+	allowProtoOwners protoOwners
+	denyProtoOwners  protoOwners
 }
 
 func NewEgressManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder) *EgressManager {
@@ -128,13 +136,13 @@ func (e *EgressManager) attachPolicy(podUid string, pa *podAttachment, rp *compi
 		return
 	}
 
-	e.addIps(podUid, rp.UID, pa.filter, rp.IPs)
+	e.addIps(podUid, rp.UID, pa, rp.IPs)
 	if denyHasStar(rp.IPs) {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 		pa.defaultDeny[rp.UID] = struct{}{}
 	}
 
-	e.addProtos(podUid, rp.UID, pa.protoFilter, rp.Protocols)
+	e.addProtos(podUid, rp.UID, pa, rp.Protocols)
 	if denyHasStar(rp.Protocols) {
 		pa.protoFilter.SetFlagIdx(protofilter.DEFAULT_DENY, true)
 		pa.protoDefaultDeny[rp.UID] = struct{}{}
@@ -142,10 +150,10 @@ func (e *EgressManager) attachPolicy(podUid string, pa *podAttachment, rp *compi
 }
 
 // detachPolicy removes the contribution of the policy uid from one pod.
-// programmedIPs and programmedProtos are the pairs that were actually written
-// to the maps, which differ from the policy's current pairs when the policy
+// programmed and programmedProtos are the pairs that were actually written to
+// the maps, which differ from the policy's current pairs when the policy
 // changed generation.
-func (e *EgressManager) detachPolicy(podUid string, pa *podAttachment, uid string, programmedIPs, programmedProtos *compiler.AllowDenyPair) {
+func (e *EgressManager) detachPolicy(podUid string, pa *podAttachment, uid string, programmed, programmedProtos *compiler.AllowDenyPair) {
 	rp, tracked := pa.attachedFilters[uid]
 	delete(pa.attachedFilters, uid)
 	// observation follows the attachments: the last policy leaving stops it
@@ -154,19 +162,19 @@ func (e *EgressManager) detachPolicy(podUid string, pa *podAttachment, uid strin
 		pa.protoFilter.SetFlagIdx(protofilter.OBSERVE, false)
 	}
 
-	// an observe-mode policy programmed no targets, so deleting its pairs would
-	// drop entries another policy owns
+	// an observe-mode policy programmed no ips, so deleting its pair would drop
+	// entries another policy owns
 	if tracked && compiler.IsObserveMode(rp.Mode) {
 		return
 	}
 
-	e.deleteIps(podUid, uid, pa.filter, programmedIPs)
+	e.deleteIps(podUid, uid, pa, programmed)
 	delete(pa.defaultDeny, uid)
 	if len(pa.defaultDeny) == 0 {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, false)
 	}
 
-	e.deleteProtos(podUid, uid, pa.protoFilter, programmedProtos)
+	e.deleteProtos(podUid, uid, pa, programmedProtos)
 	delete(pa.protoDefaultDeny, uid)
 	if len(pa.protoDefaultDeny) == 0 {
 		pa.protoFilter.SetFlagIdx(protofilter.DEFAULT_DENY, false)
@@ -174,41 +182,48 @@ func (e *EgressManager) detachPolicy(podUid string, pa *podAttachment, uid strin
 }
 
 // addIps programs a pair and surfaces anything the kernel maps could not hold.
-// uid is empty when the pair aggregates several policies (pod creation), and the
-// rejections are then logged without a policy status to attribute them to.
-func (e *EgressManager) addIps(podUid, uid string, f egressFilter, pair *compiler.AllowDenyPair) {
-	rejected, err := f.AddIps(pair)
+func (e *EgressManager) addIps(podUid, uid string, pa *podAttachment, pair *compiler.AllowDenyPair) {
+	pa.claim(uid, pair)
+	rejected, err := pa.filter.AddIps(pair)
 	if err != nil {
 		e.logger.Error(err, "failed to program egress targets", "podUid", podUid, "policy", uid)
 	}
 	e.surfaceRejected(podUid, uid, rejected)
 }
 
-func (e *EgressManager) addProtos(podUid, uid string, f protoFilter, pair *compiler.AllowDenyPair) {
-	rejected, err := f.AddProtocols(pair)
+func (e *EgressManager) addProtos(podUid, uid string, pa *podAttachment, pair *compiler.AllowDenyPair) {
+	pa.claimProtos(uid, pair)
+	rejected, err := pa.protoFilter.AddProtocols(pair)
 	if err != nil {
 		e.logger.Error(err, "failed to program egress protocol targets", "podUid", podUid, "policy", uid)
 	}
 	e.surfaceRejected(podUid, uid, rejected)
 }
 
-func (e *EgressManager) deleteIps(podUid, uid string, f egressFilter, pair *compiler.AllowDenyPair) {
-	rejected, err := f.DeleteIps(pair)
-	if err != nil {
-		e.logger.Error(err, "failed to remove egress targets", "podUid", podUid, "policy", uid)
+func (e *EgressManager) deleteProtos(podUid, uid string, pa *podAttachment, pair *compiler.AllowDenyPair) {
+	orphaned := pa.releaseProtos(uid, pair)
+	if !orphaned.HasEntries() {
+		return
 	}
-	e.logSkippedRemovals(podUid, uid, rejected)
-}
-
-func (e *EgressManager) deleteProtos(podUid, uid string, f protoFilter, pair *compiler.AllowDenyPair) {
-	rejected, err := f.DeleteProtocols(pair)
+	rejected, err := pa.protoFilter.DeleteProtocols(orphaned)
 	if err != nil {
 		e.logger.Error(err, "failed to remove egress protocol targets", "podUid", podUid, "policy", uid)
 	}
-	e.logSkippedRemovals(podUid, uid, rejected)
+	for _, r := range rejected {
+		e.logger.V(2).Info("skipped removal of an unsupported egress protocol target", "podUid", podUid, "policy", uid,
+			"target", r.Value, "reason", r.Reason)
+	}
 }
 
-func (e *EgressManager) logSkippedRemovals(podUid, uid string, rejected []compiler.RejectedTarget) {
+func (e *EgressManager) deleteIps(podUid, uid string, pa *podAttachment, pair *compiler.AllowDenyPair) {
+	orphaned := pa.release(uid, pair)
+	if !orphaned.HasEntries() {
+		return
+	}
+	rejected, err := pa.filter.DeleteIps(orphaned)
+	if err != nil {
+		e.logger.Error(err, "failed to remove egress targets", "podUid", podUid, "policy", uid)
+	}
 	for _, r := range rejected {
 		e.logger.V(2).Info("skipped removal of an unsupported egress target", "podUid", podUid, "policy", uid,
 			"target", r.Value, "reason", r.Reason)
@@ -223,7 +238,7 @@ func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []compiler.
 		return
 	}
 	for _, r := range rejected {
-		e.logger.V(2).Info("egress target was not programmed",
+		e.logger.V(2).Info("egress network target was not programmed",
 			"podUid", podUid, "policy", uid, "target", r.Value, "reason", r.Reason)
 	}
 	e.recordCondition(uid, metav1.Condition{
@@ -236,25 +251,24 @@ func (e *EgressManager) surfaceRejected(podUid, uid string, rejected []compiler.
 }
 
 // recordTargetsCondition reports, once per policy event, whether every network
-// and protocol target of the policy can be programmed. It parses the policy's
-// own values with the parsers the filters use, so the answer does not depend on
-// which pods match.
+// target of the policy can be programmed. It parses the policy's own values with
+// the parser the filter uses, so the answer does not depend on which pods match.
 func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 	if rp == nil {
 		return
 	}
-	netValues := make([]string, 0)
+	values := make([]string, 0)
 	if rp.IPs != nil {
-		netValues = append(netValues, rp.IPs.Allow...)
-		netValues = append(netValues, rp.IPs.Deny...)
+		values = append(values, rp.IPs.Allow...)
+		values = append(values, rp.IPs.Deny...)
 	}
 	protoValues := make([]string, 0)
 	if rp.Protocols != nil {
 		protoValues = append(protoValues, rp.Protocols.Allow...)
 		protoValues = append(protoValues, rp.Protocols.Deny...)
 	}
-	total := len(netValues) + len(protoValues)
-	if total == 0 {
+	unresolved := rp.UnresolvedServices
+	if len(values) == 0 && len(protoValues) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
 			Type:               v1alpha1.ConditionTargetsValid,
 			Status:             metav1.ConditionTrue,
@@ -265,15 +279,15 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 		return
 	}
 
-	_, _, netRejected := egressfilter.ParseTargets(netValues)
+	_, _, _, netRejected := egressfilter.ParseTargets(values)
 	_, _, protoRejected := protofilter.ParseTargets(protoValues)
 	rejected := append(netRejected, protoRejected...)
-	if len(rejected) == 0 {
+	if len(rejected) == 0 && len(unresolved) == 0 {
 		e.recordCondition(rp.UID, metav1.Condition{
 			Type:               v1alpha1.ConditionTargetsValid,
 			Status:             metav1.ConditionTrue,
 			Reason:             v1alpha1.ReasonAllTargetsSupported,
-			Message:            fmt.Sprintf("all %d egress targets are supported", total),
+			Message:            fmt.Sprintf("all %d network and protocol targets are supported", len(values)+len(protoValues)),
 			LastTransitionTime: metav1.NewTime(e.clock()),
 		})
 		return
@@ -282,20 +296,44 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 		e.logger.V(0).Info("egress target cannot be enforced",
 			"policy", rp.UID, "target", r.Value, "reason", r.Reason)
 	}
+	for _, value := range unresolved {
+		e.logger.V(0).Info("egress service target did not resolve to any address",
+			"policy", rp.UID, "target", value)
+	}
+
+	messages := make([]string, 0, 2)
+	if len(rejected) > 0 {
+		messages = append(messages, rejectionMessage(rejected))
+	}
+	// an unresolved Service programs nothing, so under deny "*" the destination
+	// is blocked outright: it names the condition even when literals were also
+	// rejected.
+	reason := v1alpha1.ReasonUnsupportedTargets
+	if len(unresolved) > 0 {
+		reason = v1alpha1.ReasonUnresolvedServices
+		messages = append(messages, unresolvedMessage(unresolved))
+	}
 	e.recordCondition(rp.UID, metav1.Condition{
 		Type:               v1alpha1.ConditionTargetsValid,
 		Status:             metav1.ConditionFalse,
-		Reason:             v1alpha1.ReasonUnsupportedTargets,
-		Message:            rejectionMessage(rejected),
+		Reason:             reason,
+		Message:            strings.Join(messages, "; "),
 		LastTransitionTime: metav1.NewTime(e.clock()),
 	})
 }
 
+// recordCondition resolves the policy's name from the tracked evaluation
+// results so callers that only hold a uid do not have to thread it through. An
+// untracked uid records no name and the recorder waits for one.
 func (e *EgressManager) recordCondition(uid string, cond metav1.Condition) {
 	if e.status == nil || uid == "" {
 		return
 	}
-	e.status.RecordCondition(uid, cond)
+	var name string
+	if rp := e.rps[uid]; rp != nil {
+		name = rp.Name
+	}
+	e.status.RecordCondition(uid, name, cond)
 }
 
 func rejectionMessage(rejected []compiler.RejectedTarget) string {
@@ -307,7 +345,19 @@ func rejectionMessage(rejected []compiler.RejectedTarget) string {
 		}
 		parts = append(parts, r.String())
 	}
-	return fmt.Sprintf("%d egress target(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
+	return fmt.Sprintf("%d target(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
+}
+
+func unresolvedMessage(values []string) string {
+	parts := make([]string, 0, len(values))
+	for i, value := range values {
+		if i == maxReportedRejectedTargets {
+			parts = append(parts, fmt.Sprintf("and %d more", len(values)-maxReportedRejectedTargets))
+			break
+		}
+		parts = append(parts, value)
+	}
+	return fmt.Sprintf("%d service target(s) did not resolve: %s", len(values), strings.Join(parts, "; "))
 }
 
 // clonePair copies a pair so later mutations of the policy cannot rewrite what

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -40,12 +41,14 @@ func (f *fakeSink) HandleEvent(ev Event) { f.got = append(f.got, ev) }
 // fakeRecorder records status callbacks.
 type fakeRecorder struct {
 	conditions map[string][]metav1.Condition
+	names      []string
 }
 
-func (f *fakeRecorder) RecordCondition(policyUID string, cond metav1.Condition) {
+func (f *fakeRecorder) RecordCondition(policyUID, policyName string, cond metav1.Condition) {
 	if f.conditions == nil {
 		f.conditions = map[string][]metav1.Condition{}
 	}
+	f.names = append(f.names, policyName)
 	f.conditions[policyUID] = append(f.conditions[policyUID], cond)
 }
 
@@ -77,10 +80,13 @@ func TestSourceSinkSeamsAreImplementable(t *testing.T) {
 
 func TestPolicyStatusRecorderSeam(t *testing.T) {
 	var rec PolicyStatusRecorder = &fakeRecorder{}
-	rec.RecordCondition("policy-uid", metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue, Reason: "Monitoring"})
+	rec.RecordCondition("policy-uid", "policy-name", metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue, Reason: "Monitoring"})
 
 	f := rec.(*fakeRecorder)
 	if got := f.conditions["policy-uid"]; len(got) != 1 || got[0].Type != "Applied" {
 		t.Errorf("conditions = %v, want one Applied condition", got)
+	}
+	if diff := cmp.Diff([]string{"policy-name"}, f.names); diff != "" {
+		t.Errorf("recorded names mismatch (-want +got):\n%s", diff)
 	}
 }

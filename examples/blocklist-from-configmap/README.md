@@ -13,8 +13,9 @@ would only be re-evaluated when the policy or a matched pod changes, and a Confi
 would go unnoticed.
 
 Every value the expression returns must be programmable — an IPv4 address, an IPv4 CIDR of
-`/24` or narrower, or the `"*"` default-deny sentinel. A hostname or IPv6 literal in the
-ConfigMap is rejected and surfaces as a `TargetsValid=False` condition naming the value.
+`/24` or narrower, a fully qualified domain name, or the `"*"` default-deny sentinel. An
+IPv6 literal, or a CIDR wider than `/24`, is rejected and surfaces as a
+`TargetsValid=False` condition naming the value.
 
 ## Requires
 

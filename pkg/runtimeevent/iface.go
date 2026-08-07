@@ -21,7 +21,9 @@ type Sink interface {
 }
 
 // PolicyStatusRecorder is implemented by controller.StatusWriter and consumed
-// by the managers.
+// by the managers. policyName is what addresses the object, so a caller that
+// knows it makes the condition flushable even for a policy the recorder has
+// never seen an event for; an empty name leaves the recorder to find it.
 type PolicyStatusRecorder interface {
-	RecordCondition(policyUID string, cond metav1.Condition)
+	RecordCondition(policyUID, policyName string, cond metav1.Condition)
 }

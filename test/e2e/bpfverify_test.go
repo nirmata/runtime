@@ -50,6 +50,14 @@ var bpfObjects = []bpfObjectSpec{
 			typ:        ebpf.CGroupSKB,
 			attach:     ebpf.AttachCGroupInetEgress,
 			insnBudget: 1000,
+		}, {
+			name:   "cgroup_dns_ingress",
+			typ:    ebpf.CGroupSKB,
+			attach: ebpf.AttachCGroupInetIngress,
+			// The DNS parser's unrolled label and answer walks put this two
+			// orders of magnitude above the egress program: ~15.3k processed,
+			// on both a 6.12 arm64 kernel and the amd64 runner.
+			insnBudget: 32000,
 		}},
 	},
 	{
@@ -94,6 +102,19 @@ var bpfObjects = []bpfObjectSpec{
 			// Higher than the other programs because zeroing the 1312-byte
 			// ring buffer record costs one store per word.
 			insnBudget: 10000,
+		}},
+	},
+	{
+		// The budget is an order of magnitude above the other objects because the
+		// question name is read by an unrolled per-byte pass. It needs no
+		// precondition: a cgroup_skb program loads on any kernel this project
+		// supports.
+		object: "pkg/bpf/dnsquery/dnsquery_bpfel.o",
+		progs: []progCheck{{
+			name:       "cgroup_dns_egress",
+			typ:        ebpf.CGroupSKB,
+			attach:     ebpf.AttachCGroupInetEgress,
+			insnBudget: 13000,
 		}},
 	},
 }
@@ -259,6 +280,20 @@ func TestBPFVerifyEveryObjectIsRegistered(t *testing.T) {
 		}
 		if len(obj.progs) == 0 {
 			t.Errorf("bpfObjects entry %s lists no programs", obj.object)
+		}
+		// Registering the object is not enough: a second program added to an
+		// object already in the table would otherwise never be loaded here.
+		spec, err := ebpf.LoadCollectionSpec(filepath.Join(root, obj.object))
+		if err != nil {
+			t.Errorf("loading %s to enumerate its programs: %v", obj.object, err)
+			continue
+		}
+		for name := range spec.Programs {
+			if !slices.ContainsFunc(obj.progs, func(p progCheck) bool { return p.name == name }) {
+				t.Errorf("%s contains program %q with no entry in bpfObjects "+
+					"(test/e2e/bpfverify_test.go): add one so the verifier lane loads it",
+					obj.object, name)
+			}
 		}
 	}
 

@@ -324,7 +324,7 @@ func (s *fakeStatus) RecordViolation(policyUID, podUID string) {
 	s.violations[policyUID] = append(s.violations[policyUID], podUID)
 }
 
-func (s *fakeStatus) RecordCondition(policyUID string, cond metav1.Condition) {
+func (s *fakeStatus) RecordCondition(policyUID, _ string, cond metav1.Condition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.conditions[policyUID] = append(s.conditions[policyUID], cond)

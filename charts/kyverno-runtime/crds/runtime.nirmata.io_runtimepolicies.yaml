@@ -51,8 +51,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: RuntimePolicySpec defines a runtime policy for enforcing
-              or monitoring behaviors.
+            description: |-
+              RuntimePolicySpec defines a runtime policy for enforcing or monitoring behaviors.
+
+              The dns rule is enforced here rather than only at compile time so the API
+              server refuses the object outright: a policy that was accepted and then
+              reported an unapplied condition is a policy an author has to go looking for.
             properties:
               behaviors:
                 description: |-
@@ -66,6 +70,45 @@ spec:
                   description: PolicyBehavior defines allow/deny rules for a specific
                     behavior type.
                   properties:
+                    dns:
+                      description: |-
+                        DNS declares the DNS names a selected workload is expected to resolve.
+                        It is observation only: it reports, it never blocks, so a policy carrying
+                        a dns behavior must use mode monitor and is rejected in mode enforce.
+
+                        Allow is the expected set. Deny names specific unwanted names, and the
+                        "*" sentinel in deny means "report every name", which is how an operator
+                        discovers what a workload resolves before writing an allow list.
+                      properties:
+                        allow:
+                          description: Allow specifies allowed network access.
+                          properties:
+                            expression:
+                              description: Expression is a CEL expression that evaluates
+                                to a list of items.
+                              type: string
+                            values:
+                              description: Values is a list of allowed or denied items
+                                (IPs, commands, files, etc.).
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        deny:
+                          description: Deny specifies denied network access.
+                          properties:
+                            expression:
+                              description: Expression is a CEL expression that evaluates
+                                to a list of items.
+                              type: string
+                            values:
+                              description: Values is a list of allowed or denied items
+                                (IPs, commands, files, etc.).
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                      type: object
                     exec:
                       description: Exec defines command execution behavior rules.
                       properties:
@@ -198,11 +241,11 @@ spec:
                       type: object
                   type: object
                   x-kubernetes-validations:
-                  - message: exactly one of network, exec, open, or protocol must
-                      be specified
+                  - message: exactly one of network, exec, open, protocol, or dns
+                      must be specified
                     rule: '(has(self.network) ? 1 : 0) + (has(self.exec) ? 1 : 0)
-                      + (has(self.open) ? 1 : 0) + (has(self.protocol) ? 1 : 0) ==
-                      1'
+                      + (has(self.open) ? 1 : 0) + (has(self.protocol) ? 1 : 0) +
+                      (has(self.dns) ? 1 : 0) == 1'
                 maxItems: 64
                 type: array
               evaluationInterval:
@@ -286,6 +329,12 @@ spec:
                   x-kubernetes-map-type: atomic
                 type: array
             type: object
+            x-kubernetes-validations:
+            - message: 'a dns behavior reports the names a workload resolves, it does
+                not block them: set spec.mode to "monitor", or express the destinations
+                you want blocked as a network behavior, which enforces domain values'
+              rule: '!(has(self.mode) && self.mode == ''enforce'' && has(self.behaviors)
+                && self.behaviors.exists(b, has(b.dns)))'
           status:
             description: RuntimePolicyStatus reflects the observed state of the policy.
             properties:

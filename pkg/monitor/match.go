@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"net/netip"
+	"strings"
 
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 )
@@ -28,6 +29,7 @@ type netMatcher struct {
 	star     bool
 	addrs    map[netip.Addr]struct{}
 	prefixes []netip.Prefix
+	hosts    map[string]struct{}
 }
 
 func newNetMatcher(values []string) netMatcher {
@@ -44,6 +46,11 @@ func newNetMatcher(values []string) netMatcher {
 			m.star = true
 		case v.Prefix.IsValid():
 			m.prefixes = append(m.prefixes, v.Prefix)
+		case v.Host != "":
+			if m.hosts == nil {
+				m.hosts = make(map[string]struct{}, len(values))
+			}
+			m.hosts[v.Host] = struct{}{}
 		default:
 			if m.addrs == nil {
 				m.addrs = make(map[netip.Addr]struct{}, len(values))
@@ -54,10 +61,18 @@ func newNetMatcher(values []string) netMatcher {
 	return m
 }
 
-// matches reports whether addr is covered by an explicit value. The "*"
-// sentinel is deliberately NOT a match here: it is the default-deny marker,
-// handled separately by evalNet.
-func (m netMatcher) matches(addr netip.Addr) bool {
+// matches reports whether the observation is covered by an explicit value.
+// domain is the name the kernel attributed the address to, empty when it
+// attributed none; both sides of the comparison come out of
+// compiler.ParseNetworkValue, so the host compare is exact. The "*" sentinel is
+// deliberately NOT a match here: it is the default-deny marker, handled
+// separately by netBehavior.eval.
+func (m netMatcher) matches(addr netip.Addr, domain string) bool {
+	if domain != "" {
+		if _, ok := m.hosts[domain]; ok {
+			return true
+		}
+	}
 	if !addr.IsValid() {
 		return false
 	}
@@ -105,6 +120,171 @@ func (m pathMatcher) matches(path string) bool {
 	return ok
 }
 
+// nameMatcher is the compiled form of one side of a dns behavior. Both sides of
+// every comparison it makes are lowercase: policy values through
+// compiler.ParseDNSValue, observed question names through the kernel program
+// that lowercases them on the wire.
+type nameMatcher struct {
+	star  bool
+	names map[string]struct{}
+	// suffixes holds each wildcard as ".<name>", including the separating dot.
+	suffixes []string
+}
+
+func newNameMatcher(values []string) nameMatcher {
+	m := nameMatcher{}
+	for _, raw := range values {
+		v, err := compiler.ParseDNSValue(raw)
+		if err != nil {
+			// a value the schema rejects must never produce a match the
+			// enforcing side of that schema would not have admitted
+			continue
+		}
+		switch {
+		case v.Star:
+			m.star = true
+		case v.Wildcard:
+			m.suffixes = append(m.suffixes, "."+v.Name)
+		default:
+			if m.names == nil {
+				m.names = make(map[string]struct{}, len(values))
+			}
+			m.names[v.Name] = struct{}{}
+		}
+	}
+	return m
+}
+
+// empty reports a side with nothing to match on, either because the policy
+// listed nothing or because every value it listed was rejected.
+func (m nameMatcher) empty() bool {
+	return !m.star && len(m.names) == 0 && len(m.suffixes) == 0
+}
+
+// matches reports whether name is covered by an explicit value. The "*"
+// sentinel is not an explicit match; nameBehavior.eval handles it.
+func (m nameMatcher) matches(name string) bool {
+	if name == "" {
+		return false
+	}
+	if _, ok := m.names[name]; ok {
+		return true
+	}
+	for _, s := range m.suffixes {
+		// The stored leading dot is what keeps a wildcard to subdomains:
+		// "*.openai.azure.com" covers "foo.openai.azure.com" but neither the
+		// apex "openai.azure.com" nor "evilopenai.azure.com".
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// netBehavior is a compiled network allow/deny pair.
+type netBehavior struct {
+	allow, deny netMatcher
+}
+
+// pathBehavior is a compiled open or exec allow/deny pair.
+type pathBehavior struct {
+	allow, deny pathMatcher
+}
+
+// nameBehavior is a compiled dns allow/deny pair.
+type nameBehavior struct {
+	allow, deny nameMatcher
+}
+
+// compileNetBehavior returns nil for a pair with no entries: the behavior is
+// absent from the policy, and nil is what every reader checks.
+func compileNetBehavior(p *compiler.AllowDenyPair) *netBehavior {
+	if !p.HasEntries() {
+		return nil
+	}
+	return &netBehavior{allow: newNetMatcher(p.Allow), deny: newNetMatcher(p.Deny)}
+}
+
+func compilePathBehavior(p *compiler.AllowDenyPair) *pathBehavior {
+	if !p.HasEntries() {
+		return nil
+	}
+	return &pathBehavior{allow: newPathMatcher(p.Allow), deny: newPathMatcher(p.Deny)}
+}
+
+func compileNameBehavior(p *compiler.AllowDenyPair) *nameBehavior {
+	if !p.HasEntries() {
+		return nil
+	}
+	return &nameBehavior{allow: newNameMatcher(p.Allow), deny: newNameMatcher(p.Deny)}
+}
+
+// eval implements the network half of DESIGN §2.10: the destination violates
+// when an explicit deny value covers it, or when the behavior default-denies
+// ("*" in deny) and no allow value covers it.
+func (b *netBehavior) eval(addr netip.Addr, domain string) decision {
+	if b == nil || (!addr.IsValid() && domain == "") {
+		return decision{}
+	}
+	if b.deny.matches(addr, domain) {
+		return decision{violation: true}
+	}
+	if b.deny.star && !b.allow.matches(addr, domain) {
+		return decision{violation: true, defaultDeny: true}
+	}
+	return decision{}
+}
+
+// eval is the open/exec form of netBehavior.eval, over the path (or exec
+// filename) instead of the destination address.
+func (b *pathBehavior) eval(path string) decision {
+	if b == nil || path == "" {
+		return decision{}
+	}
+	if b.deny.matches(path) {
+		return decision{violation: true}
+	}
+	if b.deny.star && !b.allow.matches(path) {
+		return decision{violation: true, defaultDeny: true}
+	}
+	return decision{}
+}
+
+// eval reports whether an observed question name is worth surfacing.
+//
+// The allow list is inverted here relative to open and exec: it is the set of
+// names the workload is expected to resolve, so a name matching none of its
+// entries is reportable on its own, with no "*" in deny. An allow list that
+// constrained nothing would make the whole behavior pointless, since observing
+// a declared name tells an operator nothing.
+//
+// A behavior with nothing to match on either side is inert rather than
+// all-reporting: an empty expected set is "nothing declared yet", not "every
+// name is a surprise". Reporting every name is what "*" in deny asks for, and
+// it is how an operator discovers a workload's names before writing the allow
+// list.
+//
+// "*" in deny keeps the exemption shape the other behaviors have: an expected
+// name stays silent. So narrowing a discovery policy is additive — entries move
+// into allow one at a time and the noise drops — rather than requiring the "*"
+// to come out in the same edit.
+func (b *nameBehavior) eval(name string) decision {
+	if b == nil || name == "" {
+		return decision{}
+	}
+	// An explicit deny entry is more specific than the expected set, so it wins.
+	if b.deny.matches(name) {
+		return decision{violation: true}
+	}
+	if b.allow.star || b.allow.matches(name) {
+		return decision{}
+	}
+	if b.allow.empty() && !b.deny.star {
+		return decision{}
+	}
+	return decision{violation: true}
+}
+
 // protoMatcher is the compiled form of one side of a protocol behavior. A bare
 // token matches any event with that protocol, whatever its ALPN; a tls/<alpn>
 // value matches only tls with exactly that ALPN (case-sensitive, mirroring the
@@ -120,6 +300,8 @@ func newProtoMatcher(values []string) protoMatcher {
 	for _, raw := range values {
 		v, err := compiler.ParseProtocolValue(raw)
 		if err != nil {
+			// a value the schema rejects must never produce a match the
+			// enforcing side of that schema would not have admitted
 			continue
 		}
 		switch {
@@ -158,35 +340,9 @@ func (m protoMatcher) matches(protocol, alpn string) bool {
 	return false
 }
 
-// netBehavior is a compiled network allow/deny pair.
-type netBehavior struct {
-	allow, deny netMatcher
-}
-
-// pathBehavior is a compiled open or exec allow/deny pair.
-type pathBehavior struct {
-	allow, deny pathMatcher
-}
-
 // protoBehavior is a compiled protocol allow/deny pair.
 type protoBehavior struct {
 	allow, deny protoMatcher
-}
-
-// compileNetBehavior returns nil for a pair with no entries: the behavior is
-// absent from the policy, and nil is what every reader checks.
-func compileNetBehavior(p *compiler.AllowDenyPair) *netBehavior {
-	if !p.HasEntries() {
-		return nil
-	}
-	return &netBehavior{allow: newNetMatcher(p.Allow), deny: newNetMatcher(p.Deny)}
-}
-
-func compilePathBehavior(p *compiler.AllowDenyPair) *pathBehavior {
-	if !p.HasEntries() {
-		return nil
-	}
-	return &pathBehavior{allow: newPathMatcher(p.Allow), deny: newPathMatcher(p.Deny)}
 }
 
 func compileProtocolBehavior(p *compiler.AllowDenyPair) *protoBehavior {
@@ -194,37 +350,6 @@ func compileProtocolBehavior(p *compiler.AllowDenyPair) *protoBehavior {
 		return nil
 	}
 	return &protoBehavior{allow: newProtoMatcher(p.Allow), deny: newProtoMatcher(p.Deny)}
-}
-
-// eval implements the network half of DESIGN §2.10: the destination violates
-// when an explicit deny value covers it, or when the behavior default-denies
-// ("*" in deny) and no allow value covers it.
-func (b *netBehavior) eval(addr netip.Addr) decision {
-	if b == nil || !addr.IsValid() {
-		return decision{}
-	}
-	if b.deny.matches(addr) {
-		return decision{violation: true}
-	}
-	if b.deny.star && !b.allow.matches(addr) {
-		return decision{violation: true, defaultDeny: true}
-	}
-	return decision{}
-}
-
-// eval is the open/exec form of netBehavior.eval, over the path (or exec
-// filename) instead of the destination address.
-func (b *pathBehavior) eval(path string) decision {
-	if b == nil || path == "" {
-		return decision{}
-	}
-	if b.deny.matches(path) {
-		return decision{violation: true}
-	}
-	if b.deny.star && !b.allow.matches(path) {
-		return decision{violation: true, defaultDeny: true}
-	}
-	return decision{}
 }
 
 // eval is the protocol form of netBehavior.eval, over the classified protocol

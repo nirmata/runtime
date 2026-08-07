@@ -1,0 +1,188 @@
+# E2E behavioral assertion -- two policies over one pod, and a pod that starts
+# after the policies that select it.
+#
+# The other egress suites create the client first, so enforcement always arrives
+# through the policy-event path. Here the policies exist before the pod does,
+# which is the ordering every restarted node sees, and the only one that reaches
+# the pod-event path.
+#
+# The overlap is the second half. One filter serves every policy attached to a
+# pod, so a target two policies both name has to survive the first of them going
+# away, and has to disappear when the last one does. That refcount is invisible
+# to a single-policy test:
+#   1. both policies present -> shared and single reachable, unnamed blocked
+#   2. policy A deleted      -> shared still reachable (B still wants it)
+#                               single blocked          (nobody wants it)
+#                               unnamed still blocked   (B still default-denies)
+#   3. policy B deleted      -> unnamed reachable       (enforcement lifted)
+#
+# Kernel requirements: cgroup v2 + BPF (CAP_BPF). BPF-LSM is not required.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: egress-overlap
+spec:
+  steps:
+  - name: start-three-target-servers
+    try:
+    - apply:
+        file: targets.yaml
+    - assert:
+        file: targets-ready.yaml
+
+  - name: apply-both-policies-before-the-client-exists
+    try:
+    - script:
+        content: |
+          set -eu
+          shared=$(kubectl -n "$NAMESPACE" get pod overlap-target-shared -o jsonpath='{.status.podIP}')
+          single=$(kubectl -n "$NAMESPACE" get pod overlap-target-single -o jsonpath='{.status.podIP}')
+          test -n "$shared" && test -n "$single" && test "$shared" != "$single"
+          sed -e "s/SHARED_IP/${shared}/" -e "s/SINGLE_IP/${single}/" policies.tmpl.yaml \
+            | tee /tmp/e2e-egress-overlap-policies.yaml
+          kubectl apply -f /tmp/e2e-egress-overlap-policies.yaml
+    # A rejected target also produces "blocked", which would pass this test for
+    # the wrong reason.
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-egress-overlap-a
+          status:
+            (conditions[?type == 'TargetsValid'].status | [0]): "True"
+            (conditions[?type == 'TargetsValid'].reason | [0]): AllTargetsSupported
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-egress-overlap-b
+          status:
+            (conditions[?type == 'TargetsValid'].status | [0]): "True"
+            (conditions[?type == 'TargetsValid'].reason | [0]): AllTargetsSupported
+
+  - name: start-the-client-into-the-already-programmed-policies
+    try:
+    - apply:
+        file: client.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: overlap-client
+          status:
+            phase: Running
+
+  - name: both-policies-programmed-onto-a-pod-that-started-after-them
+    try:
+    - script:
+        content: |
+          set -eu
+          shared=$(kubectl -n "$NAMESPACE" get pod overlap-target-shared -o jsonpath='{.status.podIP}')
+          single=$(kubectl -n "$NAMESPACE" get pod overlap-target-single -o jsonpath='{.status.podIP}')
+          unnamed=$(kubectl -n "$NAMESPACE" get pod overlap-target-unnamed -o jsonpath='{.status.podIP}')
+
+          blocked=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec overlap-client -- \
+                 wget -q -T 3 -O /dev/null "http://${unnamed}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          [ "$blocked" -eq 1 ] || { echo "FAIL: unnamed target ${unnamed} still reachable -- the policies were never programmed onto a pod that started after them"; exit 1; }
+          echo "OK: unnamed target ${unnamed} blocked"
+
+          for ip in "$shared" "$single"; do
+            if ! kubectl -n "$NAMESPACE" exec overlap-client -- \
+                 wget -q -T 5 -O /dev/null "http://${ip}:8080/" 2>/dev/null; then
+              echo "FAIL: allowed target ${ip} is unreachable under default-deny (over-blocking)"
+              exit 1
+            fi
+          done
+          echo "OK: shared (${shared}) and single (${single}) reachable"
+
+  - name: deleting-one-policy-keeps-the-target-the-other-still-wants
+    try:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-overlap-a
+    - script:
+        content: |
+          set -eu
+          shared=$(kubectl -n "$NAMESPACE" get pod overlap-target-shared -o jsonpath='{.status.podIP}')
+          single=$(kubectl -n "$NAMESPACE" get pod overlap-target-single -o jsonpath='{.status.podIP}')
+          unnamed=$(kubectl -n "$NAMESPACE" get pod overlap-target-unnamed -o jsonpath='{.status.podIP}')
+
+          # The target only the deleted policy named is the signal that the
+          # detach has been processed. Everything below is read against that,
+          # so no assertion races the daemon.
+          gone=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec overlap-client -- \
+                 wget -q -T 3 -O /dev/null "http://${single}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              gone=1; break
+            fi
+          done
+          [ "$gone" -eq 1 ] || { echo "FAIL: ${single} is still reachable after the only policy naming it was deleted"; exit 1; }
+          echo "OK: ${single} blocked after policy A was deleted"
+
+          # The shared target must not have gone with it. Required on every
+          # attempt: a single probe cannot tell a surviving entry from one that
+          # is about to be revoked.
+          for attempt in 1 2 3; do
+            if ! kubectl -n "$NAMESPACE" exec overlap-client -- \
+                 wget -q -T 5 -O /dev/null "http://${shared}:8080/" 2>/dev/null; then
+              echo "FAIL: shared target ${shared} became unreachable on attempt ${attempt} -- deleting policy A revoked an address policy B still wants"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: shared target ${shared} survived the deletion of policy A"
+
+          if kubectl -n "$NAMESPACE" exec overlap-client -- \
+               wget -q -T 3 -O /dev/null "http://${unnamed}:8080/" 2>/dev/null; then
+            echo "FAIL: unnamed target ${unnamed} became reachable -- default-deny lifted while policy B is still present"
+            exit 1
+          fi
+          echo "OK: default-deny still in force under policy B alone"
+
+  - name: deleting-the-last-policy-lifts-enforcement
+    try:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-overlap-b
+    - script:
+        content: |
+          set -eu
+          unnamed=$(kubectl -n "$NAMESPACE" get pod overlap-target-unnamed -o jsonpath='{.status.podIP}')
+
+          ok=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec overlap-client -- \
+                 wget -q -T 3 -O /dev/null "http://${unnamed}:8080/" 2>/dev/null; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: ${unnamed} is still blocked with no policy left -- enforcement did not lift"; exit 1; }
+          echo "OK: enforcement lifted with the last policy"
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=200 || true
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl get runtimepolicy -o wide || true
+    - script:
+        content: |
+          kubectl delete runtimepolicy e2e-egress-overlap-a e2e-egress-overlap-b --ignore-not-found

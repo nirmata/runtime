@@ -74,6 +74,7 @@ func TestFingerprintIsUniquePerIdentity(t *testing.T) {
 		{"netDestHost", func(f *Finding) { f.Net.DestHost = "api.other.com" }},
 		{"netAbsent", func(f *Finding) { f.Net = nil }},
 		{"processComm", func(f *Finding) { f.Process = &ProcessSummary{Comm: "curl"} }},
+		{"dnsQName", func(f *Finding) { f.DNS = &DNSSummary{QName: "api.openai.com"} }},
 	}
 
 	base := baseFinding().Fingerprint()

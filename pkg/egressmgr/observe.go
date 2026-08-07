@@ -14,8 +14,8 @@ import (
 
 // CollectObservations drains the IPv4 and protocol observation counters of
 // every pod with an attached policy and turns them into one event per
-// (destination, decision) and one per (protocol, decision). Reads are
-// destructive, so Count is the delta since the previous call.
+// (destination, decision) and (protocol, decision).
+// Reads are destructive, so Count is the delta since the previous call.
 func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 				Time:         now,
 				Count:        count,
 				KernelDenied: key.Decision == runtimeevent.DecisionDeny,
-				Net:          &runtimeevent.NetFacts{DestIP: key.Addr},
+				Net:          &runtimeevent.NetFacts{DestIP: key.Addr, Domain: key.Domain},
 				Pod:          runtimeevent.PodIdentity{UID: podUid, Labels: pa.labels},
 			})
 		}
@@ -87,6 +87,27 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 	return out, errors.Join(errs...)
 }
 
+// sortedIPEventKeys orders keys by address, then decision (allow before deny),
+// then domain, so the emitted event slice is deterministic. Every field of the
+// key is compared: one address can be reached under two domains, and leaving
+// either out would order those entries arbitrarily.
+func sortedIPEventKeys(counts map[egressfilter.IPEventKey]uint32) []egressfilter.IPEventKey {
+	keys := make([]egressfilter.IPEventKey, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if c := keys[i].Addr.Compare(keys[j].Addr); c != 0 {
+			return c < 0
+		}
+		if keys[i].Decision != keys[j].Decision {
+			return keys[i].Decision < keys[j].Decision
+		}
+		return keys[i].Domain < keys[j].Domain
+	})
+	return keys
+}
+
 // sortedProtoEventKeys orders keys by protocol token, then ALPN, then decision
 // (allow before deny), so the emitted event slice is deterministic.
 func sortedProtoEventKeys(counts map[protofilter.ProtoEventKey]uint32) []protofilter.ProtoEventKey {
@@ -100,22 +121,6 @@ func sortedProtoEventKeys(counts map[protofilter.ProtoEventKey]uint32) []protofi
 		}
 		if keys[i].ALPN != keys[j].ALPN {
 			return keys[i].ALPN < keys[j].ALPN
-		}
-		return keys[i].Decision < keys[j].Decision
-	})
-	return keys
-}
-
-// sortedIPEventKeys orders keys by address, with the decision as a tiebreaker
-// (allow before deny), so the emitted event slice is deterministic.
-func sortedIPEventKeys(counts map[egressfilter.IPEventKey]uint32) []egressfilter.IPEventKey {
-	keys := make([]egressfilter.IPEventKey, 0, len(counts))
-	for key := range counts {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if c := keys[i].Addr.Compare(keys[j].Addr); c != 0 {
-			return c < 0
 		}
 		return keys[i].Decision < keys[j].Decision
 	})

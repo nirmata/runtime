@@ -32,9 +32,19 @@ If enforcement appears to do nothing, that distinction is the first thing to che
 | --- | --- | --- | --- |
 | [block-known-bad-egress](../../examples/block-known-bad-egress/) | Stop a pod from reaching one known-bad destination address, leaving the rest of its egress alone | enforce | cgroup v2 |
 | [default-deny-egress](../../examples/default-deny-egress/) | Contain a compromised pod: block all egress except one approved service | enforce | cgroup v2 |
+| [egress-to-cluster-service](../../examples/egress-to-cluster-service/) | Name the approved destinations by their cluster Service DNS names instead of addresses, leaving the API server unreachable by omission | enforce | cgroup v2 |
+| [egress-to-domain-name](../../examples/egress-to-domain-name/) | Allow an external fully qualified domain name, enforced from the pod's own DNS answers | enforce | cgroup v2 |
 | [tls-only-egress](../../examples/tls-only-egress/) | Force a workload to speak only TLS, whatever port it uses | enforce | cgroup v2 |
 
 `block-known-bad-egress` is the scenario the [quickstart](quickstart.md) walks through.
+
+A value in the form `<service>.<namespace>.svc.cluster.local` is resolved from Service and
+EndpointSlice informers; any other fully qualified domain name is learned from the pod's DNS
+answers. The two mechanisms have different failure modes, listed in
+[limits of cluster Service targets](reference/runtimepolicy.md#limits-of-cluster-service-targets)
+and [limits of domain names](reference/runtimepolicy.md#limits-of-domain-names). A domain
+allow list is not a containment boundary. A cluster Service written short, as
+`<service>.<namespace>`, is neither: it is taken as an external name and matches nothing.
 
 ## File and process control
 
@@ -50,10 +60,30 @@ If enforcement appears to do nothing, that distinction is the first thing to che
 | --- | --- | --- | --- |
 | [monitor-egress](../../examples/monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor | cgroup v2 |
 | [monitor-workload-baseline](../../examples/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
+| [detect-mcp-config-access](../../examples/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM |
 
 Monitor mode reports through OpenReports `Report` objects and never blocks. What it can and
 cannot see is listed in
 [limits of monitor mode](reference/runtimepolicy.md#limits-of-monitor-mode).
+
+## DNS reporting
+
+A `dns` behavior declares the names a workload is expected to resolve and reports the rest.
+It observes only, and a policy that pairs it with `mode: enforce` is refused when it
+compiles: blocking a destination named by domain is what a `network` behavior does, so
+accepting `enforce` here would be a second way to spell one thing with only one of them
+working. The two are complementary — a `network` behavior decides about destinations a
+policy already named, while only the question observation supplies a name no policy named.
+
+| Example | Scenario | Mode | Requires |
+| --- | --- | --- | --- |
+| [report-unexpected-dns](../../examples/report-unexpected-dns/) | Report the provider hostnames a workload resolves outside its approved set, and discover the names it resolves at all | monitor | cgroup v2 |
+
+The allow list is inverted relative to `exec` and `open`: `dns.allow` is the expected set,
+so a name matching none of its entries is reported without any `"*"` in `deny`. Values are
+exact hostnames or left-wildcards such as `*.example.com`, which cover subdomains and not
+the apex. A resolution is not a connection, and the rest of what this cannot see is in
+[limits of DNS reporting](reference/runtimepolicy.md#limits-of-dns-reporting).
 
 ## Dynamic lists (CEL libraries)
 

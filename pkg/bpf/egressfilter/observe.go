@@ -15,11 +15,15 @@ func (e *EgressFilter) SetObserve(enabled bool) {
 	e.SetFlagIdx(OBSERVE, enabled)
 }
 
-// IPEventKey identifies one observation counter: a destination address plus
-// the enforcement decision the kernel program applied to the flow.
+// IPEventKey identifies one observation counter: a destination address, the
+// enforcement decision the kernel program applied to the flow, and the domain
+// the address was attributed to.
 type IPEventKey struct {
 	Addr     netip.Addr
 	Decision runtimeevent.KernelDecision
+	// Domain is already resolved: the kernel's numeric id is filter-local, so
+	// it never leaves this package. Empty when no domain was attributed.
+	Domain string
 }
 
 // ipEventKernelKey mirrors `struct ip_event_key` in _cprog/maps.h. cilium/ebpf
@@ -27,6 +31,7 @@ type IPEventKey struct {
 type ipEventKernelKey struct {
 	Daddr    uint32
 	Decision uint32
+	DomainId uint32
 }
 
 // ReadIPEvents reads and resets the ip_events counter map, so each poll reports
@@ -36,7 +41,7 @@ func (e *EgressFilter) ReadIPEvents() (map[IPEventKey]uint32, error) {
 	if e.bpfObjs == nil || e.bpfObjs.IpEvents == nil {
 		return nil, ErrNotLoaded
 	}
-	return readAndResetIPEvents(e.bpfObjs.IpEvents)
+	return readAndResetIPEvents(e.bpfObjs.IpEvents, e.domainNamer())
 }
 
 // SeedIPEvent writes one observation entry through the ip_events map handle. It
@@ -54,7 +59,34 @@ func (e *EgressFilter) SeedIPEvent(addr netip.Addr, decision runtimeevent.Kernel
 	return e.bpfObjs.IpEvents.Put(&key, &count)
 }
 
-func readAndResetIPEvents(m *ebpf.Map) (map[IPEventKey]uint32, error) {
+// domainNamer returns the id-to-name lookup used for one read. Interning is the
+// only allocator of these ids, and retiring one sweeps the counters carrying it,
+// so a name missing from the inverted table means the counter outlived its
+// domain rather than that the table is behind.
+func (e *EgressFilter) domainNamer() func(uint32) string {
+	names := make(map[uint32]string, len(e.domainIDs))
+	for name, id := range e.domainIDs {
+		names[id] = name
+	}
+	return func(id uint32) string {
+		if id == 0 {
+			return ""
+		}
+		name, ok := names[id]
+		if ok {
+			return name
+		}
+		// An id the intern table cannot name is an attribution gap, not a
+		// reason to lose the observation: it stays, reported by address.
+		if e.logger != nil {
+			e.logger.Info("egress observation names an unknown domain id; reporting it by address",
+				"domainId", id)
+		}
+		return ""
+	}
+}
+
+func readAndResetIPEvents(m *ebpf.Map, domainOf func(uint32) string) (map[IPEventKey]uint32, error) {
 	out := make(map[IPEventKey]uint32)
 	keys := make([]ipEventKernelKey, 0, 16)
 
@@ -70,7 +102,7 @@ func readAndResetIPEvents(m *ebpf.Map) (map[IPEventKey]uint32, error) {
 		if count == 0 {
 			continue
 		}
-		out[eventKey(key)] += count
+		out[eventKey(key, domainOf)] += count
 	}
 	var errs []error
 	if err := it.Err(); err != nil {
@@ -86,9 +118,10 @@ func readAndResetIPEvents(m *ebpf.Map) (map[IPEventKey]uint32, error) {
 	return out, errors.Join(errs...)
 }
 
-func eventKey(k ipEventKernelKey) IPEventKey {
+func eventKey(k ipEventKernelKey, domainOf func(uint32) string) IPEventKey {
 	return IPEventKey{
 		Addr:     keyAddr(k.Daddr),
 		Decision: runtimeevent.KernelDecision(k.Decision),
+		Domain:   domainOf(k.DomainId),
 	}
 }

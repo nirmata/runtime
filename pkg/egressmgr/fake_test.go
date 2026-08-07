@@ -62,6 +62,8 @@ type fakeFilter struct {
 
 	allow       map[string]struct{}
 	deny        map[string]struct{}
+	allowHosts  map[string]struct{}
+	denyHosts   map[string]struct{}
 	defaultDeny bool
 	observe     bool
 
@@ -73,8 +75,10 @@ type fakeFilter struct {
 
 func newFakeFilter() *fakeFilter {
 	return &fakeFilter{
-		allow: make(map[string]struct{}),
-		deny:  make(map[string]struct{}),
+		allow:      make(map[string]struct{}),
+		deny:       make(map[string]struct{}),
+		allowHosts: make(map[string]struct{}),
+		denyHosts:  make(map[string]struct{}),
 	}
 }
 
@@ -83,13 +87,19 @@ func (f *fakeFilter) AddIps(p *compiler.AllowDenyPair) ([]compiler.RejectedTarge
 	if p == nil {
 		return nil, nil
 	}
-	allowAddrs, _, allowRejected := egressfilter.ParseTargets(p.Allow)
-	denyAddrs, _, denyRejected := egressfilter.ParseTargets(p.Deny)
+	allowAddrs, allowHosts, _, allowRejected := egressfilter.ParseTargets(p.Allow)
+	denyAddrs, denyHosts, _, denyRejected := egressfilter.ParseTargets(p.Deny)
 	for _, a := range allowAddrs {
 		f.allow[a.String()] = struct{}{}
 	}
 	for _, a := range denyAddrs {
 		f.deny[a.String()] = struct{}{}
+	}
+	for _, h := range allowHosts {
+		f.allowHosts[h] = struct{}{}
+	}
+	for _, h := range denyHosts {
+		f.denyHosts[h] = struct{}{}
 	}
 	return append(allowRejected, denyRejected...), f.addErr
 }
@@ -99,13 +109,19 @@ func (f *fakeFilter) DeleteIps(p *compiler.AllowDenyPair) ([]compiler.RejectedTa
 	if p == nil {
 		return nil, nil
 	}
-	allowAddrs, _, allowRejected := egressfilter.ParseTargets(p.Allow)
-	denyAddrs, _, denyRejected := egressfilter.ParseTargets(p.Deny)
+	allowAddrs, allowHosts, _, allowRejected := egressfilter.ParseTargets(p.Allow)
+	denyAddrs, denyHosts, _, denyRejected := egressfilter.ParseTargets(p.Deny)
 	for _, a := range allowAddrs {
 		delete(f.allow, a.String())
 	}
 	for _, a := range denyAddrs {
 		delete(f.deny, a.String())
+	}
+	for _, h := range allowHosts {
+		delete(f.allowHosts, h)
+	}
+	for _, h := range denyHosts {
+		delete(f.denyHosts, h)
 	}
 	return append(allowRejected, denyRejected...), nil
 }
@@ -120,14 +136,14 @@ func (f *fakeFilter) SetFlagIdx(idx uint8, val bool) {
 	}
 }
 
-func (f *fakeFilter) Attach(cgPath string) (link.Link, error) {
+func (f *fakeFilter) Attach(cgPath string) ([]link.Link, error) {
 	f.attaches = append(f.attaches, cgPath)
 	if f.attachErr != nil {
 		return nil, f.attachErr
 	}
 	// link.Link cannot be implemented outside package link, and the manager only
-	// uses the returned value as an opaque map value
-	return nil, nil
+	// uses the returned values as opaque map values
+	return []link.Link{}, nil
 }
 
 // models the destructive read of the counter map: the events are handed over once
@@ -146,8 +162,10 @@ func (f *fakeFilter) reset() {
 	f.attaches = nil
 }
 
-func (f *fakeFilter) liveAllow() []string { return sortedKeys(f.allow) }
-func (f *fakeFilter) liveDeny() []string  { return sortedKeys(f.deny) }
+func (f *fakeFilter) liveAllow() []string      { return sortedKeys(f.allow) }
+func (f *fakeFilter) liveDeny() []string       { return sortedKeys(f.deny) }
+func (f *fakeFilter) liveAllowHosts() []string { return sortedKeys(f.allowHosts) }
+func (f *fakeFilter) liveDenyHosts() []string  { return sortedKeys(f.denyHosts) }
 
 func sortedKeys(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
@@ -292,11 +310,15 @@ func (ff *fakeProtoFactory) new(*logr.Logger) (protoFilter, error) {
 type fakeStatus struct {
 	mu         sync.Mutex
 	conditions map[string][]metav1.Condition
+	names      map[string][]string
 	violations []string
 }
 
 func newFakeStatus() *fakeStatus {
-	return &fakeStatus{conditions: make(map[string][]metav1.Condition)}
+	return &fakeStatus{
+		conditions: make(map[string][]metav1.Condition),
+		names:      make(map[string][]string),
+	}
 }
 
 func (s *fakeStatus) RecordViolation(policyUID string, podUID string) {
@@ -305,10 +327,18 @@ func (s *fakeStatus) RecordViolation(policyUID string, podUID string) {
 	s.violations = append(s.violations, policyUID+"/"+podUID)
 }
 
-func (s *fakeStatus) RecordCondition(policyUID string, cond metav1.Condition) {
+func (s *fakeStatus) RecordCondition(policyUID, policyName string, cond metav1.Condition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.conditions[policyUID] = append(s.conditions[policyUID], cond)
+	s.names[policyUID] = append(s.names[policyUID], policyName)
+}
+
+// recordedNames returns the names supplied alongside a policy's conditions.
+func (s *fakeStatus) recordedNames(policyUID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.names[policyUID])
 }
 
 func (s *fakeStatus) all(policyUID string) []metav1.Condition {
@@ -442,6 +472,16 @@ func wantLiveIps(t *testing.T, f *fakeFilter, allow, deny []string) {
 	}
 	if !slices.Equal(f.liveDeny(), deny) {
 		t.Errorf("live deny ips: got %v, want %v", f.liveDeny(), deny)
+	}
+}
+
+func wantLiveHosts(t *testing.T, f *fakeFilter, allow, deny []string) {
+	t.Helper()
+	if !slices.Equal(f.liveAllowHosts(), allow) {
+		t.Errorf("live allow hosts: got %v, want %v", f.liveAllowHosts(), allow)
+	}
+	if !slices.Equal(f.liveDenyHosts(), deny) {
+		t.Errorf("live deny hosts: got %v, want %v", f.liveDenyHosts(), deny)
 	}
 }
 

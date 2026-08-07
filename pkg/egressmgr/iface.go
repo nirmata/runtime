@@ -14,7 +14,7 @@ type egressFilter interface {
 	AddIps(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error)
 	DeleteIps(pair *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error)
 	SetFlagIdx(idx uint8, val bool)
-	Attach(cgPath string) (link.Link, error)
+	Attach(cgPath string) ([]link.Link, error)
 	ReadIPEvents() (map[egressfilter.IPEventKey]uint32, error)
 }
 

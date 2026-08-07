@@ -260,6 +260,22 @@ test-e2e-egress:
 test-e2e-protocol:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/protocol-enforce/
 
+# Cluster Service target resolution and enforcement. Same kernel requirements as
+# test-e2e-egress.
+test-e2e-svcref:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-svcref/
+
+# Domain-name enforcement: the cgroup DNS snooper feeding the egress filter. Same
+# kernel requirements as test-e2e-egress. The suite runs its own resolver, so it
+# needs neither cluster DNS nor egress to the internet.
+test-e2e-dns:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-dns/
+
+# Overlapping policies and a pod that starts after the policies selecting it.
+# Same kernel requirements as test-e2e-egress.
+test-e2e-overlap:
+	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/egress-overlap/
+
 # BPF-LSM open/exec enforcement behavior on its own. REQUIRES a host booted with
 # BPF-LSM ('bpf' in /sys/kernel/security/lsm); test-e2e runs it alongside the
 # rest of the suite.
@@ -317,4 +333,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

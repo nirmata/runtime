@@ -48,6 +48,7 @@ const (
 	propServiceAccount = "serviceAccount"
 	propDestIP         = "destIP"
 	propDestHost       = "destHost"
+	propDNSName        = "dnsName"
 	propComm           = "comm"
 	propArgv           = "argv"
 )
@@ -108,6 +109,9 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 	if f.Net != nil {
 		put(propDestIP, f.Net.DestIP)
 		put(propDestHost, f.Net.DestHost)
+	}
+	if f.DNS != nil {
+		put(propDNSName, f.DNS.QName)
 	}
 	if f.Process != nil {
 		put(propComm, f.Process.Comm)

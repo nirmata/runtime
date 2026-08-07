@@ -18,13 +18,19 @@ struct iphdr {
     __be32 daddr;
 };
 
+// One translation unit, not a second bpf2go object: the snooper writes
+// ip_domain and the egress program below reads it, and two objects would each
+// get their own copy of every map.
+#include "dns.c"
+
 // The counter is __u32: a narrower lookup would only bump its low byte on
 // little-endian and wrap at 255.
-static __always_inline void record_ip_event(__u32 daddr, __u32 decision)
+static __always_inline void record_ip_event(__u32 daddr, __u32 decision, __u32 domain_id)
 {
     struct ip_event_key key = {};
     key.daddr = daddr;
     key.decision = decision;
+    key.domain_id = domain_id;
 
     __u32 *val = bpf_map_lookup_elem(&ip_events, &key);
     if (val) {
@@ -64,17 +70,27 @@ int cgroup_egress(struct __sk_buff *skb)
         return 3;
     };
 
+    // 0 means the address never appeared in a snooped A record, so no domain
+    // verdict applies and the id is never looked up.
+    __u32 domain_id = 0;
+    __u32 *id = bpf_map_lookup_elem(&ip_domain, &daddr);
+    if (id) {
+        domain_id = *id;
+    }
+
     __u32 decision = DECISION_ALLOW;
     if (*f & (1 << DEFAULT_DENY)) {
-        if (bpf_map_lookup_elem(&allowed_ips, &daddr) == NULL) {
+        if (bpf_map_lookup_elem(&allowed_ips, &daddr) == NULL &&
+            !(domain_id && bpf_map_lookup_elem(&allowed_domains, &domain_id))) {
             decision = DECISION_DENY;
         }
-    } else if (bpf_map_lookup_elem(&banned_ips, &daddr) != NULL) {
+    } else if (bpf_map_lookup_elem(&banned_ips, &daddr) != NULL ||
+               (domain_id && bpf_map_lookup_elem(&banned_domains, &domain_id))) {
         decision = DECISION_DENY;
     }
 
     if (*f & (1 << LEARNING_MODE)) {
-        record_ip_event(daddr, decision);
+        record_ip_event(daddr, decision, domain_id);
     }
 
     // 1 = pass, 0 = drop

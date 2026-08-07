@@ -9,11 +9,9 @@ import (
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
 
-	"github.com/cilium/ebpf/link"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -245,18 +243,6 @@ func TestPaddedStarSentinelSetsDefaultDenyOnUpdate(t *testing.T) {
 // released rather than orphaned. The maps are drained so a caller cannot close
 // the same link twice, and a nil entry is tolerated because link.Link is an
 // interface the fakes cannot implement.
-func TestCloseLinksDrainsEveryMap(t *testing.T) {
-	cgA := containers.ContainerCgroupInfo{Path: "/cg/a"}
-	cgB := containers.ContainerCgroupInfo{Path: "/cg/b"}
-	first := map[containers.ContainerCgroupInfo]link.Link{cgA: nil}
-	second := map[containers.ContainerCgroupInfo]link.Link{cgB: nil}
-
-	closeLinks(first, second)
-
-	if len(first) != 0 || len(second) != 0 {
-		t.Errorf("maps not drained: first=%d second=%d", len(first), len(second))
-	}
-}
 
 // TestPodCreatedReleasesLinksWhenProtoAttachFails pins that a pod whose
 // protocol attach fails is not tracked, so nothing later reads a half-built

@@ -28,6 +28,11 @@ daemon:
   # eventBufferSize: depth of the collector's fan-in buffer. Events arriving when
   # it is full are dropped and counted. Empty uses the daemon default (4096).
   eventBufferSize: ""
+  # clusterDomain: the cluster's DNS domain. It decides which network values are
+  # in-cluster Service names, so a cluster not using the default rejects every
+  # Service target until this matches. Empty uses the daemon default
+  # (cluster.local).
+  clusterDomain: ""
   rbac:
     # extraRules: additional PolicyRule entries appended to the shared ClusterRole,
     # e.g. to grant the daemon read access to CRDs referenced by the resource library

@@ -108,6 +108,15 @@ func netEvent(ip string) runtimeevent.Event {
 	}
 }
 
+// netEventForDomain is the observation shape the kernel produces once the
+// snooper has attributed the destination to a DNS answer: the address is still
+// there, the domain names it.
+func netEventForDomain(ip, domain string) runtimeevent.Event {
+	ev := netEvent(ip)
+	ev.Net.Domain = domain
+	return ev
+}
+
 func openEvent(path string) runtimeevent.Event {
 	return runtimeevent.Event{
 		Kind: runtimeevent.KindOpen,
@@ -128,13 +137,26 @@ func execEvent(filename string) runtimeevent.Event {
 	}
 }
 
-func protocolEvent(protocol, alpn string) runtimeevent.Event {
+// dnsPolicy returns a monitor-mode EvaluationResult with only a dns behavior,
+// selecting app=ai pods.
+func dnsPolicy(t *testing.T, uid, name string, dns *compiler.AllowDenyPair) *compiler.EvaluationResult {
+	t.Helper()
+	return &compiler.EvaluationResult{
+		UID:      uid,
+		Name:     name,
+		DNS:      dns,
+		Selector: sel(t, map[string]string{"app": "ai"}),
+		Mode:     compiler.ModeMonitor,
+	}
+}
+
+func dnsEvent(qname string) runtimeevent.Event {
 	return runtimeevent.Event{
-		Kind:     runtimeevent.KindProtocol,
-		Time:     time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
-		Count:    1,
-		Protocol: &runtimeevent.ProtocolFacts{Protocol: protocol, ALPN: alpn},
-		Pod:      testPod(),
+		Kind:  runtimeevent.KindDNS,
+		Time:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+		Count: 1,
+		DNS:   &runtimeevent.DNSFacts{QName: qname},
+		Pod:   testPod(),
 	}
 }
 
@@ -301,142 +323,6 @@ func TestHandleEvent_ViolationDecisionTable(t *testing.T) {
 	}
 }
 
-// --- protocol behaviors ------------------------------------------------------
-
-func TestHandleEvent_ProtocolDefaultDenyCounterfactual(t *testing.T) {
-	tests := []struct {
-		name        string
-		ev          runtimeevent.Event
-		wantMessage string
-	}{
-		{
-			name:        "ssh is default-denied",
-			ev:          protocolEvent("ssh", ""),
-			wantMessage: "monitor mode: egress protocol ssh would have been denied by policy p (default deny)",
-		},
-		{name: "tls with the allowed ALPN", ev: protocolEvent("tls", "h2")},
-		{
-			name:        "tls with another ALPN is default-denied",
-			ev:          protocolEvent("tls", "http/1.1"),
-			wantMessage: "monitor mode: egress protocol tls/http/1.1 would have been denied by policy p (default deny)",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			m, sink, _ := testMonitor(t)
-			rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
-			rp.Protocols = pair([]string{"tls/h2"}, []string{compiler.StarTarget})
-			if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
-				t.Fatalf("RuntimePolicyEvent: %v", err)
-			}
-
-			m.HandleEvent(tc.ev)
-
-			got := sink.all()
-			if tc.wantMessage == "" {
-				if len(got) != 0 {
-					t.Fatalf("expected no findings, got %d: %+v", len(got), got)
-				}
-				return
-			}
-			if len(got) != 1 {
-				t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
-			}
-			if got[0].Behavior != BehaviorProtocol {
-				t.Errorf("behavior = %q, want %q", got[0].Behavior, BehaviorProtocol)
-			}
-			if got[0].Message != tc.wantMessage {
-				t.Errorf("message = %q, want %q", got[0].Message, tc.wantMessage)
-			}
-			if got[0].Net != nil || got[0].Process != nil {
-				t.Errorf("protocol finding carries a summary: net=%+v process=%+v", got[0].Net, got[0].Process)
-			}
-		})
-	}
-}
-
-func TestHandleEvent_UnclassifiedFindingNamesUnclassified(t *testing.T) {
-	m, sink, _ := testMonitor(t)
-	rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
-	rp.Protocols = pair([]string{"tls"}, []string{compiler.StarTarget})
-	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
-		t.Fatalf("RuntimePolicyEvent: %v", err)
-	}
-
-	m.HandleEvent(protocolEvent(compiler.ProtocolUnclassified, ""))
-	got := sink.all()
-	if len(got) != 1 {
-		t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
-	}
-	want := "monitor mode: egress protocol unclassified would have been denied by policy p (default deny)"
-	if got[0].Message != want {
-		t.Errorf("message = %q, want %q", got[0].Message, want)
-	}
-
-	m.HandleEvent(protocolEvent("ssh", ""))
-	got = sink.all()
-	if len(got) != 2 {
-		t.Fatalf("expected two findings, got %d: %+v", len(got), got)
-	}
-	want = "monitor mode: egress protocol ssh would have been denied by policy p (default deny)"
-	if got[1].Message != want {
-		t.Errorf("message = %q, want %q", got[1].Message, want)
-	}
-}
-
-func TestHandleEvent_NoPolicyValueCanAllowUnclassified(t *testing.T) {
-	m, sink, _ := testMonitor(t)
-	rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
-	// "unclassified" is not a value in the schema; newProtoMatcher skips it,
-	// so this allow list cannot cover the event.
-	rp.Protocols = pair([]string{compiler.ProtocolUnclassified}, []string{compiler.StarTarget})
-	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
-		t.Fatalf("RuntimePolicyEvent: %v", err)
-	}
-
-	m.HandleEvent(protocolEvent(compiler.ProtocolUnclassified, ""))
-	got := sink.all()
-	if len(got) != 1 {
-		t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
-	}
-	want := "monitor mode: egress protocol unclassified would have been denied by policy p (default deny)"
-	if got[0].Message != want {
-		t.Errorf("message = %q, want %q", got[0].Message, want)
-	}
-}
-
-func TestHandleEvent_KernelDenyIsAttributedToEnforceProtocolPolicy(t *testing.T) {
-	m, sink, mtx := testMonitor(t)
-	rp := monitorPolicy(t, "uid-e", "block-ssh", nil, nil, nil)
-	rp.Mode = compiler.ModeEnforce
-	rp.Protocols = pair(nil, []string{"ssh"})
-	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
-		t.Fatalf("RuntimePolicyEvent: %v", err)
-	}
-
-	ev := protocolEvent("ssh", "")
-	ev.KernelDenied = true
-	m.HandleEvent(ev)
-
-	want := []reporter.Finding{{
-		PolicyName: "block-ssh",
-		PolicyUID:  "uid-e",
-		Behavior:   BehaviorProtocol,
-		Severity:   reporter.SeverityMedium,
-		Result:     reporter.ResultFail,
-		Enforced:   true,
-		Message:    "enforced: egress protocol ssh was denied by policy block-ssh",
-		Pod:        testPod(),
-		Timestamp:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
-	}}
-	if diff := cmp.Diff(want, sink.all()); diff != "" {
-		t.Errorf("findings (-want +got):\n%s", diff)
-	}
-	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 0 {
-		t.Errorf("unattributed kernel deny counter = %v, want 0", got)
-	}
-}
-
 // --- selector gating -------------------------------------------------------
 
 func TestHandleEvent_SelectorGatesOnPodLabels(t *testing.T) {
@@ -515,6 +401,122 @@ func TestHandleEvent_FindingContents(t *testing.T) {
 	}}
 	if diff := cmp.Diff(want, sink.all()); diff != "" {
 		t.Errorf("findings (-want +got):\n%s", diff)
+	}
+}
+
+func TestHandleEvent_FindingNamesTheAttributedDomain(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := monitorPolicy(t, "uid-net", "block-egress", pair(nil, []string{"api.example.com"}), nil, nil)
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(netEventForDomain("10.0.0.5", "api.example.com"))
+
+	want := []reporter.Finding{{
+		PolicyName: "block-egress",
+		PolicyUID:  "uid-net",
+		Behavior:   BehaviorNetwork,
+		Severity:   reporter.SeverityMedium,
+		Result:     reporter.ResultFail,
+		Message:    "monitor mode: egress to api.example.com would have been denied by policy block-egress",
+		Pod:        testPod(),
+		Net:        &reporter.NetSummary{DestIP: "10.0.0.5", DestHost: "api.example.com"},
+		Timestamp:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+	}}
+	if diff := cmp.Diff(want, sink.all()); diff != "" {
+		t.Errorf("findings (-want +got):\n%s", diff)
+	}
+}
+
+// A policy naming a domain decides on the domain, not on whatever address the
+// answer happened to carry.
+func TestHandleEvent_DomainPolicyMatchesOnlyItsOwnDomain(t *testing.T) {
+	tests := []struct {
+		name        string
+		ev          runtimeevent.Event
+		wantFinding bool
+		wantMessage string
+	}{
+		{
+			name: "the named domain", ev: netEventForDomain("10.0.0.5", "api.example.com"),
+			wantFinding: true,
+			wantMessage: "monitor mode: egress to api.example.com would have been denied by policy p",
+		},
+		{
+			name: "an unrelated domain on the same address", ev: netEventForDomain("10.0.0.5", "cdn.example.com"),
+		},
+		{
+			name: "the same address with no domain attributed", ev: netEvent("10.0.0.5"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, sink, _ := testMonitor(t)
+			rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"api.example.com"}), nil, nil)
+			if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+				t.Fatalf("RuntimePolicyEvent: %v", err)
+			}
+
+			m.HandleEvent(tc.ev)
+
+			got := sink.all()
+			if !tc.wantFinding {
+				if len(got) != 0 {
+					t.Fatalf("expected no findings, got %+v", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("findings = %d, want 1: %+v", len(got), got)
+			}
+			if got[0].Message != tc.wantMessage {
+				t.Errorf("message = %q, want %q", got[0].Message, tc.wantMessage)
+			}
+		})
+	}
+}
+
+// An address the snooper never attributed still produces the address-only
+// finding: the domain dimension must not swallow the observation.
+func TestHandleEvent_UnattributedAddressStillProducesAnAddressFinding(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := monitorPolicy(t, "uid-p", "p", pair([]string{"api.example.com"}, []string{compiler.StarTarget}), nil, nil)
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(netEvent("93.184.216.34"))
+
+	got := sink.all()
+	if len(got) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(got), got)
+	}
+	want := "monitor mode: egress to 93.184.216.34 would have been denied by policy p (default deny)"
+	if got[0].Message != want {
+		t.Errorf("message = %q, want %q", got[0].Message, want)
+	}
+	if diff := cmp.Diff(&reporter.NetSummary{DestIP: "93.184.216.34"}, got[0].Net); diff != "" {
+		t.Errorf("net summary (-want +got):\n%s", diff)
+	}
+}
+
+// A kernel deny for a domain-attributed destination that no enforce-mode policy
+// explains is counted, exactly like the address-only case.
+func TestHandleEvent_UnattributedKernelDenyForADomainIsCounted(t *testing.T) {
+	m, _, mtx := testMonitor(t)
+	rp := monitorPolicy(t, "uid-e", "e", pair(nil, []string{"other.example.com"}), nil, nil)
+	rp.Mode = compiler.ModeEnforce
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	ev := netEventForDomain("10.0.0.5", "api.example.com")
+	ev.KernelDenied = true
+	m.HandleEvent(ev)
+
+	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 1 {
+		t.Errorf("events_dropped_total{source=monitor,reason=%s} = %v, want 1", reasonUnattributedKernelDeny, got)
 	}
 }
 
@@ -907,9 +909,6 @@ func TestHandleEvent_IgnoresUndecidableEvents(t *testing.T) {
 		{name: "open kind with empty path", ev: runtimeevent.Event{Kind: runtimeevent.KindOpen, Pod: testPod(),
 			Open: &runtimeevent.OpenFacts{}}},
 		{name: "exec kind with nil facts", ev: runtimeevent.Event{Kind: runtimeevent.KindExec, Pod: testPod()}},
-		{name: "protocol kind with nil facts", ev: runtimeevent.Event{Kind: runtimeevent.KindProtocol, Pod: testPod()}},
-		{name: "protocol kind with empty protocol", ev: runtimeevent.Event{Kind: runtimeevent.KindProtocol, Pod: testPod(),
-			Protocol: &runtimeevent.ProtocolFacts{}}},
 		{name: "empty kind", ev: runtimeevent.Event{Pod: testPod()}},
 	}
 	for _, tc := range tests {
@@ -919,7 +918,6 @@ func TestHandleEvent_IgnoresUndecidableEvents(t *testing.T) {
 				pair(nil, []string{compiler.StarTarget}),
 				pair(nil, []string{compiler.StarTarget}),
 				pair(nil, []string{compiler.StarTarget}))
-			rp.Protocols = pair(nil, []string{compiler.StarTarget})
 			if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 				t.Fatalf("RuntimePolicyEvent: %v", err)
 			}
@@ -1091,5 +1089,182 @@ func TestHandleEvent_ExecFindingCarriesArgv(t *testing.T) {
 				t.Errorf("Process.Argv = %q, want %q", got[0].Process.Argv, tc.wantArgv)
 			}
 		})
+	}
+}
+
+// --- dns observation --------------------------------------------------------
+
+func TestHandleEvent_UnexpectedDNSNameFindingContents(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := dnsPolicy(t, "uid-dns", "expected-names", pair([]string{"api.anthropic.com"}, nil))
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+	ev := dnsEvent("api.openai.com")
+	ev.Count = 3
+
+	m.HandleEvent(ev)
+
+	want := []reporter.Finding{{
+		PolicyName: "expected-names",
+		PolicyUID:  "uid-dns",
+		Behavior:   BehaviorDNS,
+		Severity:   reporter.SeverityMedium,
+		// a dns behavior cannot enforce, so the finding is advisory and never
+		// claims anything was or would have been blocked
+		Result:    reporter.ResultWarn,
+		Enforced:  false,
+		Message:   "resolved unexpected DNS name api.openai.com (3 occurrences), not expected by policy expected-names",
+		Pod:       testPod(),
+		DNS:       &reporter.DNSSummary{QName: "api.openai.com"},
+		Timestamp: time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+	}}
+	if diff := cmp.Diff(want, sink.all()); diff != "" {
+		t.Errorf("findings (-want +got):\n%s", diff)
+	}
+}
+
+func TestHandleEvent_ExpectedDNSNameProducesNoFinding(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := dnsPolicy(t, "uid-dns", "expected-names", pair([]string{"api.openai.com", "*.openai.azure.com"}, nil))
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(dnsEvent("api.openai.com"))
+	m.HandleEvent(dnsEvent("gpt.openai.azure.com"))
+
+	if got := sink.reports(); got != 0 {
+		t.Errorf("reports = %d, want 0", got)
+	}
+}
+
+func TestHandleEvent_DNSNameExpectedByOnePolicyIsStillReportedByAnother(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	expects := dnsPolicy(t, "uid-expects", "expects-openai", pair([]string{"api.openai.com"}, nil))
+	reportsIt := dnsPolicy(t, "uid-reports", "expects-anthropic", pair([]string{"api.anthropic.com"}, nil))
+	for _, rp := range []*compiler.EvaluationResult{expects, reportsIt} {
+		if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+			t.Fatalf("RuntimePolicyEvent: %v", err)
+		}
+	}
+
+	m.HandleEvent(dnsEvent("api.openai.com"))
+
+	if diff := cmp.Diff(map[string]int{"uid-reports": 1}, findingsPerPolicy(sink.all())); diff != "" {
+		t.Errorf("findings per policy (-want +got):\n%s", diff)
+	}
+}
+
+func TestHandleEvent_DNSDenyStarReportsEveryName(t *testing.T) {
+	m, sink, _ := testMonitor(t)
+	rp := dnsPolicy(t, "uid-dns", "discover", pair(nil, []string{compiler.StarTarget}))
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(dnsEvent("api.openai.com"))
+	m.HandleEvent(dnsEvent("kubernetes.default.svc.cluster.local"))
+
+	var names []string
+	for _, f := range sink.all() {
+		names = append(names, f.DNS.QName)
+	}
+	if diff := cmp.Diff([]string{"api.openai.com", "kubernetes.default.svc.cluster.local"}, names); diff != "" {
+		t.Errorf("reported names (-want +got):\n%s", diff)
+	}
+}
+
+func protocolEvent(protocol, alpn string) runtimeevent.Event {
+	return runtimeevent.Event{
+		Kind:     runtimeevent.KindProtocol,
+		Time:     time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+		Count:    1,
+		Protocol: &runtimeevent.ProtocolFacts{Protocol: protocol, ALPN: alpn},
+		Pod:      testPod(),
+	}
+}
+
+func TestHandleEvent_ProtocolDefaultDenyCounterfactual(t *testing.T) {
+	tests := []struct {
+		name        string
+		ev          runtimeevent.Event
+		wantMessage string
+	}{
+		{
+			name:        "ssh is default-denied",
+			ev:          protocolEvent("ssh", ""),
+			wantMessage: "monitor mode: egress protocol ssh would have been denied by policy p (default deny)",
+		},
+		{name: "tls with the allowed ALPN", ev: protocolEvent("tls", "h2")},
+		{
+			name:        "tls with another ALPN is default-denied",
+			ev:          protocolEvent("tls", "http/1.1"),
+			wantMessage: "monitor mode: egress protocol tls/http/1.1 would have been denied by policy p (default deny)",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, sink, _ := testMonitor(t)
+			rp := monitorPolicy(t, "uid-p", "p", nil, nil, nil)
+			rp.Protocols = pair([]string{"tls/h2"}, []string{compiler.StarTarget})
+			if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+				t.Fatalf("RuntimePolicyEvent: %v", err)
+			}
+
+			m.HandleEvent(tc.ev)
+
+			got := sink.all()
+			if tc.wantMessage == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected no findings, got %d: %+v", len(got), got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("expected exactly one finding, got %d: %+v", len(got), got)
+			}
+			if got[0].Behavior != BehaviorProtocol {
+				t.Errorf("behavior = %q, want %q", got[0].Behavior, BehaviorProtocol)
+			}
+			if got[0].Message != tc.wantMessage {
+				t.Errorf("message = %q, want %q", got[0].Message, tc.wantMessage)
+			}
+			if got[0].Net != nil || got[0].Process != nil {
+				t.Errorf("protocol finding carries a summary: net=%+v process=%+v", got[0].Net, got[0].Process)
+			}
+		})
+	}
+}
+
+func TestHandleEvent_KernelDenyIsAttributedToEnforceProtocolPolicy(t *testing.T) {
+	m, sink, mtx := testMonitor(t)
+	rp := monitorPolicy(t, "uid-e", "block-ssh", nil, nil, nil)
+	rp.Mode = compiler.ModeEnforce
+	rp.Protocols = pair(nil, []string{"ssh"})
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	ev := protocolEvent("ssh", "")
+	ev.KernelDenied = true
+	m.HandleEvent(ev)
+
+	want := []reporter.Finding{{
+		PolicyName: "block-ssh",
+		PolicyUID:  "uid-e",
+		Behavior:   BehaviorProtocol,
+		Severity:   reporter.SeverityMedium,
+		Result:     reporter.ResultFail,
+		Enforced:   true,
+		Message:    "enforced: egress protocol ssh was denied by policy block-ssh",
+		Pod:        testPod(),
+		Timestamp:  time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+	}}
+	if diff := cmp.Diff(want, sink.all()); diff != "" {
+		t.Errorf("findings (-want +got):\n%s", diff)
+	}
+	if got := testutil.ToFloat64(mtx.EventsDropped.WithLabelValues(sinkName, reasonUnattributedKernelDeny)); got != 0 {
+		t.Errorf("unattributed kernel deny counter = %v, want 0", got)
 	}
 }

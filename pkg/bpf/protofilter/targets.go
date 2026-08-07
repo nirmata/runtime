@@ -123,3 +123,12 @@ func targetKernelKey(t Target) (protoKernelKey, bool) {
 	copy(key.Alpn[:], t.ALPN)
 	return key, true
 }
+
+// String renders the target the way a policy spells it, so a value round-trips
+// back through ParseTargets.
+func (t Target) String() string {
+	if t.ALPN == "" {
+		return t.Protocol
+	}
+	return t.Protocol + "/" + t.ALPN
+}

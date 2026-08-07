@@ -25,10 +25,8 @@ const DefaultStatusFlushInterval = 30 * time.Second
 
 // policyStatusState is this node's view of one policy's status.
 type policyStatusState struct {
-	// name is needed to address the object; it is only known once a
-	// RuntimePolicyEvent arrives. Conditions and violations can be recorded
-	// before that (the handler fan-out is concurrent), in which case the entry
-	// waits, unflushed, for the name.
+	// name is needed to address the object. An entry whose name is still unknown
+	// waits, unflushed, until a caller supplies one.
 	name string
 	mode string
 
@@ -125,7 +123,7 @@ func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventT
 // RecordCondition stores a condition to be merged into the policy's status on
 // the next flush. Re-recording an identical condition is a no-op so a manager
 // that reports the same condition on every event does not cause API churn.
-func (s *StatusWriter) RecordCondition(policyUID string, cond metav1.Condition) {
+func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1.Condition) {
 	if policyUID == "" || cond.Type == "" {
 		return
 	}
@@ -133,25 +131,39 @@ func (s *StatusWriter) RecordCondition(policyUID string, cond metav1.Condition) 
 	defer s.mu.Unlock()
 
 	st := s.getOrCreate(policyUID)
+	if policyName != "" {
+		st.name = policyName
+	}
 	if prev, ok := st.conditions[cond.Type]; ok &&
 		prev.Status == cond.Status && prev.Reason == cond.Reason && prev.Message == cond.Message {
 		return
+	}
+	// apimeta.SetStatusCondition would fill a zero timestamp from time.Now(),
+	// which is a second clock: the conditions this writer builds itself all come
+	// from s.clock(), and a test with a fake one would see the two disagree.
+	if cond.LastTransitionTime.IsZero() {
+		cond.LastTransitionTime = metav1.NewTime(s.clock())
 	}
 	st.conditions[cond.Type] = cond
 	st.touch()
 }
 
 func (s *StatusWriter) appliedCondition(mode string) metav1.Condition {
+	status := metav1.ConditionTrue
 	reason := v1alpha1.ReasonEnforcing
 	message := "the policy is being enforced on this node"
 	switch mode {
 	case compiler.ModeMonitor:
 		reason = v1alpha1.ReasonMonitoring
 		message = "the policy is observed and reported but never blocks"
+	case "":
+		status = metav1.ConditionFalse
+		reason = v1alpha1.ReasonNoMode
+		message = "the policy sets no spec.mode, so it is neither enforced nor reported"
 	}
 	return metav1.Condition{
 		Type:               v1alpha1.ConditionApplied,
-		Status:             metav1.ConditionTrue,
+		Status:             status,
 		Reason:             reason,
 		Message:            message,
 		LastTransitionTime: metav1.NewTime(s.clock()),
@@ -216,8 +228,8 @@ func (s *StatusWriter) snapshot() []flushItem {
 			continue
 		}
 		if st.name == "" {
-			// a condition arrived before the policy event, so the object
-			// cannot be addressed yet; stay dirty and retry next tick
+			// no caller has supplied a name, so the object cannot be
+			// addressed yet; stay dirty and retry next tick
 			s.log.V(2).Info("policy status pending: no name known yet", "policyUid", uid)
 			continue
 		}

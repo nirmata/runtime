@@ -71,8 +71,8 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 		return
 	}
 
-	// store the old pairs because we may need to delete them from a pod's
-	// attachment when the policy stops matching, whether or not they changed
+	// store the old ips because we may need to delete them from a pod's attachment
+	// when the policy stops matching, whether or not the ips themselves changed
 	oldIps := clonePair(currentRp.IPs)
 	oldProtos := clonePair(currentRp.Protocols)
 
@@ -96,35 +96,34 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	currentRp.Name = compiledRp.Name
 	currentRp.Mode = compiledRp.Mode
 
-	hasDiff := toAddPair.HasEntries() || toRemovePair.HasEntries() ||
-		toAddProtoPair.HasEntries() || toRemoveProtoPair.HasEntries()
-
 	for podUid, pod := range e.pods {
 		rpMatches := selectorMatches(compiledRp.Selector, pod.labels)
 		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
 			// there is no diff and rp still matches, do nothing
+			hasDiff := toAddPair.HasEntries() || toRemovePair.HasEntries() ||
+				toAddProtoPair.HasEntries() || toRemoveProtoPair.HasEntries()
 			if !hasDiff && rpMatches {
 				continue
 			}
 
 			if !rpMatches {
 				e.logger.V(2).Info("runtime policy stopped matching pod, detaching", "uid", compiledRp.UID, "podUid", podUid)
-				// the targets to remove are the ones this pod actually got
-				// programmed with, not the incoming generation's
+				// the ips to remove are the ones this pod actually got programmed
+				// with, not the incoming generation's
 				e.detachPolicy(podUid, pod, compiledRp.UID, oldIps, oldProtos)
 				continue
 			}
 
-			// rp matches and there is a diff. add the new targets, delete the
-			// old and update our tracking data structures
+			// rp matches and there is a diff. add the new ips, delete the old
+			// and update our tracking data structures
 			e.logger.V(2).Info("applying target diff for updated runtime policy", "uid", compiledRp.UID, "podUid", podUid,
 				"toAddAllow", toAddPair.Allow, "toRemoveAllow", toRemovePair.Allow, "toAddDeny", toAddPair.Deny, "toRemoveDeny", toRemovePair.Deny,
 				"toAddProtoAllow", toAddProtoPair.Allow, "toRemoveProtoAllow", toRemoveProtoPair.Allow,
 				"toAddProtoDeny", toAddProtoPair.Deny, "toRemoveProtoDeny", toRemoveProtoPair.Deny)
-			e.addIps(podUid, compiledRp.UID, pod.filter, toAddPair)
-			e.deleteIps(podUid, compiledRp.UID, pod.filter, toRemovePair)
-			e.addProtos(podUid, compiledRp.UID, pod.protoFilter, toAddProtoPair)
-			e.deleteProtos(podUid, compiledRp.UID, pod.protoFilter, toRemoveProtoPair)
+			e.addIps(podUid, compiledRp.UID, pod, toAddPair)
+			e.deleteIps(podUid, compiledRp.UID, pod, toRemovePair)
+			e.addProtos(podUid, compiledRp.UID, pod, toAddProtoPair)
+			e.deleteProtos(podUid, compiledRp.UID, pod, toRemoveProtoPair)
 
 			// both operations are idempotent, so repeating them is harmless
 			if hasDefaultDeny {

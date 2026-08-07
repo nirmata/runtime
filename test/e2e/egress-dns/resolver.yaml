@@ -1,0 +1,42 @@
+# The suite's own resolver, authoritative for the two names under test.
+#
+# The names have to sit outside the cluster DNS domain or they would be resolved
+# from the API server rather than snooped, and they have to be answered by
+# something the test controls: the cluster's own resolver is shared with every
+# other suite running against the same cluster, so it is not ours to reconfigure.
+#
+# busybox dnsd serves the two A records in the dns-stub-zone ConfigMap and
+# NXDOMAIN for everything else, so a client pointed here can only learn
+# addresses this test put there. The zone is written at run time, because the
+# addresses are the backend pods' and do not exist until they are scheduled.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-stub
+  labels:
+    app: dns-stub
+spec:
+  containers:
+  - name: dnsd
+    image: busybox:1.36
+    command: ["dnsd", "-c", "/etc/dnsd/zone", "-i", "0.0.0.0", "-t", "5", "-v"]
+    volumeMounts:
+    - name: zone
+      mountPath: /etc/dnsd
+  volumes:
+  - name: zone
+    configMap:
+      name: dns-stub-zone
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dns-stub
+spec:
+  selector:
+    app: dns-stub
+  ports:
+  - name: dns
+    protocol: UDP
+    port: 53
+    targetPort: 53

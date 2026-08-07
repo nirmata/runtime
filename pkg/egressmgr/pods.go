@@ -24,33 +24,31 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	}
 
 	pa := &podAttachment{
-		cgs:              make(map[containers.ContainerCgroupInfo]link.Link),
-		protoCgs:         make(map[containers.ContainerCgroupInfo]link.Link),
+		cgs:              make(map[containers.ContainerCgroupInfo][]link.Link),
 		attachedFilters:  make(map[string]*compiler.EvaluationResult),
 		defaultDeny:      make(map[string]struct{}),
 		protoDefaultDeny: make(map[string]struct{}),
 		labels:           pod.Labels,
 		filter:           filter,
 		protoFilter:      pf,
+		allowOwners:      newSideOwners(),
+		denyOwners:       newSideOwners(),
+		allowProtoOwners: newProtoOwners(),
+		denyProtoOwners:  newProtoOwners(),
 	}
 
 	for _, cg := range cgInfos {
-		l, err := filter.Attach(cg.Path)
+		links, err := attachBoth(filter, pf, cg.Path)
 		if err != nil {
-			closeLinks(pa.cgs, pa.protoCgs)
+			for _, attached := range pa.cgs {
+				e.closeLinks(string(pod.UID), attached)
+			}
+			e.closeLinks(string(pod.UID), links)
 			return err
 		}
-		pa.cgs[*cg] = l
-		pl, err := pf.Attach(cg.Path)
-		if err != nil {
-			closeLinks(pa.cgs, pa.protoCgs)
-			return err
-		}
-		pa.protoCgs[*cg] = pl
+		pa.cgs[*cg] = links
 	}
 
-	ips := &compiler.AllowDenyPair{}
-	protos := &compiler.AllowDenyPair{}
 	for rpName, rp := range e.rps {
 		if !selectorMatches(rp.Selector, pod.Labels) {
 			continue
@@ -63,13 +61,13 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 			continue
 		}
 
-		if rp.IPs != nil {
-			ips.Allow = append(ips.Allow, rp.IPs.Allow...)
-			ips.Deny = append(ips.Deny, rp.IPs.Deny...)
+		// programmed per policy rather than as one aggregate pair so each
+		// address records the policy that wants it
+		if rp.IPs.HasEntries() {
+			e.addIps(string(pod.UID), rp.UID, pa, rp.IPs)
 		}
-		if rp.Protocols != nil {
-			protos.Allow = append(protos.Allow, rp.Protocols.Allow...)
-			protos.Deny = append(protos.Deny, rp.Protocols.Deny...)
+		if rp.Protocols.HasEntries() {
+			e.addProtos(string(pod.UID), rp.UID, pa, rp.Protocols)
 		}
 
 		if denyHasStar(rp.IPs) {
@@ -92,14 +90,6 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		pa.protoFilter.SetFlagIdx(protofilter.OBSERVE, true)
 	}
 
-	// program the targets in case there was a rp that matched
-	if ips.HasEntries() {
-		e.addIps(string(pod.UID), "", pa.filter, ips)
-	}
-	if protos.HasEntries() {
-		e.addProtos(string(pod.UID), "", pa.protoFilter, protos)
-	}
-
 	e.pods[string(pod.UID)] = pa
 	return nil
 }
@@ -118,43 +108,44 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	e.refreshLabels(string(pod.UID), pa, pod.Labels)
 
 	// check if there are new cgroup infos. if there is, create links for them.
-	// for the ones that are gone the attachment would be already deleted by the kernel
-	newCgs := make(map[containers.ContainerCgroupInfo]link.Link)
-	newProtoCgs := make(map[containers.ContainerCgroupInfo]link.Link)
-	// Links this call created, as opposed to the ones pa already owns: only
-	// these are closed if a later attach fails, since the rest stay live under
-	// the untouched pa.cgs / pa.protoCgs.
-	fresh := make(map[containers.ContainerCgroupInfo]link.Link)
-	freshProto := make(map[containers.ContainerCgroupInfo]link.Link)
+	newCgs := make(map[containers.ContainerCgroupInfo][]link.Link)
 	for _, cgInfo := range cgInfos {
-		l, exists := pa.cgs[*cgInfo]
+		links, exists := pa.cgs[*cgInfo]
 		if !exists {
-			// new cgroup, attach and get a link
-			newLink, err := pa.filter.Attach(cgInfo.Path)
+			newLinks, err := attachBoth(pa.filter, pa.protoFilter, cgInfo.Path)
 			if err != nil {
-				closeLinks(fresh, freshProto)
+				// only the links this call created: the rest stay live under
+				// the untouched pa.cgs
+				for cg, created := range newCgs {
+					if _, reused := pa.cgs[cg]; !reused {
+						e.closeLinks(string(pod.UID), created)
+					}
+				}
+				e.closeLinks(string(pod.UID), newLinks)
 				return err
 			}
-			l = newLink
-			fresh[*cgInfo] = l
+			links = newLinks
 		}
-		newCgs[*cgInfo] = l
-
-		pl, exists := pa.protoCgs[*cgInfo]
-		if !exists {
-			newLink, err := pa.protoFilter.Attach(cgInfo.Path)
-			if err != nil {
-				closeLinks(fresh, freshProto)
-				return err
-			}
-			pl = newLink
-			freshProto[*cgInfo] = pl
+		newCgs[*cgInfo] = links
+	}
+	for cg, links := range pa.cgs {
+		if _, kept := newCgs[cg]; !kept {
+			e.closeLinks(string(pod.UID), links)
 		}
-		newProtoCgs[*cgInfo] = pl
 	}
 	pa.cgs = newCgs
-	pa.protoCgs = newProtoCgs
 	return nil
+}
+
+func (e *EgressManager) closeLinks(podUid string, links []link.Link) {
+	for _, l := range links {
+		if l == nil {
+			continue
+		}
+		if err := l.Close(); err != nil {
+			e.logger.Error(err, "failed to close an egress cgroup link", "podUid", podUid)
+		}
+	}
 }
 
 // refreshLabels stores the new label set and attaches/detaches every tracked
@@ -177,25 +168,32 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabel
 	}
 }
 
-// closeLinks detaches links created on a path that then failed. A pod whose
-// attach fails partway is never stored in e.pods, so nothing else holds these
-// and the kernel keeps the programs attached to a live cgroup until they are
-// closed here.
-func closeLinks(sets ...map[containers.ContainerCgroupInfo]link.Link) {
-	for _, set := range sets {
-		for cg, l := range set {
-			// link.Link is an interface, so a map entry can hold a nil one
-			if l != nil {
-				_ = l.Close()
-			}
-			delete(set, cg)
-		}
-	}
-}
-
 func (e *EgressManager) podDeleted(podUid string) {
 	e.logger.V(2).Info("pod deleted", "podUid", podUid)
-	// a pod being deleted means that its cgroup id is deleted. so any attached links
-	// will automatically die
+	pa, ok := e.pods[podUid]
+	if !ok {
+		return
+	}
+	// the kernel detaches the programs with the cgroup, but the link fds are
+	// ours and outlive it until they are closed
+	for _, links := range pa.cgs {
+		e.closeLinks(podUid, links)
+	}
 	delete(e.pods, podUid)
+}
+
+// attachBoth attaches the egress and protocol programs to one cgroup, returning
+// every link created so a caller that fails partway can close them together.
+// Both programs live on the same cgroup hook, so a pod is either covered by
+// both or by neither.
+func attachBoth(f egressFilter, pf protoFilter, cgPath string) ([]link.Link, error) {
+	links, err := f.Attach(cgPath)
+	if err != nil {
+		return links, err
+	}
+	pl, err := pf.Attach(cgPath)
+	if err != nil {
+		return links, err
+	}
+	return append(links, pl), nil
 }
