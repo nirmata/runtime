@@ -1,0 +1,39 @@
+# An untrusted agent is not blocked; every LLM provider name it resolves is
+# reported. Naming the providers in deny rather than putting "*" there keeps
+# the rest of the workload's DNS traffic out of the report.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: untrusted-agent-llm-egress
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      nirmata.io/agent: untrusted
+  behaviors:
+  - dns:
+      deny:
+        values:
+        # A wildcard covers subdomains and not the apex, so a provider whose
+        # apex serves the API is listed twice.
+        - "*.openai.com"
+        - "*.anthropic.com"
+        - "*.openai.azure.com"
+        - "*.googleapis.com"
+        - "*.mistral.ai"
+        - "*.cohere.ai"
+        - "*.x.ai"
+        - "*.deepseek.com"
+        - "*.groq.com"
+        - "*.perplexity.ai"
+        - "*.together.ai"
+        - "*.replicate.com"
+        - "*.huggingface.co"
+        - openai.com
+        - anthropic.com
+        # Bedrock puts the region in the middle of the name, and a wildcard is
+        # only the leftmost label, so each region is its own value. Adding a
+        # region the workload uses is what extends this.
+        - bedrock-runtime.us-east-1.amazonaws.com
+        - bedrock-runtime.us-west-2.amazonaws.com
+        - bedrock-runtime.eu-central-1.amazonaws.com

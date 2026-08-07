@@ -1,0 +1,103 @@
+# Every network-side feature in one policy. Each field is annotated with what it
+# accepts; the README explains why they are combined this way and what to expect
+# when you run it.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+# RuntimePolicy is cluster scoped: no metadata.namespace, and a Service it names
+# carries its own namespace in the DNS name.
+metadata:
+  name: egress-baseline-combined
+spec:
+  # monitor | enforce. Optional with no default -- a policy that omits it
+  # neither enforces nor reports. monitor attaches the same programs with empty
+  # maps and reports what the workload touched; enforce blocks.
+  mode: enforce
+  # How often matched pods are re-evaluated. Required only to pick up changes
+  # behind a `resource` or `http` expression -- Service names and domains are
+  # driven by informers and the DNS snooper, not by this interval.
+  evaluationInterval: 30s
+  # Standard LabelSelector (matchLabels and/or matchExpressions). An empty
+  # selector, {}, is every pod on the node; omitting the field entirely is no
+  # pods, and the policy then enforces nothing while still reporting Applied.
+  # Relabelling a pod re-evaluates the match.
+  podSelector:
+    matchLabels:
+      app: combined-client
+  # Named CEL expressions, referenced as variables.<name> from any expression
+  # below. Each must be statically typed: a rule expression has to evaluate to
+  # list(string), so a function returning dyn (http.get(...).body,
+  # json.unmarshal(...)) needs an explicit .map(x, string(x)) coercion.
+  variables:
+  - name: approvedAppliances
+    expression: '["192.0.2.10"]'
+  # One entry per behavior, and each entry sets exactly one of network, exec,
+  # open, protocol or dns. Setting two, or none, is rejected at admission by a
+  # CEL rule on the CRD. Behaviors evaluate independently and AND together: a connection
+  # must pass every behavior that applies to it.
+  behaviors:
+  # network: IPv4 destinations for egress.
+  - network:
+      # allow and deny each accept values and expression, unioned -- they are
+      # additive sources for one list, not alternatives.
+      allow:
+        # A value is one of:
+        #   192.0.2.10                  IPv4 literal
+        #   192.0.2.0/24                IPv4 CIDR, /24 or narrower (expanded to
+        #                               individual addresses; wider is rejected)
+        #   api.example.com             fully qualified domain name, matched
+        #                               against the question the pod asked
+        #   "*"                         the sentinel -- see deny below
+        # Not supported: IPv6 literals and CIDRs, wildcards like *.example.com
+        # (rejected at compile time, and the whole policy then enforces nothing).
+        values:
+        - combined-allowed.default.svc.cluster.local
+        # A cluster Service DNS name is resolved from the Service and
+        # EndpointSlice informers to the ClusterIP plus the ready endpoint
+        # addresses, not from the pod's DNS answers. It must be the full
+        # <name>.<namespace>.svc.cluster.local form: a shorter one is treated as
+        # an ordinary domain and never matches what the hook observes. A name
+        # whose Service is not in cache programs nothing and reports
+        # TargetsValid=False with reason UnresolvedServices.
+        - combined-gateway.default.svc.cluster.local
+        # The client resolves names, so its resolver has to stay reachable:
+        # under default deny a pod that cannot reach kube-dns resolves nothing,
+        # and the external domain above is never learned.
+        - kube-dns.kube-system.svc.cluster.local
+        # CEL returning list(string), unioned with values. Same value grammar.
+        expression: variables.approvedAppliances
+      deny:
+        # "*" is the default-deny sentinel: egress flips from
+        # allow-all-except-denied to deny-all-except-allowed. It is evaluated
+        # across every policy matching the pod -- one policy setting it is
+        # enough -- and the effective allow list is then the union of the allow
+        # entries of all matching policies.
+        values:
+        - "*"
+  # protocol: what a connection says, classified in the kernel from its first
+  # data segment. Independent of destination and port -- SSH on 443 is ssh.
+  - protocol:
+      allow:
+        # A value is one of:
+        #   ssh | tls | dns | http/1.1 | http/2 | quic
+        #   tls/<alpn>   e.g. tls/h2, tls/http/1.1, tls/dot -- matches the
+        #                client's first offered ALPN, byte-exact, 1-16 visible
+        #                ASCII characters; bare tls matches any ALPN
+        #   "*"          the default-deny sentinel, as above
+        # A token names what the classifier saw on the wire, not a security
+        # property: no tls/ prefix does not mean cleartext (ssh and quic are
+        # both encrypted). There is deliberately no grpc token -- gRPC over TLS
+        # is ALPN h2, and the header that would distinguish it is inside the
+        # encryption. "unclassified" is observation vocabulary only: findings
+        # and metrics report it, and ParseProtocolValue rejects it as a value,
+        # so a default deny is the only thing that covers unmatched traffic.
+        values:
+        - "http/1.1"
+        # Cleartext DNS over UDP, recognized by the query's shape rather than by
+        # port. The pod resolves the Service names in the network behavior, and
+        # a protocol default deny covers UDP too -- without this the pod cannot
+        # resolve, and the domain above is never learned. A resolver pinned to
+        # DNS-over-TLS would need "tls" or "tls/dot" instead.
+        - "dns"
+      deny:
+        values:
+        - "*"

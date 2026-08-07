@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: overlap-shared-backend
+  labels:
+    app: overlap-shared
+spec:
+  containers:
+  - name: server
+    image: nginx:1.27-alpine
+    ports:
+    - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: overlap-shared
+spec:
+  selector:
+    app: overlap-shared
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: overlap-single-backend
+  labels:
+    app: overlap-single
+spec:
+  containers:
+  - name: server
+    image: nginx:1.27-alpine
+    ports:
+    - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: overlap-single
+spec:
+  selector:
+    app: overlap-single
+  ports:
+  - port: 80
+    targetPort: 80

@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: combined-allowed-backend
+  labels:
+    app: combined-allowed
+spec:
+  containers:
+  - name: server
+    image: nginx:1.27-alpine
+    ports:
+    - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: combined-allowed
+spec:
+  selector:
+    app: combined-allowed
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: combined-gateway-backend
+  labels:
+    app: combined-gateway
+spec:
+  containers:
+  - name: server
+    image: nginx:1.27-alpine
+    ports:
+    - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: combined-gateway
+spec:
+  selector:
+    app: combined-gateway
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: combined-denied-backend
+  labels:
+    app: combined-denied
+spec:
+  containers:
+  - name: server
+    image: nginx:1.27-alpine
+    ports:
+    - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: combined-denied
+spec:
+  selector:
+    app: combined-denied
+  ports:
+  - port: 80
+    targetPort: 80

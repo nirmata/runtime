@@ -1,0 +1,17 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: protocol-default-deny
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: protocol-client
+  behaviors:
+  - protocol:
+      allow:
+        values:
+        - "http/1.1"
+      deny:
+        values:
+        - "*"
