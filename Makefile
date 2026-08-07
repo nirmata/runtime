@@ -218,7 +218,21 @@ kind-install-manifests:
 	else \
 		echo "Skipping explicit default policy apply: templates/default-policies.yaml not present"; \
 	fi
-	kubectl -n kyverno-runtime rollout restart daemonset/kyverno-runtime-kyverno-runtime
+# `helm --wait` and `rollout status` both read a fresh daemonset as rolled out
+# while .status.desiredNumberScheduled is still 0, so the install would hand the
+# suites a cluster with no daemon on it. Poll for a scheduled pod first.
+	@i=0; \
+	while [ "$$i" -lt 60 ]; do \
+		n=$$(kubectl -n kyverno-runtime get daemonset/kyverno-runtime-kyverno-runtime -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null); \
+		[ -n "$$n" ] && [ "$$n" -gt 0 ] 2>/dev/null && break; \
+		i=$$((i + 1)); \
+		sleep 1; \
+	done; \
+	if [ "$$i" -ge 60 ]; then \
+		echo "ERROR: daemonset/kyverno-runtime-kyverno-runtime scheduled onto no node within 60s."; \
+		kubectl -n kyverno-runtime get daemonset,nodes || true; \
+		exit 1; \
+	fi
 	kubectl -n kyverno-runtime rollout status daemonset/kyverno-runtime-kyverno-runtime --timeout=180s
 	@if [ -f ./charts/kyverno-runtime/templates/default-policies.yaml ]; then \
 		echo "Verifying default policies are installed..."; \
@@ -245,6 +259,24 @@ kind-install-manifests:
 # LinuxKit VM does qualify, so this is the target to run on a developer machine.
 test-e2e:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
+
+# Every suite a hosted runner can satisfy: all of test/e2e except dispatch-only,
+# which needs BPF-LSM. The list is globbed rather than written out, so a new
+# suite joins this lane by existing.
+#
+# chainsaw --include-test-regex / --exclude-test-regex cannot express this:
+# neither matches the test name, so passing one silently runs the wrong set.
+# Passing the accepted directories is the only reliable selector.
+E2E_HOSTED_DIRS := $(filter-out test/e2e/dispatch-only/%, \
+	$(sort $(dir $(wildcard test/e2e/*/chainsaw-test.yaml test/e2e/*/*/chainsaw-test.yaml))))
+
+# The suites share a daemon and its BPF maps but not a namespace -- chainsaw
+# gives each test its own -- so concurrency here also exercises the per-address
+# refcounting that a serial lane never contended.
+test-e2e-hosted:
+	@test -n "$(E2E_HOSTED_DIRS)" || { echo "ERROR: no suites found under test/e2e/; the glob in E2E_HOSTED_DIRS is stale."; exit 1; }
+	chainsaw test --config test/e2e/.chainsaw.yaml --parallel 6 \
+		$(foreach d,$(E2E_HOSTED_DIRS),--test-dir $(d))
 
 # Install gate only: image builds, chart installs, daemonset Ready, policies
 # accepted. Asserts nothing about eBPF -- see test/e2e/install-gate.
@@ -333,4 +365,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-hosted test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

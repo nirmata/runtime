@@ -78,6 +78,55 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # setup-go's cache is keyed on go.sum alone and is only written on a key
+      # miss, so it never carries entries for source that changed since go.sum
+      # last did -- which is every ordinary PR. Rotate on sha, fall back to the
+      # newest cache for this go.sum.
+      - name: Restore the build cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cache/go-build
+          key: unit-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            unit-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            unit-${{ runner.os }}-
+
+      - name: Build
+        run: go build ./...
+
+      # -race is the point of running the unit suites on Linux: the managers,
+      # collector and status writer are all concurrent.
+      - name: Unit tests
+        run: make test-unit
+
+      # Saved on failure too: a post step is skipped when the job fails, which
+      # would leave the next run compiling cold exactly while someone iterates
+      # on a red suite.
+      - name: Save the build cache
+        if: always()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cache/go-build
+          key: unit-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+
+  # ---------------------------------------------------------------- ASSERTION
+  lint:
+    # Separate from "Build & Unit Test" because nothing here needs the build and
+    # nothing there needs the lint: run concurrently, the slower of the two sets
+    # the PR's wall clock instead of their sum.
+    name: "Assert: format, lint and vet"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Set up Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -100,16 +149,8 @@ jobs:
       - name: markdownlint
         run: npx -y markdownlint-cli2 "**/*.md" "#vendor" "#bin"
 
-      - name: Build
-        run: go build ./...
-
       - name: Vet
         run: go vet ./...
-
-      # -race is the point of running the unit suites on Linux: the managers,
-      # collector and status writer are all concurrent.
-      - name: Unit tests
-        run: make test-unit
 
   # -------------------------------------------------------------------- GATE
   helm:
@@ -254,8 +295,7 @@ jobs:
   e2e-egress:
     name: "Assert: egress and protocol allow/deny enforcement on kind (Linux)"
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    needs: [unit]
+    timeout-minutes: 25
     env:
       DOCKER_CONFIG: /tmp/.docker
     steps:
@@ -270,6 +310,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # ko builds with CGO_ENABLED=0 (see .ko.yaml), which shares no build cache
+      # entries with the cgo-enabled `go build` and `go test -race` in the unit
+      # job. setup-go's cache is keyed on go.sum alone and is only written on a
+      # key miss, so it never picks these up. Rotate on sha and fall back to the
+      # newest cache for this go.sum.
+      - name: Restore the ko build cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cache/go-build
+          key: ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            ko-build-${{ runner.os }}-
+
       - name: Set up ko
         uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
         with:
@@ -280,6 +334,19 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Resolve the image tag
+        run: echo "IMAGE_TAG=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+
+      # Started before the cluster so the image compiles while kind boots: the
+      # two are the largest steps in this job and neither needs the other. The
+      # exit code lands in a file because the build outlives the shell that
+      # spawned it, so no later step can `wait` on it.
+      - name: Start the image build
+        run: |
+          rm -f /tmp/ko-build.status
+          nohup bash -c 'make ko-build; echo $? > /tmp/ko-build.status' \
+            > /tmp/ko-build.log 2>&1 &
 
       - name: Set up kind
         uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
@@ -317,39 +384,39 @@ jobs:
           echo "cgroup fs: $fs"
           [ "$fs" = "cgroup2fs" ] || { echo "cgroup v2 unified hierarchy required for egress attach"; exit 1; }
 
-      # Build, load into kind, install the chart, wait for rollout. This step is
-      # a GATE: it proves install works and nothing about enforcement.
-      - name: Build image and install the chart into kind (gate)
-        run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
+      - name: Wait for the image build
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 600); do
+            [ -f /tmp/ko-build.status ] && break
+            sleep 1
+          done
+          cat /tmp/ko-build.log
+          rc=$(cat /tmp/ko-build.status 2>/dev/null || echo "timeout")
+          [ "$rc" = "0" ] || { echo "ko build failed: $rc"; exit 1; }
 
-      - name: Install gate assertions (daemonset Ready, no crash loop)
-        run: make test-e2e-gate
+      # Saved here rather than in a post step: a post step does not run when the
+      # job fails, so a red suite would leave the next run to compile cold --
+      # slowest exactly while someone is iterating on a failure.
+      - name: Save the ko build cache
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cache/go-build
+          key: ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
-      # The real assertion: DEFAULT_DENY with a single allow-listed pod IP. The
-      # allowed target must stay reachable AND the denied one must not -- a
-      # one-sided test would also pass a program that drops everything.
-      - name: Egress enforcement behavior
-        run: make test-e2e-egress
+      # Load into kind, install the chart, wait for rollout. This step is a
+      # GATE: it proves install works and nothing about enforcement.
+      - name: Install the chart into kind (gate)
+        run: make kind-install-prebuilt
 
-      # Two policies over one pod, and a pod that starts after the policies
-      # exist: the only coverage of per-address refcounting and of the
-      # pod-creation programming path.
-      - name: Egress overlapping policies and pod-first ordering
-        run: make test-e2e-overlap
-
-      - name: Egress targets named as in-cluster Services
-        run: make test-e2e-svcref
-
-      # Needs cluster DNS reachable from the client, which the suite allows by
-      # reference alongside the domain under test.
-      - name: Egress targets named as domains
-        run: make test-e2e-dns
-
-      # Same kernel requirements as the egress assertion, and the same two-sided
-      # shape: the allowed protocol must stay reachable while the denied one is
-      # dropped on the same port.
-      - name: Protocol enforcement behavior
-        run: make test-e2e-protocol
+      # Every suite a hosted runner can satisfy, concurrently against the one
+      # cluster: the install gate, egress allow/deny on pod IPs, Service and
+      # domain targets, overlapping policies with pod-first ordering, and the
+      # application-protocol classifier. Each is two-sided -- the allowed target
+      # or protocol must stay reachable while the denied one is dropped -- since
+      # a one-sided test also passes against a program that drops everything.
+      - name: Egress, protocol and install assertions
+        run: make test-e2e-hosted
 
       - name: Dump cluster state on failure
         if: failure()

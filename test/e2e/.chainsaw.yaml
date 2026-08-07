@@ -37,3 +37,7 @@ spec:
     cleanup: 90s
     exec: 120s
   failFast: false
+  # Every fixture in these suites is a sleep loop or a one-shot server with
+  # nothing to drain, so the default 30s grace period is wall clock and nothing
+  # else -- and it is spent per pod, after the assertions have already passed.
+  forceTerminationGracePeriod: 1s
