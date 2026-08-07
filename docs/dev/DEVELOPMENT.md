@@ -34,11 +34,13 @@ macOS; the kernel-bound tests skip themselves there.
 | `make test` | Alias for `test-unit` |
 | `make test-unit` | `go test -race ./...` |
 | `make test-chainsaw` | CRD schema and admission conformance; needs a cluster with the CRDs applied, no daemon |
-| `make test-e2e` | Full Chainsaw e2e suite, minus the LSM tests |
+| `make test-e2e` | Full Chainsaw e2e suite, LSM tests included; needs a host booted with `lsm=...,bpf` |
 | `make test-e2e-gate` | Install gate only: image builds, chart installs, DaemonSet Ready, policies accepted |
 | `make test-e2e-egress` | Egress allow/deny enforcement behavior |
+| `make test-e2e-protocol` | Application-protocol allow/deny enforcement behavior |
 | `make test-e2e-lsm` | BPF-LSM `open`/`exec` enforcement behavior |
-| `make test-bpf-smoke` | Program load and verifier acceptance; needs Linux and root |
+| `make test-bpf-verify` | Loads every committed BPF object and prints the verifier log on rejection; needs Linux and root |
+| `make test-bpf-smoke` | Map round trips and LSM attach against a live kernel; needs Linux and root |
 | `make smoke-quickstart` | Alias for `test-e2e-gate` |
 | `make premerge-smoke` | `build` + `kind-install` + `smoke-quickstart` |
 | `make run` | `go run ./cmd/kyverno-runtime` |
@@ -76,6 +78,7 @@ make kind             # first time: create the cluster and install
 make kind-install     # subsequent iterations: rebuild, reload, upgrade
 make smoke-quickstart # install gate
 make test-e2e-egress  # egress enforcement behavior
+make test-e2e-protocol # protocol enforcement behavior
 ```
 
 `make kind-install` rebuilds and reloads the image every time. Running only the Chainsaw suites
@@ -100,13 +103,17 @@ cluster shape it expects is `test/e2e/kind-config.yaml`.
 | --- | --- | --- |
 | `install-gate/` | Image builds, chart installs, DaemonSet Ready, policies accepted. Asserts nothing about eBPF. | yes |
 | `egress-enforce/` | Default-deny with a single allow-listed pod IP: the allowed target stays reachable **and** the denied one does not. | yes |
-| `dispatch-only/lsm-enforce/` | `open` and `exec` deny/allow through the BPF-LSM hooks. | no, excluded by `--exclude-test-regex '^lsm-'` |
-| `bpfsmoke_test.go` | Go test that loads the BPF programs and programs their maps. Skips off-Linux and without root. | no, run it with `make test-bpf-smoke` |
+| `dispatch-only/lsm-enforce/` | `open` and `exec` deny/allow through the BPF-LSM hooks. | yes, and it fails loudly on a host without BPF-LSM |
+| `bpfverify_test.go` | Go test that loads every committed BPF object into the kernel. Skips off-Linux and without root. | no, run it with `make test-bpf-verify` |
+| `bpfsmoke_test.go` | Go test that programs the maps and attaches the LSM programs. Skips off-Linux and without root. | no, run it with `make test-bpf-smoke` |
 
 File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf`
 must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock
-distributions and hosted CI runners are typically not booted with it. That is why
-`dispatch-only/` is excluded from `make test-e2e` and lives behind `make test-e2e-lsm`.
+distributions are typically not booted with it, and GitHub-hosted `ubuntu-latest` reports
+`lockdown,capability,landlock,yama,apparmor,ima,evm` — no `bpf`. That is why no CI job runs
+`make test-e2e`: hosted lanes run the narrower `make test-e2e-gate`, `make test-e2e-egress` and
+`make test-e2e-protocol` instead. Docker Desktop's LinuxKit VM does boot with BPF-LSM, so
+`make test-e2e` runs the whole suite on a developer machine.
 
 Network egress enforcement and observation require only a cgroup v2 host and BPF support; a
 stock kind cluster on a Linux host qualifies.
@@ -140,6 +147,18 @@ and CI checks it.
   container runs as the invoking user so nothing ends up root-owned. `make verify-bpf` fails on
   any byte difference. Never hand-edit `*_bpfel.go`, `*_bpfeb.go`, or `.o` files — add
   `_cprog/*.c` with a `go:generate` line instead.
+  - The kernel type definitions live in one shared, hand-maintained
+    `pkg/bpf/include/vmlinux.h`, pulled in via `-I../include`. It is committed, never generated
+    or gitignored, and stays minimal: add only the types and fields your program reads (CO-RE
+    relocations tolerate the missing rest).
+  - Editing that shared header changes the size of committed `.o` files for programs that did
+    not change, because clang emits BTF only for the types a program references. Before pushing
+    such a diff, prove it is BTF-only: `llvm-objdump -d` the old and new objects (the builder
+    image ships `llvm-objdump-19`) and state in the PR whether the instruction stream changed
+    or only BTF.
+  - Every new BPF program must be registered in the verifier lane: add an entry with an
+    instruction budget to the table in `test/e2e/bpfverify_test.go`, which `make test-bpf-verify`
+    and the `BPF verifier smoke` CI job load-test on a real kernel.
 - **Typed client** (`pkg/client/`): `make generate-client`, `make generate-listers`,
   `make generate-informers`.
 
@@ -158,9 +177,9 @@ Runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
 | Helm and CRD drift | gate | `make helm-verify`, `make verify-crds` |
 | BPF object drift | gate | `make verify-bpf` |
 | CRD conformance | assertion | `make test-chainsaw` on a bare kind cluster |
-| BPF verifier smoke | assertion | Kernel preconditions, then `make test-bpf-smoke` as root |
-| Egress enforcement | assertion | `make kind-install`, `make test-e2e-gate`, `make test-e2e-egress` |
-| LSM enforcement | assertion | `workflow_dispatch` only: `make test-bpf-smoke` and `make test-e2e-lsm` on a host booted with `lsm=...,bpf` |
+| BPF verifier smoke | assertion | Kernel preconditions, then `make test-bpf-verify` and `make test-bpf-smoke` as root |
+| Egress and protocol enforcement | assertion | `make kind-install`, `make test-e2e-gate`, `make test-e2e-egress`, `make test-e2e-protocol` |
+| LSM enforcement | assertion | `workflow_dispatch` only, with `lsm_runner` set to a runner booted with `lsm=...,bpf`: `make test-bpf-verify`, `make test-bpf-smoke`, `make test-e2e-lsm` |
 
 `Build & Unit Test` is the required status check in the repository ruleset for `main`, matched by
 job name. Renaming it leaves pull requests permanently unmergeable with no failure anywhere to

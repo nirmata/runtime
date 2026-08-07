@@ -15,9 +15,11 @@ import (
 type Kind string
 
 const (
-	KindNet  Kind = "net"
-	KindExec Kind = "exec"
-	KindOpen Kind = "open"
+	KindNet      Kind = "net"
+	KindDNS      Kind = "dns"
+	KindExec     Kind = "exec"
+	KindOpen     Kind = "open"
+	KindProtocol Kind = "protocol"
 )
 
 // KernelDecision mirrors the DECISION_ALLOW / DECISION_DENY defines in the C
@@ -49,9 +51,11 @@ type Event struct {
 	// in monitor mode. Written by pkg/monitor.
 	WouldDeny bool `json:"wouldDeny,omitempty"`
 
-	Net  *NetFacts  `json:"net,omitempty"`
-	Exec *ExecFacts `json:"exec,omitempty"`
-	Open *OpenFacts `json:"open,omitempty"`
+	Net      *NetFacts      `json:"net,omitempty"`
+	DNS      *DNSFacts      `json:"dns,omitempty"`
+	Exec     *ExecFacts     `json:"exec,omitempty"`
+	Open     *OpenFacts     `json:"open,omitempty"`
+	Protocol *ProtocolFacts `json:"protocol,omitempty"`
 
 	// Pod is filled by pkg/attribution. Sources may pre-fill Pod.UID as a
 	// hint when they know the pod but not the cgroup (egress poll source).
@@ -75,14 +79,37 @@ type PodIdentity struct {
 // NetFacts describes an egress connection attempt.
 type NetFacts struct {
 	DestIP netip.Addr `json:"destIP"`
+	// Domain is the DNS name DestIP was resolved from, empty when the kernel
+	// never saw the address in a snooped answer.
+	Domain string `json:"domain,omitempty"`
+}
+
+// DNSFacts describes an observed DNS question. The name is what the workload
+// asked to resolve, which is not proof that it connected: an answer can be
+// cached or shared, and a workload dialling a bare address asks nothing.
+type DNSFacts struct {
+	QName string `json:"qname"`
 }
 
 // ExecFacts describes a process execution.
 type ExecFacts struct {
 	Filename string `json:"filename"`
+
+	// Argv is empty for sources that observe the exec without its arguments.
+	// It is attacker-controlled text and can carry credentials passed as
+	// flags, so it must not reach a Report without going through the
+	// reporter's redaction.
+	Argv []string `json:"argv,omitempty"`
 }
 
 // OpenFacts describes a file open.
 type OpenFacts struct {
 	Path string `json:"path"`
+}
+
+// ProtocolFacts describes the application protocol classified from the first
+// data segment of an egress flow. ALPN is non-empty only for TLS.
+type ProtocolFacts struct {
+	Protocol string `json:"protocol"`
+	ALPN     string `json:"alpn,omitempty"`
 }

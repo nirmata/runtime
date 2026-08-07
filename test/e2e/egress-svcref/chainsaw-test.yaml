@@ -1,0 +1,286 @@
+# E2E behavioral assertion -- egress enforcement driven by a cluster Service DNS
+# name.
+#
+# This is a real assertion, not a gate: it proves a policy that names an
+# in-cluster Service instead of an address ends up programmed into the cgroup
+# egress maps, and that the programmed set follows the Service's endpoints.
+#
+# Both directions are asserted deliberately. A test that only checks "the
+# named Service is reachable" would also pass against a program that allows
+# everything, and one that only checks "the unnamed Service is blocked"
+# would pass against a broken cluster network. So the same client pod is used
+# throughout:
+#   1. before any policy          -> both Services reachable   (baseline)
+#   2. after default-deny + name  -> Service A reachable        (not over-blocking)
+#   3. after default-deny + name  -> Service B blocked          (enforcement works)
+#   4. after scaling A's backends -> the new backend reachable  (re-resolution)
+#   5. after scaling back down    -> the gone backend blocked   (re-resolution prunes)
+#
+# The client connects by ClusterIP and by backend pod IP, never by DNS name:
+# under default-deny the client cannot reach cluster DNS, and a name lookup
+# failure is indistinguishable from a blocked connection.
+#
+# Kernel requirements: cgroup v2 + BPF (CAP_BPF). BPF-LSM is not required.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: egress-svcref
+spec:
+  steps:
+  - name: start-two-backing-services-and-the-client
+    try:
+    - apply:
+        file: backends.yaml
+    - apply:
+        file: client.yaml
+    - assert:
+        file: backends-ready.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: svcref-client
+          status:
+            phase: Running
+
+  - name: baseline-client-reaches-both-services-without-a-policy
+    # Establishes the baseline the enforcement assertions depend on. If this
+    # fails, the cluster network is broken and "blocked" below would be
+    # meaningless.
+    try:
+    - script:
+        content: |
+          set -eu
+          a=$(kubectl -n "$NAMESPACE" get svc svcref-a -o jsonpath='{.spec.clusterIP}')
+          b=$(kubectl -n "$NAMESPACE" get svc svcref-b -o jsonpath='{.spec.clusterIP}')
+          test -n "$a" && test -n "$b" && test "$a" != "$b"
+          echo "svcref-a=$a svcref-b=$b"
+
+          for ip in "$a" "$b"; do
+            ok=0
+            for _ in $(seq 1 15); do
+              if kubectl -n "$NAMESPACE" exec svcref-client -- \
+                   wget -q -T 3 -O /dev/null "http://${ip}:8080/" 2>/dev/null; then
+                ok=1; break
+              fi
+              sleep 2
+            done
+            [ "$ok" -eq 1 ] || { echo "FAIL: baseline connectivity to ${ip} is broken (no policy applied yet)"; exit 1; }
+          done
+          echo "OK: baseline -- both Services reachable"
+
+  - name: apply-default-deny-allowing-only-service-a
+    try:
+    - script:
+        content: |
+          set -eu
+          sed "s/TEST_NAMESPACE/${NAMESPACE}/" policy.tmpl.yaml | tee /tmp/e2e-egress-svcref-policy.yaml
+          kubectl apply -f /tmp/e2e-egress-svcref-policy.yaml
+    # The name must be reported as programmable before any "blocked"
+    # assertion is trusted: a rejected or unresolved target also produces
+    # "blocked", which would pass this test for the wrong reason.
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-egress-svcref
+          spec:
+            mode: enforce
+          status:
+            (conditions[?type == 'TargetsValid'].status | [0]): "True"
+            (conditions[?type == 'TargetsValid'].reason | [0]): AllTargetsSupported
+
+  - name: enforced-client-reaches-service-a-and-not-service-b
+    try:
+    - script:
+        content: |
+          set -eu
+          a=$(kubectl -n "$NAMESPACE" get svc svcref-a -o jsonpath='{.spec.clusterIP}')
+          b=$(kubectl -n "$NAMESPACE" get svc svcref-b -o jsonpath='{.spec.clusterIP}')
+          backendA=$(kubectl -n "$NAMESPACE" get pod -l app=svcref-a -o jsonpath='{.items[0].status.podIP}')
+          test -n "$backendA"
+
+          # The unnamed Service must become unreachable within a bounded
+          # window. Poll rather than sleep blindly: the daemon programs maps on
+          # its own schedule.
+          blocked=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec svcref-client -- \
+                 wget -q -T 3 -O /dev/null "http://${b}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          if [ "$blocked" -ne 1 ]; then
+            echo "FAIL: svcref-b (${b}) still reachable -- the Service name did not take effect"
+            exit 1
+          fi
+          echo "OK: svcref-b (${b}) blocked"
+
+          # ...and the named Service must still be reachable under
+          # default-deny. An allow-list that blocks its own entries is worse
+          # than no policy, and this is what makes the assertion above
+          # meaningful.
+          if ! kubectl -n "$NAMESPACE" exec svcref-client -- \
+                 wget -q -T 5 -O /dev/null "http://${a}:8080/" 2>/dev/null; then
+            echo "FAIL: svcref-a (${a}) is unreachable under default-deny (over-blocking)"
+            exit 1
+          fi
+          echo "OK: svcref-a (${a}) still reachable by ClusterIP"
+
+          # Resolution covers the ready endpoint addresses as well as the
+          # ClusterIP, so the backend answers on its pod IP too.
+          if ! kubectl -n "$NAMESPACE" exec svcref-client -- \
+                 wget -q -T 5 -O /dev/null "http://${backendA}:8080/" 2>/dev/null; then
+            echo "FAIL: svcref-a backend ${backendA} is unreachable, so endpoint addresses were not programmed"
+            exit 1
+          fi
+          echo "OK: svcref-a backend ${backendA} reachable"
+
+          # Re-check the unnamed Service so a transient failure above
+          # cannot be mistaken for enforcement.
+          if kubectl -n "$NAMESPACE" exec svcref-client -- \
+               wget -q -T 3 -O /dev/null "http://${b}:8080/" 2>/dev/null; then
+            echo "FAIL: svcref-b (${b}) became reachable again"
+            exit 1
+          fi
+          echo "OK: enforcement stable"
+
+  - name: re-resolution-follows-the-services-endpoints
+    try:
+    - script:
+        content: |
+          set -eu
+          a=$(kubectl -n "$NAMESPACE" get svc svcref-a -o jsonpath='{.spec.clusterIP}')
+          b=$(kubectl -n "$NAMESPACE" get svc svcref-b -o jsonpath='{.spec.clusterIP}')
+          before=$(kubectl -n "$NAMESPACE" get pod -l app=svcref-a -o jsonpath='{.items[*].status.podIP}')
+          echo "svcref-a backends before scaling: $before"
+
+          kubectl -n "$NAMESPACE" scale deployment svcref-a --replicas=2
+          kubectl -n "$NAMESPACE" rollout status deployment svcref-a --timeout=120s
+
+          after=$(kubectl -n "$NAMESPACE" get pod -l app=svcref-a -o jsonpath='{.items[*].status.podIP}')
+          added=""
+          for ip in $after; do
+            case " $before " in
+              *" $ip "*) ;;
+              *) added="$ip" ;;
+            esac
+          done
+          [ -n "$added" ] || { echo "FAIL: scaling svcref-a produced no new backend IP (after: $after)"; exit 1; }
+          echo "new svcref-a backend: $added"
+
+          # The new address was never in the policy and never in the maps. It
+          # can only become reachable if the daemon saw the EndpointSlice change
+          # and re-programmed the Service's addresses.
+          ok=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec svcref-client -- \
+                 wget -q -T 3 -O /dev/null "http://${added}:8080/" 2>/dev/null; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: new svcref-a backend ${added} never became reachable -- no re-resolution"; exit 1; }
+          echo "OK: new svcref-a backend ${added} reachable after re-resolution"
+
+          # Control: re-resolution must not have opened the maps generally.
+          if kubectl -n "$NAMESPACE" exec svcref-client -- \
+               wget -q -T 3 -O /dev/null "http://${b}:8080/" 2>/dev/null; then
+            echo "FAIL: svcref-b (${b}) became reachable while re-resolving svcref-a"
+            exit 1
+          fi
+          echo "OK: svcref-b (${b}) still blocked"
+
+          kubectl -n "$NAMESPACE" scale deployment svcref-a --replicas=1
+
+          # Wait for the terminating pod to actually disappear, not just for the
+          # Deployment to report one available replica: a pod still shutting down
+          # is still listed, with its address.
+          for _ in $(seq 1 60); do
+            count=$(kubectl -n "$NAMESPACE" get pod -l app=svcref-a --no-headers | wc -l | tr -d ' ')
+            [ "$count" -eq 1 ] && break
+            sleep 2
+          done
+          remaining=$(kubectl -n "$NAMESPACE" get pod -l app=svcref-a -o jsonpath='{.items[*].status.podIP}')
+
+          # Which replica the scale-down removed is not ours to choose, so the
+          # removed address is derived from what is left rather than assumed.
+          removed=""
+          for ip in $after; do
+            case " $remaining " in
+              *" $ip "*) ;;
+              *) removed="$ip" ;;
+            esac
+          done
+          [ -n "$removed" ] || { echo "FAIL: scaling svcref-a down removed no backend IP (remaining: $remaining)"; exit 1; }
+          echo "removed svcref-a backend: $removed"
+
+          gone=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec svcref-client -- \
+                 wget -q -T 3 -O /dev/null "http://${removed}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              gone=1; break
+            fi
+          done
+          [ "$gone" -eq 1 ] || { echo "FAIL: removed svcref-a backend ${removed} is still reachable -- re-resolution does not prune"; exit 1; }
+          echo "OK: removed svcref-a backend ${removed} blocked"
+
+          if ! kubectl -n "$NAMESPACE" exec svcref-client -- \
+                 wget -q -T 5 -O /dev/null "http://${a}:8080/" 2>/dev/null; then
+            echo "FAIL: svcref-a (${a}) is unreachable after re-resolution (over-blocking)"
+            exit 1
+          fi
+          echo "OK: svcref-a (${a}) still reachable"
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=200 || true
+          kubectl -n "$NAMESPACE" get pods,svc,endpointslices -o wide || true
+          kubectl get runtimepolicy e2e-egress-svcref -o yaml || true
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-svcref
+
+  - name: unresolvable-service-name-is-reported-on-the-policy-status
+    try:
+    - script:
+        content: |
+          set -eu
+          sed "s/TEST_NAMESPACE/${NAMESPACE}/" policy-unresolved.tmpl.yaml | tee /tmp/e2e-egress-svcref-unresolved.yaml
+          kubectl apply -f /tmp/e2e-egress-svcref-unresolved.yaml
+    # A name the daemon cannot resolve must reach the policy's status rather
+    # than only programming nothing.
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-egress-svcref-unresolved
+          status:
+            (conditions[?type == 'TargetsValid'].status | [0]): "False"
+            (conditions[?type == 'TargetsValid'].reason | [0]): UnresolvedServices
+    - script:
+        content: |
+          set -eu
+          kubectl get runtimepolicy e2e-egress-svcref-unresolved \
+            -o jsonpath="{.status.conditions[?(@.type=='TargetsValid')]}{'\n'}"
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=200 || true
+          kubectl get runtimepolicy e2e-egress-svcref-unresolved -o yaml || true
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-svcref-unresolved

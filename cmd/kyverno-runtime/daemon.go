@@ -6,16 +6,20 @@ import (
 
 	v1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/attribution"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/dnsquery"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/exectrace"
 	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/kyverno-runtime/pkg/collector"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/controller"
+	"github.com/nirmata/kyverno-runtime/pkg/dnsmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/egressmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 	"github.com/nirmata/kyverno-runtime/pkg/lsmmgr"
 	"github.com/nirmata/kyverno-runtime/pkg/metrics"
 	"github.com/nirmata/kyverno-runtime/pkg/monitor"
 	"github.com/nirmata/kyverno-runtime/pkg/reporter"
+	"github.com/nirmata/kyverno-runtime/pkg/services"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
@@ -44,6 +48,7 @@ const (
 var (
 	logLevel             int
 	metricsAddr          string
+	clusterDomain        string
 	observeInterval      time.Duration
 	eventBufferSize      int
 	sourceRestartBackoff time.Duration
@@ -59,6 +64,8 @@ func init() {
 	daemonCmd.Flags().IntVar(&logLevel, "log-level", 0, "Verbosity level for debug logs (higher is more verbose).")
 	daemonCmd.Flags().StringVar(&metricsAddr, "metrics-addr", ":9090",
 		"Address the Prometheus /metrics endpoint binds to. Set to an empty string to disable it.")
+	daemonCmd.Flags().StringVar(&clusterDomain, "cluster-domain", "cluster.local",
+		"The cluster's DNS domain. A network target under it names an in-cluster Service; any other name is an external one.")
 	daemonCmd.Flags().DurationVar(&observeInterval, "observe-interval", defaultObserveInterval,
 		"How often the BPF observation maps are drained. Bounds monitor-mode detection latency.")
 	daemonCmd.Flags().IntVar(&eventBufferSize, "event-buffer-size", defaultEventBufferSize,
@@ -79,7 +86,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	logger := zap.New(zap.UseFlagOptions(&opts))
 	ctrl.SetLogger(logger)
 
-	logger.Info("starting kyverno-runtime daemon")
+	logger.Info("starting kyverno-runtime daemon", "clusterDomain", clusterDomain)
+
+	// the domain decides whether a network target is a Service or an external
+	// name, so it has to be in place before the first policy is compiled.
+	compiler.ClusterDomain = clusterDomain
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -121,7 +132,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	rpCompiler, err := compiler.NewCompiler(dclient)
+	resolver := services.NewResolver(k8sClient, logger.WithName("services"))
+
+	rpCompiler, err := compiler.NewCompiler(dclient, resolver)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy compiler")
 		os.Exit(1)
@@ -152,7 +165,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"))
 
 	em := egressmgr.NewEgressManager(logger, sw)
-	lsmm := lsmmgr.NewLsmManager(logger, sw)
+
+	// The exec tracer is optional: a kernel without the ring buffer or the
+	// sched_process_exec raw tracepoint still runs everything else. A nil
+	// source is skipped by AddSource and mirrors no cgroups.
+	var execSinks []lsmmgr.CgroupSink
+	execSrc, err := exectrace.New(logger.WithName("exectrace"), observeInterval)
+	if err != nil {
+		logger.Error(err, "exec tracing unavailable; argv will not be observed")
+		execSrc = nil
+	} else {
+		defer func() { _ = execSrc.Close() }()
+		execSinks = append(execSinks, execSrc)
+	}
+
+	lsmm := lsmmgr.NewLsmManager(logger, sw, execSinks...)
 
 	// mon evaluates observed events against monitor-mode policies and turns
 	// matches into findings.
@@ -168,15 +195,47 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
 	col.AddSource(collector.NewPollSource("egress-observe", observeInterval, em.CollectObservations))
 	col.AddSource(collector.NewPollSource("lsm-observe", observeInterval, lsmm.CollectObservations))
+	// A typed nil in the Source interface is not nil, so the check is here
+	// rather than left to AddSource.
+	if execSrc != nil {
+		col.AddSource(execSrc)
+	}
 	col.AddStage(attrIdx)
 	col.AddSink(mon)
 
-	// runtime policy informer
-	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler)
+	// DNS observation is best effort: a kernel that will not load the
+	// cgroup_skb program leaves every other behavior working.
+	if dnsObs, err := dnsquery.New(); err != nil {
+		logger.Error(err, "dns question observation disabled")
+	} else {
+		defer func() { _ = dnsObs.Close() }()
+		dm := dnsmgr.New(logger.WithName("dnsmgr"), dnsObs)
+		podHandlers = append(podHandlers, dm)
+		policyHandlers = append(policyHandlers, dm)
+		col.AddSource(dnsquery.NewSource(logger.WithName(dnsquery.SourceName), dnsObs,
+			dnsquery.WithStatsInterval(observeInterval),
+			dnsquery.WithLossFunc(func(reason string, delta uint64) {
+				m.EventsDropped.WithLabelValues(dnsquery.SourceName, reason).Add(float64(delta))
+			})))
+	}
+
+	// runtime policy informer. Constructing it registers its service change
+	// handler on the resolver, which has to happen before the resolver starts.
+	rpInformer, err := controller.NewRuntimePolicyMgr(cfg, policyHandlers, c, rpCompiler, resolver, sw)
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy informer")
 		os.Exit(1)
 	}
+
+	// a policy compiled from an unsynced service cache resolves its references to
+	// nothing, so a default deny would black-hole the egress of every pod it
+	// matches: the resolver syncs before the policy informer programs anything.
+	g.Go(func() error { return resolver.Start(ctx) })
+	if !cache.WaitForCacheSync(ctx.Done(), resolver.HasSynced) {
+		logger.Info("service resolver caches did not sync")
+		os.Exit(1)
+	}
+
 	g.Go(func() error {
 		for {
 			if err := rpInformer.Start(ctx); err != nil {

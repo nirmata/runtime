@@ -48,7 +48,9 @@ const (
 	propServiceAccount = "serviceAccount"
 	propDestIP         = "destIP"
 	propDestHost       = "destHost"
+	propDNSName        = "dnsName"
 	propComm           = "comm"
+	propArgv           = "argv"
 )
 
 // pending is one deduplicated finding awaiting the next flush.
@@ -108,8 +110,12 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 		put(propDestIP, f.Net.DestIP)
 		put(propDestHost, f.Net.DestHost)
 	}
+	if f.DNS != nil {
+		put(propDNSName, f.DNS.QName)
+	}
 	if f.Process != nil {
 		put(propComm, f.Process.Comm)
+		put(propArgv, f.Process.Argv)
 	}
 
 	return openreportsv1alpha1.ReportResult{

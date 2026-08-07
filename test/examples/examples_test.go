@@ -48,6 +48,18 @@ type manifest struct {
 	body []byte
 }
 
+// These manifests are compiled, never evaluated, so no Service value is ever
+// looked up.
+type resolveNothing struct{}
+
+func (resolveNothing) ResolveService(namespace, name string) ([]string, bool) {
+	return nil, false
+}
+
+func (resolveNothing) ResolveEndpoint(namespace, service, hostname string) ([]string, bool) {
+	return nil, false
+}
+
 func TestExampleAndDocumentedPoliciesAreValid(t *testing.T) {
 	root := repoRoot(t)
 
@@ -63,7 +75,7 @@ func TestExampleAndDocumentedPoliciesAreValid(t *testing.T) {
 	t.Logf("validating %d RuntimePolicy manifests: %d from examples/, %d from markdown fences",
 		len(fromExamples)+len(fromMarkdown), len(fromExamples), len(fromMarkdown))
 
-	c, err := compiler.NewCompiler(nil)
+	c, err := compiler.NewCompiler(nil, resolveNothing{})
 	if err != nil {
 		t.Fatalf("compiler.NewCompiler: %v", err)
 	}
@@ -86,8 +98,14 @@ func TestExampleAndDocumentedPoliciesAreValid(t *testing.T) {
 				if b.Open != nil {
 					n, kinds = n+1, append(kinds, "open")
 				}
+				if b.Protocol != nil {
+					n, kinds = n+1, append(kinds, "protocol")
+				}
+				if b.DNS != nil {
+					n, kinds = n+1, append(kinds, "dns")
+				}
 				if n != 1 {
-					t.Errorf("spec.behaviors[%d]: got %d of network/exec/open (%v), want exactly one; the CRD rejects anything else", i, n, kinds)
+					t.Errorf("spec.behaviors[%d]: got %d of network/exec/open/protocol/dns (%v), want exactly one; the CRD rejects anything else", i, n, kinds)
 				}
 			}
 			if rp.Spec.Mode == nil {

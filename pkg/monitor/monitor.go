@@ -19,9 +19,11 @@ import (
 
 // Behavior names emitted on findings; they match reporter.Finding.Behavior.
 const (
-	BehaviorNetwork = "network"
-	BehaviorOpen    = "open"
-	BehaviorExec    = "exec"
+	BehaviorNetwork  = "network"
+	BehaviorOpen     = "open"
+	BehaviorExec     = "exec"
+	BehaviorProtocol = "protocol"
+	BehaviorDNS      = "dns"
 )
 
 // sinkName is the runtimeevent.Sink name, also used as the metric source label.
@@ -53,11 +55,12 @@ type trackedPolicy struct {
 	// attributes the kernel's actual denies.
 	mode     string
 	selector labels.Selector
-	// net, open and exec are nil when the policy lists nothing for that
-	// behavior.
-	net  *netBehavior
-	open *pathBehavior
-	exec *pathBehavior
+	// each is nil when the policy lists nothing for that behavior.
+	net      *netBehavior
+	open     *pathBehavior
+	exec     *pathBehavior
+	protocol *protoBehavior
+	dns      *nameBehavior
 }
 
 // Monitor implements events.RuntimePolicyEventHandler (policy tracking) and
@@ -124,9 +127,11 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 		net:      compileNetBehavior(rp.IPs),
 		open:     compilePathBehavior(rp.Open),
 		exec:     compilePathBehavior(rp.Exec),
+		protocol: compileProtocolBehavior(rp.Protocols),
+		dns:      compileNameBehavior(rp.DNS),
 	}
-	if tp.net == nil && tp.open == nil && tp.exec == nil {
-		m.untrack(rp.UID, "policy has no network, open or exec entries")
+	if tp.net == nil && tp.open == nil && tp.exec == nil && tp.protocol == nil && tp.dns == nil {
+		m.untrack(rp.UID, "policy has no network, open, exec, protocol or dns entries")
 		return nil
 	}
 	if tp.selector == nil {
@@ -141,7 +146,8 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 	m.mu.Unlock()
 
 	m.log.V(2).Info("tracking policy", "policy", tp.name, "uid", tp.uid, "mode", tp.mode,
-		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil)
+		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil,
+		"protocol", tp.protocol != nil, "dns", tp.dns != nil)
 	return nil
 }
 
@@ -219,6 +225,14 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 		if !d.violation {
 			continue
 		}
+		if behavior == BehaviorDNS {
+			// A dns behavior only ever observes, so neither the kernel-deny
+			// attribution nor the monitor-mode counterfactual applies to it:
+			// there is no enforcing form of this policy that would have blocked
+			// the question.
+			m.record(tp, behavior, target, d, ev, false)
+			continue
+		}
 		switch tp.mode {
 		case compiler.ModeMonitor:
 			// The counterfactual, independent of KernelDenied: an enforcing
@@ -255,11 +269,15 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 func (tp *trackedPolicy) eval(behavior string, ev runtimeevent.Event) decision {
 	switch behavior {
 	case BehaviorNetwork:
-		return tp.net.eval(ev.Net.DestIP)
+		return tp.net.eval(ev.Net.DestIP, ev.Net.Domain)
 	case BehaviorOpen:
 		return tp.open.eval(ev.Open.Path)
 	case BehaviorExec:
 		return tp.exec.eval(ev.Exec.Filename)
+	case BehaviorProtocol:
+		return tp.protocol.eval(ev.Protocol.Protocol, ev.Protocol.ALPN)
+	case BehaviorDNS:
+		return tp.dns.eval(ev.DNS.QName)
 	}
 	return decision{}
 }
@@ -287,12 +305,18 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 		return
 	}
 
+	// A dns finding is advisory: nothing was blocked and nothing would have
+	// been, so it warns rather than failing the workload.
+	res := reporter.ResultFail
+	if behavior == BehaviorDNS {
+		res = reporter.ResultWarn
+	}
 	f := reporter.Finding{
 		PolicyName: tp.name,
 		PolicyUID:  tp.uid,
 		Behavior:   behavior,
 		Severity:   reporter.DefaultSeverity,
-		Result:     reporter.ResultFail,
+		Result:     res,
 		Enforced:   enforced,
 		Message:    message(tp.name, behavior, target, d, ev.Count, enforced),
 		Pod:        ev.Pod,
@@ -300,9 +324,11 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 	}
 	switch behavior {
 	case BehaviorNetwork:
-		f.Net = &reporter.NetSummary{DestIP: ev.Net.DestIP.String()}
+		f.Net = &reporter.NetSummary{DestIP: ev.Net.DestIP.String(), DestHost: ev.Net.Domain}
 	case BehaviorOpen, BehaviorExec:
-		f.Process = &reporter.ProcessSummary{Comm: ev.Comm}
+		f.Process = &reporter.ProcessSummary{Comm: ev.Comm, Argv: argvString(ev)}
+	case BehaviorDNS:
+		f.DNS = &reporter.DNSSummary{QName: ev.DNS.QName}
 	}
 
 	if err := utils.Guard("monitor: reporting finding", func() error {
@@ -322,6 +348,11 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 		if ev.Net == nil || !ev.Net.DestIP.IsValid() {
 			return "", ""
 		}
+		// A domain is only ever attributed from the interning table, whose
+		// entries are the names policies themselves authored.
+		if ev.Net.Domain != "" {
+			return BehaviorNetwork, ev.Net.Domain
+		}
 		return BehaviorNetwork, ev.Net.DestIP.String()
 	case runtimeevent.KindOpen:
 		if ev.Open == nil || ev.Open.Path == "" {
@@ -333,17 +364,49 @@ func targetOf(ev runtimeevent.Event) (behavior, target string) {
 			return "", ""
 		}
 		return BehaviorExec, ev.Exec.Filename
+	case runtimeevent.KindProtocol:
+		if ev.Protocol == nil || ev.Protocol.Protocol == "" {
+			return "", ""
+		}
+		target := ev.Protocol.Protocol
+		if ev.Protocol.ALPN != "" {
+			target += "/" + ev.Protocol.ALPN
+		}
+		return BehaviorProtocol, target
+	case runtimeevent.KindDNS:
+		if ev.DNS == nil || ev.DNS.QName == "" {
+			return "", ""
+		}
+		return BehaviorDNS, ev.DNS.QName
 	}
 	return "", ""
 }
 
-// message renders the finding message. It names only the policy and the target
-// the policy itself listed — never event payload — so it is safe by
-// construction (reporter.sanitize is the backstop). The monitor-mode wording
-// is the counterfactual ("would have been denied"); the enforced wording
-// states what the kernel actually did.
+// argvString joins the observed command line for the finding's process summary.
+// Only the exec sources carry arguments; the LSM observation counters do not, so
+// this is empty for them and the property is omitted.
+func argvString(ev runtimeevent.Event) string {
+	if ev.Exec == nil || len(ev.Exec.Argv) == 0 {
+		return ""
+	}
+	return strings.Join(ev.Exec.Argv, " ")
+}
+
+// message renders the finding message. Every target it names is either a value
+// the policy listed or an observed DNS question name, the one payload the
+// feature exists to surface; reporter.sanitize is the backstop for both. The
+// monitor-mode wording is the counterfactual ("would have been denied"); the
+// enforced wording states what the kernel actually did.
 func message(policy, behavior, target string, d decision, count uint32, enforced bool) string {
 	var b strings.Builder
+	if behavior == BehaviorDNS {
+		b.WriteString("resolved unexpected DNS name ")
+		b.WriteString(target)
+		writeOccurrences(&b, count)
+		b.WriteString(", not expected by policy ")
+		b.WriteString(policy)
+		return b.String()
+	}
 	if enforced {
 		b.WriteString("enforced: ")
 	} else {
@@ -356,11 +419,11 @@ func message(policy, behavior, target string, d decision, count uint32, enforced
 		b.WriteString("open of ")
 	case BehaviorExec:
 		b.WriteString("exec of ")
+	case BehaviorProtocol:
+		b.WriteString("egress protocol ")
 	}
 	b.WriteString(target)
-	if count > 1 {
-		fmt.Fprintf(&b, " (%d occurrences)", count)
-	}
+	writeOccurrences(&b, count)
 	if enforced {
 		b.WriteString(" was denied by policy ")
 	} else {
@@ -371,4 +434,10 @@ func message(policy, behavior, target string, d decision, count uint32, enforced
 		b.WriteString(" (default deny)")
 	}
 	return b.String()
+}
+
+func writeOccurrences(b *strings.Builder, count uint32) {
+	if count > 1 {
+		fmt.Fprintf(b, " (%d occurrences)", count)
+	}
 }

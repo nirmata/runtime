@@ -1,0 +1,196 @@
+# E2E BEHAVIORAL ASSERTION -- application-protocol egress enforcement.
+#
+# Proves the protocol classifier is loaded, attached to the client pod's
+# cgroup, and enforces per-protocol verdicts on the first data segment. Every
+# TCP probe hits the SAME destination and port (443), so nothing here is
+# distinguishable by 5-tuple; only the payload differs. The policy allows
+# ["tls", "dns"] and default-denies everything else:
+#
+#   probe            first data segment              classified    policy verdict
+#   clienthello.bin  TLS ClientHello, first ALPN h2  tls/h2        allow (tls)
+#   nslookup         cleartext DNS query over UDP    dns           allow
+#   SSH banner       "SSH-2.0-..."                   ssh           default deny
+#   wget             "GET / HTTP/1.0..."             http/1.1      default deny
+#   garbage          "HELLO..."                      unclassified  default deny
+#   split hello      10-byte TLS record prefix       unclassified  default deny
+#
+# The target is a plain busybox httpd on 443: it answers anything delivered
+# (200 for HTTP, 400 for garbage), so "response bytes" means the segment
+# passed the classifier and "no response" means it was dropped. The baseline
+# step pins that -- including cluster DNS -- so a broken network cannot
+# masquerade as enforcement.
+#
+# Kernel requirements: cgroup v2 + BPF (CAP_BPF). BPF-LSM is NOT required.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: protocol-enforce
+spec:
+  steps:
+  - name: start-target-and-client
+    try:
+    - apply:
+        file: target.yaml
+    - apply:
+        file: client.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: protocol-target
+          status:
+            phase: Running
+            (conditions[?type == 'Ready'].status | [0]): "True"
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: protocol-client
+          status:
+            phase: Running
+
+  - name: stage-probe-payloads-on-the-client
+    try:
+    - script:
+        content: |
+          set -eu
+          # A single-segment TLS ClientHello whose first ALPN entry is "h2"
+          # (offered list: h2, http/1.1), generated from the RFC 8446 layout.
+          kubectl -n "$NAMESPACE" exec protocol-client -- sh -c '
+            echo "FgMBAGUBAABhAwMAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAACBMBEwITA8AvAQAAMAAAABEADwAADGV4YW1wbGUudGVzdAArAAUEAwQDAwAQAA4ADAJoMghodHRwLzEuMQ==" | base64 -d > /tmp/clienthello.bin'
+          size=$(kubectl -n "$NAMESPACE" exec protocol-client -- wc -c /tmp/clienthello.bin | awk "{print \$1}")
+          test "$size" -eq 106
+
+  - name: baseline-every-probe-reaches-the-target
+    try:
+    - script:
+        content: |
+          set -eu
+          ip=$(kubectl -n "$NAMESPACE" get pod protocol-target -o jsonpath='{.status.podIP}')
+          test -n "$ip"
+
+          probe() { # $1: shell command producing the payload on stdout
+            kubectl -n "$NAMESPACE" exec protocol-client -- sh -c "$1 | nc -w 3 $ip 443" 2>/dev/null || true
+          }
+
+          ok=0
+          for _ in $(seq 1 15); do
+            if probe 'printf "GET / HTTP/1.0\r\n\r\n"' | grep -q "HTTP/"; then ok=1; break; fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: baseline HTTP connectivity is broken (no policy applied yet)"; exit 1; }
+
+          probe 'printf "SSH-2.0-OpenSSH_9.6\r\n"' | grep -q "HTTP/" \
+            || { echo "FAIL: baseline SSH-banner probe got no response"; exit 1; }
+          probe 'cat /tmp/clienthello.bin' | grep -q "HTTP/" \
+            || { echo "FAIL: baseline ClientHello probe got no response"; exit 1; }
+
+          # Cluster DNS must work before the policy exists, or a broken
+          # resolver would be indistinguishable from enforcement later.
+          ok=0
+          for _ in $(seq 1 15); do
+            if kubectl -n "$NAMESPACE" exec protocol-client -- nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: baseline cluster DNS is broken (no policy applied yet)"; exit 1; }
+          echo "OK: baseline -- every payload reaches the target and DNS resolves"
+
+  - name: apply-protocol-default-deny-policy
+    try:
+    - apply:
+        file: policy.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-protocol-enforce
+          spec:
+            mode: enforce
+
+  - name: enforced-protocol-verdicts-on-one-destination-and-port
+    try:
+    - script:
+        timeout: 300s
+        content: |
+          set -eu
+          ip=$(kubectl -n "$NAMESPACE" get pod protocol-target -o jsonpath='{.status.podIP}')
+
+          probe() {
+            kubectl -n "$NAMESPACE" exec protocol-client -- sh -c "$1 | nc -w 3 $ip 443" 2>/dev/null || true
+          }
+
+          # The SSH banner must stop getting a response within a bounded
+          # window. Poll rather than sleep blindly: the daemon programs maps
+          # on its own schedule.
+          blocked=0
+          for _ in $(seq 1 45); do
+            if probe 'printf "SSH-2.0-OpenSSH_9.6\r\n"' | grep -q "HTTP/"; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          [ "$blocked" -eq 1 ] || { echo "FAIL: SSH first segment still delivered -- protocol enforcement did not take effect"; exit 1; }
+          echo "OK: ssh denied on the shared destination and port"
+
+          # ...and the allowed protocols must STILL work under the default
+          # deny, which is what makes the drop above meaningful.
+          probe 'cat /tmp/clienthello.bin' | grep -q "HTTP/" \
+            || { echo "FAIL: TLS ClientHello blocked despite allow tls"; exit 1; }
+          echo "OK: TLS ClientHello still allowed"
+
+          ok=0
+          for _ in $(seq 1 15); do
+            if kubectl -n "$NAMESPACE" exec protocol-client -- nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: cluster DNS blocked despite allow dns"; exit 1; }
+          echo "OK: dns still allowed"
+
+          # Cleartext HTTP is not in the allow list, so the GET must be
+          # dropped like any other default-denied protocol.
+          if probe 'printf "GET / HTTP/1.0\r\n\r\n"' | grep -q "HTTP/"; then
+            echo "FAIL: cleartext HTTP was delivered -- http/1.1 is not allowed"
+            exit 1
+          fi
+          echo "OK: cleartext http/1.1 denied"
+
+          # A payload matching no signature classifies as unclassified. No
+          # policy value could allow it short of removing the default deny.
+          if probe 'printf "HELLO THERE GENERAL\r\n"' | grep -q "HTTP/"; then
+            echo "FAIL: unclassifiable payload was delivered under default deny"
+            exit 1
+          fi
+          echo "OK: unclassified payload denied"
+
+          # A ClientHello split across two segments classifies as
+          # unclassified, not tls: only the 10-byte record prefix is in the
+          # first segment.
+          if probe '{ head -c 10 /tmp/clienthello.bin; sleep 1; tail -c +11 /tmp/clienthello.bin; }' | grep -q "HTTP/"; then
+            echo "FAIL: split ClientHello was delivered -- it must classify as unclassified"
+            exit 1
+          fi
+          echo "OK: split ClientHello denied as unclassified"
+
+          # Re-check the deny once more so a transient failure cannot be
+          # mistaken for enforcement.
+          if probe 'printf "SSH-2.0-OpenSSH_9.6\r\n"' | grep -q "HTTP/"; then
+            echo "FAIL: SSH banner became deliverable again"
+            exit 1
+          fi
+          echo "OK: enforcement stable"
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=200 || true
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl get runtimepolicy e2e-protocol-enforce -o yaml || true
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-protocol-enforce

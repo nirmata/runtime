@@ -73,7 +73,14 @@ Follow these rules when generating and updating code:
   belongs at the fan-out boundaries only (collector stages/sinks, informer handler fan-out). See the
   panic rule in [CLAUDE.md](CLAUDE.md).
 - anything a user authored that cannot be honored must reach a `V(0)` log **and** a status
-  condition. "Silently skipped" is the forbidden failure mode.
+  condition. "Silently skipped" is the forbidden failure mode. Do not write the level into the
+  comment above it — see the comment rule in [CLAUDE.md](CLAUDE.md).
+- a user-facing value has exactly one parser and one home for its rejection reasons, and the
+  chokepoint covers the whole list (dedupe and reject handling included), not just one value. Call
+  it a schema, never a "grammar". See "One schema, one home" in [CLAUDE.md](CLAUDE.md).
+- do not declare the same struct in two packages, alias a fixed-size array into a name that hides
+  its width, or wrap a one-line call in helper layers. See "Names and shapes" in
+  [CLAUDE.md](CLAUDE.md).
 - never regenerate or edit `*_bpfel.go`, `*_bpfeb.go`, or `.o` files unless you have the full BPF
   toolchain; new `_cprog/*.c` with a commented `go:generate` line is fine.
 
@@ -89,8 +96,12 @@ is the one-line-per-package index.
 | `pkg/utils` | `Guard(op, fn)` — the panic barrier used at handler fan-out boundaries so one bad handler cannot take out its siblings. |
 | `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID) plus `StatusWriter`. |
 | `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
-| `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The two eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/bpf/lsm`, `pkg/bpf/egressfilter` | The enforcing eBPF programs: LSM `file_open`/`bprm_check_security` enforcers and a `cgroup_skb/egress` IPv4 filter. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/bpf/exectrace` | Observation-only `raw_tp/sched_process_exec` program streaming per-exec events with argv over a ring buffer; a `runtimeevent.Source`. |
+| `pkg/bpf/dnsquery` | The observation-only `cgroup_skb/egress` program that reads the QNAME out of UDP/53 questions from gated cgroups, plus its ring buffer reader, decoder, and per-CPU loss counters. One loaded instance per daemon, so N attachments share one buffer and one reader. |
+| `pkg/bpf/include` | The shared, hand-maintained `vmlinux.h` every `_cprog` compiles against. Committed, minimal, add only what a program reads. |
 | `pkg/lsmmgr`, `pkg/egressmgr` | The managers that attach those programs per matched pod and drain their observation counters (`CollectObservations`). |
+| `pkg/dnsmgr` | Decides which pods the DNS observer sees: attaches per container cgroup and admits cgroup ids to the kernel gate exactly while a policy with a `dns` behavior selects the pod. Both a `PodEventHandler` and a `RuntimePolicyEventHandler`. |
 | `pkg/runtimeevent` | The normalized `Event` type, its `KernelDecision`, and the `Source`/`Sink`/`PolicyStatusRecorder` interfaces. |
 | `pkg/collector` | Sources → stages → sinks pipeline, with drop accounting and source restart. |
 | `pkg/attribution` | cgroup/pod-UID/PID → pod identity index. Both an `events.PodEventHandler` and a `collector.Stage`. |
@@ -101,9 +112,18 @@ is the one-line-per-package index.
 
 ## Runtime event filtering policy
 
-There is one event pipeline: `pkg/collector`, fed by poll sources over the observation counters the
-two existing eBPF programs keep, annotated by `pkg/attribution`, consumed by `pkg/monitor`. There is
-no `connect`/`tcpconnect` collector and no Inspektor Gadget dependency.
+There is one event pipeline: `pkg/collector`, annotated by `pkg/attribution`, consumed by
+`pkg/monitor`. It is fed by two source shapes — poll sources over the observation counters the
+enforcing eBPF programs keep, and the ring buffer readers of `pkg/bpf/exectrace` and
+`pkg/bpf/dnsquery`. There is no `connect`/`tcpconnect` collector and no Inspektor Gadget
+dependency.
+
+Pick the shape from what the observation is, and do not mix them up: a bounded enum (an address, a
+path, an exec filename, each paired with the kernel's decision) rides a counter map and is drained
+into deltas; a variable-length string whose value *is* the observation needs a ring buffer, one
+record per occurrence — argv and a DNS question name are both that. A ring buffer can lose records
+where a counter map only stops distinguishing them, so a ring buffer source without loss counters
+is not finished.
 
 The filtering rules that apply to that pipeline:
 
@@ -116,6 +136,11 @@ The filtering rules that apply to that pipeline:
 - Egress observation is destination-IPv4 only. It does see flows a default-deny drops: the BPF
   program computes its decision, records it, and only then returns, and the decision is part of the
   observation counter key. Never move an enforcement return ahead of the counting branch.
+- DNS questions are observed only for pods a `dns` behavior selects, gated by cgroup id in the
+  kernel. That gate is a privacy boundary as much as an efficiency one — an unselected pod's
+  questions never enter the buffer — so never widen it to "every pod on the node" for convenience.
+  Every way a gated question then fails to reach the sink is counted: `ringbuf_full`,
+  `name_unreadable`, `undecodable`.
 
 ## Redaction (non-negotiable)
 
@@ -135,6 +160,14 @@ out. It is not configurable, and that is the point.
 the same programs with **empty** maps and matches in userspace over polled observations. Use
 `compiler.IsObserveMode(mode)` rather than comparing strings, and never let an observe-mode policy
 program a deny entry.
+
+A `dns` behavior is legal in `monitor` only, and `pkg/compiler.validateDNSBehavior` rejects it in
+`enforce`. The reason is not that names are unenforceable — a domain value on a `network` behavior
+is enforced against the addresses the snooper associates with it — but that destinations belong to
+`network`, so honouring `enforce` on `dns` would be a second spelling of one intent with only one of
+them working. Its allow list is also inverted: `dns.allow` is the expected set, so a name matching
+none of its entries is reported with no `"*"` in `deny`, and `deny: ["*"]` reports every name and
+short-circuits the allow list rather than exempting it.
 
 ## Markdown generation and changes
 

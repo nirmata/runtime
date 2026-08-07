@@ -54,10 +54,17 @@ has to be kept true.
   visible in the three lines underneath it.
 - **No loud notation.** ALL-CAPS MUST/NEVER/ALWAYS and em-dash flourishes
   arguing with an imagined objector are not documentation.
+- **Never name a log level in a comment.** "surfaced at V(0)" and "logged at
+  V(2)" are true until someone retunes verbosity, and nothing fails when they
+  stop being true. Say where the value reaches an operator — logs, a status
+  condition — not at what level.
 - **Do not let a comment go stale into a lie.** One said `V(0):` above a plain
   `.Info()` call; another documented an observation limit a later commit in the
   same PR had removed. Change behavior, then grep for comments describing the
   old behavior.
+- **BPF C files stay near-bare.** Document a kernel program's design in the Go
+  layer that loads it, or in the project docs — not in the `.bpf.c`. A C
+  comment is for the single line a reader would otherwise misread.
 
 The failure mode is not "too many comments" on its own — it is spending the
 reader's attention in the wrong place. The same review that cut thirty blocky
@@ -90,7 +97,7 @@ convert it into an error that gets logged and swallowed three layers up.
 The reviewer's framing, which is the right one: *"if it panics then this means
 we messed up pretty badly and i don't think this should be silenced."*
 
-## One grammar, one home
+## One schema, one home
 
 If two packages parse the same user-facing value, they will diverge. In this
 repo three did: the egress filter trimmed `\r\n` from policy targets and the
@@ -99,8 +106,23 @@ but rejected at admission — inverting the invariant that admission must never
 reject what the runtime accepts.
 
 Parse in exactly one function. When two layers need different strictness, that is
-one permissive grammar plus one explicit, documented narrowing point — not two
-grammars that agree by coincidence and a comment claiming they agree.
+one permissive schema plus one explicit, documented narrowing point — not two
+schemas that agree by coincidence and a comment claiming they agree.
+
+Chokepoint the *list*, not just the value. Sharing `ParsePathValue` was not
+enough: the enforcer and the monitor each kept their own loop around it, each
+with its own dedupe and its own idea of what to do with a value that failed —
+which is a second schema wearing the first one's clothes. `ParsePathList`
+returns the accepted values, the sentinel, and the rejects, and both callers
+take all three.
+
+Say **schema**, not "grammar" — reviewer's words: *"no one says this in normal
+conversation."*
+
+A rejection reason is part of the schema and lives with it. Do not define a
+parallel vocabulary of reason strings in the consuming package and a `switch`
+to translate errors into it: put the remedy in the sentinel error, and let
+callers surface `err.Error()`.
 
 ## A no-op method means you have two interfaces
 
@@ -133,6 +155,13 @@ When an event cannot be attributed, count it and log it. Never drop it silently:
 a monitoring gap that looks identical to "nothing happened" is worse than an
 error.
 
+## Zero what the kernel hands to userspace
+
+A reserved ring buffer record arrives holding whatever the last event on that
+CPU wrote, and every byte of it is mmapped to userspace. Fill every field or
+zero the record first: an unzeroed tail leaks one pod's argv into another
+pod's event, which is a confidentiality bug, not untidiness.
+
 ## Generated artifacts need a path back to their source
 
 Committed binaries — BPF objects, CRDs, clients — must be reproducible by a
@@ -158,6 +187,27 @@ old diff — not with an opinion. And when a reviewer is right about something
 larger than they realized, say that too: "you asked whether denies are invisible
 under default deny; it is worse than that, nothing is observed at all" is a
 better answer than a fix with no explanation.
+
+## Names and shapes
+
+A reader infers behavior from a name and a signature before reading a body.
+Both have to be honest, and neither should hide the thing the reader came for.
+
+- **Name a function for its job, not for a step inside it.** `ParsePaths` reads
+  as a syntax check on a list of paths; what it actually returns is the kernel
+  map keys, so it is `PathKeys`. The reviewer's test: say out loud what the
+  caller wanted, and see whether the name is that.
+- **One concept, one type.** `RejectedTarget` was declared identically in
+  `pkg/bpf/lsm` and `pkg/bpf/egressfilter`, so the same struct needed two
+  imports, two `String()` methods and two sets of tests. If two packages
+  produce the same shape, it belongs in the package they both already import.
+- **A type alias over a fixed-size array hides the shape.** `type PathKey =
+  [maxPathLen]byte` reads fine at the declaration and tells a caller nothing:
+  `[][maxPathLen]byte` at the call site says how wide the key is, which is the
+  one fact a reader of BPF map code needs. Spell the array.
+- **Do not build layers to reach a one-line call.** Two wrapper functions and a
+  nested closure around `ParsePathValue` is not abstraction; the parameter that
+  varies is a `func(string) error`, so pass it and stop.
 
 ## Delete on sight
 

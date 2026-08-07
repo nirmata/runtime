@@ -4,9 +4,12 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var (
@@ -18,6 +21,26 @@ func mustRpEvent(t *testing.T, e *EgressManager, r *compiler.EvaluationResult, e
 	t.Helper()
 	if err := e.RuntimePolicyEvent(r, eventType); err != nil {
 		t.Fatalf("RuntimePolicyEvent(%s, %s): unexpected error: %v", r.UID, eventType, err)
+	}
+}
+
+// The recorder addresses the RuntimePolicy by name, so the manager has to
+// resolve it from the tracked policy: the call sites only carry a uid.
+func TestRecordConditionSuppliesThePolicyName(t *testing.T) {
+	e, _, status := newTestManager()
+
+	tracked := rp("rp-1", "enforce", webLabels, []string{"2001:db8::1"}, nil)
+	tracked.Name = "block-v6"
+	mustRpEvent(t, e, tracked, events.EventTypeCreate)
+
+	if got := status.recordedNames("rp-1"); !slices.Equal(got, []string{"block-v6"}) {
+		t.Errorf("recorded names = %v, want [block-v6]", got)
+	}
+
+	// an untracked uid has no name to resolve, and must not invent one
+	e.recordCondition("rp-unknown", metav1.Condition{Type: v1alpha1.ConditionTargetsValid, Reason: v1alpha1.ReasonNoTargets})
+	if got := status.recordedNames("rp-unknown"); !slices.Equal(got, []string{""}) {
+		t.Errorf("recorded names for an untracked policy = %v, want one empty name", got)
 	}
 }
 
@@ -138,7 +161,7 @@ func TestRpUpdatedLeavingTrackedModeTearsDown(t *testing.T) {
 	if _, ok := e.rps["rp-1"]; ok {
 		t.Error("policy still tracked after leaving every supported mode")
 	}
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, []string{"*"})})
+	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
 	wantLiveIps(t, f, []string{}, []string{})
 	wantDefaultDeny(t, f, false)
 	wantDefaultDenyOwners(t, e, "pod-1")
@@ -215,7 +238,7 @@ func TestRpUpdatedWildcardAddedThenRemoved(t *testing.T) {
 
 	// "*" leaves the deny list
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil), events.EventTypeUpdate)
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair(nil, []string{"*"})})
+	wantPairs(t, "DeleteIps", f.deletes, nil)
 	wantDefaultDeny(t, f, false)
 	wantDefaultDenyOwners(t, e, "pod-1")
 	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
@@ -306,7 +329,7 @@ func TestRpDeletedRemovesAttachedIpsPerPod(t *testing.T) {
 
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 
-	wantPairs(t, "DeleteIps(web)", web.deletes, []ipPair{pair([]string{"1.1.1.1"}, []string{"*"})})
+	wantPairs(t, "DeleteIps(web)", web.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
 	wantLiveIps(t, web, []string{}, []string{})
 	wantDefaultDeny(t, web, false)
 	wantAttachedRps(t, e, "pod-web")

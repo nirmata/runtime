@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
@@ -61,6 +62,8 @@ type fakeFilter struct {
 
 	allow       map[string]struct{}
 	deny        map[string]struct{}
+	allowHosts  map[string]struct{}
+	denyHosts   map[string]struct{}
 	defaultDeny bool
 	observe     bool
 
@@ -72,39 +75,53 @@ type fakeFilter struct {
 
 func newFakeFilter() *fakeFilter {
 	return &fakeFilter{
-		allow: make(map[string]struct{}),
-		deny:  make(map[string]struct{}),
+		allow:      make(map[string]struct{}),
+		deny:       make(map[string]struct{}),
+		allowHosts: make(map[string]struct{}),
+		denyHosts:  make(map[string]struct{}),
 	}
 }
 
-func (f *fakeFilter) AddIps(p *compiler.AllowDenyPair) ([]egressfilter.RejectedTarget, error) {
+func (f *fakeFilter) AddIps(p *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.adds = append(f.adds, snapshotPair(p))
 	if p == nil {
 		return nil, nil
 	}
-	allowAddrs, _, allowRejected := egressfilter.ParseTargets(p.Allow)
-	denyAddrs, _, denyRejected := egressfilter.ParseTargets(p.Deny)
+	allowAddrs, allowHosts, _, allowRejected := egressfilter.ParseTargets(p.Allow)
+	denyAddrs, denyHosts, _, denyRejected := egressfilter.ParseTargets(p.Deny)
 	for _, a := range allowAddrs {
 		f.allow[a.String()] = struct{}{}
 	}
 	for _, a := range denyAddrs {
 		f.deny[a.String()] = struct{}{}
 	}
+	for _, h := range allowHosts {
+		f.allowHosts[h] = struct{}{}
+	}
+	for _, h := range denyHosts {
+		f.denyHosts[h] = struct{}{}
+	}
 	return append(allowRejected, denyRejected...), f.addErr
 }
 
-func (f *fakeFilter) DeleteIps(p *compiler.AllowDenyPair) ([]egressfilter.RejectedTarget, error) {
+func (f *fakeFilter) DeleteIps(p *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.deletes = append(f.deletes, snapshotPair(p))
 	if p == nil {
 		return nil, nil
 	}
-	allowAddrs, _, allowRejected := egressfilter.ParseTargets(p.Allow)
-	denyAddrs, _, denyRejected := egressfilter.ParseTargets(p.Deny)
+	allowAddrs, allowHosts, _, allowRejected := egressfilter.ParseTargets(p.Allow)
+	denyAddrs, denyHosts, _, denyRejected := egressfilter.ParseTargets(p.Deny)
 	for _, a := range allowAddrs {
 		delete(f.allow, a.String())
 	}
 	for _, a := range denyAddrs {
 		delete(f.deny, a.String())
+	}
+	for _, h := range allowHosts {
+		delete(f.allowHosts, h)
+	}
+	for _, h := range denyHosts {
+		delete(f.denyHosts, h)
 	}
 	return append(allowRejected, denyRejected...), nil
 }
@@ -119,14 +136,14 @@ func (f *fakeFilter) SetFlagIdx(idx uint8, val bool) {
 	}
 }
 
-func (f *fakeFilter) Attach(cgPath string) (link.Link, error) {
+func (f *fakeFilter) Attach(cgPath string) ([]link.Link, error) {
 	f.attaches = append(f.attaches, cgPath)
 	if f.attachErr != nil {
 		return nil, f.attachErr
 	}
 	// link.Link cannot be implemented outside package link, and the manager only
-	// uses the returned value as an opaque map value
-	return nil, nil
+	// uses the returned values as opaque map values
+	return []link.Link{}, nil
 }
 
 // models the destructive read of the counter map: the events are handed over once
@@ -145,8 +162,10 @@ func (f *fakeFilter) reset() {
 	f.attaches = nil
 }
 
-func (f *fakeFilter) liveAllow() []string { return sortedKeys(f.allow) }
-func (f *fakeFilter) liveDeny() []string  { return sortedKeys(f.deny) }
+func (f *fakeFilter) liveAllow() []string      { return sortedKeys(f.allow) }
+func (f *fakeFilter) liveDeny() []string       { return sortedKeys(f.deny) }
+func (f *fakeFilter) liveAllowHosts() []string { return sortedKeys(f.allowHosts) }
+func (f *fakeFilter) liveDenyHosts() []string  { return sortedKeys(f.denyHosts) }
 
 func sortedKeys(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
@@ -174,16 +193,132 @@ func (ff *fakeFactory) new(*logr.Logger) (egressFilter, error) {
 	return f, nil
 }
 
+// fakeProtoFilter records every call the manager makes and models the state of
+// the protocol maps: the target maps behave as sets keyed by the canonical
+// value string and the flags map holds the default-deny and observe bits.
+// Target parsing goes through the real protofilter.ParseTargets.
+type fakeProtoFilter struct {
+	adds     []ipPair
+	deletes  []ipPair
+	toggles  []flagToggle
+	attaches []string
+	reads    int
+
+	allow       map[string]struct{}
+	deny        map[string]struct{}
+	defaultDeny bool
+	observe     bool
+
+	attachErr   error
+	readErr     error
+	protoEvents map[protofilter.ProtoEventKey]uint32
+}
+
+func newFakeProtoFilter() *fakeProtoFilter {
+	return &fakeProtoFilter{
+		allow: make(map[string]struct{}),
+		deny:  make(map[string]struct{}),
+	}
+}
+
+func targetString(t protofilter.Target) string {
+	if t.ALPN == "" {
+		return t.Protocol
+	}
+	return t.Protocol + "/" + t.ALPN
+}
+
+func (f *fakeProtoFilter) AddProtocols(p *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
+	f.adds = append(f.adds, snapshotPair(p))
+	if p == nil {
+		return nil, nil
+	}
+	allowTargets, _, allowRejected := protofilter.ParseTargets(p.Allow)
+	denyTargets, _, denyRejected := protofilter.ParseTargets(p.Deny)
+	for _, t := range allowTargets {
+		f.allow[targetString(t)] = struct{}{}
+	}
+	for _, t := range denyTargets {
+		f.deny[targetString(t)] = struct{}{}
+	}
+	return append(allowRejected, denyRejected...), nil
+}
+
+func (f *fakeProtoFilter) DeleteProtocols(p *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
+	f.deletes = append(f.deletes, snapshotPair(p))
+	if p == nil {
+		return nil, nil
+	}
+	allowTargets, _, allowRejected := protofilter.ParseTargets(p.Allow)
+	denyTargets, _, denyRejected := protofilter.ParseTargets(p.Deny)
+	for _, t := range allowTargets {
+		delete(f.allow, targetString(t))
+	}
+	for _, t := range denyTargets {
+		delete(f.deny, targetString(t))
+	}
+	return append(allowRejected, denyRejected...), nil
+}
+
+func (f *fakeProtoFilter) SetFlagIdx(idx uint8, val bool) {
+	f.toggles = append(f.toggles, flagToggle{idx: idx, val: val})
+	switch idx {
+	case protofilter.DEFAULT_DENY:
+		f.defaultDeny = val
+	case protofilter.OBSERVE:
+		f.observe = val
+	}
+}
+
+func (f *fakeProtoFilter) Attach(cgPath string) (link.Link, error) {
+	f.attaches = append(f.attaches, cgPath)
+	if f.attachErr != nil {
+		return nil, f.attachErr
+	}
+	return nil, nil
+}
+
+func (f *fakeProtoFilter) ReadProtoEvents() (map[protofilter.ProtoEventKey]uint32, error) {
+	f.reads++
+	out := f.protoEvents
+	f.protoEvents = nil
+	return out, f.readErr
+}
+
+func (f *fakeProtoFilter) liveAllow() []string { return sortedKeys(f.allow) }
+func (f *fakeProtoFilter) liveDeny() []string  { return sortedKeys(f.deny) }
+
+// fakeProtoFactory stands in for protofilter.New.
+type fakeProtoFactory struct {
+	created   []*fakeProtoFilter
+	newErr    error
+	attachErr error
+}
+
+func (ff *fakeProtoFactory) new(*logr.Logger) (protoFilter, error) {
+	if ff.newErr != nil {
+		return nil, ff.newErr
+	}
+	f := newFakeProtoFilter()
+	f.attachErr = ff.attachErr
+	ff.created = append(ff.created, f)
+	return f, nil
+}
+
 // records what the manager reports back onto policy status. mutex guarded because
 // the pod and policy informers call the manager from different goroutines.
 type fakeStatus struct {
 	mu         sync.Mutex
 	conditions map[string][]metav1.Condition
+	names      map[string][]string
 	violations []string
 }
 
 func newFakeStatus() *fakeStatus {
-	return &fakeStatus{conditions: make(map[string][]metav1.Condition)}
+	return &fakeStatus{
+		conditions: make(map[string][]metav1.Condition),
+		names:      make(map[string][]string),
+	}
 }
 
 func (s *fakeStatus) RecordViolation(policyUID string, podUID string) {
@@ -192,10 +327,18 @@ func (s *fakeStatus) RecordViolation(policyUID string, podUID string) {
 	s.violations = append(s.violations, policyUID+"/"+podUID)
 }
 
-func (s *fakeStatus) RecordCondition(policyUID string, cond metav1.Condition) {
+func (s *fakeStatus) RecordCondition(policyUID, policyName string, cond metav1.Condition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.conditions[policyUID] = append(s.conditions[policyUID], cond)
+	s.names[policyUID] = append(s.names[policyUID], policyName)
+}
+
+// recordedNames returns the names supplied alongside a policy's conditions.
+func (s *fakeStatus) recordedNames(policyUID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.names[policyUID])
 }
 
 func (s *fakeStatus) all(policyUID string) []metav1.Condition {
@@ -216,12 +359,32 @@ func (s *fakeStatus) latest(policyUID, condType string) (metav1.Condition, bool)
 }
 
 func newTestManager() (*EgressManager, *fakeFactory, *fakeStatus) {
+	e, ff, _, status := newTestManagerWithProto()
+	return e, ff, status
+}
+
+func newTestManagerWithProto() (*EgressManager, *fakeFactory, *fakeProtoFactory, *fakeStatus) {
 	ff := &fakeFactory{}
+	pff := &fakeProtoFactory{}
 	status := newFakeStatus()
 	e := NewEgressManager(logr.Discard(), status)
 	e.newFilter = ff.new
+	e.newProtoFilter = pff.new
 	e.clock = func() time.Time { return testTime }
-	return e, ff, status
+	return e, ff, pff, status
+}
+
+func protoFilterOf(t *testing.T, e *EgressManager, uid string) *fakeProtoFilter {
+	t.Helper()
+	pa, ok := e.pods[uid]
+	if !ok {
+		t.Fatalf("pod %s not tracked by the manager", uid)
+	}
+	f, ok := pa.protoFilter.(*fakeProtoFilter)
+	if !ok {
+		t.Fatalf("pod %s proto filter is %T, want *fakeProtoFilter", uid, pa.protoFilter)
+	}
+	return f
 }
 
 func makePod(uid string, lbls map[string]string) corev1.Pod {
@@ -309,6 +472,16 @@ func wantLiveIps(t *testing.T, f *fakeFilter, allow, deny []string) {
 	}
 	if !slices.Equal(f.liveDeny(), deny) {
 		t.Errorf("live deny ips: got %v, want %v", f.liveDeny(), deny)
+	}
+}
+
+func wantLiveHosts(t *testing.T, f *fakeFilter, allow, deny []string) {
+	t.Helper()
+	if !slices.Equal(f.liveAllowHosts(), allow) {
+		t.Errorf("live allow hosts: got %v, want %v", f.liveAllowHosts(), allow)
+	}
+	if !slices.Equal(f.liveDenyHosts(), deny) {
+		t.Errorf("live deny hosts: got %v, want %v", f.liveDenyHosts(), deny)
 	}
 }
 

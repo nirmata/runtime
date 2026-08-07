@@ -17,8 +17,8 @@ import (
 var allowedPropertyKeys = map[string]struct{}{
 	propFingerprint: {}, propCount: {}, propFirstTimestamp: {}, propLastTimestamp: {},
 	propBehavior: {}, propEnforced: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
-	propDestIP: {}, propDestHost: {},
-	propComm: {},
+	propDestIP: {}, propDestHost: {}, propDNSName: {},
+	propComm: {}, propArgv: {},
 }
 
 func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
@@ -27,7 +27,7 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 	f.Pod.OwnerName = "app"
 	f.Pod.ServiceAccount = "app-sa"
 	f.Pod.Labels = map[string]string{"team": "platform", "secret-label": "do-not-emit"}
-	f.Process = &ProcessSummary{Comm: "curl"}
+	f.Process = &ProcessSummary{Comm: "curl", Argv: "curl -sS https://example.com"}
 
 	first := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
 	last := time.Date(2026, 7, 27, 9, 5, 0, 0, time.UTC)
@@ -62,6 +62,7 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 		propDestIP:         "1.2.3.4",
 		propDestHost:       "api.example.com",
 		propComm:           "curl",
+		propArgv:           "curl -sS https://example.com",
 	}
 	if diff := cmp.Diff(want, res.Properties); diff != "" {
 		t.Errorf("buildResult properties (-want +got):\n%s", diff)
@@ -275,5 +276,25 @@ func TestParseCountDefaultsToOne(t *testing.T) {
 		if got := parseCount(tc.in); got != tc.want {
 			t.Errorf("parseCount(%q) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestBuildResultEmitsTheObservedDNSName(t *testing.T) {
+	f := baseFinding()
+	f.Behavior = "dns"
+	f.Net = nil
+	f.Result = ResultWarn
+	f.DNS = &DNSSummary{QName: "api.openai.com"}
+
+	res := buildResult(&pending{finding: f, count: 1, first: f.Timestamp, last: f.Timestamp})
+
+	if got := res.Properties[propDNSName]; got != "api.openai.com" {
+		t.Errorf("%s = %q, want %q", propDNSName, got, "api.openai.com")
+	}
+	if got := res.Properties[propEnforced]; got != "false" {
+		t.Errorf("%s = %q, want \"false\"", propEnforced, got)
+	}
+	if got := string(res.Result); got != ResultWarn {
+		t.Errorf("result = %q, want %q", got, ResultWarn)
 	}
 }

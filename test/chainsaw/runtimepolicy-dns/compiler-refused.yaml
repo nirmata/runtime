@@ -1,0 +1,35 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-dns-address-value
+spec:
+  mode: monitor
+  behaviors:
+  - dns:
+      allow:
+        values:
+        - 192.0.2.10
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-dns-interior-wildcard
+spec:
+  mode: monitor
+  behaviors:
+  - dns:
+      allow:
+        values:
+        - api.*.example.com
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-dns-trailing-wildcard
+spec:
+  mode: monitor
+  behaviors:
+  - dns:
+      allow:
+        values:
+        - example.com.*

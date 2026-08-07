@@ -14,7 +14,7 @@ func cg(id uint64, path string) *containers.ContainerCgroupInfo {
 	return &containers.ContainerCgroupInfo{ID: id, Path: path}
 }
 
-func TestPodCreatedAggregatesAllMatchingPolicies(t *testing.T) {
+func TestPodCreatedProgramsEveryMatchingPolicy(t *testing.T) {
 	e, factory, _ := newTestManager()
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeCreate)
 	mustRpEvent(t, e, rp("rp-2", "enforce", webLabels, []string{"2.2.2.2"}, []string{"8.8.8.8"}), events.EventTypeCreate)
@@ -25,9 +25,9 @@ func TestPodCreatedAggregatesAllMatchingPolicies(t *testing.T) {
 	if len(factory.created) != 1 {
 		t.Fatalf("filters created: got %d, want 1", len(factory.created))
 	}
-	// the ips of every matching policy are programmed in a single call
-	if len(f.adds) != 1 {
-		t.Fatalf("AddIps calls: got %d (%v), want 1", len(f.adds), f.adds)
+	// one call per matching policy, so each address records who wants it
+	if len(f.adds) != 2 {
+		t.Fatalf("AddIps calls: got %d (%v), want 2", len(f.adds), f.adds)
 	}
 	wantLiveIps(t, f, []string{"1.1.1.1", "2.2.2.2"}, []string{"8.8.8.8"})
 	wantAttachedRps(t, e, "pod-web", "rp-1", "rp-2")

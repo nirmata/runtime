@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
@@ -99,7 +100,7 @@ func TestModeTransitionsRebuildProgramming(t *testing.T) {
 
 		mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeUpdate)
 
-		wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, []string{"*"})})
+		wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
 		wantPairs(t, "AddIps", f.adds, nil)
 		wantLiveIps(t, f, []string{}, []string{})
 		wantDefaultDeny(t, f, false)
@@ -297,40 +298,46 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 			allow:      []string{"1.1.1.1", "10.0.0.0/24"},
 			deny:       []string{"*"},
 			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonAllTargetsSupported,
+			wantReason: v1alpha1.ReasonAllTargetsSupported,
 		},
 		{
 			name:       "no targets at all",
 			wantStatus: metav1.ConditionTrue,
-			wantReason: ReasonNoTargets,
+			wantReason: v1alpha1.ReasonNoTargets,
 		},
 		{
 			name:       "ipv6 target",
 			deny:       []string{"2001:db8::1"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
 			wantIn:     []string{"2001:db8::1", egressfilter.ReasonIPv6},
 		},
 		{
 			name:       "cidr wider than /24",
 			deny:       []string{"10.0.0.0/8"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
 			wantIn:     []string{"10.0.0.0/8", egressfilter.ReasonCIDRTooWide},
 		},
 		{
-			name:       "hostname",
+			name:       "hostname is a supported target",
 			allow:      []string{"api.example.com"},
+			wantStatus: metav1.ConditionTrue,
+			wantReason: v1alpha1.ReasonAllTargetsSupported,
+		},
+		{
+			name:       "wildcard hostname",
+			allow:      []string{"*.example.com"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
-			wantIn:     []string{"api.example.com", egressfilter.ReasonNotAnIP},
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
+			wantIn:     []string{"*.example.com", egressfilter.ReasonWildcard},
 		},
 		{
 			name:       "mixed: the supported half is still programmed",
-			allow:      []string{"1.1.1.1", "api.example.com"},
+			allow:      []string{"1.1.1.1", "not an address"},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: ReasonUnsupportedTargets,
-			wantIn:     []string{"api.example.com"},
+			wantReason: v1alpha1.ReasonUnsupportedTargets,
+			wantIn:     []string{"not an address", egressfilter.ReasonNotAnIP},
 		},
 	}
 
@@ -341,9 +348,9 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 
 			mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, tc.allow, tc.deny), events.EventTypeCreate)
 
-			cond, ok := status.latest("rp-1", ConditionTargetsValid)
+			cond, ok := status.latest("rp-1", v1alpha1.ConditionTargetsValid)
 			if !ok {
-				t.Fatalf("no %s condition was recorded for rp-1 (all: %v)", ConditionTargetsValid, status.all("rp-1"))
+				t.Fatalf("no %s condition was recorded for rp-1 (all: %v)", v1alpha1.ConditionTargetsValid, status.all("rp-1"))
 			}
 			if cond.Status != tc.wantStatus {
 				t.Errorf("condition status: got %s, want %s (message %q)", cond.Status, tc.wantStatus, cond.Message)
@@ -370,12 +377,79 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 // a nil status recorder does not stop the manager: the daemon may run without one.
 func TestNilStatusRecorderIsTolerated(t *testing.T) {
 	ff := &fakeFactory{}
+	pff := &fakeProtoFactory{}
 	e := NewEgressManager(logr.Discard(), nil)
 	e.newFilter = ff.new
+	e.newProtoFilter = pff.new
 	e.clock = func() time.Time { return testTime }
 	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"2001:db8::1"}, nil), events.EventTypeCreate)
 	if _, ok := e.rps["rp-1"]; !ok {
 		t.Error("policy was not tracked when the status recorder is nil")
+	}
+}
+
+// the domain the filter resolved has to survive onto the event, otherwise a
+// finding can name only an address the operator has to look up by hand.
+func TestCollectObservationsCarriesTheResolvedDomain(t *testing.T) {
+	e, _, _ := newTestManager()
+	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
+
+	named := ipKey(t, "10.0.0.1")
+	named.Domain = "api.example.com"
+	f.ipEvents = map[egressfilter.IPEventKey]uint32{
+		named:                3,
+		ipKey(t, "10.0.0.2"): 1, // no domain was attributed
+	}
+
+	got, err := e.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations: %v", err)
+	}
+
+	want := []runtimeevent.Event{
+		{
+			Kind: runtimeevent.KindNet, Time: testTime, Count: 3,
+			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.1"), Domain: "api.example.com"},
+			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
+		},
+		{
+			Kind: runtimeevent.KindNet, Time: testTime, Count: 1,
+			Net: &runtimeevent.NetFacts{DestIP: addr(t, "10.0.0.2")},
+			Pod: runtimeevent.PodIdentity{UID: "pod-1", Labels: webLabels},
+		},
+	}
+	if diff := cmp.Diff(want, got, cmp.Comparer(func(a, b netip.Addr) bool { return a == b })); diff != "" {
+		t.Errorf("observations (-want +got):\n%s", diff)
+	}
+}
+
+// one address can be reached under several names, so the domain has to take
+// part in the ordering or those entries come out in map iteration order.
+func TestSortedIPEventKeysBreaksTiesOnDomain(t *testing.T) {
+	counts := make(map[egressfilter.IPEventKey]uint32)
+	for _, domain := range []string{"b.example.com", "", "a.example.com"} {
+		key := ipKey(t, "10.0.0.1")
+		key.Domain = domain
+		counts[key] = 1
+	}
+	denied := ipKeyDeny(t, "10.0.0.1")
+	denied.Domain = "a.example.com"
+	counts[denied] = 1
+
+	want := []string{"", "a.example.com", "b.example.com", "deny/a.example.com"}
+	for i := 0; i < 32; i++ {
+		got := make([]string, 0, len(counts))
+		for _, key := range sortedIPEventKeys(counts) {
+			if key.Decision == runtimeevent.DecisionDeny {
+				got = append(got, "deny/"+key.Domain)
+				continue
+			}
+			got = append(got, key.Domain)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("run %d order (-want +got):\n%s", i, diff)
+		}
 	}
 }

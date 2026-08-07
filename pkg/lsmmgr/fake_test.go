@@ -1,6 +1,7 @@
 package lsmmgr
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"sort"
@@ -121,30 +122,56 @@ func (f *fakeEnforcer) DeleteCgids(cgids []uint64) error {
 	return f.note("DeleteCgids")
 }
 
-func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) error {
+// AddTargets and DeleteTargets model the real enforcer's effective map state by
+// deriving their keys the way it does, so a value lsm.PathKeys rejects never
+// appears in the fake's allow or deny set either.
+func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addTargets = append(f.addTargets, clonePair(paths))
-	for _, p := range paths.Allow {
+	allow, deny, rejected := parseFakePair(paths)
+	for _, p := range allow {
 		f.allow[p] = struct{}{}
 	}
-	for _, p := range paths.Deny {
+	for _, p := range deny {
 		f.deny[p] = struct{}{}
 	}
-	return f.note("AddTargets")
+	return rejected, f.note("AddTargets")
 }
 
-func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) error {
+func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.delTargets = append(f.delTargets, clonePair(paths))
-	for _, p := range paths.Allow {
+	allow, deny, rejected := parseFakePair(paths)
+	for _, p := range allow {
 		delete(f.allow, p)
 	}
-	for _, p := range paths.Deny {
+	for _, p := range deny {
 		delete(f.deny, p)
 	}
-	return f.note("DeleteTargets")
+	return rejected, f.note("DeleteTargets")
+}
+
+func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejected []compiler.RejectedTarget) {
+	allowKeys, _, allowRejected := lsm.PathKeys(paths.Allow)
+	denyKeys, _, denyRejected := lsm.PathKeys(paths.Deny)
+	for _, k := range allowKeys {
+		allow = append(allow, keyPath(k))
+	}
+	for _, k := range denyKeys {
+		deny = append(deny, keyPath(k))
+	}
+	return allow, deny, append(denyRejected, allowRejected...)
+}
+
+// keyPath is the inverse of the NUL padding lsm.PathKeys applies; paths hold
+// no NUL byte, so the first one always ends the string.
+func keyPath(k [compiler.MaxPathValueLen + 1]byte) string {
+	if i := bytes.IndexByte(k[:], 0); i >= 0 {
+		return string(k[:i])
+	}
+	return string(k[:])
 }
 
 func (f *fakeEnforcer) SetDefaultDeny(val bool) error {
@@ -297,7 +324,7 @@ func (s *fakeStatus) RecordViolation(policyUID, podUID string) {
 	s.violations[policyUID] = append(s.violations[policyUID], podUID)
 }
 
-func (s *fakeStatus) RecordCondition(policyUID string, cond metav1.Condition) {
+func (s *fakeStatus) RecordCondition(policyUID, _ string, cond metav1.Condition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.conditions[policyUID] = append(s.conditions[policyUID], cond)
@@ -558,4 +585,54 @@ func attachedPolicyUIDs(pr *podRepresentation) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// fakeSink is a CgroupSink that records the effective admitted set, so a test
+// can assert what the observation-only sources would actually see.
+type fakeSink struct {
+	mu    sync.Mutex
+	cgids map[uint64]struct{}
+}
+
+func newFakeSink() *fakeSink {
+	return &fakeSink{cgids: map[uint64]struct{}{}}
+}
+
+func (s *fakeSink) AddCgids(cgids []uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range cgids {
+		s.cgids[c] = struct{}{}
+	}
+	return nil
+}
+
+func (s *fakeSink) DeleteCgids(cgids []uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range cgids {
+		delete(s.cgids, c)
+	}
+	return nil
+}
+
+func (s *fakeSink) set() []uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]uint64, 0, len(s.cgids))
+	for c := range s.cgids {
+		out = append(out, c)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// newHarnessWithSink is newHarness plus a recording CgroupSink, which
+// NewLsmManager only accepts at construction.
+func newHarnessWithSink(t *testing.T) (*harness, *fakeSink) {
+	t.Helper()
+	sink := newFakeSink()
+	h := newHarness(t)
+	h.l.cgroupSinks = []CgroupSink{sink}
+	return h, sink
 }

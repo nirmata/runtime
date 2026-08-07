@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/containers"
 
@@ -17,24 +18,37 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	if err != nil {
 		return err
 	}
+	pf, err := e.newProtoFilter(&e.logger)
+	if err != nil {
+		return err
+	}
 
 	pa := &podAttachment{
-		cgs:             make(map[containers.ContainerCgroupInfo]link.Link),
-		attachedFilters: make(map[string]*compiler.EvaluationResult),
-		defaultDeny:     make(map[string]struct{}),
-		labels:          pod.Labels,
-		filter:          filter,
+		cgs:              make(map[containers.ContainerCgroupInfo][]link.Link),
+		attachedFilters:  make(map[string]*compiler.EvaluationResult),
+		defaultDeny:      make(map[string]struct{}),
+		protoDefaultDeny: make(map[string]struct{}),
+		labels:           pod.Labels,
+		filter:           filter,
+		protoFilter:      pf,
+		allowOwners:      newSideOwners(),
+		denyOwners:       newSideOwners(),
+		allowProtoOwners: newProtoOwners(),
+		denyProtoOwners:  newProtoOwners(),
 	}
 
 	for _, cg := range cgInfos {
-		l, err := filter.Attach(cg.Path)
+		links, err := attachBoth(filter, pf, cg.Path)
 		if err != nil {
+			for _, attached := range pa.cgs {
+				e.closeLinks(string(pod.UID), attached)
+			}
+			e.closeLinks(string(pod.UID), links)
 			return err
 		}
-		pa.cgs[*cg] = l
+		pa.cgs[*cg] = links
 	}
 
-	ips := &compiler.AllowDenyPair{}
 	for rpName, rp := range e.rps {
 		if !selectorMatches(rp.Selector, pod.Labels) {
 			continue
@@ -47,27 +61,33 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 			continue
 		}
 
-		if rp.IPs != nil {
-			ips.Allow = append(ips.Allow, rp.IPs.Allow...)
-			ips.Deny = append(ips.Deny, rp.IPs.Deny...)
+		// programmed per policy rather than as one aggregate pair so each
+		// address records the policy that wants it
+		if rp.IPs.HasEntries() {
+			e.addIps(string(pod.UID), rp.UID, pa, rp.IPs)
+		}
+		if rp.Protocols.HasEntries() {
+			e.addProtos(string(pod.UID), rp.UID, pa, rp.Protocols)
 		}
 
 		if denyHasStar(rp.IPs) {
 			pa.defaultDeny[rp.UID] = struct{}{}
+		}
+		if denyHasStar(rp.Protocols) {
+			pa.protoDefaultDeny[rp.UID] = struct{}{}
 		}
 	}
 
 	if len(pa.defaultDeny) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.DEFAULT_DENY, true)
 	}
+	if len(pa.protoDefaultDeny) > 0 {
+		pa.protoFilter.SetFlagIdx(protofilter.DEFAULT_DENY, true)
+	}
 	// every pod with an attached policy is observed, whatever mode it is in
 	if len(pa.attachedFilters) > 0 {
 		pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
-	}
-
-	// ban ips in case there was a rp that matched
-	if ips.HasEntries() {
-		e.addIps(string(pod.UID), "", pa.filter, ips)
+		pa.protoFilter.SetFlagIdx(protofilter.OBSERVE, true)
 	}
 
 	e.pods[string(pod.UID)] = pa
@@ -88,22 +108,44 @@ func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.Contain
 	e.refreshLabels(string(pod.UID), pa, pod.Labels)
 
 	// check if there are new cgroup infos. if there is, create links for them.
-	// for the ones that are gone the attachment would be already deleted by the kernel
-	newCgs := make(map[containers.ContainerCgroupInfo]link.Link)
+	newCgs := make(map[containers.ContainerCgroupInfo][]link.Link)
 	for _, cgInfo := range cgInfos {
-		l, exists := pa.cgs[*cgInfo]
+		links, exists := pa.cgs[*cgInfo]
 		if !exists {
-			// new cgroup, attach and get a link
-			newLink, err := pa.filter.Attach(cgInfo.Path)
+			newLinks, err := attachBoth(pa.filter, pa.protoFilter, cgInfo.Path)
 			if err != nil {
+				// only the links this call created: the rest stay live under
+				// the untouched pa.cgs
+				for cg, created := range newCgs {
+					if _, reused := pa.cgs[cg]; !reused {
+						e.closeLinks(string(pod.UID), created)
+					}
+				}
+				e.closeLinks(string(pod.UID), newLinks)
 				return err
 			}
-			l = newLink
+			links = newLinks
 		}
-		newCgs[*cgInfo] = l
+		newCgs[*cgInfo] = links
+	}
+	for cg, links := range pa.cgs {
+		if _, kept := newCgs[cg]; !kept {
+			e.closeLinks(string(pod.UID), links)
+		}
 	}
 	pa.cgs = newCgs
 	return nil
+}
+
+func (e *EgressManager) closeLinks(podUid string, links []link.Link) {
+	for _, l := range links {
+		if l == nil {
+			continue
+		}
+		if err := l.Close(); err != nil {
+			e.logger.Error(err, "failed to close an egress cgroup link", "podUid", podUid)
+		}
+	}
 }
 
 // refreshLabels stores the new label set and attaches/detaches every tracked
@@ -121,14 +163,37 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabel
 			e.attachPolicy(podUid, pa, rp)
 		case !matches && attached:
 			e.logger.V(2).Info("relabelled pod stopped matching runtime policy, detaching", "podUid", podUid, "uid", uid)
-			e.detachPolicy(podUid, pa, uid, att.IPs)
+			e.detachPolicy(podUid, pa, uid, att.IPs, att.Protocols)
 		}
 	}
 }
 
 func (e *EgressManager) podDeleted(podUid string) {
 	e.logger.V(2).Info("pod deleted", "podUid", podUid)
-	// a pod being deleted means that its cgroup id is deleted. so any attached links
-	// will automatically die
+	pa, ok := e.pods[podUid]
+	if !ok {
+		return
+	}
+	// the kernel detaches the programs with the cgroup, but the link fds are
+	// ours and outlive it until they are closed
+	for _, links := range pa.cgs {
+		e.closeLinks(podUid, links)
+	}
 	delete(e.pods, podUid)
+}
+
+// attachBoth attaches the egress and protocol programs to one cgroup, returning
+// every link created so a caller that fails partway can close them together.
+// Both programs live on the same cgroup hook, so a pod is either covered by
+// both or by neither.
+func attachBoth(f egressFilter, pf protoFilter, cgPath string) ([]link.Link, error) {
+	links, err := f.Attach(cgPath)
+	if err != nil {
+		return links, err
+	}
+	pl, err := pf.Attach(cgPath)
+	if err != nil {
+		return links, err
+	}
+	return append(links, pl), nil
 }

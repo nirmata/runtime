@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -123,6 +124,311 @@ func TestAllowDenyPair_DiffPair(t *testing.T) {
 	}
 }
 
+// mapResolver resolves only the Services present in its map, keyed
+// "namespace/name", and the endpoints in endpoints, keyed
+// "namespace/service/hostname". An entry with an empty address list is a target
+// that exists with no ready addresses, which the interface distinguishes from an
+// absent one.
+type mapResolver struct {
+	services  map[string][]string
+	endpoints map[string][]string
+}
+
+func (m mapResolver) ResolveService(namespace, name string) ([]string, bool) {
+	addrs, found := m.services[namespace+"/"+name]
+	return addrs, found
+}
+
+func (m mapResolver) ResolveEndpoint(namespace, service, hostname string) ([]string, bool) {
+	addrs, found := m.endpoints[namespace+"/"+service+"/"+hostname]
+	return addrs, found
+}
+
+// recordingResolver resolves nothing and remembers what it was asked for.
+type recordingResolver struct {
+	calls []string
+}
+
+func (r *recordingResolver) ResolveService(namespace, name string) ([]string, bool) {
+	r.calls = append(r.calls, namespace+"/"+name)
+	return nil, false
+}
+
+func (r *recordingResolver) ResolveEndpoint(namespace, service, hostname string) ([]string, bool) {
+	r.calls = append(r.calls, namespace+"/"+service+"/"+hostname)
+	return nil, false
+}
+
+func svcValue(name, namespace string) string {
+	return name + "." + namespace + ".svc." + ClusterDomain
+}
+
+func netPolicy(b *v1alpha1.Behavior) v1alpha1.RuntimePolicy {
+	return v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{{Network: b}},
+		},
+	}
+}
+
+func TestEvaluate_ServiceValueIsReplacedByItsAddressesOnItsOwnSide(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{
+		"prod/api":     {"10.0.0.2", "10.0.0.1"},
+		"prod/metrics": {"10.1.0.1"},
+	}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	api := svcValue("api", "prod")
+	metrics := svcValue("metrics", "prod")
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{api}, ""),
+		Deny:  behaviorRule([]string{metrics}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := &AllowDenyPair{Allow: []string{"10.0.0.1", "10.0.0.2"}, Deny: []string{"10.1.0.1"}}
+	if diff := cmp.Diff(want, res.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+	if slices.Contains(res.IPs.Allow, api) || slices.Contains(res.IPs.Deny, metrics) {
+		t.Errorf("IPs = %+v, want the Service DNS names replaced, not kept alongside their addresses", res.IPs)
+	}
+	if len(res.UnresolvedServices) != 0 {
+		t.Errorf("UnresolvedServices = %v, want none", res.UnresolvedServices)
+	}
+}
+
+func TestEvaluate_ServiceValueInDenyResolvesIntoDeny(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/api": {"10.0.0.1"}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Deny: behaviorRule([]string{svcValue("api", "prod")}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"10.0.0.1"}, res.IPs.Deny); diff != "" {
+		t.Errorf("IPs.Deny mismatch (-want +got):\n%s", diff)
+	}
+	if len(res.IPs.Allow) != 0 {
+		t.Errorf("IPs.Allow = %v, want none", res.IPs.Allow)
+	}
+}
+
+func TestEvaluate_ServiceValuesAreResolvedAtEvaluationTime(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	value := svcValue("api", "prod")
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{Allow: behaviorRule([]string{value}, "")}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if len(res.IPs.Allow) != 0 {
+		t.Fatalf("IPs.Allow = %v before the Service exists, want none", res.IPs.Allow)
+	}
+
+	resolver.services["prod/api"] = []string{"10.0.0.1"}
+	res, err = compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"10.0.0.1"}, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch after the Service appeared (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_LiteralAndServiceValuesDeduplicate(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{
+		"prod/api":       {"10.0.0.1", "10.0.0.2"},
+		"prod/api-alias": {"10.0.0.2", "10.0.0.3"},
+	}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{"10.0.0.1", svcValue("api", "prod"), svcValue("api-alias", "prod")}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	if diff := cmp.Diff(want, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_UnresolvedServiceValueIsReportedVerbatim(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/present": {"10.0.0.1"}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	missing := svcValue("missing", "prod")
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{svcValue("present", "prod"), missing}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"10.0.0.1"}, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{missing}, res.UnresolvedServices); diff != "" {
+		t.Errorf("UnresolvedServices mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_ResolvedServiceWithNoEndpointsIsNotUnresolved(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/scaled-to-zero": {}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{svcValue("scaled-to-zero", "prod")}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if len(res.IPs.Allow) != 0 {
+		t.Errorf("IPs.Allow = %v, want none", res.IPs.Allow)
+	}
+	if len(res.UnresolvedServices) != 0 {
+		t.Errorf("UnresolvedServices = %v, want none for a Service that exists", res.UnresolvedServices)
+	}
+}
+
+func TestEvaluate_ExternalHostnameIsNotResolved(t *testing.T) {
+	resolver := &recordingResolver{}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{"api.example.com"}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if diff := cmp.Diff([]string{"api.example.com"}, res.IPs.Allow); diff != "" {
+		t.Errorf("IPs.Allow mismatch (-want +got):\n%s", diff)
+	}
+	if len(resolver.calls) != 0 {
+		t.Errorf("resolver was called with %v, want an external hostname never resolved", resolver.calls)
+	}
+	if len(res.UnresolvedServices) != 0 {
+		t.Errorf("UnresolvedServices = %v, want none", res.UnresolvedServices)
+	}
+}
+
+func TestEvaluate_ServiceValuesCoexistWithDefaultDenySentinel(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{"prod/api": {"10.0.0.1"}}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{svcValue("api", "prod")}, ""),
+		Deny:  behaviorRule([]string{StarTarget}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := &AllowDenyPair{Allow: []string{"10.0.0.1"}, Deny: []string{StarTarget}}
+	if diff := cmp.Diff(want, res.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_ResolvedOutputIsStableAcrossEvaluations(t *testing.T) {
+	resolver := mapResolver{services: map[string][]string{
+		"prod/a": {"10.0.0.3", "10.0.0.1"},
+		"prod/b": {"10.0.0.2"},
+		"prod/c": {"10.2.0.1", "10.1.0.1"},
+	}}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	missing := svcValue("missing", "prod")
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{Network: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{"10.9.9.9", svcValue("a", "prod"), missing}, ""),
+					Deny:  behaviorRule([]string{StarTarget, svcValue("c", "prod")}, ""),
+				}},
+				{Network: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{svcValue("b", "prod"), missing}, ""),
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	first, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	for range 5 {
+		next, err := compiled.Evaluate(t.Context())
+		if err != nil {
+			t.Fatalf("Evaluate() unexpected error = %v", err)
+		}
+		if diff := cmp.Diff(first.IPs, next.IPs); diff != "" {
+			t.Fatalf("successive Evaluate() IPs differ (-first +next):\n%s", diff)
+		}
+		if diff := cmp.Diff(first.UnresolvedServices, next.UnresolvedServices); diff != "" {
+			t.Fatalf("successive Evaluate() UnresolvedServices differ (-first +next):\n%s", diff)
+		}
+	}
+
+	want := &AllowDenyPair{
+		Allow: []string{"10.9.9.9", "10.0.0.1", "10.0.0.3", "10.0.0.2"},
+		Deny:  []string{StarTarget, "10.1.0.1", "10.2.0.1"},
+	}
+	if diff := cmp.Diff(want, first.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{missing}, first.UnresolvedServices); diff != "" {
+		t.Errorf("UnresolvedServices mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 	c := newTestCompiler(t)
 
@@ -135,10 +441,14 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 						Deny:  behaviorRule([]string{"3.3.3.3"}, `["4.4.4.4"]`),
 					},
 					Open: &v1alpha1.Behavior{
-						Allow: behaviorRule([]string{"open-allow-hardcoded"}, ""),
+						Allow: behaviorRule([]string{"/open/allow/hardcoded"}, ""),
 					},
 					Exec: &v1alpha1.Behavior{
-						Deny: behaviorRule([]string{"exec-deny-hardcoded"}, ""),
+						Deny: behaviorRule([]string{"/exec/deny/hardcoded"}, ""),
+					},
+					Protocol: &v1alpha1.Behavior{
+						Allow: behaviorRule([]string{"tls/h2"}, `["quic"]`),
+						Deny:  behaviorRule([]string{"*"}, `["ssh"]`),
 					},
 				},
 			},
@@ -156,15 +466,82 @@ func TestEvaluate_MergesHardcodedAndExpressionValuesPerKind(t *testing.T) {
 	}
 
 	// expression results are accumulated before the hardcoded values, and the
-	// three behavior kinds stay independent accumulators.
+	// behavior kinds stay independent accumulators.
 	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"2.2.2.2", "1.1.1.1"}, Deny: []string{"4.4.4.4", "3.3.3.3"}}, res.IPs); diff != "" {
 		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"open-allow-hardcoded"}}, res.Open); diff != "" {
+	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"/open/allow/hardcoded"}}, res.Open); diff != "" {
 		t.Errorf("Open mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(&AllowDenyPair{Deny: []string{"exec-deny-hardcoded"}}, res.Exec); diff != "" {
+	if diff := cmp.Diff(&AllowDenyPair{Deny: []string{"/exec/deny/hardcoded"}}, res.Exec); diff != "" {
 		t.Errorf("Exec mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(&AllowDenyPair{Allow: []string{"quic", "tls/h2"}, Deny: []string{"ssh", "*"}}, res.Protocols); diff != "" {
+		t.Errorf("Protocols mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_MergesHardcodedAndExpressionDNSValues(t *testing.T) {
+	c := newTestCompiler(t)
+
+	compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+		Spec: v1alpha1.RuntimePolicySpec{
+			Behaviors: []v1alpha1.PolicyBehavior{
+				{DNS: &v1alpha1.Behavior{
+					Allow: behaviorRule([]string{"api.openai.com"}, `["*.anthropic.com"]`),
+					Deny:  behaviorRule([]string{"*"}, ""),
+				}},
+				{DNS: &v1alpha1.Behavior{Allow: behaviorRule([]string{"pypi.org"}, "")}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+
+	want := &AllowDenyPair{
+		Allow: []string{"*.anthropic.com", "api.openai.com", "pypi.org"},
+		Deny:  []string{"*"},
+	}
+	if diff := cmp.Diff(want, res.DNS); diff != "" {
+		t.Errorf("DNS mismatch (-want +got):\n%s", diff)
+	}
+	// The dns accumulator stays independent of the other kinds.
+	if res.IPs.HasEntries() || res.Open.HasEntries() || res.Exec.HasEntries() {
+		t.Errorf("dns values leaked into another kind: IPs = %+v, Open = %+v, Exec = %+v", res.IPs, res.Open, res.Exec)
+	}
+}
+
+// A policy with no dns behavior has to be indistinguishable from one whose dns
+// behavior is empty, so a consumer only has HasEntries to check.
+func TestEvaluate_AbsentDNSBehaviorHasNoEntries(t *testing.T) {
+	c := newTestCompiler(t)
+
+	for name, behaviors := range map[string][]v1alpha1.PolicyBehavior{
+		"no behaviors":          nil,
+		"network behavior only": {{Network: &v1alpha1.Behavior{Allow: behaviorRule([]string{"1.1.1.1"}, "")}}},
+		"empty dns behavior":    {{DNS: &v1alpha1.Behavior{Allow: behaviorRule(nil, "")}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			compiled, err := c.Compile(v1alpha1.RuntimePolicy{
+				Spec: v1alpha1.RuntimePolicySpec{Behaviors: behaviors},
+			})
+			if err != nil {
+				t.Fatalf("Compile() unexpected error = %v", err)
+			}
+			res, err := compiled.Evaluate(t.Context())
+			if err != nil {
+				t.Fatalf("Evaluate() unexpected error = %v", err)
+			}
+			if res.DNS.HasEntries() {
+				t.Errorf("DNS = %+v, want no entries", res.DNS)
+			}
+		})
 	}
 }
 
@@ -302,7 +679,7 @@ func newPanickingCompiler(t *testing.T) *compiler {
 	if err != nil {
 		t.Fatalf("Extend() error = %v", err)
 	}
-	return &compiler{env: env}
+	return &compiler{env: env, resolver: mapResolver{}}
 }
 
 // TestEvaluate_PanickingCELBindingBecomesError covers the other half:
@@ -356,5 +733,59 @@ func TestEvaluate_PanickingCELBindingBecomesError(t *testing.T) {
 				t.Errorf("Evaluate() error = %q, want it to carry the panic message", err.Error())
 			}
 		})
+	}
+}
+
+// A per-endpoint record resolves through ResolveEndpoint, so it is programmed
+// with that one backend's address rather than every address behind the Service.
+func TestEvaluate_PerEndpointValueResolvesToThatEndpointAlone(t *testing.T) {
+	resolver := mapResolver{
+		services:  map[string][]string{"default/web": {"10.96.0.7", "10.244.0.5", "10.244.0.6"}},
+		endpoints: map[string][]string{"default/web/web-0": {"10.244.0.5"}},
+	}
+	c := newTestCompilerWithResolver(t, resolver)
+
+	value := "web-0.web.default.svc." + ClusterDomain
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{value}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	want := &AllowDenyPair{Allow: []string{"10.244.0.5"}}
+	if diff := cmp.Diff(want, res.IPs); diff != "" {
+		t.Errorf("IPs mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestEvaluate_UnknownPerEndpointValueIsReportedUnresolved(t *testing.T) {
+	c := newTestCompilerWithResolver(t, mapResolver{
+		services: map[string][]string{"default/web": {"10.244.0.5"}},
+	})
+
+	value := "web-9.web.default.svc." + ClusterDomain
+	compiled, err := c.Compile(netPolicy(&v1alpha1.Behavior{
+		Allow: behaviorRule([]string{value}, ""),
+	}))
+	if err != nil {
+		t.Fatalf("Compile() unexpected error = %v", err)
+	}
+
+	res, err := compiled.Evaluate(t.Context())
+	if err != nil {
+		t.Fatalf("Evaluate() unexpected error = %v", err)
+	}
+	if !slices.Contains(res.UnresolvedServices, value) {
+		t.Errorf("UnresolvedServices = %v, want it to name %q", res.UnresolvedServices, value)
+	}
+	// The Service's own addresses must not stand in for an endpoint that does
+	// not exist.
+	if len(res.IPs.Allow) != 0 {
+		t.Errorf("IPs.Allow = %v, want empty", res.IPs.Allow)
 	}
 }

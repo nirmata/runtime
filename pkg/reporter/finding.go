@@ -31,9 +31,9 @@ import (
 type Finding struct {
 	PolicyName string
 	PolicyUID  string
-	Behavior   string // "network"|"open"|"exec"
+	Behavior   string // "network"|"open"|"exec"|"protocol"|"dns"
 	Severity   string // info|low|medium|high|critical (default medium)
-	Result     string // "fail"|"warn" (monitor findings are "fail")
+	Result     string // "fail"|"warn" (observation-only findings are "warn")
 	// Enforced is true when the kernel actually denied the operation (an
 	// enforce-mode policy's maps blocked it); false for monitor mode's
 	// "would have been denied" counterfactual findings.
@@ -41,6 +41,7 @@ type Finding struct {
 	Message   string
 	Pod       runtimeevent.PodIdentity
 	Net       *NetSummary
+	DNS       *DNSSummary
 	Process   *ProcessSummary
 	Timestamp time.Time
 }
@@ -51,9 +52,15 @@ type NetSummary struct {
 	DestHost string
 }
 
+// DNSSummary summarizes the observed question of a dns finding.
+type DNSSummary struct {
+	QName string
+}
+
 // ProcessSummary summarizes the process of an exec/open finding.
 type ProcessSummary struct {
 	Comm string
+	Argv string
 }
 
 // Severity values accepted by OpenReports.
@@ -117,6 +124,10 @@ func (f Finding) Fingerprint() string {
 	if f.Process != nil {
 		comm = f.Process.Comm
 	}
+	var qname string
+	if f.DNS != nil {
+		qname = f.DNS.QName
+	}
 
 	raw := strings.Join([]string{
 		f.PolicyUID,
@@ -125,6 +136,7 @@ func (f Finding) Fingerprint() string {
 		destHost,
 		destIP,
 		comm,
+		qname,
 	}, "|")
 
 	sum := sha256.Sum256([]byte(raw))

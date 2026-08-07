@@ -100,6 +100,7 @@ defaults to `ghcr.io/nirmata/kyverno-runtime`.
 | `daemon.metrics.port` | `9090` | Port the daemon serves `/metrics` on, passed through `--metrics-addr`. |
 | `daemon.observeInterval` | `""` (daemon default `10s`) | Sets `--observe-interval`. |
 | `daemon.eventBufferSize` | `""` (daemon default `4096`) | Sets `--event-buffer-size`. |
+| `daemon.clusterDomain` | `""` (daemon default `cluster.local`) | Sets `--cluster-domain`, the DNS domain that makes a `network` value a cluster Service name. |
 | `daemon.rbac.extraRules` | `[]` | Extra `PolicyRule` entries appended to the ClusterRole. Ignored if `rbac.create` is `false`. |
 
 The default ClusterRole grants only `pods` (get/list/watch), `runtimepolicies` and
@@ -126,6 +127,12 @@ daemon:
 | `--observe-interval` | `10s` | `daemon.observeInterval` |
 | `--event-buffer-size` | `4096` | `daemon.eventBufferSize` |
 | `--source-restart-backoff` | `5s` | not exposed by the chart |
+| `--cluster-domain` | `cluster.local` | `daemon.clusterDomain` |
+
+`--cluster-domain` is the suffix that makes a `network` value a cluster Service name rather
+than an external one, so a cluster whose DNS domain is not `cluster.local` rejects every
+Service target until this matches — see
+[cluster Service targets](reference/runtimepolicy.md#cluster-service-targets).
 
 ## Verify the install
 

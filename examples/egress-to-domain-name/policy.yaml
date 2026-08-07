@@ -1,0 +1,18 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: egress-to-domain-name
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: dns-client
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - example.com
+        - kube-dns.kube-system.svc.cluster.local

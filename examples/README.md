@@ -24,16 +24,23 @@ BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `l
 boot parameter). Stock distributions and hosted CI runners are typically not booted with
 it.
 
+DNS question reporting shares the cgroup v2 requirement and needs no BPF-LSM.
+
 ## Index
 
 | Directory | Scenario | Features | Mode | Requires |
 | --- | --- | --- | --- | --- |
 | [block-known-bad-egress](block-known-bad-egress/) | Stop a pod from reaching one known-bad destination address, leaving the rest of its egress alone (used by the quickstart) | `network` deny, literal values, `podSelector`, status conditions | enforce | cgroup v2 |
 | [default-deny-egress](default-deny-egress/) | Contain a compromised pod: block all egress except one approved service | `network` default deny with an allow-list, cross-policy union | enforce | cgroup v2 |
+| [egress-to-cluster-service](egress-to-cluster-service/) | Force egress through a gateway without hardcoding its addresses | Cluster Service DNS names resolved from Service and EndpointSlice informers | enforce | cgroup v2 |
+| [egress-to-domain-name](egress-to-domain-name/) | Allow an external destination by DNS name rather than address | A fully qualified domain name as a `network` value, matched from the pod's own DNS answers | enforce | cgroup v2 |
+| [tls-only-egress](tls-only-egress/) | Force a workload to speak only TLS, whatever port it uses | `protocol` default deny, classification from the first data segment | enforce | cgroup v2 |
 | [monitor-egress](monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor mode, Reports, metrics | monitor | cgroup v2 |
 | [deny-sensitive-file-access](deny-sensitive-file-access/) | Block reads of credential files (`/etc/shadow`, SSH keys) even from a shell inside the pod | `open` deny, `values` plus `expression`, `variables` | enforce | BPF-LSM |
 | [restrict-exec-allowlist](restrict-exec-allowlist/) | Prevent shell or netcat execution in a hardened pod: default-deny exec with an allow-list | `exec` default deny with an allow-list, `variables` | enforce | BPF-LSM |
 | [monitor-workload-baseline](monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor mode across all three behaviors, `evaluationInterval`, Reports | monitor | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
+| [report-unexpected-dns](report-unexpected-dns/) | Report the DNS names a workload resolves that it was not expected to, and discover the names it resolves at all | `dns` behavior, inverted allow semantics, left-wildcards, `deny: ["*"]` discovery, advisory findings | monitor | cgroup v2 |
+| [detect-mcp-config-access](detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included | `open` deny over absolute config paths, monitor mode | monitor | BPF-LSM |
 | [blocklist-from-configmap](blocklist-from-configmap/) | The security team manages the egress blocklist in a ConfigMap, with no policy edits | `resource` CEL library, `evaluationInterval`, target validation | enforce | cgroup v2 |
 | [blocklist-from-http](blocklist-from-http/) | Pull the deny list from a threat-intel HTTP feed | `http` CEL library, `dyn` coercion, `evaluationInterval` | enforce | cgroup v2 |
 | [blocklist-from-json](blocklist-from-json/) | Parse a JSON blob from a ConfigMap into a deny list | `json` plus `resource` CEL libraries, `variables`, monitor mode | monitor | cgroup v2 |

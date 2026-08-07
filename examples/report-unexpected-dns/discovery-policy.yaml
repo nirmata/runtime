@@ -1,0 +1,14 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: discover-dns
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: dns-client
+  behaviors:
+  - dns:
+      deny:
+        values:
+        - "*"

@@ -1,0 +1,24 @@
+# Valid: a dns behavior in monitor mode, with an exact name, a left-wildcard and
+# a CEL expression unioned into the same allow rule.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-dns-monitor
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: chainsaw-target
+  variables:
+  - name: extraNames
+    expression: '["api.anthropic.com"]'
+  behaviors:
+  - dns:
+      allow:
+        values:
+        - api.openai.com
+        - "*.openai.azure.com"
+        expression: variables.extraNames
+      deny:
+        values:
+        - telemetry.example.com

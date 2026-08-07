@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: protocol-client
+  labels:
+    app: protocol-client
+spec:
+  containers:
+  - name: client
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 1800"]
