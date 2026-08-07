@@ -14,6 +14,7 @@ spec:
     - |
       # Stand in for the launchers a real agent image ships. Each execs a
       # sleep, so the pod stays up and the argv is what matters.
+      mkdir -p /usr/local/bin
       for tool in npx uvx; do
         printf '#!/bin/sh\nexec sleep 60\n' > "/usr/local/bin/$tool"
         chmod +x "/usr/local/bin/$tool"
