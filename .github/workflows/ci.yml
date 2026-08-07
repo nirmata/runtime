@@ -274,8 +274,8 @@ jobs:
       # job. setup-go's cache is keyed on go.sum alone and is only written on a
       # key miss, so it never picks these up. Rotate on sha and fall back to the
       # newest cache for this go.sum.
-      - name: Cache the ko build
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      - name: Restore the ko build cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.cache/go-build
           key: ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
@@ -353,6 +353,15 @@ jobs:
           cat /tmp/ko-build.log
           rc=$(cat /tmp/ko-build.status 2>/dev/null || echo "timeout")
           [ "$rc" = "0" ] || { echo "ko build failed: $rc"; exit 1; }
+
+      # Saved here rather than in a post step: a post step does not run when the
+      # job fails, so a red suite would leave the next run to compile cold --
+      # slowest exactly while someone is iterating on a failure.
+      - name: Save the ko build cache
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cache/go-build
+          key: ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
       # Load into kind, install the chart, wait for rollout. This step is a
       # GATE: it proves install works and nothing about enforcement.

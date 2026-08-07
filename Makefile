@@ -260,17 +260,23 @@ kind-install-manifests:
 test-e2e:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
 
-# Every suite a hosted runner can satisfy, run concurrently against one cluster.
-# Discovery is by directory, so a new suite joins this lane by existing; only
-# dispatch-only is named, because BPF-LSM is the one thing a hosted runner
-# cannot provide.
+# Every suite a hosted runner can satisfy: all of test/e2e except dispatch-only,
+# which needs BPF-LSM. The list is globbed rather than written out, so a new
+# suite joins this lane by existing.
 #
+# chainsaw --include-test-regex / --exclude-test-regex cannot express this:
+# neither matches the test name, so passing one silently runs the wrong set.
+# Passing the accepted directories is the only reliable selector.
+E2E_HOSTED_DIRS := $(filter-out test/e2e/dispatch-only/%, \
+	$(sort $(dir $(wildcard test/e2e/*/chainsaw-test.yaml test/e2e/*/*/chainsaw-test.yaml))))
+
 # The suites share a daemon and its BPF maps but not a namespace -- chainsaw
 # gives each test its own -- so concurrency here also exercises the per-address
-# refcounting that the serial lanes never contended.
+# refcounting that a serial lane never contended.
 test-e2e-hosted:
-	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/ \
-		--exclude-test-regex '^lsm-enforce$$' --parallel 6
+	@test -n "$(E2E_HOSTED_DIRS)" || { echo "ERROR: no suites found under test/e2e/; the glob in E2E_HOSTED_DIRS is stale."; exit 1; }
+	chainsaw test --config test/e2e/.chainsaw.yaml --parallel 6 \
+		$(foreach d,$(E2E_HOSTED_DIRS),--test-dir $(d))
 
 # Install gate only: image builds, chart installs, daemonset Ready, policies
 # accepted. Asserts nothing about eBPF -- see test/e2e/install-gate.
