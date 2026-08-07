@@ -55,6 +55,9 @@ type trackedPolicy struct {
 	// attributes the kernel's actual denies.
 	mode     string
 	selector labels.Selector
+	// filter narrows which of this policy's findings are reported. Nil when
+	// the policy sets no monitorFilter, which reports everything.
+	filter *compiler.MonitorFilter
 	// each is nil when the policy lists nothing for that behavior.
 	net      *netBehavior
 	open     *pathBehavior
@@ -124,6 +127,7 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 		name:     rp.Name,
 		mode:     rp.Mode,
 		selector: rp.Selector,
+		filter:   rp.MonitorFilter,
 		net:      compileNetBehavior(rp.IPs),
 		open:     compilePathBehavior(rp.Open),
 		exec:     compilePathBehavior(rp.Exec),
@@ -289,6 +293,21 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 	m.log.V(4).Info("policy violation", "policy", tp.name, "uid", tp.uid,
 		"behavior", behavior, "podUid", ev.Pod.UID, "count", ev.Count,
 		"kernelDenied", ev.KernelDenied, "wouldDeny", ev.WouldDeny)
+
+	// The filter runs ahead of every reason this could return, so a broken
+	// expression is counted on a daemon with no sink attached too.
+	dec := tp.filter.Decide(ev)
+	if dec.Err != nil {
+		if m.metrics != nil {
+			m.metrics.MonitorFilterEvalErrors.WithLabelValues(tp.name, dec.Expression).Inc()
+		}
+		m.log.Error(dec.Err, "monitor filter expression failed, reporting the finding anyway",
+			"policy", tp.name, "expression", dec.Expression)
+	}
+	if !dec.Report {
+		m.log.V(4).Info("finding filtered", "policy", tp.name, "expression", dec.Expression)
+		return
+	}
 
 	if m.sink == nil {
 		return

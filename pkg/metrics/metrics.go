@@ -21,6 +21,10 @@ type Metrics struct {
 	// AttributionMisses counts events that could not be attributed to a
 	// pod (see pkg/attribution.Index.Annotate).
 	AttributionMisses prometheus.Counter
+	// MonitorFilterEvalErrors counts monitorFilter expressions that failed to
+	// evaluate, labeled by policy and expression name. A failure reports the
+	// finding anyway, so this counts filters that are not narrowing.
+	MonitorFilterEvalErrors *prometheus.CounterVec
 	// FindingsEmitted counts findings emitted to the reporter, labeled by
 	// policy, behavior, and severity.
 	FindingsEmitted *prometheus.CounterVec
@@ -54,6 +58,12 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name:      "attribution_misses_total",
 			Help:      "Total number of events that could not be attributed to a pod.",
 		}),
+
+		MonitorFilterEvalErrors: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "monitor_filter_eval_errors_total",
+			Help:      "Total number of monitorFilter expression evaluation failures, by policy and expression name. The finding is reported anyway.",
+		}, []string{"policy", "expression"}),
 
 		FindingsEmitted: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,

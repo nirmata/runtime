@@ -28,6 +28,10 @@ type EvaluationResult struct {
 	Selector  labels.Selector
 	Mode      string
 
+	// MonitorFilter narrows which of this policy's findings are reported. Nil
+	// when the policy sets no spec.monitorFilter.
+	MonitorFilter *MonitorFilter
+
 	// UnresolvedServices holds the Service DNS values whose Service is absent
 	// from cache, as authored.
 	UnresolvedServices []string
@@ -146,6 +150,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		DNS:                dns,
 		Selector:           selector,
 		Mode:               c.mode,
+		MonitorFilter:      c.monitorFilter,
 		UnresolvedServices: unresolved,
 	}, nil
 }

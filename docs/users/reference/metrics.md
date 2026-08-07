@@ -14,6 +14,7 @@ Every metric is prefixed `nirmata_runtime_`.
 | `nirmata_runtime_events_dropped_total` | `source`, `reason` | Dropped observations. |
 | `nirmata_runtime_attribution_misses_total` | — | Observations that could not be tied to a pod. |
 | `nirmata_runtime_findings_emitted_total` | `policy`, `behavior`, `severity` | Findings handed to the reporter. |
+| `nirmata_runtime_monitor_filter_eval_errors_total` | `policy`, `expression` | `spec.monitorFilter` expressions that failed to evaluate. The finding is reported anyway. |
 | `nirmata_runtime_report_writes_total` | `result` | Report write attempts. |
 
 Label values:
@@ -88,5 +89,10 @@ What to look at:
   findings for a specific workload is not.
 - `nirmata_runtime_events_dropped_total` and `nirmata_runtime_report_writes_total{result="error"}`
   are the two counters worth alerting on.
+- `nirmata_runtime_monitor_filter_eval_errors_total` above zero means a
+  [monitorFilter](runtimepolicy.md#filtering-monitor-findings) expression is failing at
+  evaluation time; the `expression` label carries that expression's `name`. The filter fails
+  open, so the effect is findings it should have narrowed showing up in the Report — noise to
+  fix, not a gap to worry about.
 
 More on each of these in [Troubleshooting](../troubleshooting.md).

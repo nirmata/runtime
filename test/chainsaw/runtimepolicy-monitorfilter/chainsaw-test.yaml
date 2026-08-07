@@ -1,0 +1,60 @@
+# CRD conformance for spec.monitorFilter: the two shapes the apiserver decides,
+# and the round-trip that proves nothing is pruned.
+#
+# Expression syntax and the bool result type are decided by the daemon's
+# compiler, not by the schema: `expression` is a string, so a typo or a
+# list-valued expression is well-formed OpenAPI and reaches an operator as
+# Applied=False with reason CompileFailed. Those cases are asserted where they
+# happen, in pkg/compiler's tests (TestCompileMonitorFilter_Rejections).
+#
+# Requires: charts/kyverno-runtime/crds applied. No daemon, no eBPF.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: runtimepolicy-monitorfilter
+spec:
+  steps:
+  - name: enforce-with-a-monitorfilter-is-rejected-at-admission
+    try:
+    - apply:
+        file: bad-monitorfilter-enforce.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'a monitorFilter narrows what a monitor-mode policy reports'))": true
+            "(contains($error, 'never suppressed'))": true
+
+  - name: an-empty-expression-list-is-rejected
+    try:
+    - apply:
+        file: bad-monitorfilter-empty.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'spec.monitorFilter.expressions'))": true
+
+  - name: monitorfilter-in-monitor-mode-is-accepted
+    # Read the object back: both expressions survive, in the order authored,
+    # which is what makes the guard-then-dereference idiom safe.
+    try:
+    - apply:
+        file: policy-monitorfilter.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-monitorfilter
+          spec:
+            mode: monitor
+            (length(monitorFilter.expressions)): 2
+            (monitorFilter.expressions[0].name): exec-events-only
+            (monitorFilter.expressions[0].expression): 'has(event.exec)'
+            (monitorFilter.expressions[1].name): mcp-server-package
+            (monitorFilter.expressions[1].expression): 'event.exec.argv.exists(a, a.startsWith("mcp-server-"))'
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-monitorfilter

@@ -26,6 +26,7 @@ kubectl get rpol <name> -o yaml
 | `spec.evaluationInterval` | duration | How often matched pods are re-evaluated. Required to pick up changes behind a `resource` or `http` expression. |
 | `spec.variables` | list of `name` + `expression` | Named CEL expressions, referenced as `variables.<name>` from any other expression. |
 | `spec.behaviors` | list | One entry per behavior kind; each entry configures exactly one of `network`, `exec`, `open`, `protocol`, `dns`. Each `allow`/`deny` rule takes `values` and `expression`. At most 64 entries. |
+| `spec.monitorFilter` | `expressions`: list of `name` + `expression` | A per-event CEL predicate deciding which monitor-mode findings are reported. 1 to 64 entries. Rejected on an `enforce` policy. See [Filtering monitor findings](#filtering-monitor-findings). |
 
 Each entry in `spec.behaviors` configures exactly one of `network`, `exec`, `open`, `protocol`, or
 `dns`. Each of those takes an `allow` and/or a `deny` rule, and each rule accepts a literal
@@ -655,6 +656,146 @@ Details worth knowing:
 Counters for ingested observations, dropped observations, and emitted findings are in
 [Metrics](metrics.md).
 
+## Filtering monitor findings
+
+A `monitor` policy reports every observation its `allow`/`deny` lists match, and under a
+default deny (`deny.values: ["*"]`) that is every file the workload opened, every program it
+ran, or every address it reached. `spec.monitorFilter` decides which of those findings are
+worth reporting, as a CEL predicate over the observation itself:
+
+```yaml
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: report-mcp-file-access
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      nirmata.io/workload-class: ai-agent
+  behaviors:
+  - open:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: mcp-file-access
+      expression: 'has(event.open) && event.open.path.matches("(?i)mcp")'
+```
+
+This is the thing a `deny` list cannot express. `open` and `exec` values are absolute literal
+paths compared whole, with no substring, prefix, basename, or regex form, so an operator whose
+target is a *shape* of path rather than a list of them had only two options: enumerate every
+path in advance, or turn on `deny: ["*"]` and drown. A default deny plus a filter is the third.
+
+| `spec.monitorFilter` | What is reported |
+| --- | --- |
+| absent | Every finding, unchanged. |
+| present | A finding only if **every** expression is true. |
+
+- Expressions are **ANDed**, evaluated in order, and short-circuit on the first false one. A
+  disjunction goes inside a single expression with `||`.
+- Each `expression` must type as `bool`, checked when the policy compiles. An unknown field is
+  a compile error naming the valid ones, so the type checker — not a table — is how the `event`
+  schema is discovered.
+- `name` identifies the expression in compile errors, status conditions, and the eval-error
+  metric. It is never written to a Report.
+- A `dns` finding never has `event.wouldDeny` set, so an expression guarding on it silently
+  drops every DNS finding. The full `event` schema, and the CEL environment these expressions
+  run in, are in [CEL in RuntimePolicy](cel.md#monitorfilter-expressions).
+
+### A broken filter reports anyway
+
+An expression that fails at evaluation time, or returns anything other than a bool, reports the
+finding and increments `nirmata_runtime_monitor_filter_eval_errors_total`, labeled with the
+policy and the expression's `name` (see [Metrics](metrics.md)). The predicate selects what to
+*show*, so the safe direction on failure is to show it: a filter that quietly dropped findings
+would be a monitoring gap indistinguishable from "nothing happened".
+
+### Monitor mode only
+
+An `enforce` policy carrying a `monitorFilter` is refused by the API server, which carries a
+validation rule for it, so `kubectl apply` fails with:
+
+```text
+a monitorFilter narrows what a monitor-mode policy reports; an enforce-mode policy reports only operations the kernel actually denied, and those are never suppressed
+```
+
+The daemon carries the same rule, so a cluster whose CRD predates it refuses the policy at
+compile time instead, reporting `Applied=False` with reason `CompileFailed`.
+
+The two kinds of finding are not equivalent. A monitor finding is a counterfactual — an
+enforcing form of this policy would have blocked this — and under `deny.values: ["*"]` that is
+every open and every exec. An enforce finding is the record that the kernel *did* block
+something: each one is bounded and individually meaningful, and suppressing it destroys an
+audit record. The remedy for not wanting one is to change the policy so the operation is not
+denied.
+
+A `monitor` policy selecting a pod that a *different*, `enforce` policy blocks still emits its
+own counterfactual, so that finding stays filterable. `event.kernelDenied` says the kernel
+denied the operation; it does not say this policy is what denied it.
+
+### What a monitorFilter does not do
+
+- **It is not enforcement.** The kernel decides from map lookups and cannot consult CEL, so a
+  filter narrows what is observed into findings and never what is blocked. Sitting beside
+  `behaviors` invites the other reading, and the other reading is wrong.
+- **It does not relieve kernel map pressure.** Recording is unconditional, so a path a filter
+  rejects still consumes a key in the per-cgroup map and still displaces others (see
+  [Limits of monitor mode](#limits-of-monitor-mode)).
+
+### Naming a set that cannot be enumerated
+
+Two MCP targets have no absolute path a policy could list: a project-scoped `.mcp.json`, whose
+location depends on where the repository was checked out, and the OAuth refresh-token cache
+under `~/.mcp-auth/`, whose filenames are hashes. The alternatives are a disjunction, so they
+go inside one expression:
+
+```yaml
+  monitorFilter:
+    expressions:
+    - name: mcp-config-or-credential-read
+      expression: >-
+        has(event.open) && (
+          event.open.path.contains("/.mcp-auth/") ||
+          event.open.path.endsWith("/.mcp.json") ||
+          [
+            "/mcp.json", "/mcp_config.json",
+            "/claude_desktop_config.json", "/.claude.json",
+          ].exists(f, event.open.path.endsWith(f))
+        )
+```
+
+### Successive narrowing
+
+Splitting a filter across expressions is where the AND and the short-circuit earn their place:
+the guard is what lets the second expression dereference `event.exec` at all, because on an
+`open` event the first expression is false and the second never runs.
+
+```yaml
+spec:
+  mode: monitor
+  behaviors:
+  - exec:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: exec-events-only
+      expression: 'has(event.exec)'
+    - name: mcp-server-package
+      expression: >-
+        event.exec.argv.exists(a, a.startsWith("@modelcontextprotocol/")) ||
+        event.exec.argv.exists(a, a.startsWith("mcp-server-")) ||
+        event.exec.argv.exists(a, a.startsWith("mcp_server")) ||
+        event.exec.argv.exists(a, a.startsWith("mcp/")) ||
+        event.exec.argv.exists(a, a in ["mcp-remote", "supergateway", "mcpo"]) ||
+        event.exec.argv.exists(a, !a.startsWith("-") && a.endsWith("-mcp"))
+```
+
+The `!a.startsWith("-")` guard is what stops `--no-mcp` matching the `-mcp` suffix rule: a flag
+is never a package.
+
 ## Limits of monitor mode
 
 The `network`, `open`, and `exec` observations are built on the counters the enforcement
@@ -696,6 +837,11 @@ exception in shape — a program of its own, streamed rather than counted — an
 - **Observations that cannot be attributed to a pod are dropped** and counted in
   `nirmata_runtime_attribution_misses_total`. Node-level and host-process activity is
   therefore not reported.
+- **A `monitorFilter` narrows findings, not observation.** Recording in the kernel is
+  unconditional, so a broad policy with a narrow filter costs exactly what the broad policy
+  costs: the paths the filter rejects still occupy keys in the 2048-entry per-cgroup map and
+  still displace others. What the filter buys is a Report a reader can use, and room under the
+  500-result cap.
 
 ## Limits of protocol classification
 
