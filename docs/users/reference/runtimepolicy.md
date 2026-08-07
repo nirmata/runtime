@@ -630,8 +630,8 @@ Each result carries `policy` (the RuntimePolicy name), `rule` (the behavior: `ne
 `open`, `exec`, `protocol`, `dns`), `severity: medium` (`RuntimePolicy` has no severity field yet),
 `source: kyverno-runtime`, `category: Runtime Security`, the offending pod as
 `subjects[0]`, and a fixed set of `properties`: `fingerprint`, `count`, `firstTimestamp`,
-`lastTimestamp`, `behavior`, `enforced`, `node`, `container`, `owner`, `serviceAccount`,
-and — where applicable — `destIP`, `destHost`, `dnsName`, `comm`.
+`lastTimestamp`, `behavior`, `target`, `enforced`, `node`, `container`, `owner`,
+`serviceAccount`, and — where applicable — `destIP`, `destHost`, `dnsName`, `comm`, `argv`.
 
 `result` is `fail` for `network`, `open`, and `exec`, and `warn` for `dns`: a question was
 observed, nothing was blocked, and nothing would have been.

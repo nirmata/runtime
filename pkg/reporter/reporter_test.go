@@ -260,6 +260,71 @@ func TestReportDedupMergesCountAndTimestamps(t *testing.T) {
 	}
 }
 
+// openFindingIn returns the shape a counter-sourced open observation has: no
+// destination, no process, nothing but the path to tell two violations of one
+// policy apart.
+func openFindingIn(namespace, podUID, path string, at time.Time) Finding {
+	return Finding{
+		PolicyName: "block-secrets",
+		PolicyUID:  "policy-uid-1",
+		Behavior:   "open",
+		Target:     path,
+		Severity:   SeverityHigh,
+		Result:     ResultFail,
+		Message:    "monitor mode: open of " + path + " would have been denied by policy block-secrets",
+		Pod: runtimeevent.PodIdentity{
+			UID:       podUID,
+			Namespace: namespace,
+			Name:      "pod-" + podUID,
+			Container: "app",
+			NodeName:  "node-a",
+		},
+		Timestamp: at,
+	}
+}
+
+func TestOpenFindingsSplitByPathAndRepeatsMerge(t *testing.T) {
+	c := newRecordingClient(t)
+	r, _ := newTestReporter(t, c, Options{NodeName: "node-a"})
+
+	t1 := fixedTime
+	t2 := fixedTime.Add(time.Minute)
+
+	r.Report(openFindingIn("default", "pod-1", "/etc/hostname", t2))
+	r.Report(openFindingIn("default", "pod-1", "/etc/resolv.conf", t1))
+	r.Report(openFindingIn("default", "pod-1", "/etc/hostname", t1))
+
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	report := getReport(t, c, "default", "kyverno-runtime-node-a")
+	if len(report.Results) != 2 {
+		t.Fatalf("report holds %d results, want 2 (one per path)", len(report.Results))
+	}
+
+	byTarget := map[string]map[string]string{}
+	for _, res := range report.Results {
+		byTarget[res.Properties[propTarget]] = res.Properties
+	}
+	hostname, ok := byTarget["/etc/hostname"]
+	if !ok {
+		t.Fatalf("no result for /etc/hostname, got targets %v", byTarget)
+	}
+	if _, ok := byTarget["/etc/resolv.conf"]; !ok {
+		t.Fatalf("no result for /etc/resolv.conf, got targets %v", byTarget)
+	}
+	if hostname[propCount] != "2" {
+		t.Errorf("count for the repeated path = %q, want 2", hostname[propCount])
+	}
+	if hostname[propFirstTimestamp] != t1.Format(time.RFC3339) {
+		t.Errorf("firstTimestamp = %q, want %q", hostname[propFirstTimestamp], t1.Format(time.RFC3339))
+	}
+	if hostname[propLastTimestamp] != t2.Format(time.RFC3339) {
+		t.Errorf("lastTimestamp = %q, want %q", hostname[propLastTimestamp], t2.Format(time.RFC3339))
+	}
+}
+
 func TestFlushCapsResultsAndAnnotatesTruncation(t *testing.T) {
 	c := newRecordingClient(t)
 	r, _ := newTestReporter(t, c, Options{NodeName: "node-a", MaxResultsPerReport: 2})

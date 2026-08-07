@@ -70,6 +70,7 @@ func TestFingerprintIsUniquePerIdentity(t *testing.T) {
 		{"policyUID", func(f *Finding) { f.PolicyUID = "policy-uid-2" }},
 		{"podUID", func(f *Finding) { f.Pod.UID = "pod-uid-2" }},
 		{"behavior", func(f *Finding) { f.Behavior = "exec" }},
+		{"target", func(f *Finding) { f.Target = "api.other.com" }},
 		{"netDestIP", func(f *Finding) { f.Net.DestIP = "5.6.7.8" }},
 		{"netDestHost", func(f *Finding) { f.Net.DestHost = "api.other.com" }},
 		{"netAbsent", func(f *Finding) { f.Net = nil }},
@@ -93,6 +94,50 @@ func TestFingerprintIsUniquePerIdentity(t *testing.T) {
 			}
 			seen[got] = tc.name
 		})
+	}
+}
+
+// TestFingerprintSeparatesTargetsWithinOnePolicyAndPod covers the shape a
+// counter-sourced open observation has: no destination, no comm, nothing but
+// the path to tell two violations of one policy apart.
+func TestFingerprintSeparatesTargetsWithinOnePolicyAndPod(t *testing.T) {
+	open := func(path string) Finding {
+		return Finding{
+			PolicyUID: "policy-uid-1",
+			Behavior:  "open",
+			Target:    path,
+			Pod:       runtimeevent.PodIdentity{UID: "pod-uid-1"},
+		}
+	}
+
+	if a, b := open("/etc/shadow").Fingerprint(), open("/etc/passwd").Fingerprint(); a == b {
+		t.Errorf("distinct paths share a fingerprint: %q", a)
+	}
+	if a, b := open("/etc/shadow").Fingerprint(), open("/etc/shadow").Fingerprint(); a != b {
+		t.Errorf("the same path yields two fingerprints: %q != %q", a, b)
+	}
+}
+
+// TestFingerprintEncodingIsUnambiguous covers a target that carries whatever
+// bytes a delimited encoding would use to separate fields: a path and a comm
+// are both attacker-influenced, so shifting the boundary between them must not
+// let one finding wear another's fingerprint.
+func TestFingerprintEncodingIsUnambiguous(t *testing.T) {
+	f := func(target, comm string) Finding {
+		return Finding{
+			PolicyUID: "policy-uid-1",
+			Behavior:  "open",
+			Target:    target,
+			Pod:       runtimeevent.PodIdentity{UID: "pod-uid-1"},
+			Process:   &ProcessSummary{Comm: comm},
+		}
+	}
+
+	if a, b := f("/a", "b|||c").Fingerprint(), f("/a|||b", "c").Fingerprint(); a == b {
+		t.Errorf("a shifted field boundary yields the same fingerprint: %q", a)
+	}
+	if a, b := f("/a\x00b", "").Fingerprint(), f("/a", "b").Fingerprint(); a == b {
+		t.Errorf("a NUL in the target yields the same fingerprint as a split field: %q", a)
 	}
 }
 

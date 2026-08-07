@@ -19,6 +19,7 @@ package reporter
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 
@@ -32,8 +33,11 @@ type Finding struct {
 	PolicyName string
 	PolicyUID  string
 	Behavior   string // "network"|"open"|"exec"|"protocol"|"dns"
-	Severity   string // info|low|medium|high|critical (default medium)
-	Result     string // "fail"|"warn" (observation-only findings are "warn")
+	// Target is the behavior's object: the destination, path, executed
+	// binary, protocol[/alpn], or question name the message names.
+	Target   string
+	Severity string // info|low|medium|high|critical (default medium)
+	Result   string // "fail"|"warn" (observation-only findings are "warn")
 	// Enforced is true when the kernel actually denied the operation (an
 	// enforce-mode policy's maps blocked it); false for monitor mode's
 	// "would have been denied" counterfactual findings.
@@ -113,8 +117,8 @@ func normalizeResult(res string) string {
 // Report result with a count instead of growing the report unboundedly.
 //
 // It deliberately excludes the message, timestamp, and every free-text field:
-// two occurrences of the same policy hitting the same destination from the
-// same pod are the same finding.
+// two occurrences of the same policy hitting the same target from the same
+// pod are the same finding.
 func (f Finding) Fingerprint() string {
 	var destHost, destIP string
 	if f.Net != nil {
@@ -129,16 +133,23 @@ func (f Finding) Fingerprint() string {
 		qname = f.DNS.QName
 	}
 
-	raw := strings.Join([]string{
+	// Length-prefixed, not delimited: a path and a comm may each hold any byte,
+	// so no delimiter is safe. Joining on one lets a target ending in the
+	// delimiter absorb the field after it and collide with a different finding.
+	var raw strings.Builder
+	for _, part := range []string{
 		f.PolicyUID,
 		f.Pod.UID,
 		f.Behavior,
+		f.Target,
 		destHost,
 		destIP,
 		comm,
 		qname,
-	}, "|")
+	} {
+		fmt.Fprintf(&raw, "%d:%s", len(part), part)
+	}
 
-	sum := sha256.Sum256([]byte(raw))
+	sum := sha256.Sum256([]byte(raw.String()))
 	return hex.EncodeToString(sum[:])
 }

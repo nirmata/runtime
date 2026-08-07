@@ -16,13 +16,14 @@ import (
 // Finding struct is that this set never grows by accident (DESIGN §4).
 var allowedPropertyKeys = map[string]struct{}{
 	propFingerprint: {}, propCount: {}, propFirstTimestamp: {}, propLastTimestamp: {},
-	propBehavior: {}, propEnforced: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
+	propBehavior: {}, propTarget: {}, propEnforced: {}, propNode: {}, propContainer: {}, propOwner: {}, propServiceAccount: {},
 	propDestIP: {}, propDestHost: {}, propDNSName: {},
 	propComm: {}, propArgv: {},
 }
 
 func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 	f := baseFinding()
+	f.Target = "api.example.com"
 	f.Pod.OwnerKind = "Deployment"
 	f.Pod.OwnerName = "app"
 	f.Pod.ServiceAccount = "app-sa"
@@ -54,6 +55,7 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 		propFirstTimestamp: "2026-07-27T09:00:00Z",
 		propLastTimestamp:  "2026-07-27T09:05:00Z",
 		propBehavior:       "network",
+		propTarget:         "api.example.com",
 		propEnforced:       "false",
 		propNode:           "node-a",
 		propContainer:      "app",
@@ -96,7 +98,7 @@ func TestBuildResultOmitsAbsentSummaries(t *testing.T) {
 	res := buildResult(&pending{finding: f, count: 1, first: at, last: at})
 
 	for _, key := range []string{propDestIP, propDestHost, propComm,
-		propNode, propContainer, propOwner} {
+		propTarget, propNode, propContainer, propOwner} {
 		if _, ok := res.Properties[key]; ok {
 			t.Errorf("property %q emitted for an absent field", key)
 		}
