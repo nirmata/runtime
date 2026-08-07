@@ -133,7 +133,10 @@ func (f Finding) Fingerprint() string {
 		qname = f.DNS.QName
 	}
 
-	h := sha256.New()
+	// Length-prefixed, not delimited: a path and a comm may each hold any byte,
+	// so no delimiter is safe. Joining on one lets a target ending in the
+	// delimiter absorb the field after it and collide with a different finding.
+	var raw strings.Builder
 	for _, part := range []string{
 		f.PolicyUID,
 		f.Pod.UID,
@@ -144,11 +147,9 @@ func (f Finding) Fingerprint() string {
 		comm,
 		qname,
 	} {
-		// Length-prefixed, not delimited: a path and a comm may each hold any
-		// byte, so no delimiter is safe. Joining on one lets a target ending
-		// in the delimiter absorb the field after it and collide with a
-		// different finding.
-		fmt.Fprintf(h, "%d:%s", len(part), part)
+		fmt.Fprintf(&raw, "%d:%s", len(part), part)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+
+	sum := sha256.Sum256([]byte(raw.String()))
+	return hex.EncodeToString(sum[:])
 }
