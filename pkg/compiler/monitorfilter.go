@@ -198,6 +198,10 @@ func (c *compiler) compileMonitorFilter(rp v1alpha1.RuntimePolicy, mode string) 
 	}
 
 	exprPath := path.Child("expressions")
+	if len(mf.Expressions) == 0 {
+		return nil, field.Required(exprPath, "a monitorFilter with no expressions reports every finding, which is what omitting the field already does")
+	}
+
 	seen := make(map[string]struct{}, len(mf.Expressions))
 	expressions := make([]filterExpression, 0, len(mf.Expressions))
 	for i, e := range mf.Expressions {

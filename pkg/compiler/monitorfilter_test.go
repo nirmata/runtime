@@ -109,6 +109,12 @@ func TestCompileMonitorFilter_Rejections(t *testing.T) {
 		exprs:    []v1alpha1.MonitorFilterExpression{condition("a", `has(event.open)`)},
 		wantPath: "spec.monitorFilter",
 		wantErr:  "an enforce-mode policy reports only operations the kernel actually denied",
+	}, {
+		name:     "empty expression list",
+		mode:     v1alpha1.PolicyModeMonitor,
+		exprs:    []v1alpha1.MonitorFilterExpression{},
+		wantPath: "spec.monitorFilter.expressions",
+		wantErr:  "reports every finding, which is what omitting the field already does",
 	}}
 
 	for _, tt := range tests {
@@ -332,6 +338,60 @@ func TestMonitorFilterFieldCoverage(t *testing.T) {
 			}
 			if !got.Report {
 				t.Errorf("Decide() Report = false, want the expression to be true over a fully populated event")
+			}
+		})
+	}
+}
+
+// A counter-sourced observation carries neither labels nor argv, so the two
+// collection fields reach CEL as nil. They must behave as empty collections
+// rather than as null: a guard that errors here would fail open and report
+// every finding, which is the failure this filter exists to avoid.
+func TestMonitorFilterNilCollectionsBehaveAsEmpty(t *testing.T) {
+	openNoLabels := runtimeevent.Event{
+		Kind: runtimeevent.KindOpen,
+		Open: &runtimeevent.OpenFacts{Path: "/etc/hosts"},
+	}
+	execNoArgv := runtimeevent.Event{
+		Kind: runtimeevent.KindExec,
+		Exec: &runtimeevent.ExecFacts{Filename: "/bin/sh"},
+	}
+
+	tests := []struct {
+		name       string
+		expr       string
+		ev         runtimeevent.Event
+		wantReport bool
+	}{{
+		name:       "membership test on nil labels",
+		expr:       `"app" in event.pod.labels`,
+		ev:         openNoLabels,
+		wantReport: false,
+	}, {
+		name:       "size of nil labels",
+		expr:       `size(event.pod.labels) == 0`,
+		ev:         openNoLabels,
+		wantReport: true,
+	}, {
+		name:       "exists macro on nil argv",
+		expr:       `event.exec.argv.exists(a, a.startsWith("mcp-server-"))`,
+		ev:         execNoArgv,
+		wantReport: false,
+	}, {
+		name:       "size of nil argv",
+		expr:       `size(event.exec.argv) == 0`,
+		ev:         execNoArgv,
+		wantReport: true,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := compileFilter(t, condition("p", tt.expr)).Decide(tt.ev)
+			if got.Err != nil {
+				t.Fatalf("Decide() err = %v, want nil: a nil collection must not error", got.Err)
+			}
+			if got.Report != tt.wantReport {
+				t.Errorf("Decide() Report = %v, want %v", got.Report, tt.wantReport)
 			}
 		})
 	}
