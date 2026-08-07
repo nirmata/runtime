@@ -80,7 +80,7 @@ spec:
         expression: "variables.extraDenied"
 ```
 
-Runnable version: [deny-sensitive-file-access](../../../examples/deny-sensitive-file-access/).
+Runnable version: [deny-sensitive-file-access](../../../examples/files-and-processes/deny-sensitive-file-access/).
 
 ## resource library
 
@@ -99,7 +99,7 @@ Two prerequisites:
 - The list lives in external, mutable state, so set `spec.evaluationInterval` — without it the
   lookup happens once and the policy never sees a ConfigMap edit.
 
-Runnable version: [blocklist-from-configmap](../../../examples/blocklist-from-configmap/).
+Runnable version: [blocklist-from-configmap](../../../examples/dynamic-lists/blocklist-from-configmap/).
 
 ## http library
 
@@ -113,7 +113,7 @@ http.get("http://ip-server.default.svc.cluster.local:8080").body.map(x, string(x
 The fetch happens at policy evaluation time and on every re-evaluation, so
 `spec.evaluationInterval` sets how often the feed is polled.
 
-Runnable version: [blocklist-from-http](../../../examples/blocklist-from-http/).
+Runnable version: [blocklist-from-http](../../../examples/dynamic-lists/blocklist-from-http/).
 
 ## json library
 
@@ -133,7 +133,7 @@ HTTP endpoint:
 json.unmarshal(resource.get("v1", "configmaps", "default", "ip-blocklist-json").data["ips"])
 ```
 
-Runnable version: [blocklist-from-json](../../../examples/blocklist-from-json/).
+Runnable version: [blocklist-from-json](../../../examples/dynamic-lists/blocklist-from-json/).
 
 ## monitorFilter expressions
 

@@ -4,6 +4,9 @@ Every example lives in its own directory under [`examples/`](../../examples/) wi
 manifests it needs and a README that walks through what it shows, how to apply it, how to
 verify the result, and how to clean up.
 
+The directories are grouped five ways, and the sections below are those groups: each heading
+is a folder under `examples/`, so a scenario found here is found at the same place on disk.
+
 The manifests are the canonical form: each `RuntimePolicy` is a complete object that
 decodes against the CRD and whose expressions compile against the daemon's CEL environment.
 Every policy sets `spec.mode` explicitly, because a policy that omits it neither enforces
@@ -28,17 +31,19 @@ If enforcement appears to do nothing, that distinction is the first thing to che
 
 ## Egress control
 
+[`examples/egress/`](../../examples/egress/) — deciding which destinations a workload may
+reach, and over which protocols.
+
 | Example | Scenario | Mode | Requires |
 | --- | --- | --- | --- |
-| [block-known-bad-egress](../../examples/block-known-bad-egress/) | Stop a pod from reaching one known-bad destination address, leaving the rest of its egress alone | enforce | cgroup v2 |
-| [default-deny-egress](../../examples/default-deny-egress/) | Contain a compromised pod: block all egress except one approved service | enforce | cgroup v2 |
-| [egress-to-cluster-service](../../examples/egress-to-cluster-service/) | Name the approved destinations by their cluster Service DNS names instead of addresses, leaving the API server unreachable by omission | enforce | cgroup v2 |
-| [egress-to-domain-name](../../examples/egress-to-domain-name/) | Allow an external fully qualified domain name, enforced from the pod's own DNS answers | enforce | cgroup v2 |
-| [tls-only-egress](../../examples/tls-only-egress/) | Force a workload to speak only TLS, whatever port it uses | enforce | cgroup v2 |
-| [protocol-default-deny](../../examples/protocol-default-deny/) | The same default deny, with the allowed and denied protocols exercised on one port | enforce | cgroup v2 |
-| [egress-baseline-combined](../../examples/egress-baseline-combined/) | Every network-side field in one annotated policy, with the accepted values for each | enforce | cgroup v2 |
-| [overlapping-egress-policies](../../examples/overlapping-egress-policies/) | Two policies over one pod, and a pod that starts after them | enforce | cgroup v2 |
-| [trusted-and-untrusted-agents](../../examples/trusted-and-untrusted-agents/) | Give a declared agent a hard TLS-to-one-Service boundary, and report which LLM providers an undeclared one resolves | enforce and monitor | cgroup v2 |
+| [block-known-bad-egress](../../examples/egress/block-known-bad-egress/) | Stop a pod from reaching one known-bad destination address, leaving the rest of its egress alone | enforce | cgroup v2 |
+| [default-deny-egress](../../examples/egress/default-deny-egress/) | Contain a compromised pod: block all egress except one approved service | enforce | cgroup v2 |
+| [egress-to-cluster-service](../../examples/egress/egress-to-cluster-service/) | Name the approved destinations by their cluster Service DNS names instead of addresses, leaving the API server unreachable by omission | enforce | cgroup v2 |
+| [egress-to-domain-name](../../examples/egress/egress-to-domain-name/) | Allow an external fully qualified domain name, enforced from the pod's own DNS answers | enforce | cgroup v2 |
+| [tls-only-egress](../../examples/egress/tls-only-egress/) | Force a workload to speak only TLS, whatever port it uses | enforce | cgroup v2 |
+| [protocol-default-deny](../../examples/egress/protocol-default-deny/) | The same default deny, with the allowed and denied protocols exercised on one port | enforce | cgroup v2 |
+| [egress-baseline-combined](../../examples/egress/egress-baseline-combined/) | Every network-side field in one annotated policy, with the accepted values for each | enforce | cgroup v2 |
+| [overlapping-egress-policies](../../examples/egress/overlapping-egress-policies/) | Two policies over one pod, and a pod that starts after them | enforce | cgroup v2 |
 
 `block-known-bad-egress` is the scenario the [quickstart](quickstart.md) walks through.
 
@@ -52,27 +57,30 @@ allow list is not a containment boundary. A cluster Service written short, as
 
 ## File and process control
 
-| Example | Scenario | Mode | Requires |
-| --- | --- | --- | --- |
-| [deny-sensitive-file-access](../../examples/deny-sensitive-file-access/) | Block reads of credential files (`/etc/shadow`, SSH keys) even from a shell inside the pod | enforce | BPF-LSM |
-| [restrict-exec-allowlist](../../examples/restrict-exec-allowlist/) | Prevent shell or netcat execution in a hardened pod: default-deny exec with an allow-list | enforce | BPF-LSM |
-| [enforce-workload-baseline](../../examples/enforce-workload-baseline/) | Lock a workload to its known-good files, binaries, and destinations | enforce | BPF-LSM |
-
-## Monitor mode
+[`examples/files-and-processes/`](../../examples/files-and-processes/) — deciding which files
+a workload may read and which binaries it may run.
 
 | Example | Scenario | Mode | Requires |
 | --- | --- | --- | --- |
-| [monitor-egress](../../examples/monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor | cgroup v2 |
-| [monitor-workload-baseline](../../examples/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
-| [monitor-static-pods](../../examples/monitor-static-pods/) | Confirm the daemon can observe kubeadm's static control-plane pods | monitor | cgroup v2 |
-| [detect-mcp-config-access](../../examples/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM |
-| [detect-mcp-servers](../../examples/detect-mcp-servers/) | Report every stdio MCP server a workload launches, identified by the package it was asked to run rather than the binary that ran it | monitor | BPF-LSM |
+| [deny-sensitive-file-access](../../examples/files-and-processes/deny-sensitive-file-access/) | Block reads of credential files (`/etc/shadow`, SSH keys) even from a shell inside the pod | enforce | BPF-LSM |
+| [restrict-exec-allowlist](../../examples/files-and-processes/restrict-exec-allowlist/) | Prevent shell or netcat execution in a hardened pod: default-deny exec with an allow-list | enforce | BPF-LSM |
+| [enforce-workload-baseline](../../examples/files-and-processes/enforce-workload-baseline/) | Lock a workload to its known-good files, binaries, and destinations | enforce | BPF-LSM |
 
-Monitor mode reports through OpenReports `Report` objects and never blocks. What it can and
-cannot see is listed in
-[limits of monitor mode](reference/runtimepolicy.md#limits-of-monitor-mode).
+## Shadow AI
 
-## DNS reporting
+[`examples/shadow-ai/`](../../examples/shadow-ai/) — finding the model providers, SDKs, agent
+CLIs, and MCP servers a workload picked up on its own. These are walked through together,
+with what each signal can and cannot establish, in
+[detecting shadow AI](shadow-ai.md).
+
+| Example | Scenario | Mode | Requires |
+| --- | --- | --- | --- |
+| [report-unexpected-dns](../../examples/shadow-ai/report-unexpected-dns/) | Report the provider hostnames a workload resolves outside its approved set, and discover the names it resolves at all | monitor | cgroup v2 |
+| [trusted-and-untrusted-agents](../../examples/shadow-ai/trusted-and-untrusted-agents/) | Give a declared agent a hard TLS-to-one-Service boundary, and report which LLM providers an undeclared one resolves | enforce and monitor | cgroup v2 |
+| [detect-ai-sdks](../../examples/shadow-ai/detect-ai-sdks/) | Report the AI SDKs, model files, model caches, and agent credentials a workload reads | monitor | BPF-LSM |
+| [detect-agent-cli](../../examples/shadow-ai/detect-agent-cli/) | Report the coding-agent CLIs and self-hosted inference servers a workload launches | monitor | BPF-LSM |
+| [detect-mcp-servers](../../examples/shadow-ai/detect-mcp-servers/) | Report every stdio MCP server a workload launches, identified by the package it was asked to run rather than the binary that ran it | monitor | BPF-LSM for the stdio half; cgroup v2 for the remote half |
+| [detect-mcp-config-access](../../examples/shadow-ai/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM |
 
 A `dns` behavior declares the names a workload is expected to resolve and reports the rest.
 It observes only, and a policy that pairs it with `mode: enforce` is refused when it
@@ -81,27 +89,40 @@ accepting `enforce` here would be a second way to spell one thing with only one 
 working. The two are complementary — a `network` behavior decides about destinations a
 policy already named, while only the question observation supplies a name no policy named.
 
-| Example | Scenario | Mode | Requires |
-| --- | --- | --- | --- |
-| [report-unexpected-dns](../../examples/report-unexpected-dns/) | Report the provider hostnames a workload resolves outside its approved set, and discover the names it resolves at all | monitor | cgroup v2 |
-
 The allow list is inverted relative to `exec` and `open`: `dns.allow` is the expected set,
 so a name matching none of its entries is reported without any `"*"` in `deny`. Values are
 exact hostnames or left-wildcards such as `*.example.com`, which cover subdomains and not
 the apex. A resolution is not a connection, and the rest of what this cannot see is in
 [limits of DNS reporting](reference/runtimepolicy.md#limits-of-dns-reporting).
 
-## Dynamic lists (CEL libraries)
+## Monitor mode
 
-Allow and deny lists do not have to be literals. An `expression` can fetch them from the
-cluster or from an HTTP endpoint at evaluation time, and `evaluationInterval` sets how often
-that happens.
+[`examples/monitoring/`](../../examples/monitoring/) — recording what a workload does without
+blocking any of it, which is where an enforcement policy usually starts.
 
 | Example | Scenario | Mode | Requires |
 | --- | --- | --- | --- |
-| [blocklist-from-configmap](../../examples/blocklist-from-configmap/) | The security team manages the egress blocklist in a ConfigMap, with no policy edits | enforce | cgroup v2, plus ConfigMap read for the daemon |
-| [blocklist-from-http](../../examples/blocklist-from-http/) | Pull the deny list from a threat-intel HTTP feed | enforce | cgroup v2 |
-| [blocklist-from-json](../../examples/blocklist-from-json/) | Parse a JSON blob from a ConfigMap into a deny list | monitor | cgroup v2, plus ConfigMap read for the daemon |
+| [monitor-egress](../../examples/monitoring/monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor | cgroup v2 |
+| [monitor-workload-baseline](../../examples/monitoring/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
+| [monitor-static-pods](../../examples/monitoring/monitor-static-pods/) | Confirm the daemon can observe kubeadm's static control-plane pods | monitor | cgroup v2 |
+
+Monitor mode reports through OpenReports `Report` objects and never blocks. What it can and
+cannot see is listed in
+[limits of monitor mode](reference/runtimepolicy.md#limits-of-monitor-mode). The shadow AI
+examples above are monitor-mode too; they live under `shadow-ai/` because the signal they
+narrow to is what makes them worth reading, not the mode.
+
+## Dynamic lists (CEL libraries)
+
+[`examples/dynamic-lists/`](../../examples/dynamic-lists/) — allow and deny lists do not have
+to be literals. An `expression` can fetch them from the cluster or from an HTTP endpoint at
+evaluation time, and `evaluationInterval` sets how often that happens.
+
+| Example | Scenario | Mode | Requires |
+| --- | --- | --- | --- |
+| [blocklist-from-configmap](../../examples/dynamic-lists/blocklist-from-configmap/) | The security team manages the egress blocklist in a ConfigMap, with no policy edits | enforce | cgroup v2, plus ConfigMap read for the daemon |
+| [blocklist-from-http](../../examples/dynamic-lists/blocklist-from-http/) | Pull the deny list from a threat-intel HTTP feed | enforce | cgroup v2 |
+| [blocklist-from-json](../../examples/dynamic-lists/blocklist-from-json/) | Parse a JSON blob from a ConfigMap into a deny list | monitor | cgroup v2, plus ConfigMap read for the daemon |
 
 The chart's default ClusterRole grants the daemon no ConfigMap access, so the two examples
 that use the `resource` library ship a `daemon.rbac.extraRules` values snippet and apply it
