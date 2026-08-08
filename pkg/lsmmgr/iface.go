@@ -27,6 +27,7 @@ type lsmEnforcer interface {
 	EnableObservation(cgids []uint64) error
 	DisableObservation(cgids []uint64) error
 	ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventKey]uint32, error)
+	ReadEventsLost() (uint64, error)
 }
 
 var _ lsmEnforcer = (*lsm.LsmEnforcer)(nil)

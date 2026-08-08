@@ -248,3 +248,50 @@ func TestMaxPathLenMatchesKernelDefine(t *testing.T) {
 		t.Errorf("#define MAX_PATH_LEN = %s, Go maxPathLen = %s", got, want)
 	}
 }
+
+func TestReadEventsLostReportsDeltaNotTotal(t *testing.T) {
+	var l LsmEnforcer
+
+	for _, tc := range []struct {
+		total uint64
+		want  uint64
+	}{
+		{total: 0, want: 0},
+		{total: 7, want: 7},
+		{total: 7, want: 0},
+		{total: 10, want: 3},
+		{total: 2, want: 0}, // counter reset: baseline follows it down
+		{total: 5, want: 3},
+	} {
+		if got := l.lostSince(tc.total); got != tc.want {
+			t.Errorf("lostSince(%d) = %d, want %d", tc.total, got, tc.want)
+		}
+	}
+}
+
+func TestReadEventsLostReportsUnavailableWithoutStatsMap(t *testing.T) {
+	var l LsmEnforcer
+	got, err := l.ReadEventsLost()
+	if !errors.Is(err, ErrObservationUnavailable) {
+		t.Errorf("err = %v, want ErrObservationUnavailable", err)
+	}
+	if got != 0 {
+		t.Errorf("lost = %d, want 0", got)
+	}
+}
+
+// TestPathStatKeysMatchKernelEnum guards the Go stat key against the committed
+// BPF program, which cannot be regenerated on this host.
+func TestPathStatKeysMatchKernelEnum(t *testing.T) {
+	data, err := os.ReadFile("_cprog/maps.h")
+	if err != nil {
+		t.Fatalf("reading _cprog/maps.h: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^\s*PATH_STAT_COUNT_MAP_FULL\s*=\s*(\d+)\s*,`).FindSubmatch(data)
+	if m == nil {
+		t.Fatal("PATH_STAT_COUNT_MAP_FULL not found in _cprog/maps.h")
+	}
+	if got, want := string(m[1]), strconv.FormatUint(uint64(pathStatCountMapFull), 10); got != want {
+		t.Errorf("PATH_STAT_COUNT_MAP_FULL = %s, Go pathStatCountMapFull = %s", got, want)
+	}
+}

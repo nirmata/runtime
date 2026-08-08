@@ -1,7 +1,9 @@
 package egressmgr
 
 import (
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
@@ -355,4 +357,48 @@ func TestRpDeletedUnknownUidIsNoop(t *testing.T) {
 	}
 	wantAttachedRps(t, e, "pod-1", "rp-1")
 	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
+}
+
+// a pod whose address maps could not be programmed runs unfiltered, and the
+// policy has to say so: nothing else in the system can tell.
+func TestAddIpsFailureRecordsEnforcementUnavailable(t *testing.T) {
+	e, _, status := newTestManager()
+	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	f.addErr = errors.New("map update failed")
+
+	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil), events.EventTypeCreate)
+
+	cond, ok := status.latest("rp-1", v1alpha1.ConditionEnforcementAvailable)
+	if !ok {
+		t.Fatalf("no %s condition for rp-1 (all: %v)", v1alpha1.ConditionEnforcementAvailable, status.all("rp-1"))
+	}
+	if cond.Status != metav1.ConditionFalse || cond.Reason != v1alpha1.ReasonEnforcementUnavailable {
+		t.Errorf("condition = %s/%s, want False/%s", cond.Status, cond.Reason, v1alpha1.ReasonEnforcementUnavailable)
+	}
+	if !strings.Contains(cond.Message, "map update failed") || !strings.Contains(cond.Message, "pod-1") {
+		t.Errorf("condition message %q names neither the failure nor the pod", cond.Message)
+	}
+}
+
+// the protocol maps are a second failure site with the same consequence, so the
+// condition cannot be attached to the address maps alone.
+func TestAddProtocolsFailureRecordsEnforcementUnavailable(t *testing.T) {
+	e, _, _, status := newTestManagerWithProto()
+	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	protoFilterOf(t, e, "pod-1").addErr = errors.New("proto map update failed")
+
+	r := rp("rp-1", "enforce", webLabels, nil, nil)
+	r.Protocols = &compiler.AllowDenyPair{Allow: []string{"tls"}}
+	mustRpEvent(t, e, r, events.EventTypeCreate)
+
+	cond, ok := status.latest("rp-1", v1alpha1.ConditionEnforcementAvailable)
+	if !ok {
+		t.Fatalf("no %s condition for rp-1 (all: %v)", v1alpha1.ConditionEnforcementAvailable, status.all("rp-1"))
+	}
+	if cond.Status != metav1.ConditionFalse || cond.Reason != v1alpha1.ReasonEnforcementUnavailable {
+		t.Errorf("condition = %s/%s, want False/%s", cond.Status, cond.Reason, v1alpha1.ReasonEnforcementUnavailable)
+	}
+	if !strings.Contains(cond.Message, "proto map update failed") {
+		t.Errorf("condition message %q does not name the failure", cond.Message)
+	}
 }

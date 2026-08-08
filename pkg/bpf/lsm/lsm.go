@@ -39,6 +39,10 @@ type LsmEnforcer struct {
 	openEvents *ebpf.Map
 	innerSpec  *ebpf.MapSpec
 
+	stats *ebpf.Map
+	// statLast is the cumulative kernel total at the previous ReadEventsLost.
+	statLast uint64
+
 	// observeMu guards observed, the inner maps this enforcer created.
 	observeMu sync.RWMutex
 	observed  map[uint64]*ebpf.Map
@@ -102,6 +106,7 @@ func newForFileOpen(logger *logr.Logger) (*LsmEnforcer, error) {
 	l.allowed = objs.Allowed
 	l.defaultDeny = objs.DefaultDeny
 	l.openEvents = objs.OpenEvents
+	l.stats = objs.Stats
 	return l, nil
 }
 
@@ -128,6 +133,7 @@ func newForExec(logger *logr.Logger) (*LsmEnforcer, error) {
 	l.allowed = objs.Allowed
 	l.defaultDeny = objs.DefaultDeny
 	l.openEvents = objs.OpenEvents
+	l.stats = objs.Stats
 
 	return l, nil
 }

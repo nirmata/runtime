@@ -246,6 +246,11 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 	// read once: every policy in the loop matches against the same namespace
 	nsLabels := m.namespaceLabels(ev.Pod.Namespace)
 
+	// The activation depends on the event alone, so the loop builds at most the
+	// two an event can have: this one, and the monitor-mode counterfactual.
+	act := compiler.NewFilterActivation(ev)
+	var wouldDenyAct compiler.FilterActivation
+
 	// attributed becomes true when at least one enforce-mode policy's lists
 	// explain a kernel deny.
 	attributed := false
@@ -262,7 +267,7 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 			// attribution nor the monitor-mode counterfactual applies to it:
 			// there is no enforcing form of this policy that would have blocked
 			// the question.
-			m.record(tp, behavior, target, d, ev, false)
+			m.record(tp, behavior, target, d, ev, false, act)
 			continue
 		}
 		switch tp.mode {
@@ -273,7 +278,10 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 			// per-policy copy; nothing upstream is mutated.
 			evc := ev
 			evc.WouldDeny = true
-			m.record(tp, behavior, target, d, evc, false)
+			if wouldDenyAct == nil {
+				wouldDenyAct = act.WithWouldDeny()
+			}
+			m.record(tp, behavior, target, d, evc, false, wouldDenyAct)
 		case compiler.ModeEnforce:
 			// An enforce-mode violation only matters when the kernel actually
 			// denied: the kernel is the enforcer, this is the attribution.
@@ -281,7 +289,7 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 				continue
 			}
 			attributed = true
-			m.record(tp, behavior, target, d, ev, true)
+			m.record(tp, behavior, target, d, ev, true, act)
 		}
 	}
 
@@ -317,14 +325,14 @@ func (tp *trackedPolicy) eval(behavior string, ev runtimeevent.Event) decision {
 // record emits the finding for one (policy, pod). enforced says which kind of
 // finding this is: the kernel actually denied the operation and tp explains it
 // (true), or tp is a monitor-mode policy that would have denied it (false).
-func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision, ev runtimeevent.Event, enforced bool) {
+func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision, ev runtimeevent.Event, enforced bool, act compiler.FilterActivation) {
 	m.log.V(4).Info("policy violation", "policy", tp.name, "uid", tp.uid,
 		"behavior", behavior, "podUid", ev.Pod.UID, "count", ev.Count,
 		"kernelDenied", ev.KernelDenied, "wouldDeny", ev.WouldDeny)
 
 	// The filter runs ahead of every reason this could return, so a broken
 	// expression is counted on a daemon with no sink attached too.
-	dec := tp.filter.Decide(ev)
+	dec := tp.filter.Decide(act)
 	if dec.Err != nil {
 		if m.metrics != nil {
 			m.metrics.MonitorFilterEvalErrors.WithLabelValues(tp.name, dec.Expression).Inc()

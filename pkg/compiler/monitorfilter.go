@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"maps"
 	"math"
 
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
@@ -19,7 +20,7 @@ func declField(name string, t *apiservercel.DeclType) *apiservercel.DeclField {
 	return apiservercel.NewDeclField(name, t, false, nil, nil)
 }
 
-// The declared schema and filterActivation below are the two halves of one
+// The declared schema and NewFilterActivation below are the two halves of one
 // table and mirror the wire JSON of runtimeevent.Event. Event.CgroupID is
 // excluded: it is a node-internal identifier with no meaning to a policy
 // author.
@@ -77,13 +78,18 @@ var (
 	})
 )
 
-// filterActivation converts an event into the CEL activation a monitorFilter
+// FilterActivation is the CEL activation a monitorFilter expression sees. It
+// depends only on the event, so one event's activation is reused across every
+// policy that event is decided against.
+type FilterActivation map[string]any
+
+// NewFilterActivation converts an event into the CEL activation a monitorFilter
 // expression sees.
 //
 // A facts key is set only when the matching pointer is non-nil, which is what
 // makes has(event.open) answer the kind question and what makes dereferencing
 // the wrong arm an eval error rather than a zero value.
-func filterActivation(ev runtimeevent.Event) map[string]any {
+func NewFilterActivation(ev runtimeevent.Event) FilterActivation {
 	event := map[string]any{
 		"kind":         string(ev.Kind),
 		"time":         ev.Time,
@@ -131,7 +137,18 @@ func filterActivation(ev runtimeevent.Event) map[string]any {
 		event["protocol"] = map[string]any{"protocol": ev.Protocol.Protocol, "alpn": ev.Protocol.ALPN}
 	}
 
-	return map[string]any{eventKey: event}
+	return FilterActivation{eventKey: event}
+}
+
+// WithWouldDeny returns the activation for the monitor-mode counterfactual.
+// Only the outer map and the event map are copied: the per-kind fact maps under
+// them are shared with a, so neither activation may write through them.
+func (a FilterActivation) WithWouldDeny() FilterActivation {
+	event := maps.Clone(a[eventKey].(map[string]any))
+	event["wouldDeny"] = true
+	out := maps.Clone(a)
+	out[eventKey] = event
+	return out
 }
 
 // MonitorFilter is a policy's compiled monitorFilter expressions, in spec order.
@@ -154,16 +171,15 @@ type FilterDecision struct {
 	Err        error
 }
 
-// Decide reports whether ev should become a finding. A nil filter reports
-// everything.
-func (f *MonitorFilter) Decide(ev runtimeevent.Event) FilterDecision {
+// Decide reports whether the event a describes should become a finding. A nil
+// filter reports everything.
+func (f *MonitorFilter) Decide(a FilterActivation) FilterDecision {
 	if f == nil {
 		return FilterDecision{Report: true}
 	}
 
-	activation := filterActivation(ev)
 	for _, expr := range f.expressions {
-		out, _, err := expr.prog.Eval(activation)
+		out, _, err := expr.prog.Eval(map[string]any(a))
 		if err != nil {
 			return FilterDecision{Report: true, Expression: expr.name, Err: err}
 		}

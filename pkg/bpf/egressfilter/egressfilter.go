@@ -37,6 +37,9 @@ type EgressFilter struct {
 	nextDomainID uint32
 	// ids returned by retireDomain, handed out again before nextDomainID
 	freeDomainIDs []uint32
+
+	// statLast is the cumulative kernel total at the previous ReadEventsLost.
+	statLast uint64
 }
 
 func New(l *logr.Logger) (*EgressFilter, error) {

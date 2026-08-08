@@ -180,6 +180,34 @@ func TestHandleEvent_DNSFindingIsFilterable(t *testing.T) {
 	}
 }
 
+// A monitor-mode finding is the counterfactual, so its filter sees
+// event.wouldDeny true — for every policy the event is decided against.
+func TestHandleEvent_MonitorModeFilterSeesWouldDeny(t *testing.T) {
+	m, sink, mtx := testMonitor(t)
+	wants := monitorPolicy(t, "uid-wants", "wants", nil, denyEverything(), nil)
+	wants.MonitorFilter = compileFilter(t, cond("counterfactual", `event.wouldDeny`))
+	rejects := monitorPolicy(t, "uid-rejects", "rejects", nil, denyEverything(), nil)
+	rejects.MonitorFilter = compileFilter(t, cond("not-counterfactual", `!event.wouldDeny`))
+	for _, rp := range []*compiler.EvaluationResult{wants, rejects} {
+		if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+			t.Fatalf("RuntimePolicyEvent: %v", err)
+		}
+	}
+
+	m.HandleEvent(openEvent("/etc/passwd"))
+
+	got := sink.all()
+	if len(got) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].PolicyUID != "uid-wants" {
+		t.Errorf("finding came from %q, want the policy filtering on event.wouldDeny", got[0].PolicyUID)
+	}
+	if n := testutil.CollectAndCount(mtx.MonitorFilterEvalErrors); n != 0 {
+		t.Errorf("monitor_filter_eval_errors_total series = %d, want 0", n)
+	}
+}
+
 // The guard is what lets a later expression dereference event.exec: on an open
 // event the filter must stop at the guard, not fail open with an eval error.
 func TestHandleEvent_FilterGuardShortCircuitsWithoutEvalError(t *testing.T) {

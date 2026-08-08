@@ -16,6 +16,7 @@ type egressFilter interface {
 	SetFlagIdx(idx uint8, val bool)
 	Attach(cgPath string) ([]link.Link, error)
 	ReadIPEvents() (map[egressfilter.IPEventKey]uint32, error)
+	ReadEventsLost() (uint64, error)
 }
 
 // the subset of *protofilter.ProtoFilter the manager uses.

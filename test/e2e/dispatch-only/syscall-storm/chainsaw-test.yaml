@@ -1,0 +1,262 @@
+# E2E load assertion -- LSM observation under a syscall storm with many policies
+# over one pod.
+#
+# BPF-LSM required, which is why this lives under dispatch-only/: the hosted lane
+# selects suites by globbing test/e2e/*/chainsaw-test.yaml and then filtering
+# test/e2e/dispatch-only/% back out, so a directory here joins `make test-e2e-lsm`
+# and never joins `make test-e2e-hosted`. See E2E_HOSTED_DIRS in the Makefile.
+#
+# The invariant under test is the one a correctness suite cannot reach: eight
+# policies select one pod, so the manager attaches eight enforcers to each of the
+# pod's three cgroups, and each of them counts the same opens. Merged, one kernel
+# operation is one event; unmerged, it is eight, and every downstream count is
+# inflated by the number of policies an operator happened to write.
+#
+# The Report is where that becomes visible. A finding's fingerprint is
+# (policy, pod, behavior, target) -- not the cgroup and not the observing
+# attachment -- so duplicate events do not add results, they multiply the `count`
+# property of the results that already exist. Hence the two assertions below:
+# the result set stays one per policy, and the summed count stays within the
+# per-poll budget rather than eight times it.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: syscall-storm
+spec:
+  # The suite-wide exec timeout is sized for probe-and-poll scripts. The storm
+  # itself runs for about a minute before anything can be asserted, so this test
+  # sets its own rather than being killed mid-storm.
+  timeouts:
+    exec: 300s
+  steps:
+  - name: precondition-kernel-has-bpf-lsm
+    # Fail loudly rather than skip. If this step is red, the environment is wrong
+    # for this test -- not the code.
+    try:
+    - script:
+        content: |
+          set -eu
+
+          # The agent image is distroless, so the LSM list cannot be read by
+          # exec'ing into it -- there is no shell and no cat. Probe from a
+          # throwaway pod that host-mounts securityfs instead. Overrides are
+          # passed as JSON so the manifest is immune to this block's indentation.
+          kubectl -n "${NAMESPACE}" run lsm-probe --restart=Never --image=busybox:1.36 \
+            --overrides='{"spec":{"containers":[{"name":"probe","image":"busybox:1.36","command":["sh","-c","[ -r /securityfs/lsm ] && cat /securityfs/lsm || exit 2"],"volumeMounts":[{"name":"securityfs","mountPath":"/securityfs","readOnly":true}]}],"volumes":[{"name":"securityfs","hostPath":{"path":"/sys/kernel/security"}}]}}' \
+            >/dev/null
+          kubectl -n "${NAMESPACE}" wait --for=jsonpath='{.status.phase}'=Succeeded \
+            pod/lsm-probe --timeout=90s >/dev/null 2>&1 || true
+
+          # Exit 2 distinguishes "securityfs is not visible" from "read the list
+          # and bpf is absent". Conflating them reports a mount problem as a
+          # kernel that lacks BPF-LSM, which sends the reader to the wrong fix.
+          rc=$(kubectl -n "${NAMESPACE}" get pod lsm-probe \
+            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
+          lsm=$(kubectl -n "${NAMESPACE}" logs pod/lsm-probe 2>/dev/null || true)
+
+          if [ "${rc}" != "0" ]; then
+            echo "ERROR: securityfs is not readable from the node; the active LSM"
+            echo "       list could not be determined (probe exit '${rc:-no-exit-code}')."
+            echo "       This is NOT proof that BPF-LSM is off."
+            echo "       On kind, mount it into the node -- see the extraMounts in"
+            echo "       test/e2e/kind-config.yaml."
+            exit 1
+          fi
+
+          echo "active LSMs: ${lsm}"
+          case ",${lsm}," in
+            *,bpf,*) echo "BPF-LSM active" ;;
+            *)
+              echo "ERROR: kernel was not booted with BPF-LSM (no 'bpf' in the LSM list)."
+              echo "       Run it on a host booted with lsm=...,bpf."
+              exit 1
+              ;;
+          esac
+
+  - name: record-the-daemon-baseline
+    try:
+    - script:
+        content: |
+          set -eu
+          kubectl -n kyverno-runtime get pods -l app.kubernetes.io/name=kyverno-runtime \
+            -o jsonpath='{range .items[*]}{.metadata.name}{" restarts="}{.status.containerStatuses[*].restartCount}{"\n"}{end}' \
+            | tee "/tmp/syscall-storm-${NAMESPACE}-restarts-before.txt"
+
+  - name: apply-eight-monitor-policies-over-one-label
+    try:
+    - apply:
+        file: policies.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-syscall-storm-1
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-syscall-storm-8
+
+  - name: run-the-storm
+    try:
+    - apply:
+        file: storm.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: syscall-storm
+          status:
+            phase: Running
+    - script:
+        content: |
+          set -eu
+          # The clock starts where the opens do. Every later bound is derived
+          # from this, so it is written down rather than re-estimated.
+          date +%s > "/tmp/syscall-storm-${NAMESPACE}-start.txt"
+
+          for c in storm-a storm-b storm-c; do
+            done_marker=0
+            for _ in $(seq 1 100); do
+              if kubectl -n "${NAMESPACE}" logs syscall-storm -c "${c}" 2>/dev/null \
+                   | grep -q storm-complete; then
+                done_marker=1; break
+              fi
+              sleep 2
+            done
+            [ "${done_marker}" -eq 1 ] || { echo "FAIL: container ${c} never finished its storm"; exit 1; }
+          done
+          echo "all three containers completed the storm"
+
+          # One drain interval plus one report flush, so the last opens reach the
+          # Report before it is read.
+          sleep 25
+
+  - name: one-kernel-open-stays-one-event-however-many-policies-select-the-pod
+    try:
+    - script:
+        content: |
+          set -eu
+
+          policies=8
+          containers=3
+          observe_interval=10
+
+          start=$(cat "/tmp/syscall-storm-${NAMESPACE}-start.txt")
+          elapsed=$(( $(date +%s) - start ))
+          # +2 covers the poll straddling each end of the window.
+          max_polls=$(( elapsed / observe_interval + 2 ))
+
+          node=$(kubectl -n "${NAMESPACE}" get pod syscall-storm -o jsonpath='{.spec.nodeName}')
+          report="kyverno-runtime-${node}"
+
+          kubectl -n "${NAMESPACE}" get reports.openreports.io "${report}" \
+            -o jsonpath='{range .results[*]}{.policy}{" "}{.rule}{" "}{.properties.target}{" "}{.properties.count}{"\n"}{end}' \
+            > /tmp/syscall-storm-results.txt || {
+              echo "FAIL: no Report ${report} in ${NAMESPACE}; the storm produced no findings at all"
+              kubectl -n "${NAMESPACE}" get reports.openreports.io -o wide || true
+              exit 1
+            }
+          echo "--- report results (policy rule target count) ---"
+          cat /tmp/syscall-storm-results.txt
+
+          secret=$(grep ' open /storm/secret ' /tmp/syscall-storm-results.txt || true)
+          [ -n "${secret}" ] || { echo "FAIL: no open finding for /storm/secret"; exit 1; }
+
+          # One result per policy. A fingerprint that leaked the observing
+          # attachment or the cgroup would show up here as a multiple of this.
+          results=$(printf '%s\n' "${secret}" | wc -l | tr -d ' ')
+          distinct=$(printf '%s\n' "${secret}" | awk '{print $1}' | sort -u | wc -l | tr -d ' ')
+          echo "results=${results} distinct_policies=${distinct} expected=${policies}"
+          [ "${results}" -eq "${policies}" ] || { echo "FAIL: expected ${policies} results for /storm/secret, got ${results}"; exit 1; }
+          [ "${distinct}" -eq "${policies}" ] || { echo "FAIL: ${distinct} policies represented, expected ${policies}"; exit 1; }
+
+          # The dedup invariant. Each poll drains one event per (cgroup, path,
+          # decision), so every policy's result gains `containers` per poll:
+          #   deduped  -> policies * containers * polls
+          #   duplicated by attachment -> that, times policies
+          # The bound doubles the deduped budget, which still leaves a factor of
+          # four before the duplicated value would fit under it.
+          total=$(printf '%s\n' "${secret}" | awk '{s += $4} END {print s + 0}')
+          budget=$(( policies * containers * max_polls * 2 ))
+          echo "elapsed=${elapsed}s max_polls=${max_polls} summed_count=${total} budget=${budget}"
+          if [ "${total}" -gt "${budget}" ]; then
+            echo "FAIL: summed count ${total} exceeds ${budget}; one kernel open is being"
+            echo "      observed once per attached policy instead of once per cgroup."
+            exit 1
+          fi
+          echo "OK: observation count is independent of the number of selecting policies"
+
+    - script:
+        content: |
+          set -eu
+
+          pod=$(kubectl -n kyverno-runtime get pod -l app.kubernetes.io/name=kyverno-runtime \
+            -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n kyverno-runtime port-forward "pod/${pod}" 19090:9090 >/tmp/syscall-storm-pf.log 2>&1 &
+          pf=$!
+          trap 'kill "${pf}" 2>/dev/null || true' EXIT
+
+          scraped=0
+          for _ in $(seq 1 30); do
+            if curl -sS -m 2 -o /tmp/syscall-storm-metrics.txt http://127.0.0.1:19090/metrics; then
+              scraped=1; break
+            fi
+            sleep 1
+          done
+          [ "${scraped}" -eq 1 ] || { echo "FAIL: could not scrape /metrics from ${pod}"; cat /tmp/syscall-storm-pf.log; exit 1; }
+
+          echo "--- events_dropped_total, lsm-observe ---"
+          grep '^nirmata_runtime_events_dropped_total{' /tmp/syscall-storm-metrics.txt \
+            | grep 'source="lsm-observe"' || echo "(no lsm-observe drop series: nothing was dropped)"
+
+          dropped=$(grep '^nirmata_runtime_events_dropped_total{' /tmp/syscall-storm-metrics.txt \
+            | grep 'source="lsm-observe"' | grep 'reason="count_map_full"' \
+            | awk '{s += $NF} END {print s + 0}')
+          echo "count_map_full drops: ${dropped}"
+
+          # A full count map is legitimate under load, but it must never be
+          # silent: the metric and the operator-visible log line are one signal,
+          # and a metric without the log means the drop path stopped reporting.
+          if [ "${dropped}" != "0" ]; then
+            if kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+                 --all-containers --tail=2000 2>/dev/null | grep -q "kernel dropped observations"; then
+              echo "OK: ${dropped} dropped observations, accounted for in both the metric and the log"
+            else
+              echo "FAIL: events_dropped_total reports ${dropped} count_map_full drops but the"
+              echo "      daemon logged none of them -- the drop is invisible to an operator."
+              exit 1
+            fi
+          fi
+
+    - script:
+        content: |
+          set -eu
+          kubectl -n kyverno-runtime get pods -l app.kubernetes.io/name=kyverno-runtime \
+            -o jsonpath='{range .items[*]}{.metadata.name}{" restarts="}{.status.containerStatuses[*].restartCount}{"\n"}{end}' \
+            | tee "/tmp/syscall-storm-${NAMESPACE}-restarts-after.txt"
+
+          restarts=$(kubectl -n kyverno-runtime get pods -l app.kubernetes.io/name=kyverno-runtime \
+            -o jsonpath='{.items[*].status.containerStatuses[*].restartCount}' \
+            | tr ' ' '\n' | awk '{s += $1} END {print s + 0}')
+          [ "${restarts}" -eq 0 ] || {
+            echo "FAIL: daemon restarted ${restarts} time(s) under the storm"
+            kubectl -n kyverno-runtime describe pods -l app.kubernetes.io/name=kyverno-runtime || true
+            exit 1
+          }
+          echo "OK: daemon restartCount 0"
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=200 || true
+          kubectl -n "$NAMESPACE" get reports.openreports.io -o yaml || true
+    - script:
+        content: |
+          kubectl delete runtimepolicy \
+            e2e-syscall-storm-1 e2e-syscall-storm-2 e2e-syscall-storm-3 e2e-syscall-storm-4 \
+            e2e-syscall-storm-5 e2e-syscall-storm-6 e2e-syscall-storm-7 e2e-syscall-storm-8 \
+            --ignore-not-found

@@ -46,6 +46,10 @@ type EgressManager struct {
 	newFilter      filterFactory
 	newProtoFilter protoFilterFactory
 	clock          func() time.Time
+
+	// onLoss reports kernel-side observation losses, normally to a metrics
+	// counter. It may be nil.
+	onLoss runtimeevent.LossFunc
 }
 
 type podAttachment struct {
@@ -69,10 +73,11 @@ type podAttachment struct {
 	denyProtoOwners  protoOwners
 }
 
-func NewEgressManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder) *EgressManager {
+func NewEgressManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc) *EgressManager {
 	return &EgressManager{
 		logger: logger,
 		status: status,
+		onLoss: onLoss,
 		pods:   make(map[string]*podAttachment),
 		rps:    make(map[string]*compiler.EvaluationResult),
 		newFilter: func(logger *logr.Logger) (egressFilter, error) {
@@ -187,7 +192,7 @@ func (e *EgressManager) addIps(podUid, uid string, pa *podAttachment, pair *comp
 	pa.claim(uid, pair)
 	rejected, err := pa.filter.AddIps(pair)
 	if err != nil {
-		e.logger.Error(err, "failed to program egress targets", "podUid", podUid, "policy", uid)
+		e.enforcementUnavailable(podUid, uid, "failed to program egress targets", err)
 	}
 	e.surfaceRejected(podUid, uid, rejected)
 }
@@ -196,9 +201,23 @@ func (e *EgressManager) addProtos(podUid, uid string, pa *podAttachment, pair *c
 	pa.claimProtos(uid, pair)
 	rejected, err := pa.protoFilter.AddProtocols(pair)
 	if err != nil {
-		e.logger.Error(err, "failed to program egress protocol targets", "podUid", podUid, "policy", uid)
+		e.enforcementUnavailable(podUid, uid, "failed to program egress protocol targets", err)
 	}
 	e.surfaceRejected(podUid, uid, rejected)
+}
+
+// enforcementUnavailable records a policy condition for a kernel map the
+// runtime could not program: the pod's egress runs on, unfiltered, so the
+// failure is invisible everywhere else.
+func (e *EgressManager) enforcementUnavailable(podUid, uid, msg string, err error) {
+	e.logger.Error(err, msg, "podUid", podUid, "policy", uid)
+	e.recordCondition(uid, metav1.Condition{
+		Type:               v1alpha1.ConditionEnforcementAvailable,
+		Status:             metav1.ConditionFalse,
+		Reason:             v1alpha1.ReasonEnforcementUnavailable,
+		Message:            msg + " for pod " + podUid + ": " + err.Error(),
+		LastTransitionTime: metav1.NewTime(e.clock()),
+	})
 }
 
 func (e *EgressManager) deleteProtos(podUid, uid string, pa *podAttachment, pair *compiler.AllowDenyPair) {

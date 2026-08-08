@@ -378,7 +378,7 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 func TestNilStatusRecorderIsTolerated(t *testing.T) {
 	ff := &fakeFactory{}
 	pff := &fakeProtoFactory{}
-	e := NewEgressManager(logr.Discard(), nil)
+	e := NewEgressManager(logr.Discard(), nil, nil)
 	e.newFilter = ff.new
 	e.newProtoFilter = pff.new
 	e.clock = func() time.Time { return testTime }
@@ -451,5 +451,46 @@ func TestSortedIPEventKeysBreaksTiesOnDomain(t *testing.T) {
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("run %d order (-want +got):\n%s", i, diff)
 		}
+	}
+}
+
+// the kernel's own drop counter is the only signal that a pod's observations
+// are incomplete; dropping it makes a truncated view look like a quiet one.
+func TestCollectObservationsReportsKernelDrops(t *testing.T) {
+	e, _, _ := newTestManager()
+	var got []loss
+	e.onLoss = func(reason string, delta uint64) { got = append(got, loss{reason: reason, delta: delta}) }
+	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
+
+	f.lost = 7
+	if _, err := e.CollectObservations(context.Background()); err != nil {
+		t.Fatalf("CollectObservations: %v", err)
+	}
+	want := []loss{{reason: runtimeevent.ReasonCountMapFull, delta: 7}}
+	if diff := cmp.Diff(want, got, cmp.AllowUnexported(loss{})); diff != "" {
+		t.Errorf("losses (-want +got):\n%s", diff)
+	}
+
+	// the kernel counter is cumulative, so a second poll with no new drops must
+	// report nothing rather than the running total again
+	if _, err := e.CollectObservations(context.Background()); err != nil {
+		t.Fatalf("second CollectObservations: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("losses after an unchanged counter = %v, want only the first", got)
+	}
+}
+
+// a filter whose objects never loaded reports the same thing on every poll, so
+// it must not turn every poll into an error.
+func TestCollectObservationsToleratesUnloadedDropCounter(t *testing.T) {
+	e, _, _ := newTestManager()
+	f := addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, nil, nil), events.EventTypeCreate)
+
+	f.lostErr = egressfilter.ErrNotLoaded
+	if _, err := e.CollectObservations(context.Background()); err != nil {
+		t.Errorf("CollectObservations returned %v, want nil", err)
 	}
 }

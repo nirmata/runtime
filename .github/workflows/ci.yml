@@ -418,6 +418,14 @@ jobs:
       - name: Egress, protocol and install assertions
         run: make test-e2e-hosted
 
+      # Reuses the cluster and chart this job already installed: no new job, no
+      # second image build. Dispatch-gated because it is a load run, not a
+      # correctness one -- the k6 scenario alone is two minutes, and the lane it
+      # would join was deliberately cut to about five.
+      - name: Egress observation under load (k6)
+        if: github.event_name == 'workflow_dispatch'
+        run: make test-e2e-egress-load
+
       - name: Dump cluster state on failure
         if: failure()
         run: |
