@@ -58,12 +58,18 @@ of what each program allows, not a union.
 
 | `spec.mode` | Kernel programs attached | Deny/allow maps programmed | Blocks | Emits findings |
 | --- | --- | --- | --- | --- |
-| `enforce` | yes | yes | yes | no |
+| `enforce` | yes | yes | yes | denials only |
 | `monitor` | yes | **no** (maps stay empty) | no | yes |
 | omitted | no | no | no | no |
 
 A policy that omits `spec.mode` is loaded but inert: it neither enforces nor reports
 anything. There is no default mode.
+
+The two kinds of finding answer different questions. An `enforce` finding is the record that
+the kernel blocked an operation, so there is one per denial and none for anything permitted.
+A `monitor` finding is a counterfactual — an enforcing form of this policy would have blocked
+this — which under `deny.values: ["*"]` is every occurrence, and is why a `monitorFilter`
+exists for monitor policies and is refused on enforcing ones.
 
 ## What DNS reporting tells you
 
