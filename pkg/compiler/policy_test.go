@@ -569,25 +569,31 @@ func TestEvaluate_MultipleBehaviorsOfSameKindAccumulate(t *testing.T) {
 	}
 }
 
-func TestEvaluate_BadLabelSelectorReturnsError(t *testing.T) {
-	c := newTestCompiler(t)
-
-	rp := v1alpha1.RuntimePolicy{
-		Spec: v1alpha1.RuntimePolicySpec{
-			PodSelector: &metav1.LabelSelector{
-				MatchExpressions: []metav1.LabelSelectorRequirement{
-					{Key: "env", Operator: "NotARealOperator"},
-				},
-			},
+// A malformed selector is rejected by Compile rather than by each Evaluate, so
+// it reaches the author as a CompileFailed condition instead of an error the
+// re-evaluation loop retries forever.
+func TestCompile_BadLabelSelectorIsRejected(t *testing.T) {
+	bad := &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{Key: "env", Operator: "NotARealOperator"},
 		},
 	}
 
-	compiled, err := c.Compile(rp)
-	if err != nil {
-		t.Fatalf("Compile() unexpected error = %v", err)
+	tests := []struct {
+		name string
+		spec v1alpha1.RuntimePolicySpec
+	}{
+		{"pod selector", v1alpha1.RuntimePolicySpec{PodSelector: bad}},
+		{"namespace selector", v1alpha1.RuntimePolicySpec{NamespaceSelector: bad}},
 	}
-	if _, err := compiled.Evaluate(t.Context()); err == nil {
-		t.Fatal("Evaluate() expected error for invalid label selector operator, got nil")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestCompiler(t)
+			if _, err := c.Compile(v1alpha1.RuntimePolicy{Spec: tt.spec}); err == nil {
+				t.Fatal("Compile() expected error for invalid label selector operator, got nil")
+			}
+		})
 	}
 }
 

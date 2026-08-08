@@ -82,7 +82,7 @@ func NewIndex(log logr.Logger, opts ...Option) *Index {
 // PodEvent implements events.PodEventHandler. Create and update are idempotent
 // upserts: labels, owner and the cgroup set are recomputed from scratch and
 // cgroups the pod has stopped owning are evicted.
-func (ix *Index) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
+func (ix *Index) PodEvent(pod corev1.Pod, _ map[string]string, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	switch podEventType {
 	case events.EventTypeCreate, events.EventTypeUpdate:
 		ix.upsert(&pod, cgInfos)

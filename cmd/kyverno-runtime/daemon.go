@@ -190,6 +190,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// dropped by the attribution stage and counted, never misattributed.
 	podHandlers := []events.PodEventHandler{em, lsmm, attrIdx}
 	policyHandlers := []events.RuntimePolicyEventHandler{em, lsmm, sw, mon}
+	// monitor holds no pod state, so its namespaceSelector input arrives here
+	// rather than on the pod events the other handlers read it from.
+	nsHandlers := []events.NamespaceEventHandler{mon}
 
 	// Poll the managers' observation maps, attribute, then hand to the monitor.
 	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
@@ -253,7 +256,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	// pod informer
-	pw := controller.NewPodWatcher(k8sClient, nodeName, podHandlers)
+	pw := controller.NewPodWatcher(k8sClient, nodeName, podHandlers, nsHandlers)
 	g.Go(func() error {
 		for {
 			if err := pw.Start(ctx); err != nil {

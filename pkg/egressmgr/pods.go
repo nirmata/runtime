@@ -12,7 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+func (e *EgressManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) error {
 	e.logger.V(2).Info("pod created", "podUid", pod.UID)
 	filter, err := e.newFilter(&e.logger)
 	if err != nil {
@@ -29,6 +29,7 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 		defaultDeny:      make(map[string]struct{}),
 		protoDefaultDeny: make(map[string]struct{}),
 		labels:           pod.Labels,
+		nsLabels:         nsLabels,
 		filter:           filter,
 		protoFilter:      pf,
 		allowOwners:      newSideOwners(),
@@ -50,7 +51,7 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	}
 
 	for rpName, rp := range e.rps {
-		if !selectorMatches(rp.Selector, pod.Labels) {
+		if !rp.AppliesTo.Matches(nsLabels, pod.Labels) {
 			continue
 		}
 		e.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpName)
@@ -94,18 +95,18 @@ func (e *EgressManager) podCreated(pod corev1.Pod, cgInfos []*containers.Contain
 	return nil
 }
 
-// podUpdated refreshes the cached labels and re-evaluates every tracked policy's
-// selector against them before reconciling the cgroup links. Without the label
-// refresh a relabelled pod keeps enforcement from a policy that stopped
-// selecting it, and is never picked up by one that starts to.
-func (e *EgressManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+// podUpdated refreshes the cached pod and namespace labels and re-evaluates
+// every tracked policy's target against them before reconciling the cgroup
+// links. Without the refresh a relabelled pod keeps enforcement from a policy
+// that stopped selecting it, and is never picked up by one that starts to.
+func (e *EgressManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) error {
 	e.logger.V(2).Info("pod updated", "podUid", pod.UID)
 	pa, ok := e.pods[string(pod.UID)]
 	if !ok {
 		return fmt.Errorf("got a pod event for a pod that doesn't exist")
 	}
 
-	e.refreshLabels(string(pod.UID), pa, pod.Labels)
+	e.refreshLabels(string(pod.UID), pa, nsLabels, pod.Labels)
 
 	// check if there are new cgroup infos. if there is, create links for them.
 	newCgs := make(map[containers.ContainerCgroupInfo][]link.Link)
@@ -148,14 +149,15 @@ func (e *EgressManager) closeLinks(podUid string, links []link.Link) {
 	}
 }
 
-// refreshLabels stores the new label set and attaches/detaches every tracked
+// refreshLabels stores the new label sets and attaches/detaches every tracked
 // policy accordingly. Detaching decrements the default-deny refcount rather than
 // clearing the flag, so overlapping policies survive.
-func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newLabels map[string]string) {
+func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newNsLabels, newLabels map[string]string) {
 	pa.labels = newLabels
+	pa.nsLabels = newNsLabels
 
 	for uid, rp := range e.rps {
-		matches := selectorMatches(rp.Selector, newLabels)
+		matches := rp.AppliesTo.Matches(newNsLabels, newLabels)
 		att, attached := pa.attachedFilters[uid]
 		switch {
 		case matches && !attached:

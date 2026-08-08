@@ -53,6 +53,31 @@ spec:
           kind: RuntimePolicy
           name: chainsaw-valid-enforce
 
+  - name: namespace-selector
+    try:
+    - apply:
+        file: policy-namespace-selector.yaml
+    # Read the object back and prove nothing was pruned: both selector forms
+    # survive, including the well-known name label a namespace is targeted by.
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-valid-namespace-selector
+          spec:
+            (namespaceSelector.matchLabels.tier): prod
+            (namespaceSelector.matchExpressions[0].key): kubernetes.io/metadata.name
+            (namespaceSelector.matchExpressions[0].operator): NotIn
+            (namespaceSelector.matchExpressions[0].values): ["kube-system"]
+            (podSelector.matchLabels.app): agent
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-valid-namespace-selector
+
   - name: enforce-mode-protocol
     try:
     - apply:

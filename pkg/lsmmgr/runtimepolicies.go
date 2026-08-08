@@ -4,8 +4,6 @@ import (
 	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-
-	"k8s.io/apimachinery/pkg/labels"
 )
 
 // progSpec pairs a bpf lsm attach target with the compiled behavior that drives
@@ -57,14 +55,14 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	la := &lsmAttachment{
 		progs:        progMap,
 		attachedPods: make(map[string]*podRepresentation),
-		selector:     compiledRp.Selector,
+		target:       compiledRp.AppliesTo,
 		observe:      observe,
 	}
 	l.lsmAttachments[compiledRp.UID] = la
 
 	targetCgids := []uint64{}
 	for podUid, pod := range l.pods {
-		if compiledRp.Selector.Matches(labels.Set(pod.labels)) {
+		if compiledRp.AppliesTo.Matches(pod.nsLabels, pod.labels) {
 			attach(compiledRp.UID, la, podUid, pod)
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
@@ -109,7 +107,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 		return l.rpCreated(compiledRp)
 	}
 
-	la.selector = compiledRp.Selector
+	la.target = compiledRp.AppliesTo
 	for _, spec := range progSpecs(compiledRp) {
 		l.recordPathRulesCondition(compiledRp.UID, spec.condition, spec.files)
 		if err := l.syncProgType(compiledRp.UID, la, spec.files, spec.progType); err != nil {
@@ -274,9 +272,9 @@ func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *com
 
 func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 	for podUid, pod := range l.pods {
-		// la.selector has to already carry the selector from the update, otherwise
+		// la.target has to already carry the target from the update, otherwise
 		// the match below runs against the stale one
-		if la.selector.Matches(labels.Set(pod.labels)) {
+		if la.target.Matches(pod.nsLabels, pod.labels) {
 			_, ok := la.attachedPods[podUid]
 			if ok {
 				continue

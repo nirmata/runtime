@@ -4,23 +4,12 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-
-	"k8s.io/apimachinery/pkg/labels"
 )
 
 // trackableMode reports whether the manager has anything to do for a policy in
 // this mode: enforce programs the maps, monitor only observes.
 func trackableMode(mode string) bool {
 	return mode == compiler.ModeEnforce || compiler.IsObserveMode(mode)
-}
-
-// selectorMatches never panics on a nil selector. Delete events carry only a
-// uid, so a nil selector reaching a match loop must mean "matches nothing".
-func selectorMatches(sel labels.Selector, lbls map[string]string) bool {
-	if sel == nil {
-		return false
-	}
-	return sel.Matches(labels.Set(lbls))
 }
 
 func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
@@ -33,7 +22,7 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 	e.recordTargetsCondition(compiledRp)
 
 	for podUid, pod := range e.pods {
-		if !selectorMatches(compiledRp.Selector, pod.labels) {
+		if !compiledRp.AppliesTo.Matches(pod.nsLabels, pod.labels) {
 			continue
 		}
 		e.logger.V(2).Info("new runtime policy matches existing pod", "uid", compiledRp.UID, "podUid", podUid)
@@ -92,12 +81,12 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	// the shared pointer itself is never replaced: the pods hold it.
 	currentRp.IPs = compiledRp.IPs
 	currentRp.Protocols = compiledRp.Protocols
-	currentRp.Selector = compiledRp.Selector
+	currentRp.AppliesTo = compiledRp.AppliesTo
 	currentRp.Name = compiledRp.Name
 	currentRp.Mode = compiledRp.Mode
 
 	for podUid, pod := range e.pods {
-		rpMatches := selectorMatches(compiledRp.Selector, pod.labels)
+		rpMatches := compiledRp.AppliesTo.Matches(pod.nsLabels, pod.labels)
 		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
 			// there is no diff and rp still matches, do nothing
 			hasDiff := toAddPair.HasEntries() || toRemovePair.HasEntries() ||
@@ -159,16 +148,16 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 
 // observeRpUpdated handles an update of a monitor policy. Nothing is ever
 // programmed for those, so the only work is keeping the attachments in step with
-// the selector.
+// the target.
 func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.EvaluationResult) {
 	currentRp.IPs = compiledRp.IPs
 	currentRp.Protocols = compiledRp.Protocols
-	currentRp.Selector = compiledRp.Selector
+	currentRp.AppliesTo = compiledRp.AppliesTo
 	currentRp.Name = compiledRp.Name
 	currentRp.Mode = compiledRp.Mode
 
 	for podUid, pod := range e.pods {
-		matches := selectorMatches(compiledRp.Selector, pod.labels)
+		matches := compiledRp.AppliesTo.Matches(pod.nsLabels, pod.labels)
 		_, attached := pod.attachedFilters[compiledRp.UID]
 		switch {
 		case matches && !attached:

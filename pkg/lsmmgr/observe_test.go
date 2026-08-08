@@ -22,7 +22,7 @@ func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
 	for _, mode := range []string{compiler.ModeEnforce, compiler.ModeMonitor} {
 		t.Run(mode, func(t *testing.T) {
 			h := newHarness(t)
-			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
 				t.Fatal(err)
 			}
 			if err := h.l.RuntimePolicyEvent(result("rp1", mode, selFor(map[string]string{"app": "web"}),
@@ -64,7 +64,7 @@ func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
 // mixes the two.
 func TestCollectObservations_SplitsEventsByKernelDecision(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}),
@@ -104,10 +104,10 @@ func TestCollectObservations_SplitsEventsByKernelDecision(t *testing.T) {
 // after the first one drops what the rest counted.
 func TestCollectObservationsReadsAllEnforcers(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "web"}), cgs(21), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "web"}), nil, cgs(21), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	// two policies, each with BOTH prog types, both attached to both pods: four
@@ -173,7 +173,7 @@ func TestCollectObservationsReadsAllEnforcers(t *testing.T) {
 // on the next poll.
 func TestCollectObservations_CountsAreDeltas(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
@@ -235,7 +235,7 @@ func TestCollectObservations_NothingToRead(t *testing.T) {
 
 	t.Run("zero counts and empty paths are dropped", func(t *testing.T) {
 		h := newHarness(t)
-		if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+		if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
@@ -257,7 +257,7 @@ func TestCollectObservations_ReadFailures(t *testing.T) {
 	t.Run("observation unavailable is reported, not returned", func(t *testing.T) {
 		h := newHarness(t)
 		h.failMethod(open, "ReadEvents", lsm.ErrObservationUnavailable)
-		if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+		if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
@@ -276,7 +276,7 @@ func TestCollectObservations_ReadFailures(t *testing.T) {
 		h := newHarness(t)
 		boom := errors.New("map iteration failed")
 		h.failMethod(exec, "ReadEvents", boom)
-		if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+		if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
@@ -300,7 +300,7 @@ func TestCollectObservations_ReadFailures(t *testing.T) {
 
 func TestCollectObservations_CancelledContext(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),

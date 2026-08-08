@@ -23,6 +23,17 @@ type RuntimePolicySpec struct {
 	// +optional
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
+	// NamespaceSelector narrows PodSelector to pods whose namespace carries
+	// these labels. Both an empty selector and an omitted field match every
+	// namespace, so a policy that sets only PodSelector keeps applying
+	// cluster-wide. This is the opposite of PodSelector's omitted case, which
+	// matches no pods.
+	//
+	// Target namespaces by name through kubernetes.io/metadata.name, which the
+	// API server sets on every namespace.
+	// +optional
+	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+
 	// EvaluationInterval specifies how frequently the policy is re-evaluated.
 	// +optional
 	EvaluationInterval *metav1.Duration `json:"evaluationInterval,omitempty"`

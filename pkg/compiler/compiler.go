@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/dynamic"
 )
@@ -24,7 +23,7 @@ type CompiledRuntimePolicy struct {
 	mode           string
 
 	variables map[string]cel.Program
-	selector  *metav1.LabelSelector
+	appliesTo PodTarget
 	resolver  ServiceResolver
 
 	// these are the hardcoded values in the api spec
@@ -167,6 +166,14 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		return nil, err
 	}
 
+	// building the target here rather than per evaluation is what turns a
+	// malformed selector into a CompileFailed condition instead of an error the
+	// re-evaluation loop retries forever
+	appliesTo, err := compileTarget(rp.Spec.PodSelector, rp.Spec.NamespaceSelector)
+	if err != nil {
+		return nil, err
+	}
+
 	evalIntval := time.Duration(0)
 	if rp.Spec.EvaluationInterval != nil {
 		evalIntval = rp.Spec.EvaluationInterval.Duration
@@ -176,7 +183,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 		UID:               string(rp.UID),
 		Name:              rp.Name,
 		ReevalInterval:    &evalIntval,
-		selector:          rp.Spec.PodSelector,
+		appliesTo:         appliesTo,
 		resolver:          c.resolver,
 		mode:              mode,
 		compiledNets:      compiledNets,

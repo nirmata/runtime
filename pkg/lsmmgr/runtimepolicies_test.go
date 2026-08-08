@@ -144,7 +144,7 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
-			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "agent"}), cgs(11), events.EventTypeCreate); err != nil {
+			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "agent"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 				t.Fatal(err)
 			}
 			rp := result("rp1", compiler.ModeEnforce, selFor(map[string]string{"app": "agent"}), tt.openPair, tt.execPair)
@@ -192,10 +192,10 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
 	mode := compiler.ModeMonitor
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "db"}), cgs(21), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "db"}), nil, cgs(21), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	rp := result("rp1", mode, selFor(map[string]string{"app": "web"}),
@@ -249,7 +249,7 @@ func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
 // delivery, so they must be enabled for every attached cgid.
 func TestRpCreated_EnforceModeAlsoEnablesObservation(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	rp := result("rp1", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}),
@@ -285,7 +285,7 @@ func TestRpUpdated_ObserveEnforceFlipRebuildsAttachment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
-			if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+			if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 				t.Fatal(err)
 			}
 			files := pair(nil, []string{"/etc/shadow"})
@@ -350,13 +350,13 @@ func TestRpUpdated_ObserveModeTargetChangeProgramsNothing(t *testing.T) {
 func TestRpCreated_AttachesPreExistingMatchingPods(t *testing.T) {
 	h := newHarness(t)
 	// two matching pods and one that doesn't match
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "web"}), cgs(21), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "web"}), nil, cgs(21), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podC", map[string]string{"app": "db"}), cgs(31), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podC", map[string]string{"app": "db"}), nil, cgs(31), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 
@@ -397,7 +397,7 @@ func TestRpCreated_AttachesPreExistingMatchingPods(t *testing.T) {
 
 func TestRpCreated_NoMatchingPodsSkipsCgidCalls(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podC", map[string]string{"app": "db"}), cgs(31), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podC", map[string]string{"app": "db"}), nil, cgs(31), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	rp := result("rp1", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}), pair(nil, []string{"/etc/shadow"}), nil)
@@ -485,7 +485,7 @@ func TestObservationFailureSurfacesPolicyCondition(t *testing.T) {
 		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.status.conditionTypes("rp1"); !slices.Contains(got, "ObservationAvailable") {
@@ -532,7 +532,7 @@ func TestRpUpdated_NoAttachment(t *testing.T) {
 
 func TestRpUpdated_UnknownModeTearsDown(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	sel := selFor(map[string]string{"app": "web"})
@@ -563,7 +563,7 @@ func TestRpUpdated_UnknownModeTearsDown(t *testing.T) {
 
 func TestRpUpdated_EmptyingAllProgsDeletesAttachment(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	rp := result("rp1", compiler.ModeEnforce, labels.Everything(), pair(nil, []string{"/etc/shadow"}), pair(nil, []string{"/bin/sh"}))
@@ -708,7 +708,7 @@ func TestSyncProgType_LateEnforcerSeededWithAttachedPodCgids(t *testing.T) {
 		uid   string
 		cgids []uint64
 	}{{"podA", []uint64{11, 12}}, {"podB", []uint64{21}}} {
-		if err := h.l.PodEvent(testPod(p.uid, map[string]string{"app": "web"}), cgs(p.cgids...), events.EventTypeCreate); err != nil {
+		if err := h.l.PodEvent(testPod(p.uid, map[string]string{"app": "web"}), nil, cgs(p.cgids...), events.EventTypeCreate); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -825,7 +825,7 @@ func TestSyncPodAttachment_SelectorChange(t *testing.T) {
 		{"podWeb", map[string]string{"app": "web"}, []uint64{11}},
 		{"podDb", map[string]string{"app": "db"}, []uint64{21, 22}},
 	} {
-		if err := h.l.PodEvent(testPod(p.uid, p.lbls), cgs(p.cgids...), events.EventTypeCreate); err != nil {
+		if err := h.l.PodEvent(testPod(p.uid, p.lbls), nil, cgs(p.cgids...), events.EventTypeCreate); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -879,7 +879,7 @@ func TestSyncPodAttachment_SelectorChange(t *testing.T) {
 
 func TestRpDeleted(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", nil), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	// two policies on the same pod, only one is deleted

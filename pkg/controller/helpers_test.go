@@ -78,9 +78,10 @@ type rpCall struct {
 }
 
 type podCall struct {
-	pod     corev1.Pod
-	cgInfos []*containers.ContainerCgroupInfo
-	evType  string
+	pod      corev1.Pod
+	nsLabels map[string]string
+	cgInfos  []*containers.ContainerCgroupInfo
+	evType   string
 }
 
 // recordingRpHandler records every policy event it receives. Handlers are
@@ -129,9 +130,9 @@ type recordingPodHandler struct {
 
 var _ events.PodEventHandler = (*recordingPodHandler)(nil)
 
-func (h *recordingPodHandler) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
+func (h *recordingPodHandler) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	h.mu.Lock()
-	h.podCalls = append(h.podCalls, podCall{pod: pod, cgInfos: cgInfos, evType: podEventType})
+	h.podCalls = append(h.podCalls, podCall{pod: pod, nsLabels: nsLabels, cgInfos: cgInfos, evType: podEventType})
 	h.mu.Unlock()
 	if h.podPanic != nil {
 		panic(h.podPanic)

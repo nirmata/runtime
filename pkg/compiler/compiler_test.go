@@ -10,7 +10,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -386,11 +385,11 @@ func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
 		if res.Name != "block-egress" {
 			t.Errorf("Name = %q, want %q", res.Name, "block-egress")
 		}
-		if !res.Selector.Matches(labels.Set{"app": "nginx"}) {
-			t.Error("Selector should match pod with label app=nginx")
+		if !res.AppliesTo.Matches(nil, map[string]string{"app": "nginx"}) {
+			t.Error("target should match pod with label app=nginx")
 		}
-		if res.Selector.Matches(labels.Set{"app": "other"}) {
-			t.Error("Selector should not match pod with label app=other")
+		if res.AppliesTo.Matches(nil, map[string]string{"app": "other"}) {
+			t.Error("target should not match pod with label app=other")
 		}
 	})
 
@@ -420,7 +419,7 @@ func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
 			t.Errorf("Mode = %q, want empty string", res.Mode)
 		}
 		// nil PodSelector maps to labels.Nothing(), which must not match any pod.
-		if res.Selector.Matches(labels.Set{"app": "nginx"}) {
+		if res.AppliesTo.Matches(nil, map[string]string{"app": "nginx"}) {
 			t.Error("nil selector should match nothing")
 		}
 	})

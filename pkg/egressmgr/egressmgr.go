@@ -53,6 +53,7 @@ type podAttachment struct {
 	protoDefaultDeny map[string]struct{} // the same, for protocol behaviors
 
 	labels          map[string]string
+	nsLabels        map[string]string
 	cgs             map[containers.ContainerCgroupInfo][]link.Link
 	filter          egressFilter
 	protoFilter     protoFilter
@@ -102,14 +103,14 @@ func (e *EgressManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult
 	}
 }
 
-func (e *EgressManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
+func (e *EgressManager) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo, podEventType string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch podEventType {
 	case events.EventTypeCreate:
-		return e.podCreated(pod, cgInfos)
+		return e.podCreated(pod, nsLabels, cgInfos)
 	case events.EventTypeUpdate:
-		return e.podUpdated(pod, cgInfos)
+		return e.podUpdated(pod, nsLabels, cgInfos)
 	default:
 		return fmt.Errorf("invalid pod event type")
 	}

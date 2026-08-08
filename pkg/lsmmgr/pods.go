@@ -8,18 +8,18 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) {
+func (l *LsmManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) {
 	l.logger.V(2).Info("pod created", "podUid", pod.UID)
 	pr := &podRepresentation{
 		labels:       pod.Labels,
+		nsLabels:     nsLabels,
 		cgids:        containers.ExtractCgids(cgInfos),
 		attachedLsms: make(map[string]*lsmAttachment),
 	}
 	for rpUid, la := range l.lsmAttachments {
-		if la.selector.Matches(labels.Set(pod.Labels)) {
+		if la.target.Matches(nsLabels, pod.Labels) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
 			for progType, prog := range la.progs {
 				l.addPodCgids(rpUid, progType, prog, pr.cgids)
@@ -33,9 +33,10 @@ func (l *LsmManager) podCreated(pod corev1.Pod, cgInfos []*containers.ContainerC
 
 // podUpdated reconciles both halves of a pod update: a cgroup-id change is
 // applied to every attachment the pod is already attached to (containers
-// restarting inside a live pod), and a label change refreshes the cached labels
-// and re-evaluates every attachment's selector.
-func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo) error {
+// restarting inside a live pod), and a change to either the pod's own labels or
+// its namespace's refreshes the cached sets and re-evaluates every attachment's
+// target.
+func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) error {
 	l.logger.V(2).Info("pod updated", "podUid", pod.UID)
 	pr, ok := l.pods[string(pod.UID)]
 	if !ok {
@@ -45,7 +46,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	cgids := containers.ExtractCgids(cgInfos)
 	toAdd := utils.DiffSlice(pr.cgids, cgids)
 	toRemove := utils.DiffSlice(cgids, pr.cgids)
-	labelsChanged := !maps.Equal(pr.labels, pod.Labels)
+	labelsChanged := !maps.Equal(pr.labels, pod.Labels) || !maps.Equal(pr.nsLabels, nsLabels)
 
 	if len(toAdd) == 0 && len(toRemove) == 0 && !labelsChanged {
 		l.logger.V(2).Info("pod update had no cgid or label changes, skipping", "podUid", pod.UID)
@@ -60,6 +61,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	// against them
 	pr.cgids = cgids
 	pr.labels = pod.Labels
+	pr.nsLabels = nsLabels
 
 	// the cgid diff runs before the selector re-evaluation, so a pod on either
 	// side of an attachment change is handled with its new cgid set
@@ -74,7 +76,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, cgInfos []*containers.ContainerC
 	}
 
 	if labelsChanged {
-		l.logger.V(2).Info("pod labels changed, re-evaluating policy selectors", "podUid", pod.UID)
+		l.logger.V(2).Info("pod or namespace labels changed, re-evaluating policy targets", "podUid", pod.UID)
 		for rpUid, la := range l.lsmAttachments {
 			l.syncPodAttachment(rpUid, la)
 		}

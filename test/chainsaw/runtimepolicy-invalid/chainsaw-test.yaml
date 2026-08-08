@@ -75,7 +75,7 @@ spec:
             kubectl delete runtimepolicy chainsaw-invalid-unknown-field --ignore-not-found
             exit 1
           fi
-          grep -q 'namespaceSelector' /tmp/a15-unknown.err
+          grep -q 'workloadSelector' /tmp/a15-unknown.err
           echo "rejected as expected: $(cat /tmp/a15-unknown.err)"
 
   - name: malformed-cel-is-NOT-rejected-at-admission

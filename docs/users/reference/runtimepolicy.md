@@ -22,6 +22,7 @@ kubectl get rpol <name> -o yaml
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `spec.podSelector` | `LabelSelector` | Pods this policy applies to. `{}` selects every pod on the node; **absent selects none**, and the policy enforces nothing. Relabeling a pod re-evaluates the match. |
+| `spec.namespaceSelector` | `LabelSelector` | Narrows `podSelector` to pods whose **namespace** carries these labels. `{}` and **absent both select every namespace**. ANDed with `podSelector`. Relabeling a namespace re-evaluates the pods in it. See [Targeting namespaces](#targeting-namespaces). |
 | `spec.mode` | `monitor` \| `enforce` | What the daemon does with a matched pod. Optional, with no default. |
 | `spec.evaluationInterval` | duration | How often matched pods are re-evaluated. Required to pick up changes behind a `resource` or `http` expression. |
 | `spec.variables` | list of `name` + `expression` | Named CEL expressions, referenced as `variables.<name>` from any other expression. |
@@ -97,6 +98,79 @@ rejected at admission by a CEL validation rule on the CRD.
 
 Expression syntax, the available CEL libraries, and the `resource`/`http`/`json` helpers
 are in [CEL in RuntimePolicy](cel.md).
+
+## Targeting namespaces
+
+`spec.namespaceSelector` narrows a policy to pods whose **namespace** carries the labels it
+names. It is a standard `LabelSelector`, matched against the namespace's labels, and it is
+ANDed with `podSelector`: a pod is selected when its namespace matches *and* its own labels
+match.
+
+```yaml
+spec:
+  namespaceSelector:
+    matchLabels:
+      tier: prod
+  podSelector:
+    matchLabels:
+      app: agent
+```
+
+That policy selects `app=agent` pods, but only those running in a namespace labelled
+`tier=prod`.
+
+### Absent means every namespace
+
+This is the opposite of `podSelector`, and the asymmetry is deliberate:
+
+| | absent | `{}` | set |
+| --- | --- | --- | --- |
+| `podSelector` | **no pods** | every pod | matching pods |
+| `namespaceSelector` | **every namespace** | every namespace | matching namespaces |
+
+An omitted `podSelector` selects nothing, so a policy that forgets it enforces nothing
+rather than everything. An omitted `namespaceSelector` selects every namespace, so a policy
+written before the field existed keeps applying exactly as it did.
+
+### Targeting namespaces by name
+
+There is no `namespaces` list. The API server labels every namespace with
+`kubernetes.io/metadata.name`, so a name is just another label match — the same idiom
+`ValidatingWebhookConfiguration` uses:
+
+```yaml
+spec:
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: In
+      values: [payments, checkout]
+  podSelector: {}
+```
+
+Excluding namespaces is the same selector with `NotIn`, which is how you keep a cluster-wide
+policy off `kube-system`:
+
+```yaml
+spec:
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values: [kube-system, kube-public]
+  podSelector: {}
+```
+
+Because this is a `LabelSelector`, names are matched exactly. There is no wildcard: a
+`prod-*` prefix has to be expressed as a label you put on those namespaces.
+
+### Relabeling a namespace re-evaluates its pods
+
+Labeling a namespace into or out of a policy's scope takes effect without touching the pods
+or the policy. The daemon watches namespaces and replays the pods it holds in the changed
+namespace, so enforcement attaches and detaches the same way a pod relabel already works.
+
+This needs `get`/`list`/`watch` on namespaces, which the chart's ClusterRole grants.
 
 ## Cluster Service targets
 
