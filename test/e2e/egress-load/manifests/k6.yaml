@@ -1,0 +1,29 @@
+# The load generator runs in the cluster, so the harness needs no local k6 and
+# the traffic passes through the cgroup the policies are attached to. A local k6
+# would leave the pod cgroup untouched and measure nothing.
+#
+# --log-output=none: fifty VUs against a denied destination produce one error
+# line per request. handleSummary writes to stdout directly, so the one line
+# run.sh reads survives.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-load-k6
+  labels:
+    app: egress-load-client
+spec:
+  restartPolicy: Never
+  containers:
+  - name: k6
+    image: grafana/k6:0.54.0
+    command: ["k6", "run", "--quiet", "--log-output=none", "/scripts/k6-egress-storm.js"]
+    envFrom:
+    - configMapRef:
+        name: egress-load-env
+    volumeMounts:
+    - name: scripts
+      mountPath: /scripts
+  volumes:
+  - name: scripts
+    configMap:
+      name: egress-load-script

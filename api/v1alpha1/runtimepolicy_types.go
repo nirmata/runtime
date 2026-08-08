@@ -199,6 +199,11 @@ const (
 
 	ConditionObservationAvailable = "ObservationAvailable"
 	ReasonObservationUnavailable  = "ObservationUnavailable"
+
+	// ConditionEnforcementAvailable reports a kernel map the runtime could not
+	// program, so the policy's workloads run unenforced.
+	ConditionEnforcementAvailable = "EnforcementAvailable"
+	ReasonEnforcementUnavailable  = "EnforcementUnavailable"
 )
 
 // NodePolicyStatus is one node's shard of a RuntimePolicy's status, written

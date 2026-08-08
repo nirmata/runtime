@@ -49,6 +49,9 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 			errs = append(errs, fmt.Errorf("reading egress observations for pod %s: %w", podUid, err))
 			// a partial map read still carries real observations, keep going
 		}
+		if err := e.reportLost(podUid, pa.filter); err != nil {
+			errs = append(errs, err)
+		}
 		for _, key := range sortedIPEventKeys(counts) {
 			count := counts[key]
 			if count == 0 {
@@ -85,6 +88,27 @@ func (e *EgressManager) CollectObservations(ctx context.Context) ([]runtimeevent
 	}
 
 	return out, errors.Join(errs...)
+}
+
+// reportLost drains one pod's kernel drop counter. A filter whose objects are
+// not loaded has nothing to report and will not acquire any later, so it is not
+// worth failing the poll over.
+func (e *EgressManager) reportLost(podUid string, filter egressFilter) error {
+	lost, err := filter.ReadEventsLost()
+	if err != nil {
+		if errors.Is(err, egressfilter.ErrNotLoaded) {
+			return nil
+		}
+		return fmt.Errorf("reading lost egress observations for pod %s: %w", podUid, err)
+	}
+	if lost == 0 {
+		return nil
+	}
+	e.logger.Info("kernel dropped egress observations", "podUid", podUid, "count", lost)
+	if e.onLoss != nil {
+		e.onLoss(runtimeevent.ReasonCountMapFull, lost)
+	}
+	return nil
 }
 
 // sortedIPEventKeys orders keys by address, then decision (allow before deny),

@@ -320,6 +320,119 @@ func TestCollectObservations_CancelledContext(t *testing.T) {
 	}
 }
 
+// attachPolicies creates a pod plus one monitor policy per uid, every one of them
+// selecting that pod, and returns the harness.
+func attachPolicies(t *testing.T, podUID string, cgids []uint64, policyUIDs ...string) *harness {
+	t.Helper()
+	h := newHarness(t)
+	if err := h.l.PodEvent(testPod(podUID, nil), nil, cgs(cgids...), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range policyUIDs {
+		if err := h.l.RuntimePolicyEvent(result(uid, compiler.ModeMonitor, labels.Everything(),
+			pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return h
+}
+
+// one program is attached per policy and every one of them is globally attached to
+// the hook, so P policies covering a pod count the same kernel operation P times.
+func TestCollectObservationsEmitsOnePathEventAcrossAttachments(t *testing.T) {
+	h := attachPolicies(t, "podA", []uint64{11}, "rp1", "rp2")
+	h.enf("rp1", open).seed(11, map[string]uint32{"/etc/shadow": 4})
+	h.enf("rp2", open).seed(11, map[string]uint32{"/etc/shadow": 4})
+
+	got, err := h.l.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations returned %v", err)
+	}
+	want := []runtimeevent.Event{{
+		Kind:     runtimeevent.KindOpen,
+		Time:     fixedTime,
+		CgroupID: 11,
+		Count:    4,
+		Open:     &runtimeevent.OpenFacts{Path: "/etc/shadow"},
+		Pod:      runtimeevent.PodIdentity{UID: "podA"},
+	}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("events (-want +got):\n%s", diff)
+	}
+}
+
+// counts from two programs over one cgid are two views of one number, so the
+// larger one is the observation; adding them would report the pod's own policy
+// count as traffic.
+func TestCollectObservationsMergesCountsByMax(t *testing.T) {
+	h := attachPolicies(t, "podA", []uint64{11}, "rp1", "rp2")
+	h.enf("rp1", open).seed(11, map[string]uint32{"/etc/shadow": 5})
+	h.enf("rp2", open).seed(11, map[string]uint32{"/etc/shadow": 3})
+
+	got, err := h.l.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations returned %v", err)
+	}
+	if len(got) != 1 || got[0].Count != 5 {
+		t.Fatalf("events = %+v, want a single event with count 5", got)
+	}
+}
+
+// an enforce program and an observe-mode program can disagree on the same open,
+// and the kernel's actual decision is exactly what merging must not lose.
+func TestCollectObservationsKeepsDistinctDecisionsSeparate(t *testing.T) {
+	h := attachPolicies(t, "podA", []uint64{11}, "rp1", "rp2")
+	h.enf("rp1", open).seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionDeny}, 2)
+	h.enf("rp2", open).seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionAllow}, 2)
+
+	got, err := h.l.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations returned %v", err)
+	}
+	want := []runtimeevent.Event{{
+		Kind:     runtimeevent.KindOpen,
+		Time:     fixedTime,
+		CgroupID: 11,
+		Count:    2,
+		Open:     &runtimeevent.OpenFacts{Path: "/etc/shadow"},
+		Pod:      runtimeevent.PodIdentity{UID: "podA"},
+	}, {
+		Kind:         runtimeevent.KindOpen,
+		Time:         fixedTime,
+		CgroupID:     11,
+		Count:        2,
+		KernelDenied: true,
+		Open:         &runtimeevent.OpenFacts{Path: "/etc/shadow"},
+		Pod:          runtimeevent.PodIdentity{UID: "podA"},
+	}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("events (-want +got):\n%s", diff)
+	}
+}
+
+// what an operator sees is a property of the pod's traffic, so adding policies that
+// select the same pod must not change the emitted events at all.
+func TestCollectObservationsEventCountIndependentOfPolicyCount(t *testing.T) {
+	collect := func(policyUIDs ...string) []runtimeevent.Event {
+		t.Helper()
+		h := attachPolicies(t, "podA", []uint64{11}, policyUIDs...)
+		for _, uid := range policyUIDs {
+			h.enf(uid, open).seed(11, map[string]uint32{"/etc/shadow": 7})
+		}
+		got, err := h.l.CollectObservations(context.Background())
+		if err != nil {
+			t.Fatalf("CollectObservations returned %v", err)
+		}
+		return got
+	}
+
+	one := collect("rp1")
+	many := collect("rp1", "rp2", "rp3", "rp4", "rp5", "rp6", "rp7", "rp8")
+	if diff := cmp.Diff(one, many); diff != "" {
+		t.Errorf("8 policies vs 1 (-one +many):\n%s", diff)
+	}
+}
+
 // sortEvents is what makes the emitted slice reproducible despite the map
 // iteration in CollectObservations.
 func TestSortEvents_Deterministic(t *testing.T) {
@@ -346,5 +459,60 @@ func TestSortEvents_Deterministic(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, sortEvents(in)); diff != "" {
 		t.Errorf("sortEvents (-want +got):\n%s", diff)
+	}
+}
+
+// the kernel's own drop counter is the only signal that an enforcer's
+// observations are incomplete; dropping it makes a truncated view look quiet.
+func TestCollectObservationsReportsKernelDrops(t *testing.T) {
+	h := newHarness(t)
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
+		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	h.enf("rp1", open).seedLost(4)
+
+	if _, err := h.l.CollectObservations(context.Background()); err != nil {
+		t.Fatalf("CollectObservations: %v", err)
+	}
+	want := []loss{{reason: runtimeevent.ReasonCountMapFull, delta: 4}}
+	if diff := cmp.Diff(want, h.recordedLosses(), cmp.AllowUnexported(loss{})); diff != "" {
+		t.Errorf("losses (-want +got):\n%s", diff)
+	}
+}
+
+// the kernel counter is cumulative and never resets, so a poll that sees no new
+// drops must report nothing rather than the running total again.
+func TestKernelDropDeltaNotRepeated(t *testing.T) {
+	h := newHarness(t)
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
+		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+
+	h.enf("rp1", open).seedLost(4)
+	if _, err := h.l.CollectObservations(context.Background()); err != nil {
+		t.Fatalf("first CollectObservations: %v", err)
+	}
+	if _, err := h.l.CollectObservations(context.Background()); err != nil {
+		t.Fatalf("second CollectObservations: %v", err)
+	}
+	h.enf("rp1", open).seedLost(3)
+	if _, err := h.l.CollectObservations(context.Background()); err != nil {
+		t.Fatalf("third CollectObservations: %v", err)
+	}
+
+	want := []loss{
+		{reason: runtimeevent.ReasonCountMapFull, delta: 4},
+		{reason: runtimeevent.ReasonCountMapFull, delta: 3},
+	}
+	if diff := cmp.Diff(want, h.recordedLosses(), cmp.AllowUnexported(loss{})); diff != "" {
+		t.Errorf("losses (-want +got):\n%s", diff)
 	}
 }

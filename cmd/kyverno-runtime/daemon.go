@@ -45,6 +45,13 @@ const (
 	defaultSourceRestartBackoff = collector.DefaultRestartBackoff
 )
 
+// The names the managers' poll sources are registered under, and the source
+// label of every metric attributed to them.
+const (
+	egressObserveSource = "egress-observe"
+	lsmObserveSource    = "lsm-observe"
+)
+
 var (
 	logLevel             int
 	metricsAddr          string
@@ -164,7 +171,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// sw owns this node's shard of every RuntimePolicy status.
 	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"))
 
-	em := egressmgr.NewEgressManager(logger, sw)
+	em := egressmgr.NewEgressManager(logger, sw, func(reason string, delta uint64) {
+		m.EventsDropped.WithLabelValues(egressObserveSource, reason).Add(float64(delta))
+	})
 
 	// The exec tracer is optional: a kernel without the ring buffer or the
 	// sched_process_exec raw tracepoint still runs everything else. A nil
@@ -179,7 +188,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		execSinks = append(execSinks, execSrc)
 	}
 
-	lsmm := lsmmgr.NewLsmManager(logger, sw, execSinks...)
+	lsmm := lsmmgr.NewLsmManager(logger, sw, func(reason string, delta uint64) {
+		m.EventsDropped.WithLabelValues(lsmObserveSource, reason).Add(float64(delta))
+	}, execSinks...)
 
 	// mon evaluates observed events against monitor-mode policies and turns
 	// matches into findings.
@@ -196,8 +207,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Poll the managers' observation maps, attribute, then hand to the monitor.
 	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
-	col.AddSource(collector.NewPollSource("egress-observe", observeInterval, em.CollectObservations))
-	col.AddSource(collector.NewPollSource("lsm-observe", observeInterval, lsmm.CollectObservations))
+	col.AddSource(collector.NewPollSource(egressObserveSource, observeInterval, em.CollectObservations))
+	col.AddSource(collector.NewPollSource(lsmObserveSource, observeInterval, lsmm.CollectObservations))
 	// A typed nil in the Source interface is not nil, so the check is here
 	// rather than left to AddSource.
 	if execSrc != nil {

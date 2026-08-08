@@ -138,6 +138,43 @@ func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]ui
 	return out, errors.Join(errs...)
 }
 
+// pathStatCountMapFull mirrors PATH_STAT_COUNT_MAP_FULL in _cprog/maps.h.
+const pathStatCountMapFull = uint32(0)
+
+// ReadEventsLost reports open/exec observations the kernel program could not
+// record because the cgid's count map was full. It shares ReadEvents' single
+// caller, so statLast needs no lock of its own.
+func (l *LsmEnforcer) ReadEventsLost() (uint64, error) {
+	if l.stats == nil {
+		return 0, ErrObservationUnavailable
+	}
+
+	key := pathStatCountMapFull
+	var perCPU []uint64
+	if err := l.stats.Lookup(&key, &perCPU); err != nil {
+		return 0, fmt.Errorf("reading lost observation counter: %w", err)
+	}
+
+	var sum uint64
+	for _, v := range perCPU {
+		sum += v
+	}
+	return l.lostSince(sum), nil
+}
+
+// lostSince turns the kernel's cumulative counter into a per-call delta. A
+// total below the previous one means the map behind it was replaced, so the
+// baseline moves with it rather than reporting a negative interval as a huge
+// positive one.
+func (l *LsmEnforcer) lostSince(sum uint64) uint64 {
+	last := l.statLast
+	l.statLast = sum
+	if sum < last {
+		return 0
+	}
+	return sum - last
+}
+
 // innerFor returns the inner map for cgid. owned is true when the handle is the
 // long-lived one this enforcer created, which callers must not close.
 func (l *LsmEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error) {

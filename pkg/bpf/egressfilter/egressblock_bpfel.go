@@ -83,6 +83,7 @@ type egressBlockMapSpecs struct {
 	Flags          *ebpf.MapSpec `ebpf:"flags"`
 	IpDomain       *ebpf.MapSpec `ebpf:"ip_domain"`
 	IpEvents       *ebpf.MapSpec `ebpf:"ip_events"`
+	Stats          *ebpf.MapSpec `ebpf:"stats"`
 }
 
 // egressBlockVariableSpecs contains global variables before they are loaded into the kernel.
@@ -119,6 +120,7 @@ type egressBlockMaps struct {
 	Flags          *ebpf.Map `ebpf:"flags"`
 	IpDomain       *ebpf.Map `ebpf:"ip_domain"`
 	IpEvents       *ebpf.Map `ebpf:"ip_events"`
+	Stats          *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *egressBlockMaps) Close() error {
@@ -131,6 +133,7 @@ func (m *egressBlockMaps) Close() error {
 		m.Flags,
 		m.IpDomain,
 		m.IpEvents,
+		m.Stats,
 	)
 }
 

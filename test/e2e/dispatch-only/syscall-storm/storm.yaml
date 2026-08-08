@@ -1,0 +1,26 @@
+# Three containers, three cgroup ids, one pod. The LSM count maps are keyed per
+# cgroup, so three containers is the smallest shape where "one event per kernel
+# operation" is distinguishable from "one event per cgroup per attachment".
+#
+# The loop is builtin-only: `: < path` opens and closes the file without a fork,
+# so the open rate is not bounded by process creation. The outer round and its
+# sleep spread the storm over several observe intervals, which is what makes the
+# per-fingerprint count in the Report a multiple of the poll count.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: syscall-storm
+  labels:
+    app: syscall-storm
+spec:
+  restartPolicy: Never
+  containers:
+  - name: storm-a
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /storm && echo secret > /storm/secret && echo decoy > /storm/decoy && r=0; while [ \"$r\" -lt 30 ]; do i=0; while [ \"$i\" -lt 10000 ]; do : < /storm/secret; : < /storm/decoy; i=$((i + 1)); done; r=$((r + 1)); sleep 1; done; echo storm-complete; sleep 3600"]
+  - name: storm-b
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /storm && echo secret > /storm/secret && echo decoy > /storm/decoy && r=0; while [ \"$r\" -lt 30 ]; do i=0; while [ \"$i\" -lt 10000 ]; do : < /storm/secret; : < /storm/decoy; i=$((i + 1)); done; r=$((r + 1)); sleep 1; done; echo storm-complete; sleep 3600"]
+  - name: storm-c
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /storm && echo secret > /storm/secret && echo decoy > /storm/decoy && r=0; while [ \"$r\" -lt 30 ]; do i=0; while [ \"$i\" -lt 10000 ]; do : < /storm/secret; : < /storm/decoy; i=$((i + 1)); done; r=$((r + 1)); sleep 1; done; echo storm-complete; sleep 3600"]

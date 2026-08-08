@@ -23,7 +23,7 @@ Label values:
 | --- | --- |
 | `source` | `egress-observe`, `lsm-observe` (the two poll sources), `dnsquery` (the DNS question source), `monitor`, `reporter` |
 | `kind` | `net`, `exec`, `open`, `dns` |
-| `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `ringbuf_full`, `name_unreadable`, `undecodable` |
+| `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `count_map_full`, `ringbuf_full`, `name_unreadable`, `undecodable` |
 | `behavior` | `network`, `exec`, `open`, `dns` |
 | `result` | `ok`, `error`, `skipped` |
 
@@ -36,6 +36,12 @@ The pipeline-wide drop reasons:
 - `unattributed_kernel_deny` — the kernel denied something, but no enforce-mode policy the
   daemon tracks explains the deny. Kept distinct from `unattributed` so the two gaps stay
   tellable apart.
+- `count_map_full` — a per-cgroup kernel count map had no room for a new
+  `(path, decision)` or `(destination, decision)` pair, so the operation went uncounted. The
+  operation itself was still allowed or denied as the policy says; only the observation was
+  lost. Climbing means one workload is touching more distinct paths or destinations within a
+  poll interval than the map holds (2048), so narrow the `podSelector` of the policies
+  selecting it, or accept the gap knowingly.
 
 ## DNS question loss
 

@@ -78,3 +78,15 @@ struct {
     __type(key, __u32);
     __type(value, __u8);
 } banned_domains SEC(".maps");
+
+enum egress_stat {
+    EGRESS_STAT_COUNT_MAP_FULL = 0,
+    EGRESS_STAT_MAX = 1,
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, EGRESS_STAT_MAX);
+    __type(key, __u32);
+    __type(value, __u64);
+} stats SEC(".maps");

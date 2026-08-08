@@ -1,0 +1,162 @@
+# Eight monitor-mode policies, all selecting the same label, all naming the same
+# path. That is the load shape the dedup exists for: the LSM manager attaches one
+# enforcer per policy per cgroup, and every one of them sees the same kernel
+# operations. Eight views of one number must drain as one event, not eight.
+#
+# Each policy also carries an exec behavior so both LSM program types are
+# attached and drained. /bin/nc is never executed, so exec contributes
+# observations but no findings, and the open assertions stay unambiguous.
+#
+# /storm/decoy is deliberately named by no policy: it proves the storm is
+# producing observations the monitor correctly declines to report.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-1
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-2
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-3
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-4
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-5
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-6
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-7
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-syscall-storm-8
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: syscall-storm
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /storm/secret
+  - exec:
+      deny:
+        values:
+        - /bin/nc
