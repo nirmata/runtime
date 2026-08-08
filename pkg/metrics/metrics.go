@@ -16,7 +16,7 @@ type Metrics struct {
 	// labeled by source and kind.
 	EventsIngested *prometheus.CounterVec
 	// EventsDropped counts events dropped by the collector, labeled by
-	// source and reason (buffer_full|unattributed|rate_limited|count_map_full).
+	// source and reason.
 	EventsDropped *prometheus.CounterVec
 	// AttributionMisses counts events that could not be attributed to a
 	// pod (see pkg/attribution.Index.Annotate).
@@ -50,7 +50,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		EventsDropped: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "events_dropped_total",
-			Help:      "Total number of runtime events dropped, by source and reason (buffer_full|unattributed|rate_limited|count_map_full).",
+			Help:      "Total number of runtime events dropped, by source and reason.",
 		}, []string{"source", "reason"}),
 
 		AttributionMisses: f.NewCounter(prometheus.CounterOpts{
