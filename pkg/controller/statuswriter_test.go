@@ -38,7 +38,12 @@ func policyObj(name, uid string) *v1alpha1.RuntimePolicy {
 }
 
 func evalResult(uid, name, mode string, sel labels.Selector) *compiler.EvaluationResult {
-	return &compiler.EvaluationResult{UID: uid, Name: name, Mode: mode, Selector: sel}
+	return &compiler.EvaluationResult{
+		UID:       uid,
+		Name:      name,
+		Mode:      mode,
+		AppliesTo: compiler.PodTarget{Pod: sel, Namespace: labels.Everything()},
+	}
 }
 
 func selectorFor(t *testing.T, kv map[string]string) labels.Selector {

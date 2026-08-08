@@ -18,10 +18,13 @@ import (
 // rpWithProtos builds an EvaluationResult carrying only a protocol pair.
 func rpWithProtos(uid, mode string, sel map[string]string, allow, deny []string) *compiler.EvaluationResult {
 	return &compiler.EvaluationResult{
-		UID:       uid,
-		Name:      uid,
-		Mode:      mode,
-		Selector:  labels.SelectorFromSet(labels.Set(sel)),
+		UID:  uid,
+		Name: uid,
+		Mode: mode,
+		AppliesTo: compiler.PodTarget{
+			Pod:       labels.SelectorFromSet(labels.Set(sel)),
+			Namespace: labels.Everything(),
+		},
 		Protocols: &compiler.AllowDenyPair{Allow: allow, Deny: deny},
 	}
 }
@@ -251,7 +254,7 @@ func TestPodCreatedReleasesLinksWhenProtoAttachFails(t *testing.T) {
 	e, _, pfac, _ := newTestManagerWithProto()
 	pfac.attachErr = errors.New("attach refused")
 
-	err := e.PodEvent(makePod("pod-1", webLabels), cgInfos("/cg/pod-1"), events.EventTypeCreate)
+	err := e.PodEvent(makePod("pod-1", webLabels), nil, cgInfos("/cg/pod-1"), events.EventTypeCreate)
 	if err == nil {
 		t.Fatal("podCreated returned nil despite a failing protocol attach")
 	}

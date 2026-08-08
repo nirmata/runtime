@@ -10,6 +10,10 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch"]
+# daemon: reads namespace labels to match a policy's namespaceSelector
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: ["runtime.nirmata.io"]
   resources: ["runtimepolicies"]
   verbs: ["get", "list", "watch"]

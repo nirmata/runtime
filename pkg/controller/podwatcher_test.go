@@ -45,23 +45,42 @@ func newTestPodWatcher(t *testing.T, hs []events.PodEventHandler, seed ...*corev
 			t.Fatal(err)
 		}
 	}
+	nsFactory := informers.NewSharedInformerFactory(client, 0)
+	namespaces := nsFactory.Core().V1().Namespaces()
 	w := &podWatcher{
 		factory:       factory,
 		informer:      pods.Informer(),
 		lister:        pods.Lister(),
 		queue:         newPodQueue(),
+		nsFactory:     nsFactory,
+		nsInformer:    namespaces.Informer(),
+		nsLister:      namespaces.Lister(),
 		nodeName:      "node-1",
 		eventHandlers: hs,
 		log:           logr.Discard(),
 	}
+	// every namespace a pod event can name has to be in the cache, or the
+	// handler requeues rather than fanning out
+	for _, p := range seed {
+		seedNamespace(t, w, p.Namespace, nil)
+	}
 	t.Cleanup(w.queue.ShutDown)
 	return w, pods.Informer().GetIndexer()
+}
+
+func seedNamespace(t *testing.T, w *podWatcher, name string, lbls map[string]string) {
+	t.Helper()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: lbls}}
+	if err := w.nsInformer.GetIndexer().Add(ns); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPodHandleCreateFansOutToAllHandlers(t *testing.T) {
 	h1 := &recordingPodHandler{name: "h1"}
 	h2 := &recordingPodHandler{name: "h2"}
 	w, _ := newTestPodWatcher(t, podHandlers(h1, h2))
+	seedNamespace(t, w, "ns", nil)
 
 	p := pod("ns", "p", "uid-1")
 	if err := w.handleCreateOrUpdate(p, events.EventTypeCreate); err != nil {
@@ -91,6 +110,7 @@ func TestPodHandleCreateJoinsHandlerErrors(t *testing.T) {
 	h1 := &recordingPodHandler{name: "h1", podErr: errA}
 	h2 := &recordingPodHandler{name: "h2", podErr: errB}
 	w, _ := newTestPodWatcher(t, podHandlers(h1, h2))
+	seedNamespace(t, w, "ns", nil)
 
 	err := w.handleCreateOrUpdate(pod("ns", "p", "uid-1"), events.EventTypeCreate)
 	if err == nil {
@@ -109,6 +129,7 @@ func TestPodHandleUpdateFansOutAndJoinsErrors(t *testing.T) {
 	h1 := &recordingPodHandler{name: "h1", podErr: errA}
 	h2 := &recordingPodHandler{name: "h2"}
 	w, _ := newTestPodWatcher(t, podHandlers(h1, h2))
+	seedNamespace(t, w, "ns", nil)
 
 	err := w.handleCreateOrUpdate(pod("ns", "p", "uid-1"), events.EventTypeUpdate)
 	if !errors.Is(err, errA) {
@@ -127,6 +148,7 @@ func TestPodFanOutConvertsHandlerPanicToError(t *testing.T) {
 	boom := &recordingPodHandler{name: "boom", podPanic: "handler exploded"}
 	healthy := &recordingPodHandler{name: "healthy"}
 	w, _ := newTestPodWatcher(t, podHandlers(boom, healthy))
+	seedNamespace(t, w, "ns", nil)
 
 	err := w.handleCreateOrUpdate(pod("ns", "p", "uid-1"), events.EventTypeCreate)
 	if err == nil {
@@ -228,7 +250,7 @@ func nextKey(t *testing.T, q workqueue.TypedRateLimitingInterface[queueKey]) que
 // because the lister cannot serve the object by the time the worker runs.
 func TestPodInformerQueuesKeysByEventType(t *testing.T) {
 	client := k8sfake.NewSimpleClientset(pod("ns", "p", "uid-1"))
-	w := NewPodWatcher(client, "node-1", nil)
+	w := NewPodWatcher(client, "node-1", nil, nil)
 	t.Cleanup(w.queue.ShutDown)
 
 	stop := make(chan struct{})
@@ -498,7 +520,7 @@ func TestPodHandleCreateOrUpdateFansOutPartialCgInfos(t *testing.T) {
 	w, _ := newTestPodWatcher(t, podHandlers(h))
 
 	partial := []*containers.ContainerCgroupInfo{{ID: 7, Path: "/sys/fs/cgroup/x", Name: "c1"}}
-	if err := w.fanOut(pod("ns", "p", "uid-1"), partial, events.EventTypeCreate); err != nil {
+	if err := w.fanOut(pod("ns", "p", "uid-1"), nil, partial, events.EventTypeCreate); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	calls := h.podEventCalls()
@@ -530,5 +552,64 @@ func TestPodUnresolvableContainerIsRetried(t *testing.T) {
 	}
 	if len(calls[0].cgInfos) != 0 {
 		t.Errorf("cgInfos = %+v, want empty", calls[0].cgInfos)
+	}
+}
+
+// A namespace's labels reach the handlers on the pod event, which is what lets
+// a policy's namespaceSelector be matched without every handler keeping its own
+// namespace cache.
+func TestPodEventCarriesNamespaceLabels(t *testing.T) {
+	h := &recordingPodHandler{name: "h"}
+	w, _ := newTestPodWatcher(t, podHandlers(h))
+	seedNamespace(t, w, "ns", map[string]string{"tier": "prod"})
+
+	if err := w.handleCreateOrUpdate(pod("ns", "p", "uid-1"), events.EventTypeCreate); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := h.podEventCalls()
+	if len(calls) != 1 {
+		t.Fatalf("got %d pod events, want 1", len(calls))
+	}
+	want := map[string]string{"tier": "prod"}
+	if diff := cmp.Diff(want, calls[0].nsLabels); diff != "" {
+		t.Errorf("namespace labels mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A pod whose namespace is not yet cached is requeued rather than delivered
+// with an empty label set: an empty set reads as "no namespaceSelector matches
+// you", which would silently unselect the pod from every policy that has one.
+func TestPodEventWithUncachedNamespaceIsRequeued(t *testing.T) {
+	h := &recordingPodHandler{name: "h"}
+	p := pod("ns", "p", "uid-1")
+	w, _ := newTestPodWatcher(t, podHandlers(h))
+
+	err := w.handleCreateOrUpdate(p, events.EventTypeCreate)
+	if err == nil {
+		t.Fatal("expected an error for a pod whose namespace is not cached")
+	}
+	if got := len(h.podEventCalls()); got != 0 {
+		t.Errorf("handler got %d events, want none: an unresolved namespace must not fan out", got)
+	}
+}
+
+// Relabelling a namespace has to re-evaluate the pods inside it. They are
+// replayed as ordinary updates, which is the path every handler already uses to
+// re-run a policy's target.
+func TestNamespaceRelabelReplaysItsPodsOnly(t *testing.T) {
+	here := pod("ns", "p", "uid-1")
+	elsewhere := pod("other", "q", "uid-2")
+	w, _ := newTestPodWatcher(t, nil, here, elsewhere)
+
+	w.requeueNamespace("ns")
+
+	if got := w.queue.Len(); got != 1 {
+		t.Fatalf("queue len = %d, want only the relabelled namespace's pod", got)
+	}
+	key, _ := w.queue.Get()
+	want := queueKey{Type: events.EventTypeUpdate, Key: "ns/p"}
+	if key != want {
+		t.Errorf("queued %+v, want %+v", key, want)
 	}
 }

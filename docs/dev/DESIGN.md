@@ -112,7 +112,8 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 
 | Field | Type | Purpose |
 | --- | --- | --- |
-| `podSelector` | `*metav1.LabelSelector` | Pods this policy applies to. |
+| `podSelector` | `*metav1.LabelSelector` | Pods this policy applies to. Absent selects no pods. |
+| `namespaceSelector` | `*metav1.LabelSelector` | Narrows `podSelector` to pods in namespaces carrying these labels. Absent and `{}` both select every namespace, so a policy without one is unchanged. ANDed with `podSelector`. |
 | `evaluationInterval` | `*metav1.Duration` | If set, the policy is periodically re-evaluated (`controller.evaluateForInterval`) instead of only on create/update. |
 | `variables` | `[]admissionregistrationv1.Variable` | Named CEL expressions reusable across behaviors via `variables.<name>`. |
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
@@ -187,12 +188,14 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
    (`pkg/compiler/variables.go`) whose fields are registered per-policy as `spec.variables` are
    compiled.
 2. `Compiler.Compile(rp)` compiles `spec.variables` and each behavior's `allow`/`deny` expressions
-   into `cel.Program`s, returning a `*CompiledRuntimePolicy` that also carries the raw
-   `podSelector` and `evaluationInterval`.
+   into `cel.Program`s, returning a `*CompiledRuntimePolicy` that also carries the compiled
+   `PodTarget` and `evaluationInterval`. Both selectors are converted here rather than per
+   evaluation, so a malformed one is a `CompileFailed` condition rather than an error the
+   re-evaluation loop retries.
 3. `CompiledRuntimePolicy.Evaluate(ctx)` (`pkg/compiler/policy.go`) evaluates the variables (lazily,
    via `k8s.io/apiserver/pkg/cel/lazy.MapValue`) and each compiled behavior, unions literal
    `values` with the CEL expression's result, and returns an `EvaluationResult{UID, Name, Mode, IPs,
-   Open, Exec, DNS, Selector}` where `IPs`/`Open`/`Exec`/`DNS` are each an
+   Open, Exec, DNS, AppliesTo}` where `IPs`/`Open`/`Exec`/`DNS` are each an
    `AllowDenyPair{Allow, Deny []string}`. A policy carrying a `monitorFilter` also compiles each of
    its expressions to a `bool`-typed program, which rides the evaluation result out to the monitor
    like every other per-policy fact.
@@ -217,10 +220,34 @@ pointer for the same object between retries (#59); deletes are served from a tom
 are dropped after five requeues.
 
 `pkg/controller.podWatcher` similarly watches `Pod` objects on the local node and fans
-`PodEvent(pod, cgInfos, eventType)` out to the same handlers, so pod lifecycle and policy
-lifecycle are two independent event streams that both mutate the same manager state
+`PodEvent(pod, nsLabels, cgInfos, eventType)` out to the same handlers, so pod lifecycle and
+policy lifecycle are two independent event streams that both mutate the same manager state
 (`LsmManager`/`EgressManager` each hold a mutex-guarded map of policies and pods, matching
-selectors against pod labels on both sides).
+targets against pod and namespace labels on both sides).
+
+### Namespace targeting
+
+`compiler.PodTarget` holds both compiled selectors and is the single answer to "does this
+policy apply to this pod": `Matches(nsLabels, podLabels)` ANDs them, and a nil half matches
+nothing so a target that failed to build never widens a policy's scope.
+
+The watcher runs a second informer factory for namespaces — the pod factory carries a
+`spec.nodeName` field selector no namespace has — and waits for both caches before the worker
+starts, since a pod matched against an empty namespace label set would silently fall out of
+every policy carrying a `namespaceSelector` with nothing to re-trigger it. A pod whose
+namespace is not yet cached is requeued rather than delivered with empty labels.
+
+Namespace labels reach handlers two ways, because the handlers differ in what they hold:
+
+- **Pod-state handlers** (`LsmManager`, `EgressManager`, `dnsmgr.Manager`) cache `nsLabels`
+  beside the pod labels they already cache, delivered on `PodEvent`. A namespace relabel
+  replays that namespace's pods as ordinary updates, reusing the path each manager already
+  has for re-evaluating a target.
+- **`Monitor`** keeps no pod state — events carry their own attributed identity — so it
+  implements `events.NamespaceEventHandler` and keeps a `namespace -> labels` map instead.
+  The labels stay out of `runtimeevent.PodIdentity`: that type is embedded in
+  `reporter.Finding`, and the reporter's guarantee is that an unredacted payload is not
+  representable at the boundary, which a second user-controlled map would weaken.
 
 ## CEL extension libraries
 

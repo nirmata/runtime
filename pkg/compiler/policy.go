@@ -10,8 +10,6 @@ import (
 
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apiserver/pkg/cel/lazy"
 )
 
@@ -25,7 +23,7 @@ type EvaluationResult struct {
 	Exec      *AllowDenyPair
 	Protocols *AllowDenyPair
 	DNS       *AllowDenyPair
-	Selector  labels.Selector
+	AppliesTo PodTarget
 	Mode      string
 
 	// MonitorFilter narrows which of this policy's findings are reported. Nil
@@ -69,11 +67,6 @@ func (p *AllowDenyPair) DiffPair(target *AllowDenyPair) *AllowDenyPair {
 
 // Evaluate runs the policy's compiled CEL programs.
 func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult, error) {
-	selector, err := metav1.LabelSelectorAsSelector(c.selector)
-	if err != nil {
-		return nil, err
-	}
-
 	vars := lazy.NewMapValue(VariablesType)
 
 	data := make(map[string]any)
@@ -148,7 +141,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 		Exec:               exec,
 		Protocols:          protocols,
 		DNS:                dns,
-		Selector:           selector,
+		AppliesTo:          c.appliesTo,
 		Mode:               c.mode,
 		MonitorFilter:      c.monitorFilter,
 		UnresolvedServices: unresolved,

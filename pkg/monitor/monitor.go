@@ -13,7 +13,6 @@ import (
 	"github.com/nirmata/kyverno-runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -53,8 +52,8 @@ type trackedPolicy struct {
 	// mode decides what a violation means: compiler.ModeMonitor produces
 	// "would have been denied" counterfactuals; compiler.ModeEnforce
 	// attributes the kernel's actual denies.
-	mode     string
-	selector labels.Selector
+	mode      string
+	podTarget compiler.PodTarget
 	// filter narrows which of this policy's findings are reported. Nil when
 	// the policy sets no monitorFilter, which reports everything.
 	filter *compiler.MonitorFilter
@@ -66,10 +65,11 @@ type trackedPolicy struct {
 	dns      *nameBehavior
 }
 
-// Monitor implements events.RuntimePolicyEventHandler (policy tracking) and
-// runtimeevent.Sink (event evaluation). It is not a pod-event handler: events
-// carry their own attributed pod identity (filled by pkg/attribution), so
-// monitor keeps no pod state at all.
+// Monitor implements events.RuntimePolicyEventHandler (policy tracking),
+// events.NamespaceEventHandler (namespaceSelector input) and runtimeevent.Sink
+// (event evaluation). It is not a pod-event handler: events carry their own
+// attributed pod identity (filled by pkg/attribution), so monitor keeps no pod
+// state at all.
 type Monitor struct {
 	log     logr.Logger
 	sink    FindingSink
@@ -79,6 +79,10 @@ type Monitor struct {
 	// policies is keyed by policy uid. Only monitor- and enforce-mode
 	// policies with at least one behavior entry are present.
 	policies map[string]*trackedPolicy
+	// nsLabels is keyed by namespace name. Events carry the namespace but not
+	// its labels: a namespace label set is not part of a finding, so it reaches
+	// monitor here rather than riding on every event.
+	nsLabels map[string]map[string]string
 }
 
 // New builds a Monitor. findings and m may each be nil: a daemon without a
@@ -90,6 +94,7 @@ func New(log logr.Logger, findings FindingSink, m *metrics.Metrics) *Monitor {
 		sink:     findings,
 		metrics:  m,
 		policies: make(map[string]*trackedPolicy),
+		nsLabels: make(map[string]map[string]string),
 	}
 }
 
@@ -123,24 +128,24 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 	}
 
 	tp := &trackedPolicy{
-		uid:      rp.UID,
-		name:     rp.Name,
-		mode:     rp.Mode,
-		selector: rp.Selector,
-		filter:   rp.MonitorFilter,
-		net:      compileNetBehavior(rp.IPs),
-		open:     compilePathBehavior(rp.Open),
-		exec:     compilePathBehavior(rp.Exec),
-		protocol: compileProtocolBehavior(rp.Protocols),
-		dns:      compileNameBehavior(rp.DNS),
+		uid:       rp.UID,
+		name:      rp.Name,
+		mode:      rp.Mode,
+		podTarget: rp.AppliesTo,
+		filter:    rp.MonitorFilter,
+		net:       compileNetBehavior(rp.IPs),
+		open:      compilePathBehavior(rp.Open),
+		exec:      compilePathBehavior(rp.Exec),
+		protocol:  compileProtocolBehavior(rp.Protocols),
+		dns:       compileNameBehavior(rp.DNS),
 	}
 	if tp.net == nil && tp.open == nil && tp.exec == nil && tp.protocol == nil && tp.dns == nil {
 		m.untrack(rp.UID, "policy has no network, open, exec, protocol or dns entries")
 		return nil
 	}
-	if tp.selector == nil {
-		// A nil selector matches nothing here rather than everything: a
-		// selector that failed to build must never widen a policy's scope.
+	if tp.podTarget.Pod == nil {
+		// A target that failed to build matches nothing here rather than
+		// everything: it must never widen a policy's scope.
 		m.untrack(rp.UID, "policy has no usable pod selector")
 		return nil
 	}
@@ -153,6 +158,26 @@ func (m *Monitor) RuntimePolicyEvent(rp *compiler.EvaluationResult, rpEventType 
 		"network", tp.net != nil, "open", tp.open != nil, "exec", tp.exec != nil,
 		"protocol", tp.protocol != nil, "dns", tp.dns != nil)
 	return nil
+}
+
+// NamespaceEvent keeps the namespace label cache in step. A delete drops the
+// entry, which leaves an event from a pod in that namespace matching only the
+// policies whose namespaceSelector is empty — the namespace is going away, so
+// no policy should keep selecting into it.
+func (m *Monitor) NamespaceEvent(name string, nsLabels map[string]string, evType string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if evType == events.EventTypeDelete {
+		delete(m.nsLabels, name)
+		return
+	}
+	m.nsLabels[name] = nsLabels
+}
+
+func (m *Monitor) namespaceLabels(name string) map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.nsLabels[name]
 }
 
 func (m *Monitor) untrack(uid, reason string) {
@@ -218,11 +243,14 @@ func (m *Monitor) handleEvent(ev runtimeevent.Event) {
 		return
 	}
 
+	// read once: every policy in the loop matches against the same namespace
+	nsLabels := m.namespaceLabels(ev.Pod.Namespace)
+
 	// attributed becomes true when at least one enforce-mode policy's lists
 	// explain a kernel deny.
 	attributed := false
 	for _, tp := range policies {
-		if !tp.selector.Matches(labels.Set(ev.Pod.Labels)) {
+		if !tp.podTarget.Matches(nsLabels, ev.Pod.Labels) {
 			continue
 		}
 		d := tp.eval(behavior, ev)

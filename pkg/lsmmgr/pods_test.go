@@ -21,7 +21,7 @@ func TestPodCreated_MatchingAndNonMatchingPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,7 +51,7 @@ func TestPodCreated_MatchingAndNonMatchingPolicies(t *testing.T) {
 
 func TestPodCreated_NoPolicies(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	pr := h.l.pods["podA"]
@@ -113,7 +113,7 @@ func TestPodUpdated_CgidDiff(t *testing.T) {
 				tt.wantStored = tt.updated
 			}
 			h := newHarness(t)
-			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(tt.initial...), events.EventTypeCreate); err != nil {
+			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(tt.initial...), events.EventTypeCreate); err != nil {
 				t.Fatal(err)
 			}
 			// one attached policy and one that never matched the pod
@@ -128,7 +128,7 @@ func TestPodUpdated_CgidDiff(t *testing.T) {
 			attached, unattached := h.enf("rpWeb", open), h.enf("rpDb", open)
 			h.resetAll()
 
-			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(tt.updated...), events.EventTypeUpdate); err != nil {
+			if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(tt.updated...), events.EventTypeUpdate); err != nil {
 				t.Fatal(err)
 			}
 
@@ -156,7 +156,7 @@ func TestPodUpdated_CgidDiff(t *testing.T) {
 
 func TestPodUpdated_UnknownPodErrors(t *testing.T) {
 	h := newHarness(t)
-	err := h.l.PodEvent(testPod("ghost", nil), cgs(1), events.EventTypeUpdate)
+	err := h.l.PodEvent(testPod("ghost", nil), nil, cgs(1), events.EventTypeUpdate)
 	if err == nil {
 		t.Fatal("expected an error for an update of an unknown pod")
 	}
@@ -169,7 +169,7 @@ func TestPodUpdated_UnknownPodErrors(t *testing.T) {
 // directions are asserted here, plus the refreshed label cache.
 func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	// rpWeb does not select the pod yet, rpDb does
@@ -187,7 +187,7 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	h.resetAll()
 
 	// relabel in place: app=db -> app=web, cgids unchanged
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeUpdate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
 
@@ -227,7 +227,7 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 // a label change that does not move any selector must not churn the enforcers.
 func TestPodUpdated_IrrelevantLabelChangeIsQuiet(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.l.RuntimePolicyEvent(result("rpWeb", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}),
@@ -236,7 +236,7 @@ func TestPodUpdated_IrrelevantLabelChangeIsQuiet(t *testing.T) {
 	}
 	h.resetAll()
 
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web", "pod-template-hash": "abc"}), cgs(11), events.EventTypeUpdate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web", "pod-template-hash": "abc"}), nil, cgs(11), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
 	f := h.enf("rpWeb", open)
@@ -254,7 +254,7 @@ func TestPodUpdated_IrrelevantLabelChangeIsQuiet(t *testing.T) {
 // attached policy must be seeded with the NEW cgid set, not the old one.
 func TestPodUpdated_LabelAndCgidChangeTogether(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.l.RuntimePolicyEvent(result("rpWeb", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}),
@@ -267,7 +267,7 @@ func TestPodUpdated_LabelAndCgidChangeTogether(t *testing.T) {
 	}
 	h.resetAll()
 
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(22), events.EventTypeUpdate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(22), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.enf("rpWeb", open).cgidSet(); !slices.Equal(got, []uint64{22}) {
@@ -281,10 +281,10 @@ func TestPodUpdated_LabelAndCgidChangeTogether(t *testing.T) {
 
 func TestPodDeleted(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "web"}), cgs(21), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podB", map[string]string{"app": "web"}), nil, cgs(21), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.l.RuntimePolicyEvent(result("rpWeb", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}),
@@ -339,13 +339,13 @@ func TestPodEvents_CgidFailuresAreNonFatal(t *testing.T) {
 		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatalf("podCreated returned %v, want nil", err)
 	}
 	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
 		t.Errorf("attached pods = %v, want [podA] despite the AddCgids failure", got)
 	}
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(12), events.EventTypeUpdate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(12), events.EventTypeUpdate); err != nil {
 		t.Fatalf("podUpdated returned %v, want nil", err)
 	}
 	if err := h.l.PodDeleted("podA"); err != nil {
@@ -362,7 +362,7 @@ func TestPolicyEvents_CgidFailuresAreNonFatal(t *testing.T) {
 	h := newHarness(t)
 	h.failMethod(open, "AddCgids", errors.New("cgid map full"))
 	h.failMethod(open, "DeleteCgids", errors.New("cgid missing"))
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	files := pair(nil, []string{"/etc/shadow"})
@@ -384,7 +384,7 @@ func TestPolicyEvents_CgidFailuresAreNonFatal(t *testing.T) {
 
 func TestPodEvent_UnknownEventTypeIsIgnored(t *testing.T) {
 	h := newHarness(t)
-	if err := h.l.PodEvent(testPod("podA", nil), cgs(11), "bogus"); err != nil {
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), "bogus"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(h.l.pods) != 0 {
@@ -398,7 +398,7 @@ func TestPodDeleted_ThenRecreatedGetsFreshRepresentation(t *testing.T) {
 		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	first := h.l.pods["podA"]
@@ -406,7 +406,7 @@ func TestPodDeleted_ThenRecreatedGetsFreshRepresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	// recreated with a different cgid, as happens when a pod is rescheduled
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(99), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(99), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	second := h.l.pods["podA"]
@@ -428,7 +428,7 @@ func TestPodCreated_NoContainers(t *testing.T) {
 		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), []*containers.ContainerCgroupInfo{}, events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, []*containers.ContainerCgroupInfo{}, events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.l.pods["podA"].cgids; len(got) != 0 {
@@ -439,11 +439,63 @@ func TestPodCreated_NoContainers(t *testing.T) {
 		t.Errorf("attached pods = %v, want [podA]", got)
 	}
 	h.resetAll()
-	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), cgs(7), events.EventTypeUpdate); err != nil {
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(7), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.enf("rpWeb", open).cgidSet(); !slices.Equal(got, []uint64{7}) {
 		t.Errorf("cgid set = %v, want [7]", got)
 	}
 	assertInvariant(t, h.l)
+}
+
+// A policy scoped to a namespace attaches only pods whose namespace labels
+// match, and a relabelled namespace re-evaluates them: the labels arrive on the
+// pod event, so this is the same path a pod relabel takes.
+func TestPodUpdated_NamespaceLabelChangeReEvaluatesTargets(t *testing.T) {
+	h := newHarness(t)
+
+	prodOnly := &compiler.EvaluationResult{
+		UID:  "rpProd",
+		Name: "rpProd",
+		Mode: compiler.ModeEnforce,
+		AppliesTo: compiler.PodTarget{
+			Pod:       selFor(map[string]string{"app": "db"}),
+			Namespace: selFor(map[string]string{"tier": "prod"}),
+		},
+		Open: pair(nil, []string{"/etc/passwd"}),
+	}
+	if err := h.l.RuntimePolicyEvent(prodOnly, events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+
+	// the pod's own labels match, but its namespace's do not
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}),
+		map[string]string{"tier": "dev"}, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if got := attachedPodUIDs(h.l.lsmAttachments["rpProd"]); len(got) != 0 {
+		t.Fatalf("attached pods = %v, want none: the namespace does not match", got)
+	}
+	h.resetAll()
+
+	// the namespace is relabelled into scope; the pod is unchanged
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}),
+		map[string]string{"tier": "prod"}, cgs(11), events.EventTypeUpdate); err != nil {
+		t.Fatal(err)
+	}
+	if got := attachedPodUIDs(h.l.lsmAttachments["rpProd"]); !slices.Equal(got, []string{"podA"}) {
+		t.Fatalf("attached pods = %v, want [podA] once the namespace matches", got)
+	}
+	if got := h.l.pods["podA"].nsLabels["tier"]; got != "prod" {
+		t.Errorf("stored namespace label tier = %q, want the refreshed %q", got, "prod")
+	}
+
+	// and back out again
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "db"}),
+		map[string]string{"tier": "dev"}, cgs(11), events.EventTypeUpdate); err != nil {
+		t.Fatal(err)
+	}
+	if got := attachedPodUIDs(h.l.lsmAttachments["rpProd"]); len(got) != 0 {
+		t.Fatalf("attached pods = %v, want none once the namespace stops matching", got)
+	}
 }

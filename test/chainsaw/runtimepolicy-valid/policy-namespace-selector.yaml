@@ -1,0 +1,22 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-valid-namespace-selector
+spec:
+  mode: enforce
+  namespaceSelector:
+    matchLabels:
+      tier: prod
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - kube-system
+  podSelector:
+    matchLabels:
+      app: agent
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /etc/shadow

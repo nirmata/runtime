@@ -775,7 +775,7 @@ func TestHandleDeleteCancelsThreadAndSendsUIDOnly(t *testing.T) {
 		if res.UID != "uid-1" {
 			t.Errorf("%s result UID = %q, want uid-1", h.name, res.UID)
 		}
-		if res.IPs != nil || res.Open != nil || res.Exec != nil || res.Selector != nil || res.Mode != "" {
+		if res.IPs != nil || res.Open != nil || res.Exec != nil || res.AppliesTo != (compiler.PodTarget{}) || res.Mode != "" {
 			t.Errorf("%s delete result carries data beyond the identity: %+v", h.name, res)
 		}
 	}

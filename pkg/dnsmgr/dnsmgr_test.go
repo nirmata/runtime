@@ -14,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -97,8 +98,10 @@ func dnsPolicy(t *testing.T, uid string, matchLabels map[string]string) *compile
 		t.Fatalf("building selector: %v", err)
 	}
 	return &compiler.EvaluationResult{
-		UID: uid, Name: uid, Selector: sel, Mode: compiler.ModeMonitor,
-		DNS: &compiler.AllowDenyPair{Allow: []string{"api.anthropic.com"}},
+		UID: uid, Name: uid,
+		AppliesTo: compiler.PodTarget{Pod: sel, Namespace: labels.Everything()},
+		Mode:      compiler.ModeMonitor,
+		DNS:       &compiler.AllowDenyPair{Allow: []string{"api.anthropic.com"}},
 	}
 }
 
@@ -121,7 +124,7 @@ func cgs(n int) []*containers.ContainerCgroupInfo {
 func TestPodIsNotObservedWithoutADNSPolicy(t *testing.T) {
 	m, ft := newManager(t)
 
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(2), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(2), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 
@@ -137,11 +140,15 @@ func TestPolicyWithoutDNSBehaviorNeverSelects(t *testing.T) {
 	m, ft := newManager(t)
 
 	sel, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{})
-	networkOnly := &compiler.EvaluationResult{UID: "rp1", Name: "rp1", Selector: sel, Mode: compiler.ModeMonitor}
+	networkOnly := &compiler.EvaluationResult{
+		UID: "rp1", Name: "rp1",
+		AppliesTo: compiler.PodTarget{Pod: sel, Namespace: labels.Everything()},
+		Mode:      compiler.ModeMonitor,
+	}
 	if err := m.RuntimePolicyEvent(networkOnly, events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", nil), cgs(1), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", nil), nil, cgs(1), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 
@@ -156,7 +163,7 @@ func TestPolicyThenPodAdmitsEveryContainerCgroup(t *testing.T) {
 	if err := m.RuntimePolicyEvent(dnsPolicy(t, "rp1", map[string]string{"app": "agent"}), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(3), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(3), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 
@@ -173,7 +180,7 @@ func TestPolicyThenPodAdmitsEveryContainerCgroup(t *testing.T) {
 func TestPodThenPolicyIsPickedUp(t *testing.T) {
 	m, ft := newManager(t)
 
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(2), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(2), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 	if got := ft.attaches; got != 0 {
@@ -198,7 +205,7 @@ func TestRelabelledPodStopsBeingObserved(t *testing.T) {
 	if err := m.RuntimePolicyEvent(dnsPolicy(t, "rp1", map[string]string{"app": "agent"}), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(2), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(2), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 	if got := len(ft.gateIDs()); got != 2 {
@@ -206,7 +213,7 @@ func TestRelabelledPodStopsBeingObserved(t *testing.T) {
 	}
 
 	// The label the policy selected on is gone.
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "other"}), cgs(2), events.EventTypeUpdate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "other"}), nil, cgs(2), events.EventTypeUpdate); err != nil {
 		t.Fatalf("PodEvent update: %v", err)
 	}
 
@@ -224,14 +231,14 @@ func TestRelabelledPodStartsBeingObserved(t *testing.T) {
 	if err := m.RuntimePolicyEvent(dnsPolicy(t, "rp1", map[string]string{"app": "agent"}), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "other"}), cgs(1), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "other"}), nil, cgs(1), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 	if got := ft.attaches; got != 0 {
 		t.Fatalf("attaches = %d, want 0", got)
 	}
 
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(1), events.EventTypeUpdate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(1), events.EventTypeUpdate); err != nil {
 		t.Fatalf("PodEvent update: %v", err)
 	}
 
@@ -250,7 +257,7 @@ func TestPolicyLosingItsDNSBehaviorRevokesObservation(t *testing.T) {
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(2), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(2), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 	if got := len(ft.gateIDs()); got != 2 {
@@ -279,7 +286,7 @@ func TestObservationSurvivesAnOverlappingSecondPolicy(t *testing.T) {
 	if err := m.RuntimePolicyEvent(dnsPolicy(t, "rp2", map[string]string{"app": "agent"}), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent rp2: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(1), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(1), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 
@@ -305,12 +312,12 @@ func TestRestartedContainerIsAttachedAndAdmitted(t *testing.T) {
 	if err := m.RuntimePolicyEvent(dnsPolicy(t, "rp1", map[string]string{"app": "agent"}), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(1), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(1), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 
 	restarted := []*containers.ContainerCgroupInfo{{ID: 999, Path: "/sys/fs/cgroup/pod/c0-restarted", Name: "c0"}}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), restarted, events.EventTypeUpdate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, restarted, events.EventTypeUpdate); err != nil {
 		t.Fatalf("PodEvent update: %v", err)
 	}
 
@@ -331,7 +338,7 @@ func TestRepeatedPodUpdateDoesNotReattach(t *testing.T) {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
 	for range 4 {
-		if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(2), events.EventTypeUpdate); err != nil {
+		if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(2), events.EventTypeUpdate); err != nil {
 			t.Fatalf("PodEvent: %v", err)
 		}
 	}
@@ -347,7 +354,7 @@ func TestPodDeletedRevokesAndDetaches(t *testing.T) {
 	if err := m.RuntimePolicyEvent(dnsPolicy(t, "rp1", map[string]string{"app": "agent"}), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(2), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(2), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 	if err := m.PodDeleted("p1"); err != nil {
@@ -381,7 +388,7 @@ func TestFailedAttachDoesNotAdmitTheCgroup(t *testing.T) {
 	if err := m.RuntimePolicyEvent(dnsPolicy(t, "rp1", map[string]string{"app": "agent"}), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(2), events.EventTypeCreate)
+	err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(2), events.EventTypeCreate)
 	if err == nil {
 		t.Fatal("PodEvent returned nil, want the attach error surfaced")
 	}
@@ -417,7 +424,7 @@ func TestPolicyWithNoModeDoesNotObserve(t *testing.T) {
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(1), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(1), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 
@@ -436,7 +443,7 @@ func TestEnforceModePolicyDoesNotObserve(t *testing.T) {
 	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
-	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), cgs(1), events.EventTypeCreate); err != nil {
+	if err := m.PodEvent(pod("p1", map[string]string{"app": "agent"}), nil, cgs(1), events.EventTypeCreate); err != nil {
 		t.Fatalf("PodEvent: %v", err)
 	}
 

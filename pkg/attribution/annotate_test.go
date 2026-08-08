@@ -53,7 +53,7 @@ func TestAnnotateFillsPod(t *testing.T) {
 			ix := testIndex(t,
 				WithProcRoot(writeProcCgroup(t, 4242, "0::"+testSystemdCg+"\n")),
 				WithMetrics(m))
-			if err := ix.PodEvent(testPod(map[string]string{"app": "agent"}), appCgroup(), events.EventTypeCreate); err != nil {
+			if err := ix.PodEvent(testPod(map[string]string{"app": "agent"}), nil, appCgroup(), events.EventTypeCreate); err != nil {
 				t.Fatalf("create: %v", err)
 			}
 
@@ -87,7 +87,7 @@ func TestAnnotateFillsPod(t *testing.T) {
 
 func TestAnnotateKeepsSourceContainerHint(t *testing.T) {
 	ix := testIndex(t)
-	if err := ix.PodEvent(testPod(nil), nil, events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(testPod(nil), nil, nil, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	ev := runtimeevent.Event{
@@ -121,7 +121,7 @@ func TestAnnotateDropsUnattributedAndCounts(t *testing.T) {
 	m := metrics.New(prometheus.NewRegistry())
 	ix := testIndex(t, WithProcRoot(writeProcCgroup(t, 1, "0::/init.scope\n")), WithMetrics(m))
 	// Index then delete the pod, so cgroup 4242 is genuinely gone.
-	if err := ix.PodEvent(testPod(nil), appCgroup(), events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(testPod(nil), nil, appCgroup(), events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if err := ix.PodDeleted(string(testPod(nil).UID)); err != nil {
@@ -152,7 +152,7 @@ func TestAnnotateWithoutMetricsDoesNotPanic(t *testing.T) {
 
 func TestProcessDelegatesToAnnotate(t *testing.T) {
 	ix := testIndex(t)
-	if err := ix.PodEvent(testPod(nil), []*containers.ContainerCgroupInfo{
+	if err := ix.PodEvent(testPod(nil), nil, []*containers.ContainerCgroupInfo{
 		{ID: 4242, Name: "app"},
 	}, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)

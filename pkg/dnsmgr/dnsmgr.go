@@ -11,7 +11,6 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/labels"
 )
 
 // tracer is the kernel side of DNS observation, satisfied by
@@ -45,7 +44,8 @@ type Manager struct {
 }
 
 type podState struct {
-	labels map[string]string
+	labels   map[string]string
+	nsLabels map[string]string
 	// cgInfos is the latest container set from the pod watcher, retained even
 	// while the pod is unobserved: the policy informer delivers no container
 	// information, so a policy that starts selecting an existing pod has
@@ -73,7 +73,7 @@ var (
 	_ events.RuntimePolicyEventHandler = (*Manager)(nil)
 )
 
-func (m *Manager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, _ string) error {
+func (m *Manager) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -82,9 +82,11 @@ func (m *Manager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroup
 		ps = &podState{cgs: make(map[containers.ContainerCgroupInfo]link.Link)}
 		m.pods[string(pod.UID)] = ps
 	}
-	// Labels are refreshed on every update: a relabelled pod must start or stop
-	// being observed, and a stale label set would decide otherwise.
+	// Labels are refreshed on every update: a pod relabelled, or moved under a
+	// relabelled namespace, must start or stop being observed, and a stale label
+	// set would decide otherwise.
 	ps.labels = pod.Labels
+	ps.nsLabels = nsLabels
 	ps.cgInfos = cgInfos
 
 	return m.reconcilePod(string(pod.UID), ps)
@@ -131,7 +133,7 @@ func (m *Manager) RuntimePolicyEvent(rp *compiler.EvaluationResult, eventType st
 // reconcilePod brings one pod's attachment and gate admission in line with the
 // current policy set.
 func (m *Manager) reconcilePod(uid string, ps *podState) error {
-	want := m.selectedLocked(ps.labels)
+	want := m.selectedLocked(ps.nsLabels, ps.labels)
 
 	switch {
 	case want:
@@ -214,9 +216,9 @@ func (m *Manager) detach(uid string, ps *podState) error {
 	return errors.Join(errs...)
 }
 
-func (m *Manager) selectedLocked(podLabels map[string]string) bool {
+func (m *Manager) selectedLocked(nsLabels, podLabels map[string]string) bool {
 	for _, rp := range m.rps {
-		if rp.Selector.Matches(labels.Set(podLabels)) {
+		if rp.AppliesTo.Matches(nsLabels, podLabels) {
 			return true
 		}
 	}

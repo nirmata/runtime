@@ -408,7 +408,7 @@ func cgInfos(paths ...string) []*containers.ContainerCgroupInfo {
 // addPod drives a create pod event and returns the fake filter bound to it.
 func addPod(t *testing.T, e *EgressManager, uid string, lbls map[string]string, paths ...string) *fakeFilter {
 	t.Helper()
-	if err := e.PodEvent(makePod(uid, lbls), cgInfos(paths...), events.EventTypeCreate); err != nil {
+	if err := e.PodEvent(makePod(uid, lbls), nil, cgInfos(paths...), events.EventTypeCreate); err != nil {
 		t.Fatalf("podCreated(%s): unexpected error: %v", uid, err)
 	}
 	return filterOf(t, e, uid)
@@ -418,7 +418,7 @@ func addPod(t *testing.T, e *EgressManager, uid string, lbls map[string]string, 
 // pod's cgroups as they are.
 func relabelPod(t *testing.T, e *EgressManager, uid string, lbls map[string]string, paths ...string) {
 	t.Helper()
-	if err := e.PodEvent(makePod(uid, lbls), cgInfos(paths...), events.EventTypeUpdate); err != nil {
+	if err := e.PodEvent(makePod(uid, lbls), nil, cgInfos(paths...), events.EventTypeUpdate); err != nil {
 		t.Fatalf("podUpdated(%s): unexpected error: %v", uid, err)
 	}
 }
@@ -438,16 +438,19 @@ func filterOf(t *testing.T, e *EgressManager, uid string) *fakeFilter {
 
 func rp(uid, mode string, sel map[string]string, allow, deny []string) *compiler.EvaluationResult {
 	return &compiler.EvaluationResult{
-		UID:      uid,
-		Name:     uid,
-		Mode:     mode,
-		Selector: labels.SelectorFromSet(labels.Set(sel)),
-		IPs:      &compiler.AllowDenyPair{Allow: allow, Deny: deny},
+		UID:  uid,
+		Name: uid,
+		Mode: mode,
+		AppliesTo: compiler.PodTarget{
+			Pod:       labels.SelectorFromSet(labels.Set(sel)),
+			Namespace: labels.Everything(),
+		},
+		IPs: &compiler.AllowDenyPair{Allow: allow, Deny: deny},
 	}
 }
 
-// the controller emits delete events that carry only the uid (nil IPs, nil
-// selector), so the delete path has to work off the stored attachment alone.
+// the controller emits delete events that carry only the uid (nil IPs, a zero
+// target), so the delete path has to work off the stored attachment alone.
 func deleteEvent(uid string) *compiler.EvaluationResult {
 	return &compiler.EvaluationResult{UID: uid}
 }

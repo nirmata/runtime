@@ -64,7 +64,7 @@ func TestPodEventLifecycle(t *testing.T) {
 	ix := testIndex(t)
 	pod := testPod(map[string]string{"app": "agent", "pod-template-hash": "7d9f4b6c8"})
 
-	if err := ix.PodEvent(pod, appCgroup(), events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(pod, nil, appCgroup(), events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestPodEventLifecycle(t *testing.T) {
 	// Update: the container restarted into a new cgroup; the old one must go.
 	updated := testPod(map[string]string{"app": "agent", "pod-template-hash": "7d9f4b6c8"})
 	newCg := []*containers.ContainerCgroupInfo{{ID: 5353, Path: testSystemdCg, Name: "app"}}
-	if err := ix.PodEvent(updated, newCg, events.EventTypeUpdate); err != nil {
+	if err := ix.PodEvent(updated, nil, newCg, events.EventTypeUpdate); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, ok := ix.Lookup(4242); ok {
@@ -121,12 +121,12 @@ func TestPodEventLifecycle(t *testing.T) {
 func TestPodEventUpdateRefreshesLabels(t *testing.T) {
 	ix := testIndex(t)
 	pod := testPod(map[string]string{"app": "agent", "tier": "old"})
-	if err := ix.PodEvent(pod, appCgroup(), events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(pod, nil, appCgroup(), events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	relabelled := testPod(map[string]string{"app": "agent", "ai-agent": "true"})
-	if err := ix.PodEvent(relabelled, appCgroup(), events.EventTypeUpdate); err != nil {
+	if err := ix.PodEvent(relabelled, nil, appCgroup(), events.EventTypeUpdate); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestPodEventCopiesLabelsFromCaller(t *testing.T) {
 	ix := testIndex(t)
 	labels := map[string]string{"app": "agent"}
 	pod := testPod(labels)
-	if err := ix.PodEvent(pod, appCgroup(), events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(pod, nil, appCgroup(), events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	// The informer's cache object must never be able to mutate the index.
@@ -160,7 +160,7 @@ func TestPodEventIndexesPodWithoutCgroups(t *testing.T) {
 	// The egress poll source only knows pod UIDs, so a pod whose containers
 	// have no resolvable cgroup yet must still be attributable by UID.
 	ix := testIndex(t)
-	if err := ix.PodEvent(testPod(nil), nil, events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(testPod(nil), nil, nil, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if _, ok := ix.LookupPodUID(testPodUID); !ok {
@@ -178,7 +178,7 @@ func TestPodEventSkipsInvalidEntries(t *testing.T) {
 		{ID: 0, Name: "notstarted"},
 		{ID: 77, Name: "app"},
 	}
-	if err := ix.PodEvent(testPod(nil), cgInfos, events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(testPod(nil), nil, cgInfos, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if _, ok := ix.Lookup(0); ok {
@@ -191,7 +191,7 @@ func TestPodEventSkipsInvalidEntries(t *testing.T) {
 
 func TestPodEventRejectsUnknownType(t *testing.T) {
 	ix := testIndex(t)
-	if err := ix.PodEvent(testPod(nil), nil, "resync"); err == nil {
+	if err := ix.PodEvent(testPod(nil), nil, nil, "resync"); err == nil {
 		t.Errorf("PodEvent with bogus type: got nil error, want error")
 	}
 }
@@ -200,7 +200,7 @@ func TestPodEventSkipsPodWithoutUID(t *testing.T) {
 	ix := testIndex(t)
 	pod := testPod(nil)
 	pod.UID = ""
-	if err := ix.PodEvent(pod, appCgroup(), events.EventTypeCreate); err != nil {
+	if err := ix.PodEvent(pod, nil, appCgroup(), events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if pods, cgroups := ix.Len(); pods != 0 || cgroups != 0 {
@@ -299,7 +299,7 @@ func TestLookupPIDResolvesViaCgroupID(t *testing.T) {
 		}
 		return &containers.ContainerCgroupInfo{ID: 99, Path: testSystemdCg, Name: "app"}, nil
 	}
-	if err := ix.PodEvent(testPod(nil), []*containers.ContainerCgroupInfo{
+	if err := ix.PodEvent(testPod(nil), nil, []*containers.ContainerCgroupInfo{
 		{ID: 99, Path: testSystemdCg, Name: "app"},
 	}, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
@@ -359,7 +359,7 @@ func TestLookupPIDFallsBackToCgroupPath(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ix := testIndex(t, WithProcRoot(writeProcCgroup(t, 4242, tc.content)))
-			if err := ix.PodEvent(testPod(nil), appCgroup(), events.EventTypeCreate); err != nil {
+			if err := ix.PodEvent(testPod(nil), nil, appCgroup(), events.EventTypeCreate); err != nil {
 				t.Fatalf("create: %v", err)
 			}
 			got, ok := ix.LookupPID(4242)
@@ -419,7 +419,7 @@ func TestIndexIsSafeForConcurrentUse(t *testing.T) {
 				pod := testPod(map[string]string{"i": fmt.Sprint(i)})
 				pod.UID = "3f8e1a2b-4c5d-6e7f-8091-a2b3c4d5e6f7"
 				cg := []*containers.ContainerCgroupInfo{{ID: uint64(i%16 + 1), Name: "app"}}
-				_ = ix.PodEvent(pod, cg, events.EventTypeUpdate)
+				_ = ix.PodEvent(pod, nil, cg, events.EventTypeUpdate)
 				ev := &runtimeevent.Event{Kind: runtimeevent.KindNet, CgroupID: uint64(i%16 + 1)}
 				ix.Annotate(ev)
 				ix.Len()

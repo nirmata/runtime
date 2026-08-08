@@ -88,7 +88,7 @@ func TestPodCreatedAttachFailureDoesNotRegisterPod(t *testing.T) {
 	e, factory, _ := newTestManager()
 	factory.attachErr = errors.New("attach boom")
 
-	err := e.PodEvent(makePod("pod-1", webLabels), cgInfos("/cg/a"), events.EventTypeCreate)
+	err := e.PodEvent(makePod("pod-1", webLabels), nil, cgInfos("/cg/a"), events.EventTypeCreate)
 	if err == nil {
 		t.Fatal("expected an error when the cgroup attach fails")
 	}
@@ -101,7 +101,7 @@ func TestPodCreatedFilterConstructionFailurePropagates(t *testing.T) {
 	e, factory, _ := newTestManager()
 	factory.newErr = errors.New("no bpf here")
 
-	err := e.PodEvent(makePod("pod-1", webLabels), cgInfos("/cg/a"), events.EventTypeCreate)
+	err := e.PodEvent(makePod("pod-1", webLabels), nil, cgInfos("/cg/a"), events.EventTypeCreate)
 	if err == nil {
 		t.Fatal("expected an error when the filter cannot be created")
 	}
@@ -114,14 +114,14 @@ func TestPodUpdatedAttachesOnlyNewCgroupsAndDropsStaleOnes(t *testing.T) {
 	e, _, _ := newTestManager()
 	a, b, c := cg(1, "/cg/a"), cg(2, "/cg/b"), cg(3, "/cg/c")
 
-	if err := e.PodEvent(makePod("pod-1", webLabels), []*containers.ContainerCgroupInfo{a, b}, events.EventTypeCreate); err != nil {
+	if err := e.PodEvent(makePod("pod-1", webLabels), nil, []*containers.ContainerCgroupInfo{a, b}, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	f := filterOf(t, e, "pod-1")
 	f.reset()
 
 	// container "a" is gone, "c" is new, "b" is unchanged
-	if err := e.PodEvent(makePod("pod-1", webLabels), []*containers.ContainerCgroupInfo{b, c}, events.EventTypeUpdate); err != nil {
+	if err := e.PodEvent(makePod("pod-1", webLabels), nil, []*containers.ContainerCgroupInfo{b, c}, events.EventTypeUpdate); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -136,13 +136,13 @@ func TestPodUpdatedAttachesOnlyNewCgroupsAndDropsStaleOnes(t *testing.T) {
 func TestPodUpdatedAttachFailureLeavesCgroupsUnchanged(t *testing.T) {
 	e, _, _ := newTestManager()
 	a := cg(1, "/cg/a")
-	if err := e.PodEvent(makePod("pod-1", webLabels), []*containers.ContainerCgroupInfo{a}, events.EventTypeCreate); err != nil {
+	if err := e.PodEvent(makePod("pod-1", webLabels), nil, []*containers.ContainerCgroupInfo{a}, events.EventTypeCreate); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	f := filterOf(t, e, "pod-1")
 	f.attachErr = errors.New("attach boom")
 
-	err := e.PodEvent(makePod("pod-1", webLabels), []*containers.ContainerCgroupInfo{a, cg(2, "/cg/b")}, events.EventTypeUpdate)
+	err := e.PodEvent(makePod("pod-1", webLabels), nil, []*containers.ContainerCgroupInfo{a, cg(2, "/cg/b")}, events.EventTypeUpdate)
 	if err == nil {
 		t.Fatal("expected the attach error to propagate")
 	}
@@ -154,7 +154,7 @@ func TestPodUpdatedAttachFailureLeavesCgroupsUnchanged(t *testing.T) {
 func TestPodUpdatedForUnknownPodErrors(t *testing.T) {
 	e, factory, _ := newTestManager()
 
-	err := e.PodEvent(makePod("ghost", webLabels), cgInfos("/cg/a"), events.EventTypeUpdate)
+	err := e.PodEvent(makePod("ghost", webLabels), nil, cgInfos("/cg/a"), events.EventTypeUpdate)
 	if err == nil {
 		t.Fatal("expected an error for an update of an untracked pod")
 	}

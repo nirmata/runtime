@@ -24,7 +24,7 @@ func TestRuntimePolicyEventRejectsUnknownType(t *testing.T) {
 func TestPodEventRejectsUnknownType(t *testing.T) {
 	e, factory, _ := newTestManager()
 
-	if err := e.PodEvent(makePod("pod-1", webLabels), cgInfos("/cg/a"), "resync"); err == nil {
+	if err := e.PodEvent(makePod("pod-1", webLabels), nil, cgInfos("/cg/a"), "resync"); err == nil {
 		t.Fatal("expected an error for an unknown pod event type")
 	}
 	if len(e.pods) != 0 {
@@ -120,12 +120,12 @@ func TestConcurrentPodAndPolicyEventsKeepStateConsistent(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < n; i++ {
 			uid := fmt.Sprintf("pod-%d", i)
-			if err := e.PodEvent(makePod(uid, webLabels), cgInfos("/cg/"+uid), events.EventTypeCreate); err != nil {
+			if err := e.PodEvent(makePod(uid, webLabels), nil, cgInfos("/cg/"+uid), events.EventTypeCreate); err != nil {
 				t.Errorf("pod create %s: %v", uid, err)
 			}
 			// relabelling exercises the re-match path concurrently with the policy
 			// stream
-			if err := e.PodEvent(makePod(uid, apiLabels), cgInfos("/cg/"+uid), events.EventTypeUpdate); err != nil {
+			if err := e.PodEvent(makePod(uid, apiLabels), nil, cgInfos("/cg/"+uid), events.EventTypeUpdate); err != nil {
 				t.Errorf("pod update %s: %v", uid, err)
 			}
 			if i%3 == 0 {

@@ -36,10 +36,10 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 
 	// 2. two pods show up, one matching
 	step("create podWeb", func() error {
-		return h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate)
+		return h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate)
 	})
 	step("create podDb", func() error {
-		return h.l.PodEvent(testPod("podDb", map[string]string{"app": "db"}), cgs(21), events.EventTypeCreate)
+		return h.l.PodEvent(testPod("podDb", map[string]string{"app": "db"}), nil, cgs(21), events.EventTypeCreate)
 	})
 	if got := openEnf.cgidSet(); !slices.Equal(got, []uint64{11, 12}) {
 		t.Fatalf("open cgids = %v, want [11 12]", got)
@@ -88,7 +88,7 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 
 	// 6. podWeb is relabelled into rp1's new selector: it must be picked up
 	step("relabel podWeb to db", func() error {
-		return h.l.PodEvent(testPod("podWeb", map[string]string{"app": "db"}), cgs(11, 12), events.EventTypeUpdate)
+		return h.l.PodEvent(testPod("podWeb", map[string]string{"app": "db"}), nil, cgs(11, 12), events.EventTypeUpdate)
 	})
 	if got := openEnf.cgidSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
 		t.Fatalf("open cgids after relabel = %v, want [11 12 21]", got)
@@ -117,7 +117,7 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 
 	// 8. the db pod's containers churn
 	step("podDb cgid churn", func() error {
-		return h.l.PodEvent(testPod("podDb", map[string]string{"app": "db"}), cgs(22, 23), events.EventTypeUpdate)
+		return h.l.PodEvent(testPod("podDb", map[string]string{"app": "db"}), nil, cgs(22, 23), events.EventTypeUpdate)
 	})
 	for name, f := range map[string]*fakeEnforcer{"rp1": openEnf, "rp2": rp2Enf} {
 		if got := f.cgidSet(); !slices.Equal(got, []uint64{11, 12, 22, 23}) {
@@ -207,7 +207,7 @@ func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), cgs(uint64(100+i)), events.EventTypeCreate); err != nil {
+			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), nil, cgs(uint64(100+i)), events.EventTypeCreate); err != nil {
 				errCh <- err
 			}
 		}()
@@ -232,7 +232,7 @@ func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), cgs(uint64(200+i)), events.EventTypeUpdate); err != nil {
+			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), nil, cgs(uint64(200+i)), events.EventTypeUpdate); err != nil {
 				errCh <- err
 			}
 		}()
@@ -276,7 +276,7 @@ func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), cgs(uint64(300+i)), events.EventTypeUpdate); err != nil {
+			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), nil, cgs(uint64(300+i)), events.EventTypeUpdate); err != nil {
 				errCh <- err
 			}
 		}()
@@ -391,7 +391,7 @@ func TestMirrorCgidsSurvivesOverlappingExecPolicies(t *testing.T) {
 			t.Fatalf("create %s: %v", uid, err)
 		}
 	}
-	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), cgs(11, 12), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
 		t.Fatalf("create podWeb: %v", err)
 	}
 	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
@@ -429,7 +429,7 @@ func TestMirrorCgidsPodDeleteWithOverlappingExecPolicies(t *testing.T) {
 			t.Fatalf("create %s: %v", uid, err)
 		}
 	}
-	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), cgs(11), events.EventTypeCreate); err != nil {
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatalf("create podWeb: %v", err)
 	}
 	if got := sink.set(); !slices.Equal(got, []uint64{11}) {

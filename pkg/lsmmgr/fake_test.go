@@ -504,12 +504,12 @@ func selFor(kv map[string]string) labels.Selector {
 
 func result(uid, mode string, sel labels.Selector, open, exec *compiler.AllowDenyPair) *compiler.EvaluationResult {
 	return &compiler.EvaluationResult{
-		UID:      uid,
-		Name:     uid,
-		Mode:     mode,
-		Selector: sel,
-		Open:     open,
-		Exec:     exec,
+		UID:       uid,
+		Name:      uid,
+		Mode:      mode,
+		AppliesTo: compiler.PodTarget{Pod: sel, Namespace: labels.Everything()},
+		Open:      open,
+		Exec:      exec,
 	}
 }
 

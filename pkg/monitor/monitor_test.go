@@ -71,13 +71,13 @@ func findingsPerPolicy(fs []reporter.Finding) map[string]int {
 	return out
 }
 
-func sel(t *testing.T, kv map[string]string) labels.Selector {
+func sel(t *testing.T, kv map[string]string) compiler.PodTarget {
 	t.Helper()
 	s, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: kv})
 	if err != nil {
 		t.Fatalf("building selector: %v", err)
 	}
-	return s
+	return compiler.PodTarget{Pod: s, Namespace: labels.Everything()}
 }
 
 func pair(allow, deny []string) *compiler.AllowDenyPair {
@@ -88,13 +88,13 @@ func pair(allow, deny []string) *compiler.AllowDenyPair {
 func monitorPolicy(t *testing.T, uid, name string, ips, open, exec *compiler.AllowDenyPair) *compiler.EvaluationResult {
 	t.Helper()
 	return &compiler.EvaluationResult{
-		UID:      uid,
-		Name:     name,
-		IPs:      ips,
-		Open:     open,
-		Exec:     exec,
-		Selector: sel(t, map[string]string{"app": "ai"}),
-		Mode:     compiler.ModeMonitor,
+		UID:       uid,
+		Name:      name,
+		IPs:       ips,
+		Open:      open,
+		Exec:      exec,
+		AppliesTo: sel(t, map[string]string{"app": "ai"}),
+		Mode:      compiler.ModeMonitor,
 	}
 }
 
@@ -142,11 +142,11 @@ func execEvent(filename string) runtimeevent.Event {
 func dnsPolicy(t *testing.T, uid, name string, dns *compiler.AllowDenyPair) *compiler.EvaluationResult {
 	t.Helper()
 	return &compiler.EvaluationResult{
-		UID:      uid,
-		Name:     name,
-		DNS:      dns,
-		Selector: sel(t, map[string]string{"app": "ai"}),
-		Mode:     compiler.ModeMonitor,
+		UID:       uid,
+		Name:      name,
+		DNS:       dns,
+		AppliesTo: sel(t, map[string]string{"app": "ai"}),
+		Mode:      compiler.ModeMonitor,
 	}
 }
 
@@ -869,7 +869,7 @@ func TestRuntimePolicyEvent_IgnoresPoliciesThatCanNeverViolate(t *testing.T) {
 		{name: "no behavior entries", mut: func(rp *compiler.EvaluationResult) {
 			rp.IPs, rp.Open, rp.Exec = &compiler.AllowDenyPair{}, nil, nil
 		}},
-		{name: "nil selector", mut: func(rp *compiler.EvaluationResult) { rp.Selector = nil }},
+		{name: "nil selector", mut: func(rp *compiler.EvaluationResult) { rp.AppliesTo = compiler.PodTarget{} }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1373,5 +1373,90 @@ func TestHandleEvent_CounterSourcedOpenEventsKeepDistinctTargets(t *testing.T) {
 	}
 	if a, b := got[0].Fingerprint(), got[1].Fingerprint(); a == b {
 		t.Errorf("findings for %q and %q share a fingerprint %q", got[0].Target, got[1].Target, a)
+	}
+}
+
+// Namespace labels reach monitor on their own event rather than on each
+// runtime event, so the gate has to read the cache the namespace events built.
+func TestHandleEvent_NamespaceSelectorGatesOnNamespaceLabels(t *testing.T) {
+	prodSel, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
+		MatchLabels: map[string]string{"tier": "prod"},
+	})
+	if err != nil {
+		t.Fatalf("building selector: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		seed          map[string]string
+		deleteNs      bool
+		wantViolation bool
+	}{
+		{name: "namespace labels match", seed: map[string]string{"tier": "prod"}, wantViolation: true},
+		{name: "namespace labels do not match", seed: map[string]string{"tier": "dev"}},
+		{name: "namespace never seen", seed: nil},
+		{name: "namespace deleted", seed: map[string]string{"tier": "prod"}, deleteNs: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, sink, _ := testMonitor(t)
+			rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
+			rp.AppliesTo.Namespace = prodSel
+			if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+				t.Fatalf("RuntimePolicyEvent: %v", err)
+			}
+			if tc.seed != nil {
+				m.NamespaceEvent("apps", tc.seed, events.EventTypeCreate)
+			}
+			if tc.deleteNs {
+				m.NamespaceEvent("apps", nil, events.EventTypeDelete)
+			}
+
+			ev := netEvent("10.0.0.5")
+			ev.Pod.Labels = map[string]string{"app": "ai"}
+			ev.Pod.Namespace = "apps"
+
+			m.HandleEvent(ev)
+
+			gotViolation := len(sink.all()) == 1
+			if gotViolation != tc.wantViolation {
+				t.Errorf("violation = %v, want %v (findings=%d)", gotViolation, tc.wantViolation, len(sink.all()))
+			}
+		})
+	}
+}
+
+// A relabelled namespace has to change the verdict for events that follow it,
+// with no policy or pod event in between.
+func TestNamespaceEvent_RelabelChangesTheVerdict(t *testing.T) {
+	prodSel, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
+		MatchLabels: map[string]string{"tier": "prod"},
+	})
+	if err != nil {
+		t.Fatalf("building selector: %v", err)
+	}
+
+	m, sink, _ := testMonitor(t)
+	rp := monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil)
+	rp.AppliesTo.Namespace = prodSel
+	if err := m.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	ev := netEvent("10.0.0.5")
+	ev.Pod.Labels = map[string]string{"app": "ai"}
+	ev.Pod.Namespace = "apps"
+
+	m.NamespaceEvent("apps", map[string]string{"tier": "dev"}, events.EventTypeCreate)
+	m.HandleEvent(ev)
+	if got := len(sink.all()); got != 0 {
+		t.Fatalf("findings = %d, want 0 while the namespace is out of scope", got)
+	}
+
+	m.NamespaceEvent("apps", map[string]string{"tier": "prod"}, events.EventTypeUpdate)
+	m.HandleEvent(ev)
+	if got := len(sink.all()); got != 1 {
+		t.Fatalf("findings = %d, want 1 once the namespace is relabelled into scope", got)
 	}
 }

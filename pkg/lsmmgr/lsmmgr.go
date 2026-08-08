@@ -17,7 +17,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 )
 
 const maxReportedRejectedPaths = 10
@@ -52,6 +51,7 @@ type LsmManager struct {
 type podRepresentation struct {
 	cgids        []uint64
 	labels       map[string]string
+	nsLabels     map[string]string
 	attachedLsms map[string]*lsmAttachment
 }
 
@@ -62,7 +62,7 @@ type progState struct {
 
 type lsmAttachment struct {
 	progs        map[string]*progState
-	selector     labels.Selector
+	target       compiler.PodTarget
 	attachedPods map[string]*podRepresentation
 
 	// monitor policies: the enforcers are attached with empty banned and allowed
@@ -103,15 +103,15 @@ func (l *LsmManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, e
 	return nil
 }
 
-func (l *LsmManager) PodEvent(pod corev1.Pod, cgInfos []*containers.ContainerCgroupInfo, eventType string) error {
+func (l *LsmManager) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo, eventType string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch eventType {
 	case events.EventTypeCreate:
-		l.podCreated(pod, cgInfos)
+		l.podCreated(pod, nsLabels, cgInfos)
 		return nil
 	case events.EventTypeUpdate:
-		return l.podUpdated(pod, cgInfos)
+		return l.podUpdated(pod, nsLabels, cgInfos)
 	}
 	return nil
 }
