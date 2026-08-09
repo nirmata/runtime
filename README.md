@@ -22,9 +22,11 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
 ## ✨ Key Features
 
 - **Five behaviors**: `open` (file paths), `exec` (binary paths), `network` (addresses,
-  CIDRs, domain names, and cluster Service names), `protocol` (the application protocol a
-  flow speaks), and `dns` (the names a workload resolves, observed only), in any
-  combination in one policy.
+  CIDRs, domain names, and cluster Service names), and `protocol` (the application
+  protocol a flow speaks) can be enforced or observed, in any combination in one policy.
+  A fifth, `dns` (the names a workload resolves), only ever observes: pairing it with
+  `mode: enforce` is refused, because blocking a destination named by domain is what a
+  `network` behavior does.
 - **Enforce or monitor**: `spec.mode` is per policy, so one policy can block a workload
   while another reports on it.
 - **Readable findings**: a `monitorFilter` is a per-observation CEL predicate deciding
@@ -47,7 +49,7 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
 - Egress is keyed on IPv4 destination addresses. A domain name or cluster Service name is accepted as a value and resolved to addresses; an IPv6 literal is not.
 - File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are
 typically not booted with it.
-- `network`, `open`, and `exec` observations come from eBPF counters that the daemon drains on a poll interval rather than from a stream of events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
+- `network`, `protocol`, `open`, and `exec` observations come from eBPF counters that the daemon drains on a poll interval rather than from a stream of events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
 - Nothing reads inside TLS. A destination is named by domain only when the pod's own DNS answer was observed, and no policy value has a port.
 - Exceptions are not yet supported.
 
@@ -81,7 +83,7 @@ Nothing to clone and no server to run. Start a client:
 
 ```bash
 kubectl run egress-client --image=busybox:1.36 --labels=app=egress-client \
-  --command -- sleep 3600
+  --restart=Never --command -- sleep 3600
 kubectl wait --for=condition=Ready pod/egress-client --timeout=90s
 ```
 
