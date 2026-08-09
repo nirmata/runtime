@@ -58,8 +58,8 @@ typically not booted with it.
 - A Kubernetes cluster on Linux nodes, plus `kubectl`, `helm`, and `git`. A stock
   [kind](https://kind.sigs.k8s.io/) cluster works.
 - Network egress enforcement and observation require only a cgroup v2 host and BPF
-  support; a stock kind cluster on a Linux host qualifies. That is all the sample below
-  needs.
+  support; a stock kind cluster on a Linux host qualifies. That, plus egress from the
+  cluster to the address each sample below probes, is all they need.
 
 ### Install
 
@@ -77,30 +77,31 @@ To build from source instead, or to install a daemon image you built yourself, s
 
 ### Block an address
 
-Start a client and an HTTP server, and note the server's address:
+Nothing to clone and no server to run. Start a client:
 
 ```bash
-git clone https://github.com/nirmata/kyverno-runtime.git
-cd kyverno-runtime/examples/egress/block-known-bad-egress
-kubectl apply -f client.yaml -f targets.yaml
-kubectl wait --for=condition=Ready pod/egress-client pod/egress-target-denied --timeout=90s
-DENIED=$(kubectl get pod egress-target-denied -o jsonpath='{.status.podIP}')
+kubectl run egress-client --image=busybox:1.36 --labels=app=egress-client \
+  --command -- sleep 3600
+kubectl wait --for=condition=Ready pod/egress-client --timeout=90s
 ```
 
-The client can reach it, and prints `ok`:
+`8.8.8.8` is Google Public DNS. It is used here only because it is a recognizable address
+that answers from anywhere with egress, so the sample needs nothing of your own running —
+blocking a public resolver is a demonstration, not a recommendation. The client can reach
+it:
 
 ```bash
-kubectl exec egress-client -- wget -q -T 3 -O - "http://$DENIED:8080/"
+kubectl exec egress-client -- timeout 5 nslookup example.com 8.8.8.8
 ```
 
-Deny that one address. Egress matches on destination IPv4 address, so one `sed` fills in
-the address the pod actually got:
+Deny that one address:
 
-```yaml
+```bash
+kubectl apply -f - <<'EOF'
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
-  name: block-known-bad-egress
+  name: block-address-sample
 spec:
   mode: enforce
   podSelector:
@@ -110,22 +111,27 @@ spec:
   - network:
       deny:
         values:
-        - "10.244.0.8"
+        - "8.8.8.8"
+EOF
 ```
+
+The same query now times out, because the packet is dropped in the kernel — while
+everything else the pod does, cluster DNS included, keeps working:
 
 ```bash
-sed "s/DENIED_IP/$DENIED/" policy.tmpl.yaml | kubectl apply -f -
+kubectl exec egress-client -- timeout 5 nslookup example.com 8.8.8.8  # times out
+kubectl exec egress-client -- nslookup kubernetes.default             # still resolves
 ```
 
-The same request now fails, because the packet is dropped in the kernel — while everything
-else the pod does, such as cluster DNS, keeps working:
+No CNI, iptables rule, or sidecar is involved, and nothing about the pod spec changed. A
+real policy names the destinations that matter to the workload, and can name them as domain
+names or cluster Service names rather than literal addresses — see
+[examples](docs/users/examples.md).
 
 ```bash
-kubectl exec egress-client -- wget -q -T 3 -O - "http://$DENIED:8080/"  # times out
-kubectl exec egress-client -- nslookup kubernetes.default               # still resolves
+kubectl delete rpol block-address-sample
+kubectl delete pod egress-client
 ```
-
-No CNI, iptables rule, or sidecar is involved, and nothing about the pod spec changed.
 
 ### See what a workload reaches for
 
@@ -136,7 +142,8 @@ server not in the image contract. A `dns` behavior declares the names a workload
 above already used:
 
 ```bash
-cd ../shadow-ai/report-unexpected-dns
+git clone https://github.com/nirmata/kyverno-runtime.git
+cd kyverno-runtime/examples/shadow-ai/report-unexpected-dns
 kubectl apply -f client.yaml
 kubectl wait --for=condition=Ready pod/dns-client --timeout=90s
 kubectl apply -f policy.yaml
