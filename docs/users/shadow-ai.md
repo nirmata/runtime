@@ -6,9 +6,11 @@ in the image contract — is a new path from that workload to a filesystem, a da
 remote API. OWASP tracks one member of the class as MCP09:2025, Shadow MCP Servers; the rest
 of it has the same shape.
 
-This guide covers what a `RuntimePolicy` can see of AI activity, and what it cannot. For the
-fields themselves see the [RuntimePolicy reference](reference/runtimepolicy.md); for the
-expression environment see the [CEL reference](reference/cel.md).
+This guide covers what a `RuntimePolicy` can see of AI activity, and what it cannot. For why
+that division falls where it does — and what a gateway or a TLS-terminating proxy covers
+instead — see [why a runtime layer](why-runtime.md). For the fields themselves see the
+[RuntimePolicy reference](reference/runtimepolicy.md); for the expression environment see the
+[CEL reference](reference/cel.md).
 
 ## Why the runtime sees what the network does not
 
@@ -375,16 +377,56 @@ Runnable: [trusted-and-untrusted-agents](../../examples/shadow-ai/trusted-and-un
 
 The strongest control available is not a denylist of providers, which goes stale the week it
 is written. It is default-deny to an approved gateway, with `protocol` closing the gap so the
-only way out is TLS to that gateway — the policy above, with the gateway in place of the API
-server.
+only way out is TLS to that gateway.
 
 This does not detect anything. It makes AI traffic go somewhere that can inspect it, which is
-the one thing a TLS-terminating proxy cannot arrange for itself.
+the one thing a TLS-terminating proxy cannot arrange for itself: a workload that ignores
+`HTTPS_PROXY` never reaches the proxy to be told otherwise.
+
+```yaml
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: ai-egress-via-gateway
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      ai-workload: "true"
+  behaviors:
+  - network:
+      allow:
+        values:
+        - llm-gateway.ai-gateway.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
+      deny:
+        values: ["*"]
+  - protocol:
+      allow:
+        values: ["tls", "dns"]
+      deny:
+        values: ["*"]
+```
+
+A cluster Service has to be named in full. The short form `llm-gateway.ai-gateway` is read as
+an external domain and never matches anything the egress hook observes; the full name
+resolves from the Service and EndpointSlice informers — the ClusterIP plus the ready endpoint
+addresses — so it holds whether or not the pod ever queries for it.
+
+`allow: ["tls", "dns"]` is deliberately narrow. `quic` is excluded, so an HTTP/3 client is
+denied rather than tunnelling past inspection, and cleartext `http/1.1` is excluded, so a
+plaintext call to a provider fails rather than leaking. A resolver pinned to DNS-over-TLS
+needs `tls/dot` rather than `dns`.
 
 Both behaviors carry the `"*"` sentinel, so a connection must satisfy both: the right
 destination over the wrong protocol is denied, and so is TLS to anywhere else. A `network`
 policy interns at most 256 domain names per pod, another reason to allow a short list rather
 than deny a long one.
+
+What this buys is also measurable. The gateway's audit reports *N* calls for an identity; the
+kernel observed *M* connections to providers from the pod backing it, and `M > N` quantifies
+what bypassed the gateway. Neither vantage point produces that number alone — see
+[why a runtime layer](why-runtime.md).
 
 When a workload's legitimate binaries are known, the same reasoning applies to execution. A
 package-name filter is a denylist, and renaming a binary or wrapping it in a shell script
@@ -410,6 +452,60 @@ was not in that contract.
 
 Runnable: [restrict-exec-allowlist](../../examples/files-and-processes/restrict-exec-allowlist/),
 [default-deny-egress](../../examples/egress/default-deny-egress/).
+
+## Close the evasion lanes everywhere else
+
+Compelled routing suits workloads someone declared. For the rest of the cluster, a blocklist
+closes the lanes that exist mostly to evade inspection, without the default deny that would
+disturb ordinary traffic:
+
+```yaml
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: baseline-evasion-lanes
+spec:
+  mode: enforce
+  podSelector: {}
+  behaviors:
+  - protocol:
+      deny:
+        values: ["quic", "ssh"]
+  - network:
+      deny:
+        values: ["169.254.169.254"]
+```
+
+`quic` carries HTTP/3, which no provider SDK needs and no TLS-terminating proxy can read.
+The instance metadata address is the classic credential-theft destination and has no
+legitimate caller in most workloads. `podSelector: {}` selects every pod on the node —
+omitting the field selects none.
+
+Reading the pod's own ServiceAccount token is worth knowing about too, but it does not
+belong in that policy. `spec.mode` is per policy, not per behavior, so adding an `open` deny
+there would enforce it from the moment it applies — and plenty of in-cluster clients read
+that path legitimately. Learn which ones first, from a policy of its own:
+
+```yaml
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: baseline-serviceaccount-token-reads
+spec:
+  mode: monitor
+  podSelector: {}
+  behaviors:
+  - open:
+      deny:
+        values: ["/var/run/secrets/kubernetes.io/serviceaccount/token"]
+```
+
+Every finding it produces is a reader you would have blocked. Once that set is understood,
+either narrow the `podSelector` to the workloads that should never read it and move that
+policy to `mode: enforce`, or leave it observing.
+
+Runnable: [block-known-bad-egress](../../examples/egress/block-known-bad-egress/),
+[deny-sensitive-file-access](../../examples/files-and-processes/deny-sensitive-file-access/).
 
 ## Keeping the lists current
 
@@ -443,8 +539,17 @@ Runnable: [blocklist-from-http](../../examples/dynamic-lists/blocklist-from-http
 
 - **A filter narrows findings, not observation.** The kernel still records every path the pod
   opens, and the per-pod map is under the same pressure a bare `deny: ["*"]` would put it
-  under. On a busy workload, observations can be lost — see
+  under. On a busy workload, observations can be lost, and a lost observation is
+  indistinguishable from a workload that did nothing — see
   [the limits of monitor mode](reference/runtimepolicy.md).
+- **An internal hop moves the attribution.** A workload whose provider calls go through an
+  in-cluster gateway or reverse proxy produces egress from *that* pod, so the finding names
+  the hop rather than the caller. Per-caller attribution needs the hop to propagate identity;
+  what the kernel sees is the pod that opened the socket.
+- **Renaming defeats an argv denylist.** A stdio MCP server or agent CLI copied to another
+  path, invoked under a different name, or wrapped in a shell script matches none of the
+  package predicates above. An `exec` allow list blocks the whole class instead, which is why
+  it is the stronger control where the workload's binaries are known.
 - **A filter is monitor-only.** An `enforce` policy carrying one is refused at admission: an
   enforce finding records that the kernel actually blocked something, and is never suppressed.
 - **DNS visibility is the question, not the answer.** Only cleartext UDP port 53 is read, so

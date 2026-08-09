@@ -5,6 +5,9 @@ Runtime and writing `RuntimePolicy` objects.
 
 - [Quickstart](quickstart.md) — kind cluster to a kernel-enforced egress block in under
   five minutes.
+- [Why a runtime layer](why-runtime.md) — what a gateway, a TLS proxy, admission control,
+  and a CNI each cannot see, which workloads get content inspection and which only get
+  detection, and what this project leaves to the layers above.
 - [Concepts](concepts.md) — the per-node daemon, how enforcement works, allow and deny
   semantics, modes, scoping, and what monitor mode can see.
 - [Installation](installation.md) — platform requirements, the Helm chart and its values,
