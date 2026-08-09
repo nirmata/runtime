@@ -44,6 +44,12 @@ static __always_inline void record_ip_event(__u32 daddr, __u32 decision, __u32 d
         val = bpf_map_lookup_elem(&ip_events, &key);
         if (val) {
             __sync_fetch_and_add(val, 1);
+            return;
+        }
+        __u32 stat = EGRESS_STAT_COUNT_MAP_FULL;
+        __u64 *v = bpf_map_lookup_elem(&stats, &stat);
+        if (v) {
+            *v += 1; // per-CPU value, so no atomic
         }
     }
 }

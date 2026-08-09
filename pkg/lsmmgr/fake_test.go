@@ -61,6 +61,11 @@ type fakeEnforcer struct {
 	// pending are the kernel-side counts ReadEvents will hand back (and reset).
 	pending map[uint64]map[lsm.PathEventKey]uint32
 
+	// lost is the cumulative kernel drop total, as the real stats map holds it:
+	// ReadEventsLost hands back the increase since the previous call.
+	lost     uint64
+	lostLast uint64
+
 	errs map[string]error
 }
 
@@ -221,6 +226,24 @@ func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventK
 	return out, f.note("ReadEvents")
 }
 
+func (f *fakeEnforcer) ReadEventsLost() (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.note("ReadEventsLost"); err != nil {
+		return 0, err
+	}
+	delta := f.lost - f.lostLast
+	f.lostLast = f.lost
+	return delta, nil
+}
+
+// seedLost raises the cumulative kernel drop total by n.
+func (f *fakeEnforcer) seedLost(n uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lost += n
+}
+
 // seed puts kernel-side allow-decision counts in place for the next ReadEvents
 // call. seedDecision is the general form.
 func (f *fakeEnforcer) seed(cgid uint64, counts map[string]uint32) {
@@ -340,6 +363,19 @@ func (s *fakeStatus) conditionTypes(policyUID string) []string {
 	return out
 }
 
+// latest returns the last condition of the given type recorded for a policy.
+func (s *fakeStatus) latest(policyUID, condType string) (metav1.Condition, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conds := s.conditions[policyUID]
+	for i := len(conds) - 1; i >= 0; i-- {
+		if conds[i].Type == condType {
+			return conds[i], true
+		}
+	}
+	return metav1.Condition{}, false
+}
+
 // harness wires an LsmManager to fake enforcers and keeps a record of every
 // enforcer that got created.
 type harness struct {
@@ -351,6 +387,13 @@ type harness struct {
 	created   []*fakeEnforcer
 	createErr map[string]error
 	methodErr map[string]map[string]error
+	losses    []loss
+}
+
+// loss is one call the manager made on its LossFunc.
+type loss struct {
+	reason string
+	delta  uint64
 }
 
 func newHarness(t *testing.T) *harness {
@@ -375,10 +418,20 @@ func newHarness(t *testing.T) *harness {
 		h.created = append(h.created, f)
 		return f, nil
 	}
-	h.l = NewLsmManager(logr.Discard(), h.status)
+	h.l = NewLsmManager(logr.Discard(), h.status, func(reason string, delta uint64) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.losses = append(h.losses, loss{reason: reason, delta: delta})
+	})
 	h.l.newEnforcer = factory
 	h.l.clock = func() time.Time { return fixedTime }
 	return h
+}
+
+func (h *harness) recordedLosses() []loss {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.losses)
 }
 
 // failCreate makes enforcer construction fail for a target.

@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// LossFunc receives the increase in one kernel-side loss counter since the last
+// poll.
+type LossFunc func(reason string, delta uint64)
+
+// ReasonCountMapFull is the LossFunc reason for observations a kernel program
+// could not record because its per-cgroup count map had no room left.
+const ReasonCountMapFull = "count_map_full"
+
 // Kind discriminates which facts pointer on an Event is populated.
 type Kind string
 

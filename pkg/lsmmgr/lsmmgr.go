@@ -34,6 +34,10 @@ type LsmManager struct {
 	newEnforcer enforcerFactory
 	clock       func() time.Time
 
+	// onLoss reports kernel-side observation losses, normally to a metrics
+	// counter. may be nil
+	onLoss runtimeevent.LossFunc
+
 	// cgroupSinks gate observation-only sources on the pods the exec policies
 	// select. Set before the informers start and not mutated afterwards.
 	cgroupSinks []CgroupSink
@@ -71,10 +75,11 @@ type lsmAttachment struct {
 	observe bool
 }
 
-func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, cgroupSinks ...CgroupSink) *LsmManager {
+func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, cgroupSinks ...CgroupSink) *LsmManager {
 	return &LsmManager{
 		logger:      logger,
 		status:      status,
+		onLoss:      onLoss,
 		cgroupSinks: cgroupSinks,
 		newEnforcer: func(logger *logr.Logger, target string) (lsmEnforcer, error) {
 			enf, err := lsm.NewForAttachTarget(logger, target)
@@ -128,12 +133,16 @@ func (l *LsmManager) PodDeleted(uid string) error {
 // addPodCgids adds cgids to one program's cgroup map and turns observation on
 // for them. Attached implies observed, in enforce mode as well: the counted
 // paths feed userspace deny delivery. Keep the two calls together.
-func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids []uint64) {
+func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids []uint64, observe bool) {
 	if len(cgids) == 0 {
 		return
 	}
 	if err := prog.enf.AddCgids(cgids); err != nil {
-		l.logger.Error(err, "failed to add cgids to enforcer", "uid", rpUID, "progType", progType)
+		if observe {
+			l.observationUnavailable(rpUID, progType, "failed to add cgids to enforcer", err)
+		} else {
+			l.enforcementUnavailable(rpUID, progType, "failed to add cgids to enforcer", err)
+		}
 	}
 	if err := prog.enf.EnableObservation(cgids); err != nil {
 		l.observationUnavailable(rpUID, progType, "failed to enable observation", err)
@@ -226,6 +235,20 @@ func (l *LsmManager) observationUnavailable(rpUID, progType, msg string, err err
 		Status:  metav1.ConditionFalse,
 		Reason:  v1alpha1.ReasonObservationUnavailable,
 		Message: msg + " for " + progType + ": " + err.Error(),
+	})
+}
+
+// enforcementUnavailable records a policy condition for a kernel map the
+// runtime could not program: the workload runs on, unenforced, so the failure
+// is invisible everywhere else.
+func (l *LsmManager) enforcementUnavailable(rpUID, progType, msg string, err error) {
+	l.logger.Error(err, msg, "uid", rpUID, "progType", progType)
+	l.recordCondition(rpUID, metav1.Condition{
+		Type:               v1alpha1.ConditionEnforcementAvailable,
+		Status:             metav1.ConditionFalse,
+		Reason:             v1alpha1.ReasonEnforcementUnavailable,
+		Message:            msg + " for " + progType + ": " + err.Error(),
+		LastTransitionTime: metav1.NewTime(l.clock()),
 	})
 }
 

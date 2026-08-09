@@ -1,10 +1,12 @@
 package egressfilter
 
 import (
+	"errors"
 	"net/netip"
 	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"unsafe"
@@ -182,5 +184,52 @@ func TestEventKeyCarriesTheResolvedDomain(t *testing.T) {
 				t.Errorf("eventKey mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestReadEventsLostReportsDeltaNotTotal(t *testing.T) {
+	e := newUnloadedFilter()
+
+	for _, tc := range []struct {
+		total uint64
+		want  uint64
+	}{
+		{total: 0, want: 0},
+		{total: 7, want: 7},
+		{total: 7, want: 0},
+		{total: 10, want: 3},
+		{total: 2, want: 0}, // counter reset: baseline follows it down
+		{total: 5, want: 3},
+	} {
+		if got := e.lostSince(tc.total); got != tc.want {
+			t.Errorf("lostSince(%d) = %d, want %d", tc.total, got, tc.want)
+		}
+	}
+}
+
+func TestReadEventsLostReportsUnloadedObjectsAsAnError(t *testing.T) {
+	e := newUnloadedFilter()
+	got, err := e.ReadEventsLost()
+	if !errors.Is(err, ErrNotLoaded) {
+		t.Errorf("err = %v, want ErrNotLoaded", err)
+	}
+	if got != 0 {
+		t.Errorf("lost = %d, want 0", got)
+	}
+}
+
+// TestEgressStatKeysMatchKernelEnum guards the Go stat key against the
+// committed BPF program, which cannot be regenerated on this host.
+func TestEgressStatKeysMatchKernelEnum(t *testing.T) {
+	data, err := os.ReadFile("_cprog/maps.h")
+	if err != nil {
+		t.Fatalf("reading _cprog/maps.h: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^\s*EGRESS_STAT_COUNT_MAP_FULL\s*=\s*(\d+)\s*,`).FindSubmatch(data)
+	if m == nil {
+		t.Fatal("EGRESS_STAT_COUNT_MAP_FULL not found in _cprog/maps.h")
+	}
+	if got, want := string(m[1]), strconv.FormatUint(uint64(egressStatCountMapFull), 10); got != want {
+		t.Errorf("EGRESS_STAT_COUNT_MAP_FULL = %s, Go egressStatCountMapFull = %s", got, want)
 	}
 }

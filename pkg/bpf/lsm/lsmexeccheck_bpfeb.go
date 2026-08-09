@@ -74,6 +74,7 @@ type lsmExecCheckMapSpecs struct {
 	DefaultDeny     *ebpf.MapSpec `ebpf:"default_deny"`
 	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
 	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
+	Stats           *ebpf.MapSpec `ebpf:"stats"`
 }
 
 // lsmExecCheckVariableSpecs contains global variables before they are loaded into the kernel.
@@ -108,6 +109,7 @@ type lsmExecCheckMaps struct {
 	DefaultDeny     *ebpf.Map `ebpf:"default_deny"`
 	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
 	OpenEvents      *ebpf.Map `ebpf:"open_events"`
+	Stats           *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *lsmExecCheckMaps) Close() error {
@@ -118,6 +120,7 @@ func (m *lsmExecCheckMaps) Close() error {
 		m.DefaultDeny,
 		m.InnerOpenEvents,
 		m.OpenEvents,
+		m.Stats,
 	)
 }
 

@@ -87,8 +87,8 @@ metrics registry + Serve(--metrics-addr)    -> errgroup
 attribution.NewIndex(WithMetrics)
 reporter.New(controller-runtime client)     -> Run in errgroup
 controller.NewStatusWriter(nodeName, 30s)   -> Run in errgroup
-egressmgr.NewEgressManager(log, statusWriter)
-lsmmgr.NewLsmManager(log, statusWriter)
+egressmgr.NewEgressManager(log, statusWriter, onLoss -> EventsDropped)
+lsmmgr.NewLsmManager(log, statusWriter, onLoss -> EventsDropped)
 monitor.New(log, reporter, metrics)
 podHandlers    = [em, lsmm, attrIdx]        (+ dm when dnsquery loaded)
 policyHandlers = [em, lsmm, statusWriter, monitor]  (+ dm when dnsquery loaded)

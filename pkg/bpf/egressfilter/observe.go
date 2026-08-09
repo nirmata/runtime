@@ -44,6 +44,43 @@ func (e *EgressFilter) ReadIPEvents() (map[IPEventKey]uint32, error) {
 	return readAndResetIPEvents(e.bpfObjs.IpEvents, e.domainNamer())
 }
 
+// egressStatCountMapFull mirrors EGRESS_STAT_COUNT_MAP_FULL in _cprog/maps.h.
+const egressStatCountMapFull = uint32(0)
+
+// ReadEventsLost reports flows the kernel program could not record because
+// ip_events was full. It shares ReadIPEvents' single caller, so statLast needs
+// no lock of its own.
+func (e *EgressFilter) ReadEventsLost() (uint64, error) {
+	if e.bpfObjs == nil || e.bpfObjs.Stats == nil {
+		return 0, ErrNotLoaded
+	}
+
+	key := egressStatCountMapFull
+	var perCPU []uint64
+	if err := e.bpfObjs.Stats.Lookup(&key, &perCPU); err != nil {
+		return 0, fmt.Errorf("reading lost observation counter: %w", err)
+	}
+
+	var sum uint64
+	for _, v := range perCPU {
+		sum += v
+	}
+	return e.lostSince(sum), nil
+}
+
+// lostSince turns the kernel's cumulative counter into a per-call delta. A
+// total below the previous one means the map behind it was replaced, so the
+// baseline moves with it rather than reporting a negative interval as a huge
+// positive one.
+func (e *EgressFilter) lostSince(sum uint64) uint64 {
+	last := e.statLast
+	e.statLast = sum
+	if sum < last {
+		return 0
+	}
+	return sum - last
+}
+
 // SeedIPEvent writes one observation entry through the ip_events map handle. It
 // exists for the kernel smoke test in test/e2e, which pins the key marshaling
 // seam; production counting happens in the BPF program.

@@ -223,7 +223,7 @@ func TestMonitorFilterDecide(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := compileFilter(t, tt.exprs...).Decide(tt.ev)
+			got := compileFilter(t, tt.exprs...).Decide(NewFilterActivation(tt.ev))
 			if (got.Err != nil) != tt.wantErrs {
 				t.Fatalf("Decide() err = %v, want an error: %v", got.Err, tt.wantErrs)
 			}
@@ -238,7 +238,7 @@ func TestMonitorFilterDecide(t *testing.T) {
 // TestMonitorFilterDecideErrImpliesReport pins the fail-open invariant: a filter
 // that cannot answer must widen what an operator sees, never narrow it.
 func TestMonitorFilterDecideErrImpliesReport(t *testing.T) {
-	got := compileFilter(t, condition("boom", `event.exec.filename == "x"`)).Decide(openEvent("/etc/passwd"))
+	got := compileFilter(t, condition("boom", `event.exec.filename == "x"`)).Decide(NewFilterActivation(openEvent("/etc/passwd")))
 	if got.Err == nil {
 		t.Fatal("Decide() err = nil, want the absent-arm dereference to error")
 	}
@@ -250,10 +250,29 @@ func TestMonitorFilterDecideErrImpliesReport(t *testing.T) {
 	}
 }
 
+// One event is decided against many policies from one activation, so the
+// counterfactual variant must not reach back into the base one.
+func TestWithWouldDenyDoesNotMutateBaseActivation(t *testing.T) {
+	base := NewFilterActivation(openEvent("/etc/passwd"))
+	f := compileFilter(t, condition("c", `event.wouldDeny`))
+
+	variant := base.WithWouldDeny()
+	if got := f.Decide(variant); !got.Report || got.Err != nil {
+		t.Fatalf("Decide(variant) = %+v, want event.wouldDeny true", got)
+	}
+	got := f.Decide(base)
+	if got.Err != nil {
+		t.Fatalf("Decide(base) err = %v", got.Err)
+	}
+	if got.Report {
+		t.Error("event.wouldDeny is true on the base activation, want the variant to be a copy")
+	}
+}
+
 func TestMonitorFilterNilReportsEverything(t *testing.T) {
 	var f *MonitorFilter
 	want := FilterDecision{Report: true}
-	if diff := cmp.Diff(want, f.Decide(openEvent("/etc/passwd"))); diff != "" {
+	if diff := cmp.Diff(want, f.Decide(NewFilterActivation(openEvent("/etc/passwd")))); diff != "" {
 		t.Errorf("Decide() mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -332,7 +351,7 @@ func TestMonitorFilterFieldCoverage(t *testing.T) {
 		`has(event.open) && has(event.exec) && has(event.net) && has(event.dns) && has(event.protocol)`,
 	} {
 		t.Run(expr, func(t *testing.T) {
-			got := compileFilter(t, condition("c", expr)).Decide(fullEvent())
+			got := compileFilter(t, condition("c", expr)).Decide(NewFilterActivation(fullEvent()))
 			if got.Err != nil {
 				t.Fatalf("Decide() err = %v", got.Err)
 			}
@@ -386,7 +405,7 @@ func TestMonitorFilterNilCollectionsBehaveAsEmpty(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := compileFilter(t, condition("p", tt.expr)).Decide(tt.ev)
+			got := compileFilter(t, condition("p", tt.expr)).Decide(NewFilterActivation(tt.ev))
 			if got.Err != nil {
 				t.Fatalf("Decide() err = %v, want nil: a nil collection must not error", got.Err)
 			}
@@ -414,7 +433,7 @@ func TestMonitorFilterUnionArmPresence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			for _, arm := range arms {
-				got := compileFilter(t, condition("c", fmt.Sprintf("has(event.%s)", arm))).Decide(tt.ev)
+				got := compileFilter(t, condition("c", fmt.Sprintf("has(event.%s)", arm))).Decide(NewFilterActivation(tt.ev))
 				if got.Err != nil {
 					t.Fatalf("Decide() err = %v", got.Err)
 				}
@@ -431,7 +450,7 @@ func TestMonitorFilterUnionArmPresence(t *testing.T) {
 // address.
 func TestUnsetDestIPIsEmptyString(t *testing.T) {
 	ev := runtimeevent.Event{Kind: runtimeevent.KindNet, Net: &runtimeevent.NetFacts{}}
-	got := compileFilter(t, condition("c", `event.net.destIP == ""`)).Decide(ev)
+	got := compileFilter(t, condition("c", `event.net.destIP == ""`)).Decide(NewFilterActivation(ev))
 	if got.Err != nil {
 		t.Fatalf("Decide() err = %v", got.Err)
 	}

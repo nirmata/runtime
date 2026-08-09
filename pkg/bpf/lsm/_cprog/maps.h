@@ -61,3 +61,15 @@ struct {
 } open_events SEC(".maps") = {
     .values = { &inner_open_events },
 };
+
+enum path_stat {
+    PATH_STAT_COUNT_MAP_FULL = 0,
+    PATH_STAT_MAX = 1,
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, PATH_STAT_MAX);
+    __type(key, __u32);
+    __type(value, __u64);
+} stats SEC(".maps");

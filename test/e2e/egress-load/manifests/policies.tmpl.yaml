@@ -1,0 +1,50 @@
+# Applied by run.sh after substituting TEST_NAMESPACE. Chainsaw is not involved
+# here and neither is its templating; the substitution keeps the policy shape
+# reviewable as YAML rather than buried in a heredoc.
+#
+# Two policies over the same pod, one per mode, because the load has to exercise
+# both halves of the observation plane at once: an enforce policy whose kernel
+# denies must each be attributed in userspace, and a monitor policy whose
+# counterfactual denies must each be evaluated. Under a storm those are the two
+# paths that would fall over.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-load-enforce
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: egress-load-client
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: TEST_NAMESPACE
+  behaviors:
+  - network:
+      allow:
+        values:
+        - egress-load-target.TEST_NAMESPACE.svc.cluster.local
+      deny:
+        values:
+        - "*"
+---
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-load-monitor
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: egress-load-client
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: TEST_NAMESPACE
+  behaviors:
+  - network:
+      deny:
+        values:
+        # RFC 5737 TEST-NET-3: reserved for documentation, so it routes nowhere
+        # and the load cannot leave the cluster even if the enforce policy were
+        # never programmed.
+        - 203.0.113.0/24
