@@ -22,7 +22,7 @@ func (l *LsmManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgIn
 		if la.target.Matches(nsLabels, pod.Labels) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
 			for progType, prog := range la.progs {
-				l.addPodCgids(rpUid, progType, prog, pr.cgids)
+				l.addPodCgids(rpUid, progType, prog, pr.cgids, la.observe)
 			}
 
 			attach(rpUid, la, string(pod.UID), pr)
@@ -70,7 +70,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgIn
 			continue
 		}
 		for progType, prog := range la.progs {
-			l.addPodCgids(rpUid, progType, prog, toAdd)
+			l.addPodCgids(rpUid, progType, prog, toAdd, la.observe)
 			l.removePodCgids(rpUid, progType, prog, toRemove)
 		}
 	}

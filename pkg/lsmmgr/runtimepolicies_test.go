@@ -3,12 +3,15 @@ package lsmmgr
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
 	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
 	"github.com/nirmata/kyverno-runtime/pkg/compiler"
 	"github.com/nirmata/kyverno-runtime/pkg/events"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -924,5 +927,52 @@ func TestRuntimePolicyEvent_UnknownEventTypeIsIgnored(t *testing.T) {
 	}
 	if h.createdCount() != 0 || len(h.l.lsmAttachments) != 0 {
 		t.Errorf("unknown event type mutated state: created=%d attachments=%d", h.createdCount(), len(h.l.lsmAttachments))
+	}
+}
+
+// a pod whose cgroup never reached the enforcer's map runs unenforced, and the
+// policy has to say so: nothing else in the system can tell.
+func TestAddCgidsFailureRecordsEnforcementUnavailable(t *testing.T) {
+	h := newHarness(t)
+	h.failMethod(open, "AddCgids", errors.New("map update failed"))
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, labels.Everything(),
+		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+
+	cond, ok := h.status.latest("rp1", v1alpha1.ConditionEnforcementAvailable)
+	if !ok {
+		t.Fatalf("no %s condition for rp1 (all: %v)", v1alpha1.ConditionEnforcementAvailable, h.status.conditionTypes("rp1"))
+	}
+	if cond.Status != metav1.ConditionFalse || cond.Reason != v1alpha1.ReasonEnforcementUnavailable {
+		t.Errorf("condition = %s/%s, want False/%s", cond.Status, cond.Reason, v1alpha1.ReasonEnforcementUnavailable)
+	}
+	if !strings.Contains(cond.Message, "map update failed") {
+		t.Errorf("condition message %q does not name the failure", cond.Message)
+	}
+}
+
+// an observe-mode enforcer returns no -EPERM, so an unprogrammed cgroup costs
+// findings rather than enforcement and belongs on the observation condition.
+func TestObserveModeAddCgidsFailureRecordsObservationUnavailable(t *testing.T) {
+	h := newHarness(t)
+	h.failMethod(open, "AddCgids", errors.New("map update failed"))
+	if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
+		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.status.conditionTypes("rp1")
+	if !slices.Contains(got, v1alpha1.ConditionObservationAvailable) {
+		t.Errorf("conditions = %v, want %s", got, v1alpha1.ConditionObservationAvailable)
+	}
+	if slices.Contains(got, v1alpha1.ConditionEnforcementAvailable) {
+		t.Errorf("conditions = %v, want no %s: observe mode enforces nothing", got, v1alpha1.ConditionEnforcementAvailable)
 	}
 }

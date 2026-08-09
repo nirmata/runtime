@@ -54,6 +54,12 @@ static __always_inline void record_path_event(__u64 *cgid, struct path_event_key
         count = bpf_map_lookup_elem(count_map, key);
         if (count) {
             __sync_fetch_and_add(count, 1);
+            return;
+        }
+        __u32 stat = PATH_STAT_COUNT_MAP_FULL;
+        __u64 *v = bpf_map_lookup_elem(&stats, &stat);
+        if (v) {
+            *v += 1; // per-CPU value, so no atomic
         }
     }
 }

@@ -72,7 +72,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	for progType, prog := range la.progs {
-		l.addPodCgids(compiledRp.UID, progType, prog, targetCgids)
+		l.addPodCgids(compiledRp.UID, progType, prog, targetCgids, la.observe)
 	}
 
 	return nil
@@ -214,7 +214,7 @@ func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *com
 			files: newFiles,
 		}
 		for _, pod := range la.attachedPods {
-			l.addPodCgids(rpUID, progType, ps, pod.cgids)
+			l.addPodCgids(rpUID, progType, ps, pod.cgids, la.observe)
 		}
 
 		la.progs[progType] = ps
@@ -281,7 +281,7 @@ func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 			}
 			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
 			for progType, prog := range la.progs {
-				l.addPodCgids(uid, progType, prog, pod.cgids)
+				l.addPodCgids(uid, progType, prog, pod.cgids, la.observe)
 			}
 
 			attach(uid, la, podUid, pod)

@@ -48,6 +48,12 @@ type flagToggle struct {
 	val bool
 }
 
+// loss is one call the manager made on its LossFunc.
+type loss struct {
+	reason string
+	delta  uint64
+}
+
 // fakeFilter records every call the manager makes and models the state the bpf
 // maps would end up in: the ip maps behave as sets and the flags map holds the
 // default-deny and observe bits. Target parsing goes through the real
@@ -71,6 +77,12 @@ type fakeFilter struct {
 	addErr    error
 	readErr   error
 	ipEvents  map[egressfilter.IPEventKey]uint32
+
+	// lost is the cumulative kernel drop total, as the real stats map holds it:
+	// ReadEventsLost hands back the increase since the previous call.
+	lost     uint64
+	lostLast uint64
+	lostErr  error
 }
 
 func newFakeFilter() *fakeFilter {
@@ -155,6 +167,15 @@ func (f *fakeFilter) ReadIPEvents() (map[egressfilter.IPEventKey]uint32, error) 
 	return out, f.readErr
 }
 
+func (f *fakeFilter) ReadEventsLost() (uint64, error) {
+	if f.lostErr != nil {
+		return 0, f.lostErr
+	}
+	delta := f.lost - f.lostLast
+	f.lostLast = f.lost
+	return delta, nil
+}
+
 func (f *fakeFilter) reset() {
 	f.adds = nil
 	f.deletes = nil
@@ -210,6 +231,7 @@ type fakeProtoFilter struct {
 	observe     bool
 
 	attachErr   error
+	addErr      error
 	readErr     error
 	protoEvents map[protofilter.ProtoEventKey]uint32
 }
@@ -241,7 +263,7 @@ func (f *fakeProtoFilter) AddProtocols(p *compiler.AllowDenyPair) ([]compiler.Re
 	for _, t := range denyTargets {
 		f.deny[targetString(t)] = struct{}{}
 	}
-	return append(allowRejected, denyRejected...), nil
+	return append(allowRejected, denyRejected...), f.addErr
 }
 
 func (f *fakeProtoFilter) DeleteProtocols(p *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
@@ -367,7 +389,7 @@ func newTestManagerWithProto() (*EgressManager, *fakeFactory, *fakeProtoFactory,
 	ff := &fakeFactory{}
 	pff := &fakeProtoFactory{}
 	status := newFakeStatus()
-	e := NewEgressManager(logr.Discard(), status)
+	e := NewEgressManager(logr.Discard(), status, nil)
 	e.newFilter = ff.new
 	e.newProtoFilter = pff.new
 	e.clock = func() time.Time { return testTime }

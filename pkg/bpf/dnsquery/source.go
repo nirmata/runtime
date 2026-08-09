@@ -19,10 +19,6 @@ const SourceName = "dnsquery"
 // DefaultStatsInterval is how often the kernel-side loss counters are read.
 const DefaultStatsInterval = 30 * time.Second
 
-// LossFunc receives the increase in one kernel-side loss counter since the last
-// poll.
-type LossFunc func(reason string, delta uint64)
-
 // Source drains the question ring buffer into the collector.
 type Source struct {
 	obs   *Observer
@@ -30,13 +26,13 @@ type Source struct {
 	clock func() time.Time
 
 	statsInterval time.Duration
-	onLoss        LossFunc
+	onLoss        runtimeevent.LossFunc
 }
 
 type Option func(*Source)
 
 // WithLossFunc reports kernel-side loss deltas, normally to a metrics counter.
-func WithLossFunc(f LossFunc) Option {
+func WithLossFunc(f runtimeevent.LossFunc) Option {
 	return func(s *Source) { s.onLoss = f }
 }
 
