@@ -474,19 +474,35 @@ spec:
   - network:
       deny:
         values: ["169.254.169.254"]
+```
+
+`quic` carries HTTP/3, which no provider SDK needs and no TLS-terminating proxy can read.
+The instance metadata address is the classic credential-theft destination and has no
+legitimate caller in most workloads. `podSelector: {}` selects every pod on the node —
+omitting the field selects none.
+
+Reading the pod's own ServiceAccount token is worth knowing about too, but it does not
+belong in that policy. `spec.mode` is per policy, not per behavior, so adding an `open` deny
+there would enforce it from the moment it applies — and plenty of in-cluster clients read
+that path legitimately. Learn which ones first, from a policy of its own:
+
+```yaml
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: baseline-serviceaccount-token-reads
+spec:
+  mode: monitor
+  podSelector: {}
+  behaviors:
   - open:
       deny:
         values: ["/var/run/secrets/kubernetes.io/serviceaccount/token"]
 ```
 
-`quic` carries HTTP/3, which no provider SDK needs and no TLS-terminating proxy can read.
-The instance metadata address is the classic credential-theft destination and has no
-legitimate caller in most workloads.
-
-The ServiceAccount token deny is the one to trial in `mode: monitor` first: plenty of
-in-cluster clients read that path legitimately, and the finding names which ones before
-anything is blocked. `podSelector: {}` selects every pod on the node — omitting the field
-selects none.
+Every finding it produces is a reader you would have blocked. Once that set is understood,
+either narrow the `podSelector` to the workloads that should never read it and move that
+policy to `mode: enforce`, or leave it observing.
 
 Runnable: [block-known-bad-egress](../../examples/egress/block-known-bad-egress/),
 [deny-sensitive-file-access](../../examples/files-and-processes/deny-sensitive-file-access/).

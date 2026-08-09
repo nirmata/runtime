@@ -78,8 +78,12 @@ denied* for a workload that was never declared and never cooperated. What was sa
 connection is not knowable, and this documentation should not imply otherwise.
 
 The enforcement itself is coarse in specific, stateable ways — an `exec` value selects a
-binary and never a command, paths are absolute and exact, and a denied flow has already
-completed its handshake. Those are listed in
+binary and never a command, paths are absolute and exact, and a `protocol` denial lands
+mid-connection, because a flow cannot be classified until its first data segment exists. A
+`network` denial is decided on the destination address alone, so it drops the first packet
+and the connection never establishes; either way the client sees a stall and a timeout
+rather than a refusal, since a `cgroup_skb` program drops packets and cannot send a reset.
+Those limits are listed in
 [limits of monitor mode](reference/runtimepolicy.md#limits-of-monitor-mode) and
 [limits of protocol classification](reference/runtimepolicy.md#limits-of-protocol-classification);
 read them before writing a policy that an operator will rely on.
