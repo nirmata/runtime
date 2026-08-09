@@ -136,23 +136,25 @@ test-chainsaw:
 
 CRDS := runtimepolicies.runtime.nirmata.io reports.openreports.io clusterreports.openreports.io
 
-# `kubectl wait --for=condition=X` errors instead of retrying when .status.conditions
-# does not exist yet, which the CRD applied last reliably hits: "accessor error: <nil>
-# is of the type <nil>, expected []interface{}". Poll for the field first, then wait on
-# the condition so a CRD that never establishes still fails the target.
+# Polled rather than waited on: `kubectl wait --for=condition=Established` evaluates
+# every version its watch observes, so a revision published before the status
+# subresource is populated aborts the whole command with "accessor error: <nil> is of
+# the type <nil>, expected []interface{}" instead of waiting for the next one. Reading
+# the condition directly cannot observe that state, because a missing field and a
+# missing condition are the same empty string here.
 wait-crds:
 	@for crd in $(CRDS); do \
 		i=0; \
-		while [ "$$i" -lt 60 ]; do \
-			[ -n "$$(kubectl get crd $$crd -o jsonpath='{.status.conditions}' 2>/dev/null)" ] && break; \
+		while [ "$$i" -lt 90 ]; do \
+			[ "$$(kubectl get crd $$crd -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null)" = "True" ] && break; \
 			i=$$((i + 1)); \
 			sleep 1; \
 		done; \
-		if [ "$$i" -ge 60 ]; then \
-			echo "ERROR: crd/$$crd published no .status.conditions within 60s; it may not exist."; \
+		if [ "$$i" -ge 90 ]; then \
+			echo "ERROR: crd/$$crd did not reach Established within 90s."; \
+			kubectl get crd $$crd -o jsonpath='{.status.conditions}' 2>&1 || true; \
 			exit 1; \
 		fi; \
-		kubectl wait --for=condition=Established --timeout=60s crd/$$crd || exit 1; \
 	done
 
 fmt:
