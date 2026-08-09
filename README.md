@@ -47,7 +47,7 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
 - Egress is keyed on IPv4 destination addresses. A domain name or cluster Service name is accepted as a value and resolved to addresses; an IPv6 literal is not.
 - File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are
 typically not booted with it.
-- `network`, `open`, and `exec` observation drains eBPF counters on a poll interval rather than streaming events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
+- `network`, `open`, and `exec` observations come from eBPF counters that the daemon drains on a poll interval rather than from a stream of events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
 - Nothing reads inside TLS. A destination is named by domain only when the pod's own DNS answer was observed, and no policy value has a port.
 - Exceptions are not yet supported.
 
