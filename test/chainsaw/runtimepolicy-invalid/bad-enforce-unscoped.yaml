@@ -1,0 +1,14 @@
+# Invalid: an enforce-mode policy that names neither selector. Both selectors
+# default to everything, so this would enforce on every pod on every node the
+# agent runs on without saying so.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-invalid-enforce-unscoped
+spec:
+  mode: enforce
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /etc/shadow

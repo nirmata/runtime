@@ -21,8 +21,8 @@ kubectl get rpol <name> -o yaml
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `spec.podSelector` | `LabelSelector` | Pods this policy applies to. `{}` selects every pod on the node; **absent selects none**, and the policy enforces nothing. Relabeling a pod re-evaluates the match. |
-| `spec.namespaceSelector` | `LabelSelector` | Narrows `podSelector` to pods whose **namespace** carries these labels. `{}` and **absent both select every namespace**. ANDed with `podSelector`. Relabeling a namespace re-evaluates the pods in it. See [Targeting namespaces](#targeting-namespaces). |
+| `spec.podSelector` | `LabelSelector` | Pods this policy applies to. `{}` and absent both select every pod on the node. Relabeling a pod re-evaluates the match. An `enforce`-mode policy must set this or `namespaceSelector`. |
+| `spec.namespaceSelector` | `LabelSelector` | Narrows `podSelector` to pods whose **namespace** carries these labels. `{}` and absent both select every namespace. ANDed with `podSelector`. Relabeling a namespace re-evaluates the pods in it. See [Targeting namespaces](#targeting-namespaces). |
 | `spec.mode` | `monitor` \| `enforce` | What the daemon does with a matched pod. Optional, with no default. |
 | `spec.evaluationInterval` | duration | How often matched pods are re-evaluated. Required to pick up changes behind a `resource` or `http` expression. |
 | `spec.variables` | list of `name` + `expression` | Named CEL expressions, referenced as `variables.<name>` from any other expression. |
@@ -119,18 +119,21 @@ spec:
 That policy selects `app=agent` pods, but only those running in a namespace labelled
 `tier=prod`.
 
-### Absent means every namespace
-
-This is the opposite of `podSelector`, and the asymmetry is deliberate:
+### Absent means everything, on both halves
 
 | | absent | `{}` | set |
 | --- | --- | --- | --- |
-| `podSelector` | **no pods** | every pod | matching pods |
-| `namespaceSelector` | **every namespace** | every namespace | matching namespaces |
+| `podSelector` | every pod | every pod | matching pods |
+| `namespaceSelector` | every namespace | every namespace | matching namespaces |
 
-An omitted `podSelector` selects nothing, so a policy that forgets it enforces nothing
-rather than everything. An omitted `namespaceSelector` selects every namespace, so a policy
-written before the field existed keeps applying exactly as it did.
+A policy that names one half is scoped by that half alone, so `namespaceSelector` on its
+own reaches every pod in the namespaces it matches. A policy that names neither reaches
+every pod on every node the agent runs on.
+
+An `enforce`-mode policy is required to say which of those it means: the API server
+rejects it unless it sets `podSelector` or `namespaceSelector`, and `podSelector: {}` is
+how you ask for every pod on the node in as many words. A `monitor`-mode policy has no
+such requirement — omitting both is the ordinary way to learn what a cluster does.
 
 ### Targeting namespaces by name
 

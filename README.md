@@ -39,8 +39,8 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
   libraries.
 - **Kubernetes-native output**: OpenReports `Report` objects, per-node `status.nodes`
   shards with `Applied` and `TargetsValid` conditions, and Prometheus counters.
-- **Selector scoping**: a `podSelector` label selector, cluster-wide; omitting it selects
-  every pod.
+- **Selector scoping**: `podSelector` and `namespaceSelector` label selectors, cluster-wide;
+  omitting either selects everything, and an `enforce`-mode policy must set one of them.
 - **Periodic re-evaluation**: `evaluationInterval` re-runs the policy's expressions, so
   an externally sourced deny list stays current without editing the policy.
 

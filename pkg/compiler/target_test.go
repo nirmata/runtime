@@ -6,7 +6,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestCompileTarget_AbsentSelectorsDifferByHalf(t *testing.T) {
+func TestCompileTarget_AbsentSelectorMatchesEverything(t *testing.T) {
 	matchProd := &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}}
 	matchApp := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "agent"}}
 
@@ -23,19 +23,20 @@ func TestCompileTarget_AbsentSelectorsDifferByHalf(t *testing.T) {
 		podLabel map[string]string
 		want     bool
 	}{
-		// An omitted podSelector selects no pods, so nothing else can rescue it.
-		{"no pod selector, no namespace selector", nil, nil, prodNs, agentPod, false},
-		{"no pod selector, matching namespace selector", nil, matchProd, prodNs, agentPod, false},
+		// An omitted selector matches everything on either half, so a policy
+		// that names one half is scoped by that half alone.
+		{"no pod selector, no namespace selector", nil, nil, prodNs, agentPod, true},
+		{"no pod selector, matching namespace selector", nil, matchProd, prodNs, agentPod, true},
+		{"no pod selector, non-matching namespace selector", nil, matchProd, devNs, agentPod, false},
 
-		// An omitted namespaceSelector selects every namespace, which is what
-		// keeps a policy written before the field existed working unchanged.
 		{"pod selector only, matching pod", matchApp, nil, devNs, agentPod, true},
 		{"pod selector only, non-matching pod", matchApp, nil, devNs, otherPod, false},
 		{"pod selector only, no namespace labels at all", matchApp, nil, nil, agentPod, true},
 
-		// An empty namespaceSelector is the same "every namespace" as an
-		// omitted one, following LabelSelectorAsSelector.
+		// An empty selector is the same "everything" as an omitted one on both
+		// halves, following LabelSelectorAsSelector.
 		{"empty namespace selector", matchApp, &metav1.LabelSelector{}, devNs, agentPod, true},
+		{"empty pod selector", &metav1.LabelSelector{}, matchProd, prodNs, otherPod, true},
 
 		// Both halves are ANDed, and each half reads its own label set: a swap
 		// of the two arguments flips one of these two rows.
@@ -60,7 +61,7 @@ func TestCompileTarget_AbsentSelectorsDifferByHalf(t *testing.T) {
 
 // The zero value reaches a match loop when a delete event carries only a uid,
 // and it must not be read as the "unset, so everything" that an absent
-// namespaceSelector means.
+// selector means.
 func TestPodTarget_ZeroValueMatchesNothing(t *testing.T) {
 	var zero PodTarget
 	if zero.Matches(map[string]string{"tier": "prod"}, map[string]string{"app": "agent"}) {

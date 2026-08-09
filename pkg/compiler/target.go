@@ -25,22 +25,25 @@ func (t PodTarget) Matches(nsLabels, podLabels map[string]string) bool {
 }
 
 // compileTarget builds the target from the two spec selectors. An absent
-// podSelector selects no pods, while an absent namespaceSelector selects every
-// namespace, so only the pod half goes through LabelSelectorAsSelector's
-// nil-means-nothing conversion.
+// selector matches everything on either half, so neither goes through
+// LabelSelectorAsSelector's nil-means-nothing conversion.
 func compileTarget(podSel, nsSel *metav1.LabelSelector) (PodTarget, error) {
 	path := field.NewPath("spec")
 
-	pod, err := metav1.LabelSelectorAsSelector(podSel)
+	pod, err := selectorOrEverything(podSel)
 	if err != nil {
 		return PodTarget{}, field.Invalid(path.Child("podSelector"), podSel, err.Error())
 	}
-	ns := labels.Everything()
-	if nsSel != nil {
-		ns, err = metav1.LabelSelectorAsSelector(nsSel)
-		if err != nil {
-			return PodTarget{}, field.Invalid(path.Child("namespaceSelector"), nsSel, err.Error())
-		}
+	ns, err := selectorOrEverything(nsSel)
+	if err != nil {
+		return PodTarget{}, field.Invalid(path.Child("namespaceSelector"), nsSel, err.Error())
 	}
 	return PodTarget{Pod: pod, Namespace: ns}, nil
+}
+
+func selectorOrEverything(sel *metav1.LabelSelector) (labels.Selector, error) {
+	if sel == nil {
+		return labels.Everything(), nil
+	}
+	return metav1.LabelSelectorAsSelector(sel)
 }

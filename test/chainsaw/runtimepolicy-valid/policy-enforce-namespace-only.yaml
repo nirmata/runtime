@@ -1,0 +1,17 @@
+# Enforce mode scoped by namespaceSelector alone: the pods are every pod in the
+# matching namespaces, and the spec rule requiring enforce policies to state
+# their scope is satisfied without a podSelector.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: chainsaw-valid-enforce-namespace-only
+spec:
+  mode: enforce
+  namespaceSelector:
+    matchLabels:
+      tier: prod
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /etc/shadow
