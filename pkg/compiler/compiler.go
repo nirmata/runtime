@@ -169,7 +169,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	// building the target here rather than per evaluation is what turns a
 	// malformed selector into a CompileFailed condition instead of an error the
 	// re-evaluation loop retries forever
-	appliesTo, err := compileTarget(rp.Spec.PodSelector, rp.Spec.NamespaceSelector)
+	appliesTo, err := compileTarget(rp.Spec.PodSelector, rp.Spec.NamespaceSelector, mode)
 	if err != nil {
 		return nil, err
 	}

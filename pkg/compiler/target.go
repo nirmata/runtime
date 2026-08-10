@@ -27,8 +27,18 @@ func (t PodTarget) Matches(nsLabels, podLabels map[string]string) bool {
 // compileTarget builds the target from the two spec selectors. An absent
 // selector matches everything on either half, so neither goes through
 // LabelSelectorAsSelector's nil-means-nothing conversion.
-func compileTarget(podSel, nsSel *metav1.LabelSelector) (PodTarget, error) {
+//
+// Because absent is now the widest target rather than the narrowest, enforce
+// mode requires one of the two to be named. RuntimePolicySpec carries the same
+// rule so the API server refuses the object outright; this is the backstop for
+// an object already stored when the CRD gained it, which no admission rule
+// re-examines, and the two messages are meant to read identically.
+func compileTarget(podSel, nsSel *metav1.LabelSelector, mode string) (PodTarget, error) {
 	path := field.NewPath("spec")
+
+	if mode == ModeEnforce && podSel == nil && nsSel == nil {
+		return PodTarget{}, field.Required(path.Child("podSelector"), "an enforce-mode policy must state the pods it applies to: set spec.podSelector or spec.namespaceSelector, or set spec.podSelector to {} to enforce on every pod on the node")
+	}
 
 	pod, err := selectorOrEverything(podSel)
 	if err != nil {

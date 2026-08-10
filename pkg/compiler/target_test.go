@@ -48,7 +48,7 @@ func TestCompileTarget_AbsentSelectorMatchesEverything(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			target, err := compileTarget(tt.podSel, tt.nsSel)
+			target, err := compileTarget(tt.podSel, tt.nsSel, ModeMonitor)
 			if err != nil {
 				t.Fatalf("compileTarget() unexpected error = %v", err)
 			}
@@ -56,6 +56,34 @@ func TestCompileTarget_AbsentSelectorMatchesEverything(t *testing.T) {
 				t.Errorf("Matches(%v, %v) = %v, want %v", tt.nsLabels, tt.podLabel, got, tt.want)
 			}
 		})
+	}
+}
+
+// An object stored before the CRD carried the scope rule is never re-admitted,
+// so the compiler is the only thing standing between it and cluster-wide
+// enforcement it never asked for.
+func TestCompileTarget_UnscopedEnforceIsRefused(t *testing.T) {
+	if _, err := compileTarget(nil, nil, ModeEnforce); err == nil {
+		t.Fatal("an enforce-mode policy naming neither selector must be refused")
+	}
+
+	for _, tt := range []struct {
+		name   string
+		podSel *metav1.LabelSelector
+		nsSel  *metav1.LabelSelector
+	}{
+		{"empty pod selector is an explicit whole-node scope", &metav1.LabelSelector{}, nil},
+		{"namespace selector alone is scope enough", nil, &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := compileTarget(tt.podSel, tt.nsSel, ModeEnforce); err != nil {
+				t.Errorf("compileTarget() unexpected error = %v", err)
+			}
+		})
+	}
+
+	if _, err := compileTarget(nil, nil, ModeMonitor); err != nil {
+		t.Errorf("monitor mode carries no scope requirement, got error = %v", err)
 	}
 }
 
@@ -84,6 +112,7 @@ func TestCompileTarget_NamespaceByWellKnownNameLabel(t *testing.T) {
 				Values:   []string{"payments", "checkout"},
 			}},
 		},
+		ModeEnforce,
 	)
 	if err != nil {
 		t.Fatalf("compileTarget() unexpected error = %v", err)

@@ -135,6 +135,10 @@ rejects it unless it sets `podSelector` or `namespaceSelector`, and `podSelector
 how you ask for every pod on the node in as many words. A `monitor`-mode policy has no
 such requirement — omitting both is the ordinary way to learn what a cluster does.
 
+The daemon refuses to compile an unscoped `enforce` policy as well, so one that was
+already stored when the rule arrived reports the refusal in its status conditions instead
+of widening to the whole cluster on upgrade.
+
 ### Targeting namespaces by name
 
 There is no `namespaces` list. The API server labels every namespace with
