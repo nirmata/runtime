@@ -112,8 +112,8 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 
 | Field | Type | Purpose |
 | --- | --- | --- |
-| `podSelector` | `*metav1.LabelSelector` | Pods this policy applies to. Absent selects no pods. |
-| `namespaceSelector` | `*metav1.LabelSelector` | Narrows `podSelector` to pods in namespaces carrying these labels. Absent and `{}` both select every namespace, so a policy without one is unchanged. ANDed with `podSelector`. |
+| `podSelector` | `*metav1.LabelSelector` | Pods this policy applies to. Absent and `{}` both select every pod. An `enforce`-mode policy must set this or `namespaceSelector`, enforced by an `XValidation` rule on the spec. |
+| `namespaceSelector` | `*metav1.LabelSelector` | Narrows `podSelector` to pods in namespaces carrying these labels. Absent and `{}` both select every namespace. ANDed with `podSelector`. |
 | `evaluationInterval` | `*metav1.Duration` | If set, the policy is periodically re-evaluated (`controller.evaluateForInterval`) instead of only on create/update. |
 | `variables` | `[]admissionregistrationv1.Variable` | Named CEL expressions reusable across behaviors via `variables.<name>`. |
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |

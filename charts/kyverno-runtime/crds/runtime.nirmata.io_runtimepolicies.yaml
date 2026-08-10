@@ -298,10 +298,8 @@ spec:
               namespaceSelector:
                 description: |-
                   NamespaceSelector narrows PodSelector to pods whose namespace carries
-                  these labels. Both an empty selector and an omitted field match every
-                  namespace, so a policy that sets only PodSelector keeps applying
-                  cluster-wide. This is the opposite of PodSelector's omitted case, which
-                  matches no pods.
+                  these labels. An empty selector and an omitted field both match every
+                  namespace.
 
                   Target namespaces by name through kubernetes.io/metadata.name, which the
                   API server sets on every namespace.
@@ -352,8 +350,7 @@ spec:
               podSelector:
                 description: |-
                   PodSelector identifies the pods this policy applies to. An empty selector
-                  matches every pod on the node; omitting the field matches none, following
-                  metav1.LabelSelectorAsSelector.
+                  and an omitted field both match every pod on the node.
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -433,6 +430,11 @@ spec:
                 an enforce-mode policy reports only operations the kernel actually
                 denied, and those are never suppressed
               rule: '!(has(self.mode) && self.mode == ''enforce'' && has(self.monitorFilter))'
+            - message: 'an enforce-mode policy must state the pods it applies to:
+                set spec.podSelector or spec.namespaceSelector, or set spec.podSelector
+                to {} to enforce on every pod on the node'
+              rule: '!(has(self.mode) && self.mode == ''enforce'') || has(self.podSelector)
+                || has(self.namespaceSelector)'
           status:
             description: RuntimePolicyStatus reflects the observed state of the policy.
             properties:

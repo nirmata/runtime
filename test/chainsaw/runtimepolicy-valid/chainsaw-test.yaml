@@ -78,6 +78,26 @@ spec:
           kind: RuntimePolicy
           name: chainsaw-valid-namespace-selector
 
+  - name: enforce-scoped-by-namespace-selector-alone
+    try:
+    - apply:
+        file: policy-enforce-namespace-only.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: chainsaw-valid-enforce-namespace-only
+          spec:
+            mode: enforce
+            (namespaceSelector.matchLabels.tier): prod
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: chainsaw-valid-enforce-namespace-only
+
   - name: enforce-mode-protocol
     try:
     - apply:

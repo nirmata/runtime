@@ -96,10 +96,15 @@ to learn which providers and endpoints a workload reaches for, and a `network` b
 
 ## Scoping with podSelector
 
-`spec.podSelector` is an optional label selector, and the two ways of writing "no labels"
-mean opposite things. `podSelector: {}` matches every pod on the node. Omitting the field
-matches **none**, so the policy compiles, is tracked, and enforces nothing — write the
-empty selector when you mean the whole node.
+`spec.podSelector` is an optional label selector over pod labels, and `spec.namespaceSelector`
+is one over namespace labels. They are ANDed, and on both an empty selector and an omitted
+field mean every pod and every namespace — so a policy that sets neither applies everywhere
+the agent runs.
+
+That is the right default for `monitor` mode, where the point is to learn what a cluster
+does. For `enforce` mode the API server refuses a policy that sets neither: write
+`podSelector: {}` to enforce on every pod on the node, so the blast radius is visible in the
+policy rather than inferred from a field that isn't there.
 
 Relabeling a running pod re-evaluates which policies match it: the daemon's pod
 watcher fires on pod updates too, so a label change on a live pod picks up or drops

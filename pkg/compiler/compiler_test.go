@@ -418,9 +418,8 @@ func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
 		if res.Mode != "" {
 			t.Errorf("Mode = %q, want empty string", res.Mode)
 		}
-		// nil PodSelector maps to labels.Nothing(), which must not match any pod.
-		if res.AppliesTo.Matches(nil, map[string]string{"app": "nginx"}) {
-			t.Error("nil selector should match nothing")
+		if !res.AppliesTo.Matches(nil, map[string]string{"app": "nginx"}) {
+			t.Error("an absent selector should match every pod")
 		}
 	})
 

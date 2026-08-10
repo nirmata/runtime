@@ -2,17 +2,15 @@
 # XValidation rule refuses it: destinations are enforced by a network behavior's
 # domain values, so accepting this would give an author two spellings of one
 # thing with only one of them working.
-# Accepted at admission, refused by the daemon's compiler. Every document here is
-# a shape the CRD schema has no rule for: `mode` is a valid enum value, each item
-# declares exactly one behavior kind, and `values` is a list of strings.
 #
-# See the chainsaw-test.yaml comment for why these are positive applies.
+# podSelector is set so the dns rule is the only rule this document violates.
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
   name: chainsaw-dns-enforce-mode
 spec:
   mode: enforce
+  podSelector: {}
   behaviors:
   - dns:
       allow:

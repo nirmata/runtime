@@ -5,6 +5,7 @@ metadata:
   name: chainsaw-invalid-two-kinds
 spec:
   mode: enforce
+  podSelector: {}
   behaviors:
   - network:
       deny:

@@ -5,6 +5,7 @@ metadata:
   name: chainsaw-invalid-protocol-and-network
 spec:
   mode: enforce
+  podSelector: {}
   behaviors:
   - protocol:
       deny:

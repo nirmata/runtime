@@ -478,8 +478,8 @@ spec:
 
 `quic` carries HTTP/3, which no provider SDK needs and no TLS-terminating proxy can read.
 The instance metadata address is the classic credential-theft destination and has no
-legitimate caller in most workloads. `podSelector: {}` selects every pod on the node —
-omitting the field selects none.
+legitimate caller in most workloads. `podSelector: {}` selects every pod on the node, and an
+`enforce`-mode policy has to say so explicitly.
 
 Reading the pod's own ServiceAccount token is worth knowing about too, but it does not
 belong in that policy. `spec.mode` is per policy, not per behavior, so adding an `open` deny

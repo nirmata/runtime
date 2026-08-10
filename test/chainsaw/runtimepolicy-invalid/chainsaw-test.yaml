@@ -62,6 +62,18 @@ spec:
             "($error != null)": true
             "(contains($error, 'exactly one of network, exec, open, protocol, or dns must be specified'))": true
 
+  - name: unscoped-enforce-policy-is-rejected
+    # An absent selector selects everything on both halves, so enforce mode
+    # requires the author to name one. Monitor mode does not, which the valid
+    # suite covers with an empty spec.
+    try:
+    - apply:
+        file: bad-enforce-unscoped.yaml
+        expect:
+        - check:
+            "($error != null)": true
+            "(contains($error, 'an enforce-mode policy must state the pods it applies to'))": true
+
   - name: unknown-spec-field-is-rejected
     # The CRD is structural with pruning; an unknown field submitted by a client
     # that sends --validate=strict must be rejected rather than dropped. This

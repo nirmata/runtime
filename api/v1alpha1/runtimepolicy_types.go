@@ -16,18 +16,16 @@ import (
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'enforce' && has(self.behaviors) && self.behaviors.exists(b, has(b.dns)))",message="a dns behavior reports the names a workload resolves, it does not block them: set spec.mode to \"monitor\", or express the destinations you want blocked as a network behavior, which enforces domain values"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'enforce' && has(self.monitorFilter))",message="a monitorFilter narrows what a monitor-mode policy reports; an enforce-mode policy reports only operations the kernel actually denied, and those are never suppressed"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'enforce') || has(self.podSelector) || has(self.namespaceSelector)",message="an enforce-mode policy must state the pods it applies to: set spec.podSelector or spec.namespaceSelector, or set spec.podSelector to {} to enforce on every pod on the node"
 type RuntimePolicySpec struct {
 	// PodSelector identifies the pods this policy applies to. An empty selector
-	// matches every pod on the node; omitting the field matches none, following
-	// metav1.LabelSelectorAsSelector.
+	// and an omitted field both match every pod on the node.
 	// +optional
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
 	// NamespaceSelector narrows PodSelector to pods whose namespace carries
-	// these labels. Both an empty selector and an omitted field match every
-	// namespace, so a policy that sets only PodSelector keeps applying
-	// cluster-wide. This is the opposite of PodSelector's omitted case, which
-	// matches no pods.
+	// these labels. An empty selector and an omitted field both match every
+	// namespace.
 	//
 	// Target namespaces by name through kubernetes.io/metadata.name, which the
 	// API server sets on every namespace.
