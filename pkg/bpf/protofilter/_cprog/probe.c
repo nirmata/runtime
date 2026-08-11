@@ -5,6 +5,10 @@
 #include <bpf/bpf_endian.h>
 #include "maps.h"
 
+#ifndef barrier_var
+#define barrier_var(var) asm volatile("" : "+r"(var))
+#endif
+
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
 #define IPPROTO_TCP 6
