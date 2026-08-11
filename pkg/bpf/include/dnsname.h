@@ -15,8 +15,11 @@ struct domain_key {
     __u8 name[MAX_DOMAIN_LEN];
 };
 
-/* Single pass over the wire-format QNAME, copying bytes into key->name (lowercased)
-* up to MAX_DOMAIN_LEN. Compression pointers are not supported and are rejected. */
+/* One flat pass instead of a loop per label: `remaining` counts down the current
+ * label, so a byte read with remaining == 0 is the next length byte, and the
+ * verifier sees a single unrolled loop with constant indices. key must be zeroed
+ * by the caller: the terminating zero byte is the padding, never written, and
+ * qname_len counts it. bpf_skb_load_bytes because an skb may be non-linear. */
 static __always_inline int read_qname(struct __sk_buff *skb, __u32 off,
                                       struct domain_key *key, __u32 *qname_len)
 {
@@ -28,10 +31,6 @@ static __always_inline int read_qname(struct __sk_buff *skb, __u32 off,
         if (bpf_skb_load_bytes(skb, off + i, &b, sizeof(b)) < 0)
             return -1;
 
-        /*
-         * we either must be at the end, or have a compression pointer
-         * that indicates the length. set that to remaining
-         */
         if (remaining == 0) {
             if (b == 0) {
                 *qname_len = i + 1;

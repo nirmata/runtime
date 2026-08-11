@@ -20,7 +20,9 @@ struct iphdr {
     __be32 daddr;
 };
 
-// iphdr needs to be defined first
+// One translation unit, not a second bpf2go object: the snooper writes
+// ip_domain and the egress program below reads it, and two objects would each
+// get their own copy of every map.
 #include "dns.c"
 
 // The counter is __u32: a narrower lookup would only bump its low byte on

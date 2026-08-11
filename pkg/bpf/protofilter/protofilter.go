@@ -17,9 +17,11 @@ import (
 // _cprog/maps.h; the C program tests `*f & (1 << IDX)`.
 const (
 	DEFAULT_DENY = 1
-	OBSERVE      = 2
+	// OBSERVE is LEARNING_MODE in the C.
+	OBSERVE = 2
 
-	maxFlagIdx = 7 // maximum indexable bits in a u8
+	// maxFlagIdx is bounded by the __u8 map value.
+	maxFlagIdx = 7
 )
 
 // ErrNotLoaded is returned by map-touching methods when the BPF objects are not
