@@ -188,7 +188,8 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
         /* ALPN: list length(2), then the first entry: length(1) + bytes */
         if (ext_len < 3 || load_u8(skb, base + off + 2, &b8) < 0)
             return PROTO_UNCLASSIFIED;
-        __u32 alen = b8;
+        __u64 alen = b8;
+        barrier_var(alen);
         if (3 + alen > ext_len)
             return PROTO_UNCLASSIFIED;
         /* checked last: an earlier branch on a register derived from alen syncs
