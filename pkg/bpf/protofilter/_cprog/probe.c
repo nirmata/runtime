@@ -192,12 +192,13 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
         /* ALPN: list length(2), then the first entry: length(1) + bytes */
         if (ext_len < 3 || load_u8(skb, base + off + 2, &b8) < 0)
             return PROTO_UNCLASSIFIED;
-        __u64 alen = b8;
-        barrier_var(alen);
-        if (3 + alen > ext_len)
+        __u32 alen32 = b8;
+        if (3 + alen32 > ext_len)
             return PROTO_UNCLASSIFIED;
-        /* checked last: an earlier branch on a register derived from alen syncs
-         * away the [1,16] range the variable-length load is checked against */
+        /* checked last, right after its own barrier: the ext_len branch above
+         * syncs away any range a barrier placed before it would have held */
+        __u64 alen = alen32;
+        barrier_var(alen);
         if (alen == 0 || alen > ALPN_MAX_LEN)
             return PROTO_TLS; /* an entry no policy value can name: bare tls */
 
