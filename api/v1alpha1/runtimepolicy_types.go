@@ -52,6 +52,7 @@ type RuntimePolicySpec struct {
 
 	// Mode defines the operational mode of the policy.
 	// +optional
+	// +kubebuilder:default=monitor
 	Mode *RuntimePolicyMode `json:"mode,omitempty"`
 
 	// MonitorFilter narrows which findings a monitor-mode policy reports. It

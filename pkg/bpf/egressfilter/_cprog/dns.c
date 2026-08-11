@@ -88,10 +88,13 @@ SEC("cgroup_skb/ingress")
 int cgroup_dns_ingress(struct __sk_buff *skb)
 {
     struct iphdr ip;
+    // we have less than the minimum bytes in the sk_buff 
     if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip)) < 0)
         return 1;
+    // not ipv4, or not a udp packet
     if ((ip.ihl_version >> 4) != 4 || ip.protocol != IPPROTO_UDP)
         return 1;
+    // only process the first fragment of a frame
     if (bpf_ntohs(ip.frag_off) & 0x1fff)
         return 1;
 
@@ -102,6 +105,7 @@ int cgroup_dns_ingress(struct __sk_buff *skb)
     __be16 sport;
     if (bpf_skb_load_bytes(skb, ihl, &sport, sizeof(sport)) < 0)
         return 1;
+    // udp, but not a dns packet
     if (bpf_ntohs(sport) != DNS_PORT)
         return 1;
 
@@ -113,6 +117,8 @@ int cgroup_dns_ingress(struct __sk_buff *skb)
     __u16 flags = bpf_ntohs(dns.flags);
     if (!(flags & DNS_FLAG_RESPONSE) || (flags & DNS_FLAG_RCODE))
         return 1;
+    
+    // the dns packet must atleast contain 1 question (a query)
     if (bpf_ntohs(dns.qdcount) != 1)
         return 1;
 

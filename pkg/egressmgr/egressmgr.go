@@ -134,6 +134,10 @@ func (e *EgressManager) PodDeleted(uid string) error {
 // program cannot return -EPERM for them.
 func (e *EgressManager) attachPolicy(podUid string, pa *podAttachment, rp *compiler.EvaluationResult) {
 	pa.attachedFilters[rp.UID] = rp
+
+	// even though we set those flags for any policy, a pod with no matching policy
+	// will still get a filter created for it. and so we should have something to gate
+	// recording events on actually matching a policy
 	pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
 	pa.protoFilter.SetFlagIdx(protofilter.OBSERVE, true)
 

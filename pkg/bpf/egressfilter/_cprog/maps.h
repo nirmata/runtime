@@ -84,6 +84,7 @@ enum egress_stat {
     EGRESS_STAT_MAX = 1,
 };
 
+/* a single entry map that denotes that the event recording map failed because it's full */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, EGRESS_STAT_MAX);

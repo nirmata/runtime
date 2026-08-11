@@ -5,6 +5,8 @@
 #include <bpf/bpf_endian.h>
 #include "maps.h"
 
+#define ETH_P_IP 0x0800
+
 struct iphdr {
     __u8  ihl_version;
     __u8  tos;
@@ -59,6 +61,10 @@ static __always_inline void record_ip_event(__u32 daddr, __u32 decision, __u32 d
 SEC("cgroup_skb/egress")
 int cgroup_egress(struct __sk_buff *skb)
 {
+    // we currently only support ipv4
+    if (skb->protocol != bpf_htons(ETH_P_IP))
+        return 1;
+
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
@@ -85,14 +91,19 @@ int cgroup_egress(struct __sk_buff *skb)
     }
 
     __u32 decision = DECISION_ALLOW;
+
+    // if there's an explicit deny
+    if (bpf_map_lookup_elem(&banned_ips, &daddr) != NULL || (domain_id && 
+        bpf_map_lookup_elem(&banned_domains, &domain_id))) {
+            decision = DECISION_DENY;
+    }
+
+    // if DEFAULT_DENY, and that IP/domain is not in the allow list
     if (*f & (1 << DEFAULT_DENY)) {
         if (bpf_map_lookup_elem(&allowed_ips, &daddr) == NULL &&
             !(domain_id && bpf_map_lookup_elem(&allowed_domains, &domain_id))) {
             decision = DECISION_DENY;
         }
-    } else if (bpf_map_lookup_elem(&banned_ips, &daddr) != NULL ||
-               (domain_id && bpf_map_lookup_elem(&banned_domains, &domain_id))) {
-        decision = DECISION_DENY;
     }
 
     if (*f & (1 << LEARNING_MODE)) {

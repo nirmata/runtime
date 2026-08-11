@@ -253,6 +253,7 @@ spec:
                   is re-evaluated.
                 type: string
               mode:
+                default: monitor
                 description: Mode defines the operational mode of the policy.
                 enum:
                 - monitor
