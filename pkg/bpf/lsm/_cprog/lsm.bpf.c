@@ -23,16 +23,16 @@ static __always_inline __u32 path_decision(struct path_event_key *key) {
     __u32 dd_key = 0;
     __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
 
+    if (bpf_map_lookup_elem(&banned, key->path) != NULL) {
+        return DECISION_DENY;
+    }
+
     if (dd) {
         if (bpf_map_lookup_elem(&allowed, key->path) == NULL) {
             return DECISION_DENY;
         }
-        return DECISION_ALLOW;
     }
-
-    if (bpf_map_lookup_elem(&banned, key->path) != NULL) {
-        return DECISION_DENY;
-    }
+    
     return DECISION_ALLOW;
 }
 

@@ -12,11 +12,6 @@
  * libbpf patches the real offset from the running kernel's BTF at load time.
  * The compile-time offsets here are placeholders.
  *
- * One header rather than one per package: two copies of a kernel type drift,
- * and a field spelled differently in two of them is a load-time failure in
- * only one program. If a program grows a new kernel-struct access, add just
- * that struct (and the fields on the access path) here, keep
- * preserve_access_index, and run `make generate-bpf`.
  */
 #ifndef __VMLINUX_H__
 #define __VMLINUX_H__

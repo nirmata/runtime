@@ -22,12 +22,12 @@ CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 # Pinned tool versions. controller-gen stamps its own version into the
 # controller-gen.kubebuilder.io/version annotation of every generated CRD, so an
 # unpinned `go run` makes that annotation flap with whatever each developer or
-# runner happens to resolve. Bump this deliberately and regenerate.
-CONTROLLER_GEN_VERSION ?= v0.20.0
+# runner happens to resolve. The code generators resolve to the versions pinned
+# in go.mod via the tool directive: bump them there and regenerate.
 CHAINSAW_VERSION ?= v0.2.15
 
 generate-crds:
-	go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
+	go tool controller-gen crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
 
 # verify-crds fails if the committed CRDs do not match what the pinned
 # controller-gen produces from api/v1alpha1. Run in CI so a types change that
@@ -37,7 +37,7 @@ verify-crds:
 	@git diff --exit-code -- ./charts/kyverno-runtime/crds || { \
 		echo ""; \
 		echo "ERROR: charts/kyverno-runtime/crds is out of date."; \
-		echo "Run 'make generate-crds' (controller-gen $(CONTROLLER_GEN_VERSION)) and commit the result."; \
+		echo "Run 'make generate-crds' (controller-gen pinned in go.mod) and commit the result."; \
 		exit 1; \
 	}
 
@@ -79,7 +79,7 @@ verify-bpf: generate-bpf
 	fi
 
 generate-client:
-	go run k8s.io/code-generator/cmd/client-gen \
+	go tool client-gen \
 		--clientset-name versioned \
 		--input-base "" \
 		--input $(MODULE)/api/v1alpha1 \
@@ -88,14 +88,14 @@ generate-client:
 		--go-header-file hack/boilerplate.go.txt
 
 generate-listers:
-	go run k8s.io/code-generator/cmd/lister-gen \
+	go tool lister-gen \
 		--output-dir ./pkg/client/listers \
 		--output-pkg $(MODULE)/pkg/client/listers \
 		--go-header-file hack/boilerplate.go.txt \
 		$(MODULE)/api/v1alpha1
 
 generate-informers:
-	go run k8s.io/code-generator/cmd/informer-gen \
+	go tool informer-gen \
 		--output-dir ./pkg/client/informers \
 		--output-pkg $(MODULE)/pkg/client/informers \
 		--versioned-clientset-package $(MODULE)/pkg/client/clientset/versioned \

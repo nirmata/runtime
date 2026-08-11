@@ -107,14 +107,16 @@ static __always_inline int settle(struct flow_key *fk, __u32 proto, const char *
     __builtin_memcpy(pk.alpn, alpn, ALPN_MAX_LEN);
 
     __u32 decision = DECISION_ALLOW;
+    if (proto_match(&banned_protos, &pk)) {
+        decision = DECISION_DENY;
+    }
+
     if (*f & (1 << DEFAULT_DENY)) {
         if (!proto_match(&allowed_protos, &pk)) {
             decision = DECISION_DENY;
         }
-    } else if (proto_match(&banned_protos, &pk)) {
-        decision = DECISION_DENY;
     }
-
+    
     if (*f & (1 << LEARNING_MODE)) {
         record_proto_event(&pk, decision);
     }
