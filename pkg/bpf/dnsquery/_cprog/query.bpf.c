@@ -76,10 +76,8 @@ static __always_inline __u32 l4_offset(struct __sk_buff *skb)
 SEC("cgroup_skb/egress")
 int cgroup_dns_egress(struct __sk_buff *skb)
 {
-    // The task cgroup is the fallback for an skb with no socket.
+    // An skb with no socket yields cgid 0, which is never in the map.
     __u64 cgid = bpf_skb_cgroup_id(skb);
-    if (cgid == 0)
-        cgid = bpf_get_current_cgroup_id();
     if (!bpf_map_lookup_elem(&cgids, &cgid))
         return 1;
 
