@@ -176,6 +176,9 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
 
     /* no ALPN extension by the time the loop exits: matches the bare tls token */
     __u32 ret_proto = PROTO_TLS;
+    __u32 alpn_off = 0;
+    __u32 alen32 = 0;
+    int have_alpn = 0;
 
 #pragma unroll
     for (int i = 0; i < 32; i++) {
@@ -203,43 +206,49 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
             break;
         }
 
-        __u32 alen32 = b8;
-        if (3 + alen32 > ext_len) {
+        __u32 a = b8;
+        if (3 + a > ext_len) {
             ret_proto = PROTO_UNCLASSIFIED;
             break;
         }
-        /* checked last, right after its own barrier: the ext_len branch above
-         * syncs away any range a barrier placed before it would have held */
-        __u64 alen = alen32;
-        barrier_var(alen);
-        if (alen == 0 || alen > ALPN_MAX_LEN) {
+        if (a == 0 || a > ALPN_MAX_LEN) {
             ret_proto = PROTO_TLS; /* an entry no policy value can name: bare tls */
             break;
         }
-
-        __u8 tmp[ALPN_MAX_LEN] = {};
-        if (bpf_skb_load_bytes(skb, base + off + 3, tmp, alen) < 0) {
-            ret_proto = PROTO_UNCLASSIFIED;
-            break;
-        }
-
-        int alpn_ok = 1;
-        for (int j = 0; j < ALPN_MAX_LEN; j++) {
-            if (j >= alen)
-                break;
-            /* ensure that the alpn is an actual printable ascii string */
-            if (tmp[j] < 0x21 || tmp[j] > 0x7e) {
-                alpn_ok = 0;
-                break;
-            }
-        }
-        if (alpn_ok)
-            __builtin_memcpy(alpn, tmp, ALPN_MAX_LEN);
-        ret_proto = PROTO_TLS;
+        alpn_off = base + off + 3;
+        alen32 = a;
+        have_alpn = 1;
         break;
     }
 
-    return ret_proto;
+    if (!have_alpn)
+        return ret_proto;
+
+    __u64 alen = alen32;
+    barrier_var(alen);
+    /* this kernel's verifier learns no lower bound from a != 0 branch, so no
+     * check can float alen off zero. the mask round-trip is the identity for
+     * alen in [1,16] and hands the verifier min=1 by construction; barrier_var
+     * keeps clang from folding it away as provable */
+    alen = ((alen - 1) & (ALPN_MAX_LEN - 1)) + 1;
+
+    __u8 tmp[ALPN_MAX_LEN] = {};
+    if (bpf_skb_load_bytes(skb, alpn_off, tmp, alen) < 0)
+        return PROTO_UNCLASSIFIED;
+
+    int alpn_ok = 1;
+    for (int j = 0; j < ALPN_MAX_LEN; j++) {
+        if (j >= alen)
+            break;
+        /* ensure that the alpn is an actual printable ascii string */
+        if (tmp[j] < 0x21 || tmp[j] > 0x7e) {
+            alpn_ok = 0;
+            break;
+        }
+    }
+    if (alpn_ok)
+        __builtin_memcpy(alpn, tmp, ALPN_MAX_LEN);
+    return PROTO_TLS;
 }
 
 static __always_inline int method_eq(const __u8 *buf, __u32 n, const char *m, __u32 len)
