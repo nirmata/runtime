@@ -265,16 +265,20 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
                                           __u32 payload_len, char *alpn)
 {
     __u8 buf[24] = {};
-    /* payload_len's range does not survive the skb->len subtraction, so it is
-     * re-bounded here: barrier_var stops clang deleting the check as provable,
-     * and __u64 keeps the compares and the helper argument on one register --
-     * a range folded onto a 32-bit copy leaves the passed register unbounded */
+    /* __u64 keeps the clamps and the helper argument on one register -- a
+     * range folded onto a 32-bit copy leaves the passed register unbounded */
     __u64 n = payload_len;
     if (n > sizeof(buf))
         n = sizeof(buf);
-
-    if (n < 1)
-        n = 1;
+    barrier_var(n);
+    /* the verifier learns no lower bound from an n == 0 branch, and clang
+     * deletes an n < 1 check as provable from the caller's guard anyway, so
+     * the floor is arithmetic: the round-trip is the identity for n in
+     * [1,32] and pins min=1; the re-clamp pulls the max the mask widened
+     * to 32 back inside buf */
+    n = ((n - 1) & 31) + 1;
+    if (n > sizeof(buf))
+        n = sizeof(buf);
 
     if (bpf_skb_load_bytes(skb, payload_off, buf, n) < 0)
         return PROTO_UNCLASSIFIED;
