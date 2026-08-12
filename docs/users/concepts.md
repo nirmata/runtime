@@ -141,3 +141,8 @@ for the authoritative list.
   [reference/runtimepolicy.md#status](reference/runtimepolicy.md#status).
 - **Metrics** — Prometheus counters on `--metrics-addr`. See
   [reference/metrics.md](reference/metrics.md).
+
+## Known gaps
+
+- For open and exec, having a policy with deny `"*"` cannot be overriden with an allow list from another policy.
+

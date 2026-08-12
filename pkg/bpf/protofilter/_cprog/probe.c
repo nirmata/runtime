@@ -5,6 +5,10 @@
 #include <bpf/bpf_endian.h>
 #include "maps.h"
 
+#ifndef barrier_var
+#define barrier_var(var) asm volatile("" : "+r"(var))
+#endif
+
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
 #define IPPROTO_TCP 6
@@ -170,46 +174,81 @@ static __always_inline __u32 parse_client_hello(struct __sk_buff *skb, __u32 bas
     if (ext_end > record_end)
         return PROTO_UNCLASSIFIED;
 
+    /* no ALPN extension by the time the loop exits: matches the bare tls token */
+    __u32 ret_proto = PROTO_TLS;
+    __u32 alpn_off = 0;
+    __u32 alen32 = 0;
+    int have_alpn = 0;
+
+#pragma unroll
     for (int i = 0; i < 32; i++) {
         if (off + 4 > ext_end)
             break;
         __u16 ext_type, ext_len;
         if (load_u16be(skb, base + off, &ext_type) < 0 ||
-            load_u16be(skb, base + off + 2, &ext_len) < 0)
-            return PROTO_UNCLASSIFIED;
+            load_u16be(skb, base + off + 2, &ext_len) < 0) {
+            ret_proto = PROTO_UNCLASSIFIED;
+            break;
+        }
         off += 4;
-        if (off + ext_len > ext_end)
-            return PROTO_UNCLASSIFIED;
+        if (off + ext_len > ext_end) {
+            ret_proto = PROTO_UNCLASSIFIED;
+            break;
+        }
         if (ext_type != 16) {
             off += ext_len;
             continue;
         }
 
         /* ALPN: list length(2), then the first entry: length(1) + bytes */
-        if (ext_len < 3 || load_u8(skb, base + off + 2, &b8) < 0)
-            return PROTO_UNCLASSIFIED;
-        __u32 alen = b8;
-        if (3 + alen > ext_len)
-            return PROTO_UNCLASSIFIED;
-        /* checked last: an earlier branch on a register derived from alen syncs
-         * away the [1,16] range the variable-length load is checked against */
-        if (alen == 0 || alen > ALPN_MAX_LEN)
-            return PROTO_TLS; /* an entry no policy value can name: bare tls */
-
-        __u8 tmp[ALPN_MAX_LEN] = {};
-        if (bpf_skb_load_bytes(skb, base + off + 3, tmp, alen) < 0)
-            return PROTO_UNCLASSIFIED;
-        for (int j = 0; j < ALPN_MAX_LEN; j++) {
-            if (j >= alen)
-                break;
-            if (tmp[j] < 0x21 || tmp[j] > 0x7e)
-                return PROTO_TLS;
+        if (ext_len < 3 || load_u8(skb, base + off + 2, &b8) < 0) {
+            ret_proto = PROTO_UNCLASSIFIED;
+            break;
         }
-        __builtin_memcpy(alpn, tmp, ALPN_MAX_LEN);
-        return PROTO_TLS;
+
+        __u32 a = b8;
+        if (3 + a > ext_len) {
+            ret_proto = PROTO_UNCLASSIFIED;
+            break;
+        }
+        if (a == 0 || a > ALPN_MAX_LEN) {
+            ret_proto = PROTO_TLS; /* an entry no policy value can name: bare tls */
+            break;
+        }
+        alpn_off = base + off + 3;
+        alen32 = a;
+        have_alpn = 1;
+        break;
     }
 
-    return PROTO_TLS; /* no ALPN extension: matches the bare tls token */
+    if (!have_alpn)
+        return ret_proto;
+
+    __u64 alen = alen32;
+    barrier_var(alen);
+    /* this kernel's verifier learns no lower bound from a != 0 branch, so no
+     * check can float alen off zero. the mask round-trip is the identity for
+     * alen in [1,16] and hands the verifier min=1 by construction; barrier_var
+     * keeps clang from folding it away as provable */
+    alen = ((alen - 1) & (ALPN_MAX_LEN - 1)) + 1;
+
+    __u8 tmp[ALPN_MAX_LEN] = {};
+    if (bpf_skb_load_bytes(skb, alpn_off, tmp, alen) < 0)
+        return PROTO_UNCLASSIFIED;
+
+    int alpn_ok = 1;
+    for (int j = 0; j < ALPN_MAX_LEN; j++) {
+        if (j >= alen)
+            break;
+        /* ensure that the alpn is an actual printable ascii string */
+        if (tmp[j] < 0x21 || tmp[j] > 0x7e) {
+            alpn_ok = 0;
+            break;
+        }
+    }
+    if (alpn_ok)
+        __builtin_memcpy(alpn, tmp, ALPN_MAX_LEN);
+    return PROTO_TLS;
 }
 
 static __always_inline int method_eq(const __u8 *buf, __u32 n, const char *m, __u32 len)
@@ -231,11 +270,13 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
      * and __u64 keeps the compares and the helper argument on one register --
      * a range folded onto a 32-bit copy leaves the passed register unbounded */
     __u64 n = payload_len;
-    barrier_var(n);
-    if (n == 0)
-        return PROTO_UNCLASSIFIED;
     if (n > sizeof(buf))
         n = sizeof(buf);
+    /* branchless floor: handle_tcp only calls in once payload_off < skb_len,
+     * so n is never actually 0 -- this keeps the call's length register
+     * provably nonzero without a branch the verifier could sync away */
+    n = n < 1 ? 1 : n;
+    barrier_var(n);
     if (bpf_skb_load_bytes(skb, payload_off, buf, n) < 0)
         return PROTO_UNCLASSIFIED;
 
@@ -253,6 +294,8 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
             return PROTO_HTTP2;
     }
 
+    /* detection of plain text HTTP2 or SSH didn't yield anything, maybe the connection
+       is using TLS ? */
     if (n >= 5 && buf[0] == 0x16 && buf[1] == 0x03 && buf[2] >= 0x01 && buf[2] <= 0x04) {
         __u32 record_len = ((__u32)buf[3] << 8) | buf[4];
         /* a ClientHello split across segments is unclassified, never tls: no
