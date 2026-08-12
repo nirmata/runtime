@@ -272,11 +272,10 @@ static __always_inline __u32 classify_tcp(struct __sk_buff *skb, __u32 payload_o
     __u64 n = payload_len;
     if (n > sizeof(buf))
         n = sizeof(buf);
-    /* branchless floor: handle_tcp only calls in once payload_off < skb_len,
-     * so n is never actually 0 -- this keeps the call's length register
-     * provably nonzero without a branch the verifier could sync away */
-    n = n < 1 ? 1 : n;
-    barrier_var(n);
+
+    if (n < 1)
+        n = 1;
+
     if (bpf_skb_load_bytes(skb, payload_off, buf, n) < 0)
         return PROTO_UNCLASSIFIED;
 
