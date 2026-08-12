@@ -145,4 +145,3 @@ for the authoritative list.
 ## Known gaps
 
 - For open and exec, having a policy with deny `"*"` cannot be overriden with an allow list from another policy.
-
