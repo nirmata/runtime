@@ -26,6 +26,7 @@ func (l *LsmManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgIn
 			}
 
 			attach(rpUid, la, string(pod.UID), pr)
+			l.recordPodsMatchedCondition(rpUid, len(la.attachedPods))
 		}
 	}
 	l.pods[string(pod.UID)] = pr
@@ -79,6 +80,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgIn
 		l.logger.V(2).Info("pod or namespace labels changed, re-evaluating policy targets", "podUid", pod.UID)
 		for rpUid, la := range l.lsmAttachments {
 			l.syncPodAttachment(rpUid, la)
+			l.recordPodsMatchedCondition(rpUid, len(la.attachedPods))
 		}
 	}
 	return nil
@@ -96,5 +98,6 @@ func (l *LsmManager) podDeleted(podUid string) {
 			l.removePodCgids(rpUid, progType, prog, podAttachment.cgids)
 		}
 		delete(la.attachedPods, podUid)
+		l.recordPodsMatchedCondition(rpUid, len(la.attachedPods))
 	}
 }

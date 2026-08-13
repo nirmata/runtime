@@ -319,10 +319,10 @@ func TestStatusWriterAppliedDerivedFromAttachmentOutcome(t *testing.T) {
 	}
 }
 
-// TestStatusWriterAppliedGatedByPodsMatched pins the remaining gap left open
-// by #96: a policy whose podSelector/namespaceSelector matches zero pods on
-// this node must not read the same as one that is enforcing/observing
-// something, even though its attachment itself succeeded.
+// TestStatusWriterAppliedGatedByPodsMatched: a policy whose
+// podSelector/namespaceSelector matches zero pods on this node must not read
+// the same as one that is enforcing/observing something, even though its
+// attachment itself succeeded.
 func TestStatusWriterAppliedGatedByPodsMatched(t *testing.T) {
 	tests := []struct {
 		mode string
