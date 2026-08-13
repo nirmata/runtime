@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -115,7 +116,6 @@ func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventT
 		st.name = res.Name
 	}
 	st.mode = res.Mode
-	st.conditions[v1alpha1.ConditionApplied] = s.appliedCondition(res.Mode)
 	st.touch()
 	return nil
 }
@@ -148,7 +148,9 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 	st.touch()
 }
 
-func (s *StatusWriter) appliedCondition(mode string) metav1.Condition {
+// baseAppliedCondition reports what spec.mode alone promises: nothing has yet
+// asked whether that promise was kept on this node.
+func (s *StatusWriter) baseAppliedCondition(mode string) metav1.Condition {
 	status := metav1.ConditionTrue
 	reason := v1alpha1.ReasonEnforcing
 	message := "the policy is being enforced on this node"
@@ -168,6 +170,34 @@ func (s *StatusWriter) appliedCondition(mode string) metav1.Condition {
 		Message:            message,
 		LastTransitionTime: metav1.NewTime(s.clock()),
 	}
+}
+
+// appliedCondition derives Applied from the mode plus whatever the owning
+// manager (lsmmgr for open/exec, egressmgr for network/protocol) has recorded
+// about whether attachment for that mode actually succeeded on this node. A
+// mode that promises enforcement or observation but whose attachment failed
+// must not read the same as one that is working.
+func (s *StatusWriter) appliedCondition(mode string, conditions map[string]metav1.Condition) metav1.Condition {
+	cond := s.baseAppliedCondition(mode)
+
+	var gateType string
+	switch mode {
+	case compiler.ModeEnforce:
+		gateType = v1alpha1.ConditionEnforcementAvailable
+	case compiler.ModeMonitor:
+		gateType = v1alpha1.ConditionObservationAvailable
+	default:
+		return cond
+	}
+
+	gate, ok := conditions[gateType]
+	if !ok || gate.Status != metav1.ConditionFalse {
+		return cond
+	}
+	cond.Status = metav1.ConditionFalse
+	cond.Reason = gate.Reason
+	cond.Message = gate.Message
+	return cond
 }
 
 // Run flushes dirty policy statuses every interval, and once more when ctx is
@@ -233,10 +263,23 @@ func (s *StatusWriter) snapshot() []flushItem {
 			s.log.V(2).Info("policy status pending: no name known yet", "policyUid", uid)
 			continue
 		}
-		conds := make([]metav1.Condition, 0, len(st.conditions))
+		conds := make([]metav1.Condition, 0, len(st.conditions)+1)
+		// reportCompileFailure records Applied directly — nothing compiled, so
+		// nothing else about the policy is relevant to whether it applied — and
+		// that verdict must not be duplicated alongside the derived one below for
+		// the same slot.
+		if explicit, ok := st.conditions[v1alpha1.ConditionApplied]; ok {
+			conds = append(conds, explicit)
+		} else {
+			conds = append(conds, s.appliedCondition(st.mode, st.conditions))
+		}
 		for _, c := range st.conditions {
+			if c.Type == v1alpha1.ConditionApplied {
+				continue
+			}
 			conds = append(conds, c)
 		}
+		sort.Slice(conds, func(i, j int) bool { return conds[i].Type < conds[j].Type })
 		items = append(items, flushItem{
 			uid:        uid,
 			name:       st.name,
