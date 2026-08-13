@@ -13,6 +13,7 @@ import (
 	"github.com/nirmata/runtime/pkg/containers"
 	"github.com/nirmata/runtime/pkg/events"
 	"github.com/nirmata/runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -252,6 +253,55 @@ func (l *LsmManager) enforcementUnavailable(rpUID, progType, msg string, err err
 	})
 }
 
+// reportAttachFailure records why an enforcer could not be built or attached
+// for one program type, so a node that can never honor a policy's open/exec
+// rules does not read the same as one that is honoring them. rpCreated and
+// syncProgType are the two places an attach is first attempted.
+func (l *LsmManager) reportAttachFailure(rpUID, progType string, observe bool, err error) {
+	err = l.diagnoseAttachErr(err)
+	if observe {
+		l.observationUnavailable(rpUID, progType, "failed to attach lsm enforcer", err)
+	} else {
+		l.enforcementUnavailable(rpUID, progType, "failed to attach lsm enforcer", err)
+	}
+}
+
+// clearAttachFailure asserts that a program type is attached and programmed,
+// undoing a previous reportAttachFailure once a retry of the same event
+// succeeds — this is on the requeue path, so a transient cause (unlike a
+// missing BPF-LSM) can clear between attempts.
+func (l *LsmManager) clearAttachFailure(rpUID, progType string, observe bool) {
+	if observe {
+		l.recordCondition(rpUID, metav1.Condition{
+			Type:               v1alpha1.ConditionObservationAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             v1alpha1.ReasonObservationAvailable,
+			Message:            "the " + progType + " enforcer is attached and observing",
+			LastTransitionTime: metav1.NewTime(l.clock()),
+		})
+		return
+	}
+	l.recordCondition(rpUID, metav1.Condition{
+		Type:               v1alpha1.ConditionEnforcementAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             v1alpha1.ReasonEnforcementAvailable,
+		Message:            "the " + progType + " enforcer is attached and programmed",
+		LastTransitionTime: metav1.NewTime(l.clock()),
+	})
+}
+
+// diagnoseAttachErr names BPF-LSM absence as the cause of an attach failure
+// when it is: that is the one cause an operator can act on (boot the node
+// with lsm=bpf), as opposed to a raw kernel errno from link.AttachLSM. A
+// BpfLSMEnabled error means the check itself was inconclusive, so the
+// original error is left as is rather than asserted to be something else.
+func (l *LsmManager) diagnoseAttachErr(err error) error {
+	if enabled, lsmErr := utils.BpfLSMEnabled(); lsmErr == nil && !enabled {
+		return fmt.Errorf("BPF-LSM is not active on this node: %w", err)
+	}
+	return err
+}
+
 // recordPathRulesCondition reports, once per policy event, whether every path
 // value of one behavior can be programmed. It parses the policy's own values
 // with the parser the enforcer uses, so the answer holds in observe mode too,
@@ -314,6 +364,30 @@ func rejectionMessage(rejected []compiler.RejectedTarget) string {
 		parts = append(parts, r.String())
 	}
 	return fmt.Sprintf("%d path(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
+}
+
+// recordPodsMatchedCondition reports whether this node currently has any pod
+// selected by the policy, so a podSelector/namespaceSelector that matches
+// nothing does not read the same as an attachment that is doing something.
+func (l *LsmManager) recordPodsMatchedCondition(rpUID string, matched int) {
+	if matched == 0 {
+		l.logger.V(0).Info("runtime policy matches no pods on this node", "uid", rpUID)
+		l.recordCondition(rpUID, metav1.Condition{
+			Type:               v1alpha1.ConditionPodsMatched,
+			Status:             metav1.ConditionFalse,
+			Reason:             v1alpha1.ReasonNoMatchingPods,
+			Message:            "no pod on this node matches the policy's podSelector/namespaceSelector",
+			LastTransitionTime: metav1.NewTime(l.clock()),
+		})
+		return
+	}
+	l.recordCondition(rpUID, metav1.Condition{
+		Type:               v1alpha1.ConditionPodsMatched,
+		Status:             metav1.ConditionTrue,
+		Reason:             v1alpha1.ReasonPodsMatched,
+		Message:            fmt.Sprintf("%d pod(s) on this node match the policy", matched),
+		LastTransitionTime: metav1.NewTime(l.clock()),
+	})
 }
 
 func (l *LsmManager) recordCondition(rpUID string, cond metav1.Condition) {

@@ -198,11 +198,20 @@ const (
 
 	ConditionObservationAvailable = "ObservationAvailable"
 	ReasonObservationUnavailable  = "ObservationUnavailable"
+	ReasonObservationAvailable    = "ObservationAvailable"
 
 	// ConditionEnforcementAvailable reports a kernel map the runtime could not
 	// program, so the policy's workloads run unenforced.
 	ConditionEnforcementAvailable = "EnforcementAvailable"
 	ReasonEnforcementUnavailable  = "EnforcementUnavailable"
+	ReasonEnforcementAvailable    = "EnforcementAvailable"
+
+	// ConditionPodsMatched reports whether this node currently has any pod
+	// selected by the policy's podSelector/namespaceSelector, so a selector
+	// that matches nothing does not read the same as a working policy.
+	ConditionPodsMatched = "PodsMatched"
+	ReasonNoMatchingPods = "NoMatchingPods"
+	ReasonPodsMatched    = "PodsMatched"
 )
 
 // NodePolicyStatus is one node's shard of a RuntimePolicy's status, written

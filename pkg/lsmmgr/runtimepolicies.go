@@ -40,10 +40,12 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		}
 		enf, err := l.createForProgType(compiledRp.UID, spec.files, spec.progType, observe)
 		if err != nil {
+			l.reportAttachFailure(compiledRp.UID, spec.progType, observe, err)
 			// nothing else references the enforcers built so far
 			l.closeProgs(compiledRp.UID, progMap)
 			return err
 		}
+		l.clearAttachFailure(compiledRp.UID, spec.progType, observe)
 		progMap[spec.progType] = &progState{files: spec.files, enf: enf}
 	}
 
@@ -67,6 +69,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
 	}
+	l.recordPodsMatchedCondition(compiledRp.UID, len(la.attachedPods))
 	if len(targetCgids) == 0 {
 		return nil
 	}
@@ -121,6 +124,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	l.syncPodAttachment(compiledRp.UID, la)
+	l.recordPodsMatchedCondition(compiledRp.UID, len(la.attachedPods))
 	return nil
 }
 
@@ -207,8 +211,10 @@ func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *com
 
 		enforcer, err := l.createForProgType(rpUID, newFiles, progType, la.observe)
 		if err != nil {
+			l.reportAttachFailure(rpUID, progType, la.observe, err)
 			return err
 		}
+		l.clearAttachFailure(rpUID, progType, la.observe)
 		ps := &progState{
 			enf:   enforcer,
 			files: newFiles,

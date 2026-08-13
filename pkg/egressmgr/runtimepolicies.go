@@ -21,13 +21,16 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 	e.rps[compiledRp.UID] = compiledRp
 	e.recordTargetsCondition(compiledRp)
 
+	matched := 0
 	for podUid, pod := range e.pods {
 		if !compiledRp.AppliesTo.Matches(pod.nsLabels, pod.labels) {
 			continue
 		}
+		matched++
 		e.logger.V(2).Info("new runtime policy matches existing pod", "uid", compiledRp.UID, "podUid", podUid)
 		e.attachPolicy(podUid, pod, compiledRp)
 	}
+	e.recordPodsMatchedCondition(compiledRp.UID, matched)
 }
 
 func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
@@ -85,8 +88,12 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	currentRp.Name = compiledRp.Name
 	currentRp.Mode = compiledRp.Mode
 
+	matched := 0
 	for podUid, pod := range e.pods {
 		rpMatches := compiledRp.AppliesTo.Matches(pod.nsLabels, pod.labels)
+		if rpMatches {
+			matched++
+		}
 		if _, attached := pod.attachedFilters[compiledRp.UID]; attached {
 			// there is no diff and rp still matches, do nothing
 			hasDiff := toAddPair.HasEntries() || toRemovePair.HasEntries() ||
@@ -144,6 +151,7 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 			e.attachPolicy(podUid, pod, currentRp)
 		}
 	}
+	e.recordPodsMatchedCondition(compiledRp.UID, matched)
 }
 
 // observeRpUpdated handles an update of a monitor policy. Nothing is ever
@@ -156,8 +164,12 @@ func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.Evaluat
 	currentRp.Name = compiledRp.Name
 	currentRp.Mode = compiledRp.Mode
 
+	matched := 0
 	for podUid, pod := range e.pods {
 		matches := compiledRp.AppliesTo.Matches(pod.nsLabels, pod.labels)
+		if matches {
+			matched++
+		}
 		_, attached := pod.attachedFilters[compiledRp.UID]
 		switch {
 		case matches && !attached:
@@ -168,6 +180,7 @@ func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.Evaluat
 			e.detachPolicy(podUid, pod, compiledRp.UID, nil, nil)
 		}
 	}
+	e.recordPodsMatchedCondition(compiledRp.UID, matched)
 }
 
 func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) {

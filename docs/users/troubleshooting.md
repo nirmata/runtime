@@ -16,7 +16,17 @@ Work through these in order.
    `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot
    parameter). Stock distributions and hosted CI runners are typically not booted with
    it. This is the single most likely reason a new user sees no `open`/`exec`
-   enforcement.
+   enforcement, and it names itself directly: `status.conditions` type
+   `EnforcementAvailable` (enforce mode) or `ObservationAvailable` (monitor mode) goes
+   `False` with a message naming BPF-LSM specifically, and `Applied` follows it to
+   `False` — a policy attached to a node that can never honor it does not read as
+   healthy.
+
+   ```bash
+   kubectl get rpol <name> -o jsonpath='{.status.conditions[?(@.type=="EnforcementAvailable")]}'
+   ```
+
+   To confirm directly instead of trusting the condition:
 
    ```bash
    kubectl debug node/<node> -it --image=busybox:1.36 -- cat /host/sys/kernel/security/lsm
@@ -41,7 +51,18 @@ Work through these in order.
    blocked nor observed, whatever the policy says. See
    [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
 
-5. **What do the policy's own conditions say?**
+5. **Does the selector match any pod on this node?** A `podSelector` /
+   `namespaceSelector` that is well-formed but selects nothing looks identical to a
+   working policy from the outside — the pod that would have triggered it simply never
+   existed on this node. Check `status.conditions` type `PodsMatched`; `False` with
+   reason `NoMatchingPods` means exactly that.
+
+   ```bash
+   kubectl get rpol <name> -o jsonpath='{.status.conditions[?(@.type=="PodsMatched")]}'
+   kubectl get pod <pod> --show-labels
+   ```
+
+6. **What do the policy's own conditions say?**
 
    ```bash
    kubectl get rpol <name> -o yaml
@@ -49,7 +70,8 @@ Work through these in order.
 
    Check `status.conditions`: `Applied` says whether the policy is loaded on this node
    and in which mode; `TargetsValid` says whether every `network` target in the policy
-   could be programmed.
+   could be programmed. See the full condition table in
+   [Status](reference/runtimepolicy.md#status).
 
 ## A path I allowed is still blocked
 
@@ -67,9 +89,12 @@ allow list of each default-denying policy. See
   staying inside an enforcing policy's rules produces no Reports at all.
 - Allow up to about 20 seconds: BPF counters are drained every `--observe-interval`
   (default 10s), and findings are buffered and flushed every 10 seconds.
-- Check `status.conditions` for `ObservationAvailable=False`: it means a loaded LSM
-  program has no observation maps, so a monitor-mode policy on that node would
-  silently produce no findings.
+- Check `status.conditions` for `ObservationAvailable=False`: it means observation
+  could not be attached at all (a node without BPF-LSM) or a loaded LSM program has no
+  observation maps, so a monitor-mode policy on that node would silently produce no
+  findings.
+- Check `status.conditions` for `PodsMatched=False`: the policy's selector matches no
+  pod on this node, so there is nothing here that could produce a finding.
 - A finding for a pod whose namespace is not a valid DNS-1123 label is dropped rather
   than written to an invalid object name.
 
@@ -185,6 +210,12 @@ nothing to restart.
 
 `NoMode` means the policy omits `spec.mode`. It is loaded and inert by design: no programs
 are attached, nothing is blocked and no findings are produced. Set `enforce` or `monitor`.
+
+`EnforcementUnavailable` (enforce mode) and `ObservationUnavailable` (monitor mode) mean
+attaching the enforcer for `open` or `exec` failed on this node — the `Applied` message
+borrows its message from `EnforcementAvailable` / `ObservationAvailable`, which usually
+names a node without BPF-LSM, see [step 2](#the-policy-is-applied-but-nothing-is-blocked).
+Both clear on their own once a later attempt succeeds, without restarting the policy.
 
 ## Events are being dropped
 

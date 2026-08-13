@@ -261,6 +261,99 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 	}
 }
 
+// TestStatusWriterAppliedDerivedFromAttachmentOutcome pins the fix for Applied
+// being written from spec.mode alone: a manager (lsmmgr, egressmgr) reporting
+// that attachment for the policy's mode actually failed on this node must
+// downgrade Applied instead of leaving it at whatever the mode alone implies,
+// and a later recovery must be reflected too.
+func TestStatusWriterAppliedDerivedFromAttachmentOutcome(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		gateType   string
+		gateReason string
+	}{
+		{name: "enforce mode gated by EnforcementAvailable", mode: compiler.ModeEnforce,
+			gateType: v1alpha1.ConditionEnforcementAvailable, gateReason: v1alpha1.ReasonEnforcementUnavailable},
+		{name: "monitor mode gated by ObservationAvailable", mode: compiler.ModeMonitor,
+			gateType: v1alpha1.ConditionObservationAvailable, gateReason: v1alpha1.ReasonObservationUnavailable},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+			if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", tc.mode, labels.Everything()), events.EventTypeCreate); err != nil {
+				t.Fatal(err)
+			}
+			sw.RecordCondition("uid-1", "p", metav1.Condition{
+				Type: tc.gateType, Status: metav1.ConditionFalse, Reason: tc.gateReason,
+				Message: "attach failed: BPF-LSM is not active on this node",
+			})
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+
+			got := getPolicy(t, client, "p")
+			applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+			if applied.Status != metav1.ConditionFalse || applied.Reason != tc.gateReason {
+				t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, tc.gateReason)
+			}
+			if applied.Message == "" {
+				t.Error("Applied carries no message explaining the failure")
+			}
+
+			// the underlying cause clears and the manager reasserts success
+			sw.RecordCondition("uid-1", "p", metav1.Condition{
+				Type: tc.gateType, Status: metav1.ConditionTrue, Reason: "Recovered",
+				Message: "attached",
+			})
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatalf("flush after recovery: %v", err)
+			}
+			got = getPolicy(t, client, "p")
+			applied = conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+			if applied.Status != metav1.ConditionTrue {
+				t.Errorf("Applied after recovery = %s, want True", applied.Status)
+			}
+		})
+	}
+}
+
+// TestStatusWriterAppliedIgnoresUnrelatedGate makes sure the derivation only
+// looks at the condition that gates the policy's own mode: an enforce-mode
+// policy must not be downgraded by an ObservationAvailable=False left over
+// from, say, a monitor-mode policy that shares nothing but a uid collision in
+// the test setup.
+func TestStatusWriterAppliedIgnoresUnrelatedGate(t *testing.T) {
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionObservationAvailable, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonObservationUnavailable,
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	got := getPolicy(t, client, "p")
+	applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+	if applied.Status != metav1.ConditionTrue || applied.Reason != v1alpha1.ReasonEnforcing {
+		t.Errorf("Applied = (%s, %s), want (True, %s): an enforce-mode policy is not gated by ObservationAvailable",
+			applied.Status, applied.Reason, v1alpha1.ReasonEnforcing)
+	}
+}
+
+func conditionOfType(t *testing.T, conds []metav1.Condition, condType string) metav1.Condition {
+	t.Helper()
+	for _, c := range conds {
+		if c.Type == condType {
+			return c
+		}
+	}
+	t.Fatalf("no %s condition found (have %+v)", condType, conds)
+	return metav1.Condition{}
+}
+
 // TestStatusWriterRetriesOnConflict injects a conflict on the first update, the
 // way another node's concurrent write would.
 func TestStatusWriterRetriesOnConflict(t *testing.T) {

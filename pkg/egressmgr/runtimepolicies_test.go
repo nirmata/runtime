@@ -35,8 +35,17 @@ func TestRecordConditionSuppliesThePolicyName(t *testing.T) {
 	tracked.Name = "block-v6"
 	mustRpEvent(t, e, tracked, events.EventTypeCreate)
 
-	if got := status.recordedNames("rp-1"); !slices.Equal(got, []string{"block-v6"}) {
-		t.Errorf("recorded names = %v, want [block-v6]", got)
+	// the create event resolves the name for every condition it records
+	// (targets validity, pods matched, ...), not just the first
+	got := status.recordedNames("rp-1")
+	if len(got) == 0 {
+		t.Fatal("recorded names = [], want at least one")
+	}
+	for _, name := range got {
+		if name != "block-v6" {
+			t.Errorf("recorded names = %v, want every entry to be block-v6", got)
+			break
+		}
 	}
 
 	// an untracked uid has no name to resolve, and must not invent one
@@ -400,5 +409,65 @@ func TestAddProtocolsFailureRecordsEnforcementUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(cond.Message, "proto map update failed") {
 		t.Errorf("condition message %q does not name the failure", cond.Message)
+	}
+}
+
+// TestPodsMatchedCondition pins the second reported gap: a podSelector that
+// currently selects no pod on this node must not read the same as a policy
+// that is doing something.
+func TestPodsMatchedCondition(t *testing.T) {
+	e, _, status := newTestManager()
+
+	r := rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil)
+	mustRpEvent(t, e, r, events.EventTypeCreate)
+
+	cond, ok := status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok {
+		t.Fatalf("no %s condition for rp-1 (all: %v)", v1alpha1.ConditionPodsMatched, status.all("rp-1"))
+	}
+	if cond.Status != metav1.ConditionFalse || cond.Reason != v1alpha1.ReasonNoMatchingPods {
+		t.Errorf("with no matching pod: condition = %s/%s, want False/%s", cond.Status, cond.Reason, v1alpha1.ReasonNoMatchingPods)
+	}
+
+	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	// the policy itself is unchanged, but re-evaluating it is what the
+	// periodic re-evaluation thread and the informer's resync both do
+	mustRpEvent(t, e, r, events.EventTypeUpdate)
+
+	cond, ok = status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok {
+		t.Fatalf("no %s condition for rp-1 after update (all: %v)", v1alpha1.ConditionPodsMatched, status.all("rp-1"))
+	}
+	if cond.Status != metav1.ConditionTrue || cond.Reason != v1alpha1.ReasonPodsMatched {
+		t.Errorf("with a matching pod: condition = %s/%s, want True/%s", cond.Status, cond.Reason, v1alpha1.ReasonPodsMatched)
+	}
+}
+
+// TestPodsMatchedCondition_ObserveMode covers the same gap on the
+// observe-mode update path (observeRpUpdated), which tracks attachments
+// separately from the enforce-mode path.
+func TestPodsMatchedCondition_ObserveMode(t *testing.T) {
+	e, _, status := newTestManager()
+
+	r := rp("rp-1", "monitor", webLabels, []string{"1.1.1.1"}, nil)
+	mustRpEvent(t, e, r, events.EventTypeCreate)
+
+	cond, ok := status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok {
+		t.Fatalf("no %s condition for rp-1 (all: %v)", v1alpha1.ConditionPodsMatched, status.all("rp-1"))
+	}
+	if cond.Status != metav1.ConditionFalse || cond.Reason != v1alpha1.ReasonNoMatchingPods {
+		t.Errorf("with no matching pod: condition = %s/%s, want False/%s", cond.Status, cond.Reason, v1alpha1.ReasonNoMatchingPods)
+	}
+
+	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	mustRpEvent(t, e, r, events.EventTypeUpdate)
+
+	cond, ok = status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok {
+		t.Fatalf("no %s condition for rp-1 after update (all: %v)", v1alpha1.ConditionPodsMatched, status.all("rp-1"))
+	}
+	if cond.Status != metav1.ConditionTrue || cond.Reason != v1alpha1.ReasonPodsMatched {
+		t.Errorf("with a matching pod: condition = %s/%s, want True/%s", cond.Status, cond.Reason, v1alpha1.ReasonPodsMatched)
 	}
 }
