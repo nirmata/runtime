@@ -17,6 +17,16 @@ kubectl get rpol
 kubectl get rpol <name> -o yaml
 ```
 
+`network` targets below are destination-based detection and attribution, not a
+replacement for your CNI's NetworkPolicy: connectivity, identity-based policy, FQDN
+egress, ingress, and encryption stay with the CNI. What a `RuntimePolicy` adds is
+`protocol`, classified from a flow's first data segment rather than its declared port;
+`exec` and `open`, enforced alongside `protocol` and `network` in one policy object; and
+`monitor` mode, which reports the attempt a NetworkPolicy drop never surfaces. See
+[why a runtime layer](../why-runtime.md#cooperation-is-the-dividing-line) for the layer
+comparison and [known and shadow workloads](../why-runtime.md#known-and-shadow-workloads)
+for what each behavior delivers depending on whether the workload cooperates.
+
 ## Spec reference
 
 | Field | Type | Meaning |
@@ -46,12 +56,6 @@ spec:
         expression: "..."
 ```
 
-- `network`: IPv4 addresses, IPv4 CIDRs of `/24` or narrower, cluster Service DNS names,
-  and fully qualified domain names for egress. The filter reads IPv4 packets only, which
-  on a dual-stack cluster is a real boundary — see
-  [Limits of network enforcement](#limits-of-network-enforcement).
-- `exec`: command names/paths.
-- `open`: file paths.
 - `protocol`: application protocols for egress, classified in the kernel from the first data
   segment of each flow rather than from the port. `network` and `protocol` evaluate
   independently and AND together: a connection must pass both. See
@@ -70,6 +74,12 @@ spec:
   A `tls/` prefix means the classifier saw a TLS record layer on the wire. Its absence says
   nothing about whether the traffic is encrypted: `ssh` and `quic` both carry their own
   encryption, they just do not use TLS records.
+- `exec`: command names/paths.
+- `open`: file paths.
+- `network`: IPv4 addresses, IPv4 CIDRs of `/24` or narrower, cluster Service DNS names,
+  and fully qualified domain names for egress. The filter reads IPv4 packets only, which
+  on a dual-stack cluster is a real boundary — see
+  [Limits of network enforcement](#limits-of-network-enforcement).
 - `dns`: the DNS names a workload is expected to resolve. Observation only, and its allow
   list is inverted relative to the other behaviors — see [DNS reporting](#dns-reporting).
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a
