@@ -217,6 +217,13 @@ borrows its message from `EnforcementAvailable` / `ObservationAvailable`, which 
 names a node without BPF-LSM, see [step 2](#the-policy-is-applied-but-nothing-is-blocked).
 Both clear on their own once a later attempt succeeds, without restarting the policy.
 
+`NoMatchingPods` means the attachment itself is fine, but `spec.podSelector` /
+`spec.namespaceSelector` currently selects no pod on this node — the `Applied` message
+borrows its message from `PodsMatched`, see [step 5](#the-policy-is-applied-but-nothing-is-blocked).
+This reason is only reported once `EnforcementAvailable` / `ObservationAvailable` are
+already `True`: an attachment failure is checked first and takes priority if both are true
+at once.
+
 ## Events are being dropped
 
 `nirmata_runtime_events_dropped_total` is labeled by `source` and `reason`. Three
