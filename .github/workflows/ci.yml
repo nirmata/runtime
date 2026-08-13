@@ -168,7 +168,7 @@ jobs:
           cache: true
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       # Renders with defaults and with the toggles flipped, and asserts the
       # metrics port actually reaches the daemon args.
@@ -333,7 +333,7 @@ jobs:
         uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Resolve the image tag
         run: echo "IMAGE_TAG=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
@@ -485,7 +485,7 @@ jobs:
         uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       # The two failures have different fixes, so they get different messages:
       # an unreadable list means securityfs is not mounted here, which is not
