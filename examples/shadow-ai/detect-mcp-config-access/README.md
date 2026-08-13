@@ -85,7 +85,6 @@ by default) and findings are flushed every 10s, so allow up to about 20 seconds.
     policy: detect-mcp-config-access
     rule: open
     category: Runtime Security
-    severity: medium
     result: fail
     scored: true
     description: 'monitor mode: open of /root/.cursor/mcp.json would have been denied by policy detect-mcp-config-access'

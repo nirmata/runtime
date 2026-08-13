@@ -773,8 +773,7 @@ kubectl get report kyverno-runtime-node-1 -n default -o yaml
 ```
 
 Each result carries `policy` (the RuntimePolicy name), `rule` (the behavior: `network`,
-`open`, `exec`, `protocol`, `dns`), `severity: medium` (`RuntimePolicy` has no severity field yet),
-`source: kyverno-runtime`, `category: Runtime Security`, the offending pod as
+`open`, `exec`, `protocol`, `dns`), `source: kyverno-runtime`, `category: Runtime Security`, the offending pod as
 `subjects[0]`, and a fixed set of `properties`: `fingerprint`, `count`, `firstTimestamp`,
 `lastTimestamp`, `behavior`, `target`, `enforced`, `node`, `container`, `owner`,
 `serviceAccount`, and — where applicable — `destIP`, `destHost`, `dnsName`, `comm`, `argv`.

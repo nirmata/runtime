@@ -26,7 +26,7 @@ type Metrics struct {
 	// finding anyway, so this counts filters that are not narrowing.
 	MonitorFilterEvalErrors *prometheus.CounterVec
 	// FindingsEmitted counts findings emitted to the reporter, labeled by
-	// policy, behavior, and severity.
+	// policy and behavior.
 	FindingsEmitted *prometheus.CounterVec
 	// ReportWrites counts OpenReports write attempts, labeled by result
 	// (ok|error|skipped).
@@ -68,8 +68,8 @@ func New(reg prometheus.Registerer) *Metrics {
 		FindingsEmitted: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "findings_emitted_total",
-			Help:      "Total number of findings emitted, by policy, behavior, and severity.",
-		}, []string{"policy", "behavior", "severity"}),
+			Help:      "Total number of findings emitted, by policy and behavior.",
+		}, []string{"policy", "behavior"}),
 
 		ReportWrites: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,

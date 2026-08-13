@@ -124,7 +124,6 @@ func findingIn(namespace, podUID string, at time.Time) Finding {
 		PolicyName: "block-egress",
 		PolicyUID:  "policy-uid-1",
 		Behavior:   "network",
-		Severity:   SeverityHigh,
 		Result:     ResultFail,
 		Message:    "egress denied",
 		Pod: runtimeevent.PodIdentity{
@@ -269,7 +268,6 @@ func openFindingIn(namespace, podUID, path string, at time.Time) Finding {
 		PolicyUID:  "policy-uid-1",
 		Behavior:   "open",
 		Target:     path,
-		Severity:   SeverityHigh,
 		Result:     ResultFail,
 		Message:    "monitor mode: open of " + path + " would have been denied by policy block-secrets",
 		Pod: runtimeevent.PodIdentity{

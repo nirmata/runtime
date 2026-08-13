@@ -76,9 +76,6 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 	if res.Result != openreportsv1alpha1.Result(ResultFail) {
 		t.Errorf("buildResult result = %q, want %q", res.Result, ResultFail)
 	}
-	if res.Severity != openreportsv1alpha1.ResultSeverity(SeverityHigh) {
-		t.Errorf("buildResult severity = %q, want %q", res.Severity, SeverityHigh)
-	}
 	if res.Timestamp.Seconds != last.Unix() {
 		t.Errorf("buildResult timestamp = %d, want %d", res.Timestamp.Seconds, last.Unix())
 	}

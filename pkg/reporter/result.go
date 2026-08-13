@@ -64,7 +64,7 @@ type pending struct {
 
 // merge folds a repeat occurrence of the same fingerprint into p. The newest
 // finding wins for the descriptive fields so a report always shows the most
-// recent message and severity for a fingerprint.
+// recent message for a fingerprint.
 func (p *pending) merge(f Finding, at time.Time) {
 	p.finding = f
 	p.count++
@@ -125,7 +125,6 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 		Policy:      sanitize(f.PolicyName),
 		Rule:        sanitize(f.Behavior),
 		Category:    Category,
-		Severity:    openreportsv1alpha1.ResultSeverity(normalizeSeverity(f.Severity)),
 		Result:      openreportsv1alpha1.Result(normalizeResult(f.Result)),
 		Scored:      true,
 		Timestamp:   metav1.Timestamp{Seconds: p.last.Unix()},
@@ -201,7 +200,7 @@ func applyResults(existing, incoming []openreportsv1alpha1.ReportResult, max int
 }
 
 // mergeResult folds a freshly built result for an already-known fingerprint
-// into the stored one. next is the base (newest message/severity wins); only
+// into the stored one. next is the base (newest message wins); only
 // the accumulated count and the earliest firstTimestamp survive from prev.
 func mergeResult(prev, next openreportsv1alpha1.ReportResult) openreportsv1alpha1.ReportResult {
 	out := *next.DeepCopy()
