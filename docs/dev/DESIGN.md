@@ -56,9 +56,9 @@ The binary at `cmd/kyverno-runtime/` (`root.go`) exposes one subcommand:
 
 Implemented in `cmd/kyverno-runtime/daemon.go`. Deployed as a `DaemonSet`
 (`charts/kyverno-runtime/templates/daemonset.yaml`), one instance per node, requiring `NODE_NAME`
-and running privileged with `hostPID: true` (needed to attach LSM/cgroup eBPF programs and to
-resolve container cgroup paths under `/host`, `/run`, `/sys/fs/bpf`, `/sys/kernel/debug`, and
-`/sys/kernel/tracing`).
+and running privileged with `hostPID: true`, which is what lets it attach LSM and cgroup eBPF
+programs. Container cgroup paths are resolved from the cgroup mount found in
+`/proc/self/mountinfo` (`pkg/containers`), not from a host filesystem mount.
 
 On startup it wires together:
 

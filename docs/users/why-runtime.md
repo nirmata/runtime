@@ -30,7 +30,7 @@ report.
 | TLS-intercepting proxy | content of any intercepted HTTPS, including calls that skip the gateway | anything that does not route through it or does not trust its CA |
 | Admission control | what may be created; injects env and CA | whether the process honors either |
 | CNI NetworkPolicy | who may reach whom, L3/L4 and FQDN | attempts, process identity, its own enforcement status |
-| Nirmata Runtime | per-pod facts decided in the kernel: destination and protocol of every flow, file and exec enforcement, and the attempts as findings | content, which requires the client's cooperation |
+| Nirmata Runtime | per-pod facts decided in the kernel: destination of every IPv4 flow, protocol of every flow, file and exec enforcement, and the attempts as findings | content, which requires the client's cooperation; IPv6 destinations |
 
 The mechanism — eBPF at `cgroup_skb` and BPF-LSM — is shared with other runtime tools. What
 differs is the altitude: an admission-validated CRD, per-node status conditions, findings
@@ -62,6 +62,11 @@ workload for anything.
 | `quic` denied | HTTP/3 is opaque to a proxy, and no provider SDK speaks it, so denying it costs little and forces the workload into a lane something can observe |
 | `exec` default deny | The pod runs its own binaries and no others, enforced at `bprm_check_security` |
 | `open` deny | Named credential paths are unreadable regardless of which process asks |
+
+On a dual-stack cluster the `network` row is weaker than it reads: the egress filter is
+IPv4-only, so a destination reachable over IPv6 is reachable under a `network` default
+deny. The `protocol` rows hold for IPv6 flows as well. See
+[limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
 
 ### What is recorded
 
@@ -95,10 +100,13 @@ and nothing else is the one enforcement a proxy cannot perform on its own behalf
 workload that ignores the proxy never reaches the proxy to be told otherwise. The policy is
 in [compel AI traffic through a gateway](shadow-ai.md#compel-ai-traffic-through-a-gateway).
 
-**Reconcile the two vantage points.** A gateway reports *N* calls for an identity; the
-kernel observed *M* connections to providers from the pod backing it. `M > N` quantifies
-bypass, and neither system produces that number alone — the gateway cannot see what evaded
-it, and the kernel does not know what the gateway did with what it got.
+**Supply the kernel's half of a reconciliation.** A gateway's audit reports the calls
+that reached it; the Reports here name the provider connections the kernel observed from
+each pod, with counts per window. More kernel-observed connections than gateway-audited
+calls means something bypassed the gateway — a number neither system holds alone, because
+the gateway cannot see what evaded it and the kernel does not know what the gateway did
+with what it got. Comparing the two is a step an operator performs today; nothing here
+computes the discrepancy.
 
 ## What this does not do
 

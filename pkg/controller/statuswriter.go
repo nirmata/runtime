@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	v1alpha1client "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	v1alpha1client "github.com/nirmata/runtime/pkg/client/clientset/versioned"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
 
 	"github.com/go-logr/logr"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"

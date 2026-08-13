@@ -3,10 +3,10 @@ package egressmgr
 import (
 	"fmt"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/runtime/pkg/bpf/protofilter"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/containers"
 
 	"github.com/cilium/ebpf/link"
 	corev1 "k8s.io/api/core/v1"

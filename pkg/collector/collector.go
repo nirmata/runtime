@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/metrics"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
+	"github.com/nirmata/runtime/pkg/metrics"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/utils"
 
 	"github.com/go-logr/logr"
 )

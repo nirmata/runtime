@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 // Finding is a CLOSED struct: typed scalar fields only. There is no headers

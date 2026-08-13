@@ -20,7 +20,7 @@ Nothing here needs BPF-LSM. File `open` and process `exec` enforcement do — se
 ## 1. Create a cluster and install
 
 ```bash
-git clone https://github.com/nirmata/kyverno-runtime.git
+git clone https://github.com/nirmata/runtime.git
 cd kyverno-runtime
 make kind
 ```

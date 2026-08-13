@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	fakeversioned "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned/fake"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	fakeversioned "github.com/nirmata/runtime/pkg/client/clientset/versioned/fake"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"

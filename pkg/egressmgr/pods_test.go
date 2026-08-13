@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/events"
 )
 
 func cg(id uint64, path string) *containers.ContainerCgroupInfo {

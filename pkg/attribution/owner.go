@@ -3,7 +3,7 @@ package attribution
 import (
 	"strings"
 
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/events"
 
 	corev1 "k8s.io/api/core/v1"
 )

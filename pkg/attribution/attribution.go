@@ -7,10 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/metrics"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/metrics"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"

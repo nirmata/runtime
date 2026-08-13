@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/netip"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/compiler"
 )
 
 // MinCIDRPrefixBits is the narrowest (numerically smallest) IPv4 prefix length

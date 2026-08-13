@@ -6,6 +6,6 @@ builds:
   main: .
 
 baseImageOverrides:
-  github.com/nirmata/kyverno-runtime/cmd/kyverno-runtime: gcr.io/distroless/base-debian12:nonroot
+  github.com/nirmata/runtime/cmd/kyverno-runtime: gcr.io/distroless/base-debian12:nonroot
 
 defaultBaseImage: gcr.io/distroless/base-debian12:nonroot

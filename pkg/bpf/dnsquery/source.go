@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/go-logr/logr"

@@ -37,6 +37,6 @@ formatters:
       custom-order: true
       sections:
         - standard
-        - prefix(github.com/nirmata/kyverno-runtime)
+        - prefix(github.com/nirmata/runtime)
         - default
 

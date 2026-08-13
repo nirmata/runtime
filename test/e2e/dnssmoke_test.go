@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/dnsquery"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/bpf/dnsquery"
+	"github.com/nirmata/runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 )

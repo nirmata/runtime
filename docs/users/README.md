@@ -12,6 +12,8 @@ Runtime and writing `RuntimePolicy` objects.
   semantics, modes, scoping, and what monitor mode can see.
 - [Installation](installation.md) — platform requirements, the Helm chart and its values,
   daemon flags, and verifying an install.
+- [Platform support](platforms.md) — which kernel feature each behavior needs, which
+  managed node images have BPF-LSM active by default, and how to check any node.
 - [Examples](examples.md) — catalog of the scenarios under
   [`examples/`](../../examples/), grouped by feature.
 - [Detecting shadow AI](shadow-ai.md) — the model providers a workload resolves, the SDKs

@@ -423,9 +423,11 @@ destination over the wrong protocol is denied, and so is TLS to anywhere else. A
 policy interns at most 256 domain names per pod, another reason to allow a short list rather
 than deny a long one.
 
-What this buys is also measurable. The gateway's audit reports *N* calls for an identity; the
-kernel observed *M* connections to providers from the pod backing it, and `M > N` quantifies
-what bypassed the gateway. Neither vantage point produces that number alone — see
+What this buys is also measurable, though the comparison is yours to make. The gateway's
+audit reports the calls that reached it; the Reports here name the provider connections
+the kernel observed from the pod backing that identity, with counts per window. More
+kernel-observed connections than gateway-audited calls means something bypassed the
+gateway. Nothing computes that discrepancy for you — see
 [why a runtime layer](why-runtime.md).
 
 When a workload's legitimate binaries are known, the same reasoning applies to execution. A
@@ -557,6 +559,10 @@ Runnable: [blocklist-from-http](../../examples/dynamic-lists/blocklist-from-http
   asked at all. A resolution is also not a connection.
 - **A destination named by domain is enforced from the pod's own DNS answers.** A workload
   that connects to a literal address it never resolved is matched by address only.
+- **The egress filter is IPv4-only.** On a dual-stack cluster a `network` default deny
+  neither blocks nor observes an IPv6 connection, so a provider reachable over IPv6 is
+  reachable. A `protocol` behavior does classify and enforce IPv6 flows — see
+  [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
 - **No policy value has a port.** A local model on `11434` and a vLLM server on `8000` are
   reachable as destinations, never as ports, so a cleartext in-cluster inference endpoint is
   constrained by address or Service name or not at all.

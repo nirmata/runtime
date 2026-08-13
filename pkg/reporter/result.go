@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	corev1 "k8s.io/api/core/v1"

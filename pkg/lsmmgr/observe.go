@@ -8,8 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 // progTypeOrder fixes the drain order of the program types of one attachment, so

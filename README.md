@@ -1,7 +1,8 @@
 # Nirmata Runtime
 
-Kyverno policies for eBPF runtime enforcement.
+Kyverno-style CEL policies for eBPF runtime enforcement.
 
+[![CI](https://github.com/nirmata/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/nirmata/runtime/actions/workflows/ci.yml)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.29+-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -17,7 +18,7 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
 - **Admission Controllers checks the spec; Runtime checks the behavior.** Kyverno at admission validates what a pod *declares* before it starts. Nirmata Runtime enforces what the running process actually *does* — the files it opens, the binaries it execs, the addresses it contacts — after admission has already said yes.
 - **Egress control below the CNI.** NetworkPolicy needs a CNI that implements it and reasons about pod-to-pod identity. The egress filter here attaches to the pod's cgroup, so it has no CNI dependency and it also covers destinations outside the cluster.
 - **Blocks, not just alerts.** Runtime detection tells you a sensitive file was read. `mode: enforce` returns `-EPERM` from a BPF-LSM hook, so the read never happens. `mode: monitor` gives you the detection workflow first, with the same policy object.
-- **One small CRD, Kyverno CEL, deliberately narrow.** Tetragon is a general tracing and enforcement engine with its own policy grammar. Nirmata Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
+- **One small CRD, Kyverno CEL, deliberately narrow.** Tetragon is a general tracing and enforcement engine with its own policy schema. KubeArmor attaches to the same BPF-LSM hooks and falls back to AppArmor on nodes without them, which this project does not do. Nirmata Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
 
 ## ✨ Key Features
 
@@ -49,6 +50,7 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
 - Egress is keyed on IPv4 destination addresses. A domain name or cluster Service name is accepted as a value and resolved to addresses; an IPv6 literal is not.
 - File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are
 typically not booted with it.
+- A policy whose `open` and `exec` rules can never fire on a node — one booted without BPF-LSM — still reports `Applied=True` for that node in `status.nodes`. `Applied=True` says the daemon loaded the policy, not that the policy is blocking anything; the node's kernel is what tells you which. This is an open bug.
 - `network`, `protocol`, `open`, and `exec` observations come from eBPF counters that the daemon drains on a poll interval rather than from a stream of events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
 - Nothing reads inside TLS. A destination is named by domain only when the pod's own DNS answer was observed, and no policy value has a port.
 - Exceptions are not yet supported.
@@ -62,6 +64,8 @@ typically not booted with it.
 - Network egress enforcement and observation require only a cgroup v2 host and BPF
   support; a stock kind cluster on a Linux host qualifies. That, plus egress from the
   cluster to the address each sample below probes, is all they need.
+- File `open` and process `exec` enforcement need a node booted with BPF-LSM active. Whether
+  a managed distribution gives you one is listed in [platforms](docs/users/platforms.md).
 
 ### Install
 
@@ -144,14 +148,24 @@ server not in the image contract. A `dns` behavior declares the names a workload
 above already used:
 
 ```bash
-git clone https://github.com/nirmata/kyverno-runtime.git
-cd kyverno-runtime/examples/shadow-ai/report-unexpected-dns
-kubectl apply -f client.yaml
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-client
+  labels:
+    app: dns-client
+spec:
+  containers:
+  - name: client
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep 900"]
+EOF
 kubectl wait --for=condition=Ready pod/dns-client --timeout=90s
-kubectl apply -f policy.yaml
 ```
 
-```yaml
+```bash
+kubectl apply -f - <<'EOF'
 apiVersion: runtime.nirmata.io/v1alpha1
 kind: RuntimePolicy
 metadata:
@@ -168,6 +182,7 @@ spec:
         - api.openai.com
         - api.anthropic.com
         - "*.openai.azure.com"
+EOF
 ```
 
 Resolve one approved provider and one that is not. The trailing dot makes each name
@@ -192,10 +207,16 @@ kubectl get report "kyverno-runtime-${NODE}" \
 
 `api.mistral.ai` appears; `api.openai.com` does not.
 
+```bash
+kubectl delete rpol report-unexpected-dns
+kubectl delete pod dns-client
+```
+
 The question crosses the wire in cleartext, so this works without touching the workload,
 its TLS, or its trust store. What was *said* over that connection is not knowable here —
 see [detecting shadow AI](docs/users/shadow-ai.md) for the signals that are, and the ones
-that are not.
+that are not. The manifests above, with the full walkthrough, are in
+[examples/shadow-ai/report-unexpected-dns/](examples/shadow-ai/report-unexpected-dns/).
 
 Full walkthroughs: [network egress](docs/users/quickstart.md), including how to flip a
 policy to `monitor` and read the resulting Report, plus
@@ -210,6 +231,7 @@ policy to `monitor` and read the resulting Report, plus
 - **[Why a runtime layer](docs/users/why-runtime.md)** - what a gateway, a TLS proxy, admission control, and a CNI each cannot see, and what this leaves to them
 - **[Concepts](docs/users/concepts.md)** - how enforcement works, allow and deny semantics, modes, scoping, and what monitor mode sees
 - **[Installation](docs/users/installation.md)** - platform requirements, Helm chart values, daemon flags
+- **[Platforms](docs/users/platforms.md)** - BPF-LSM support across EKS, GKE, AKS, and Bottlerocket, and what works without it
 - **[Examples](docs/users/examples.md)** - the scenario catalog, grouped by feature
 - **[Detecting shadow AI](docs/users/shadow-ai.md)** - the providers a workload resolves, the SDKs and model files it reads, the agent CLIs and MCP servers it launches, and what stays inside TLS
 - **[Troubleshooting](docs/users/troubleshooting.md)** - why nothing is blocked, missing Reports, rejected targets
@@ -232,10 +254,15 @@ policy to `monitor` and read the resulting Report, plus
 
 ## 🤝 Contributing
 
-Contributions are welcome. See **[docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md)** for
-build and test mechanics, the test layout, and how generated artifacts are regenerated.
-Sign your commits (`git commit -s`). Bugs and feature requests go to
-[GitHub issues](https://github.com/nirmata/kyverno-runtime/issues).
+Contributions are welcome. Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to
+propose a change and get it reviewed, and
+**[docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md)** for build and test mechanics, the
+test layout, and how generated artifacts are regenerated. Sign your commits
+(`git commit -s`). Bugs and feature requests go to
+[GitHub issues](https://github.com/nirmata/runtime/issues).
+
+Security vulnerabilities do not go to the issue tracker. Report them privately by the
+process in **[SECURITY.md](SECURITY.md)**.
 
 ## 📄 License
 
@@ -255,6 +282,6 @@ Nirmata Runtime is licensed under the [Apache License 2.0](LICENSE).
 
 Built with ❤️ by the Nirmata team
 
-[Report Bug](https://github.com/nirmata/kyverno-runtime/issues) · [Request Feature](https://github.com/nirmata/kyverno-runtime/issues)
+[Report Bug](https://github.com/nirmata/runtime/issues) · [Request Feature](https://github.com/nirmata/runtime/issues)
 
 </div>

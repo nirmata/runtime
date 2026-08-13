@@ -1,4 +1,4 @@
-MODULE := github.com/nirmata/kyverno-runtime
+MODULE := github.com/nirmata/runtime
 
 KIND_CLUSTER_NAME ?= kyverno-runtime
 IMAGE_REPOSITORY ?= ghcr.io/nirmata/kyverno-runtime

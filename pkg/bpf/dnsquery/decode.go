@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 // Byte layout of `struct dns_query_event` in _cprog/maps.h. Little-endian, in

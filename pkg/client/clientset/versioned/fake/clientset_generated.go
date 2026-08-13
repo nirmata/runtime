@@ -18,9 +18,9 @@ limitations under the License.
 package fake
 
 import (
-	clientset "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned"
-	runtimev1alpha1 "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned/typed/api/v1alpha1"
-	fakeruntimev1alpha1 "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned/typed/api/v1alpha1/fake"
+	clientset "github.com/nirmata/runtime/pkg/client/clientset/versioned"
+	runtimev1alpha1 "github.com/nirmata/runtime/pkg/client/clientset/versioned/typed/api/v1alpha1"
+	fakeruntimev1alpha1 "github.com/nirmata/runtime/pkg/client/clientset/versioned/typed/api/v1alpha1/fake"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"

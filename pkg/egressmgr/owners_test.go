@@ -3,7 +3,7 @@ package egressmgr
 import (
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/events"
 )
 
 func TestSharedAddressSurvivesOneOwnerDetaching(t *testing.T) {

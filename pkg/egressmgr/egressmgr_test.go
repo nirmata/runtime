@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/events"
 )
 
 func TestRuntimePolicyEventRejectsUnknownType(t *testing.T) {

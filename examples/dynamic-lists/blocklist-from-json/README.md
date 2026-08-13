@@ -27,7 +27,7 @@ The chart's default ClusterRole grants the daemon no access to ConfigMaps, so th
 values snippet:
 
 ```bash
-helm upgrade kyverno-runtime oci://ghcr.io/nirmata/kyverno-runtime/kyverno-runtime \
+helm upgrade kyverno-runtime oci://ghcr.io/nirmata/charts/kyverno-runtime \
   --namespace kyverno-runtime --reuse-values -f rbac-values.yaml
 ```
 

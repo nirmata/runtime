@@ -1,7 +1,7 @@
 package protofilter
 
 import (
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/compiler"
 )
 
 // Target is one protocol the maps can hold. ALPN is non-empty only for a

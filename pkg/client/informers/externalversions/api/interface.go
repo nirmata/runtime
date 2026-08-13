@@ -18,8 +18,8 @@ limitations under the License.
 package api
 
 import (
-	v1alpha1 "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions/api/v1alpha1"
-	internalinterfaces "github.com/nirmata/kyverno-runtime/pkg/client/informers/externalversions/internalinterfaces"
+	v1alpha1 "github.com/nirmata/runtime/pkg/client/informers/externalversions/api/v1alpha1"
+	internalinterfaces "github.com/nirmata/runtime/pkg/client/informers/externalversions/internalinterfaces"
 )
 
 // Interface provides access to each of this group's versions.

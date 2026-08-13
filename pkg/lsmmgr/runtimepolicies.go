@@ -1,9 +1,9 @@
 package lsmmgr
 
 import (
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/compiler"
 )
 
 // progSpec pairs a bpf lsm attach target with the compiled behavior that drives

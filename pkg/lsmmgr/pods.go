@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"maps"
 
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
+	"github.com/nirmata/runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/utils"
 
 	corev1 "k8s.io/api/core/v1"
 )

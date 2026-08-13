@@ -7,9 +7,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/cilium/ebpf"
 	"github.com/go-logr/logr"

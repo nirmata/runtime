@@ -3,9 +3,9 @@ package egressmgr
 import (
 	"net/netip"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/runtime/pkg/bpf/protofilter"
+	"github.com/nirmata/runtime/pkg/compiler"
 )
 
 // sideOwners holds, for one side of a pair, the policy uids that asked for each

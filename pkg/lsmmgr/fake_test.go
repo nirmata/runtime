@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"

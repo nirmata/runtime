@@ -235,7 +235,7 @@ jobs:
       DOCKER_CONFIG: /tmp/.docker
     # The chart's appVersion points at the release image tag, so it must not publish
     # before that tag exists and has passed e2e.
-    needs: [release-e2e]
+    needs: [release-e2e, promote-image]
 
     steps:
       - name: Checkout
@@ -267,14 +267,23 @@ jobs:
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # Chart version is semver, so it carries no leading v; appVersion is the image tag
+      # the DaemonSet pulls, and promote-image tags the image with the git ref verbatim.
       - name: Set chart version from tag
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ steps.chart_version.outputs.version }}"
           sed -i.bak -E "s/^version:.*/version: ${VERSION}/" charts/kyverno-runtime/Chart.yaml
-          sed -i.bak -E "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/kyverno-runtime/Chart.yaml
+          sed -i.bak -E "s/^appVersion:.*/appVersion: \"${GITHUB_REF_NAME}\"/" charts/kyverno-runtime/Chart.yaml
           rm -f charts/kyverno-runtime/Chart.yaml.bak
+
+      - name: Verify the chart's appVersion resolves to a published image tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(sed -nE 's/^appVersion: "(.*)"/\1/p' charts/kyverno-runtime/Chart.yaml)"
+          docker buildx imagetools inspect "${IMAGE_REPOSITORY}:${APP_VERSION}" >/dev/null
 
       - name: Lint chart
         run: helm lint charts/kyverno-runtime

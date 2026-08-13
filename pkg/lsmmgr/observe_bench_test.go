@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
 
 	"github.com/go-logr/logr"
 )

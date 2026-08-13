@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"

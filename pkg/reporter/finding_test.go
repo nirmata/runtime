@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 // baseFinding is the reference finding the fingerprint tables mutate.

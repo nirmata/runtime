@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"

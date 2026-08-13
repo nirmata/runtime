@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a new behavior, field, or capability for Nirmata Runtime.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nirmata Runtime is deliberately narrow: five behaviors, one CRD, Kyverno CEL.
+        A proposal that fits that shape is more likely to land than one that grows a
+        second policy schema alongside `RuntimePolicy` — see the "One schema, one
+        home" section of [CLAUDE.md](../../CLAUDE.md) for why.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The workload behavior, detection gap, or operational pain this addresses.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: |
+        What you'd add or change — a new behavior kind, a field on an existing one, a
+        CEL library, a metric. A sketch of the `RuntimePolicy` shape helps.
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Can this already be expressed with `monitorFilter`, `variables`, or an existing behavior?
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Links, related issues, or examples from other tools.
+    validations:
+      required: false

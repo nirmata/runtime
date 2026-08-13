@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/exectrace"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/bpf/exectrace"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/testr"

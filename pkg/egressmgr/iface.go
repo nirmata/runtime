@@ -1,9 +1,9 @@
 package egressmgr
 
 import (
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/runtime/pkg/bpf/protofilter"
+	"github.com/nirmata/runtime/pkg/compiler"
 
 	"github.com/cilium/ebpf/link"
 )

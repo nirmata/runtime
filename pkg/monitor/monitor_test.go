@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
-	"github.com/nirmata/kyverno-runtime/pkg/metrics"
-	"github.com/nirmata/kyverno-runtime/pkg/reporter"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/metrics"
+	"github.com/nirmata/runtime/pkg/reporter"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr/testr"
 	"github.com/google/go-cmp/cmp"

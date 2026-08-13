@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/cilium/ebpf"
 )

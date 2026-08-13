@@ -5,8 +5,8 @@ import (
 	"maps"
 	"math"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
