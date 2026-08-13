@@ -1,0 +1,13 @@
+# blank_issues_enabled: false forces every issue through one of the forms
+# above (or a contact link below) rather than a free-text issue with no
+# structure.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/nirmata/runtime/security/advisories/new
+    about: Do not open a public issue for a suspected vulnerability. Use private reporting, or see SECURITY.md.
+  # Discussions is not enabled on this repository yet (maintainers: enable it
+  # under Settings > General > Features, then this link is live).
+  - name: Ask a question
+    url: https://github.com/nirmata/runtime/discussions
+    about: Usage questions and general discussion, once GitHub Discussions is enabled for this repository.

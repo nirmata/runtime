@@ -1,0 +1,21 @@
+# Proposed from commit history (git shortlog, GitHub contributor stats) and
+# not yet confirmed by the people named below. Maintainers: confirm before
+# relying on this for required review.
+#
+# Later entries override earlier ones for an overlapping path, matching
+# GitHub's CODEOWNERS precedence.
+
+* @JimBugwadia
+
+/pkg/bpf/             @JimBugwadia @aerosouund
+/pkg/lsmmgr/          @JimBugwadia @aerosouund
+/pkg/egressmgr/       @JimBugwadia @aerosouund
+/pkg/compiler/        @JimBugwadia @aerosouund
+/pkg/client/          @JimBugwadia @aerosouund
+/charts/              @JimBugwadia @aerosouund
+/hack/bpf-builder/    @JimBugwadia @aerosouund
+
+/.github/             @JimBugwadia @aerosouund
+/Makefile             @JimBugwadia @aerosouund
+
+/SECURITY.md          @JimBugwadia

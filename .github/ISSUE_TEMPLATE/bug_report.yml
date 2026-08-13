@@ -1,0 +1,115 @@
+name: Bug report
+description: Something in Nirmata Runtime isn't working as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: if a policy loads but nothing is blocked or reported, check
+        [Troubleshooting](../../docs/users/troubleshooting.md) first — the most common
+        causes (missing `spec.mode`, a node without BPF-LSM, a policy that failed to
+        compile) are covered there with the exact commands to check them.
+
+        If this is a suspected security vulnerability — an `enforce`-mode policy not
+        blocking what it should, data from one pod appearing attributed to another, a
+        crash from a malformed policy — do not file it here. Follow
+        [SECURITY.md](../../SECURITY.md) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: runtimepolicy
+    attributes:
+      label: RuntimePolicy
+      description: The full manifest you applied, including `spec.mode`.
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: rpol-status
+    attributes:
+      label: RuntimePolicy status
+      description: Output of `kubectl get rpol <name> -o yaml`, in particular `status.conditions`.
+      render: yaml
+    validations:
+      required: false
+
+  - type: input
+    id: k8s-version
+    attributes:
+      label: Kubernetes version
+      description: Output of `kubectl version`.
+      placeholder: "e.g. v1.31.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - kind
+        - EKS
+        - GKE
+        - AKS
+        - Bottlerocket
+        - OpenShift
+        - Other self-managed
+    validations:
+      required: true
+
+  - type: input
+    id: node-image
+    attributes:
+      label: Node OS / kernel version
+      description: Output of `uname -a` on the affected node.
+      placeholder: "e.g. Linux 6.8.0-1015-gcp #16-Ubuntu SMP ..."
+    validations:
+      required: true
+
+  - type: input
+    id: lsm
+    attributes:
+      label: Active LSMs on the node
+      description: |
+        Output of `cat /sys/kernel/security/lsm` on the node (not the daemon pod,
+        which is distroless and has no shell). Only relevant to `open`/`exec`
+        behaviors, but include it anyway — see
+        [Platforms](../../docs/users/platforms.md).
+      placeholder: "e.g. lockdown,capability,landlock,yama,bpf"
+    validations:
+      required: false
+
+  - type: input
+    id: chart-version
+    attributes:
+      label: Chart / app version
+      description: Output of `helm get metadata kyverno-runtime -n kyverno-runtime`, or the image tag.
+    validations:
+      required: true
+
+  - type: textarea
+    id: daemon-logs
+    attributes:
+      label: Daemon logs
+      description: |
+        Output of `kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --tail=400`.
+        Redact anything sensitive first.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Anything else — Prometheus metrics, Report objects, related issues.
+    validations:
+      required: false
