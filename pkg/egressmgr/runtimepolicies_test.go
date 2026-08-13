@@ -472,6 +472,54 @@ func TestPodsMatchedCondition_ObserveMode(t *testing.T) {
 	}
 }
 
+// TestPodsMatchedUpdatesOnPodEventsAlone pins a bug Copilot's review caught: a
+// policy re-evaluated on RuntimePolicyEvent recomputes PodsMatched, but pod
+// create/update/delete previously never did, so a policy created with zero
+// matches stayed PodsMatched=False (and, since Applied now derives from it,
+// Applied=False) forever after a matching pod later showed up, until the
+// policy itself happened to be re-evaluated. No RuntimePolicyEvent update is
+// sent anywhere in this test — every transition below has to come from the
+// pod events alone.
+func TestPodsMatchedUpdatesOnPodEventsAlone(t *testing.T) {
+	e, _, status := newTestManager()
+	r := rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil)
+	mustRpEvent(t, e, r, events.EventTypeCreate)
+
+	cond, ok := status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("before any pod: PodsMatched = %+v, want False", cond)
+	}
+
+	// a matching pod is created: PodsMatched must flip on this event alone
+	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	cond, ok = status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("after a matching pod is created: PodsMatched = %+v, want True", cond)
+	}
+
+	// the pod is relabelled out of the selector: PodsMatched must flip back
+	relabelPod(t, e, "pod-1", apiLabels, "/cg/pod-1")
+	cond, ok = status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("after the pod relabels out: PodsMatched = %+v, want False", cond)
+	}
+
+	// relabel it back in, then delete it outright: PodsMatched must flip back
+	// to False on the delete, not stay stuck True
+	relabelPod(t, e, "pod-1", webLabels, "/cg/pod-1")
+	cond, ok = status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("after the pod relabels back in: PodsMatched = %+v, want True", cond)
+	}
+	if err := e.PodDeleted("pod-1"); err != nil {
+		t.Fatalf("PodDeleted: unexpected error: %v", err)
+	}
+	cond, ok = status.latest("rp-1", v1alpha1.ConditionPodsMatched)
+	if !ok || cond.Status != metav1.ConditionFalse {
+		t.Errorf("after the last matching pod is deleted: PodsMatched = %+v, want False", cond)
+	}
+}
+
 // TestPodsMatchedZeroLogsOnce pins the fix for V(0) log spam: a policy
 // re-evaluated repeatedly with the same zero-match outcome (an
 // EvaluationInterval tick, or an informer resync) must not re-trigger the log

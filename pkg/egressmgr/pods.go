@@ -50,12 +50,17 @@ func (e *EgressManager) podCreated(pod corev1.Pod, nsLabels map[string]string, c
 		pa.cgs[*cg] = links
 	}
 
+	// registered before the matching loop below so recomputePodsMatchedCondition,
+	// which counts over e.pods, sees this pod too
+	e.pods[string(pod.UID)] = pa
+
 	for rpName, rp := range e.rps {
 		if !rp.AppliesTo.Matches(nsLabels, pod.Labels) {
 			continue
 		}
 		e.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpName)
 		pa.attachedFilters[rpName] = rp
+		e.recomputePodsMatchedCondition(rpName)
 
 		// observe-mode policies program nothing
 		if compiler.IsObserveMode(rp.Mode) {
@@ -90,8 +95,6 @@ func (e *EgressManager) podCreated(pod corev1.Pod, nsLabels map[string]string, c
 		pa.filter.SetFlagIdx(egressfilter.OBSERVE, true)
 		pa.protoFilter.SetFlagIdx(protofilter.OBSERVE, true)
 	}
-
-	e.pods[string(pod.UID)] = pa
 	return nil
 }
 
@@ -163,11 +166,32 @@ func (e *EgressManager) refreshLabels(podUid string, pa *podAttachment, newNsLab
 		case matches && !attached:
 			e.logger.V(2).Info("relabelled pod newly matches runtime policy", "podUid", podUid, "uid", uid)
 			e.attachPolicy(podUid, pa, rp)
+			e.recomputePodsMatchedCondition(uid)
 		case !matches && attached:
 			e.logger.V(2).Info("relabelled pod stopped matching runtime policy, detaching", "podUid", podUid, "uid", uid)
 			e.detachPolicy(podUid, pa, uid, att.IPs, att.Protocols)
+			e.recomputePodsMatchedCondition(uid)
 		}
 	}
+}
+
+// recomputePodsMatchedCondition recounts how many pods on this node currently
+// match a policy and reports it. Pod events change that count without a
+// corresponding policy event, so a pod attaching to or detaching from a
+// policy has to trigger this itself rather than wait for the policy's own
+// create/update path to notice.
+func (e *EgressManager) recomputePodsMatchedCondition(uid string) {
+	rp, ok := e.rps[uid]
+	if !ok {
+		return
+	}
+	matched := 0
+	for _, pod := range e.pods {
+		if rp.AppliesTo.Matches(pod.nsLabels, pod.labels) {
+			matched++
+		}
+	}
+	e.recordPodsMatchedCondition(uid, matched)
 }
 
 func (e *EgressManager) podDeleted(podUid string) {
@@ -182,6 +206,11 @@ func (e *EgressManager) podDeleted(podUid string) {
 		e.closeLinks(podUid, links)
 	}
 	delete(e.pods, podUid)
+	// recomputed after the delete, so a departing pod no longer counts toward
+	// the policies it was attached to
+	for uid := range pa.attachedFilters {
+		e.recomputePodsMatchedCondition(uid)
+	}
 }
 
 // attachBoth attaches the egress and protocol programs to one cgroup, returning

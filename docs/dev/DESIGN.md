@@ -725,11 +725,25 @@ then lifts the newest `lastEvaluatedTime` across all shards to the top level. Up
 `retry.RetryOnConflict` against the `status` subresource, so concurrent per-node writes converge
 instead of clobbering each other.
 
-Conditions are merged by type: `Applied` is written by the `StatusWriter` itself with the reason
-naming the mode (`Enforcing`/`Monitoring`); `TargetsValid` comes from `egressmgr`,
-`ObservationAvailable`, `ExecRulesValid` and `OpenRulesValid` from `lsmmgr`, and are merged
+Conditions are merged by type: `TargetsValid` comes from `egressmgr`; `EnforcementAvailable`,
+`ObservationAvailable`, `ExecRulesValid` and `OpenRulesValid` come from `lsmmgr`;
+`EnforcementAvailable` and `PodsMatched` are written by both, since either manager can fail to
+attach or match pods for its own behaviors. All of these are merged into `status.conditions`
 verbatim. Each behavior gets its own condition type because conditions are keyed by type and
-last-write-wins. This is the mechanism behind
+last-write-wins.
+
+`Applied` is the one exception: rather than being recorded directly, `StatusWriter` derives it at
+flush time from `spec.mode` plus whatever the mode's own `EnforcementAvailable` /
+`ObservationAvailable` and the shared `PodsMatched` currently say — a mode that promises
+enforcement or observation does not read as applied when the attachment behind it never took, or
+when the policy's selector matches no pod on this node. The two are checked in that order, so an
+attachment failure (the more actionable case) is reported ahead of, and is never masked by, a
+selector that also happens to match nothing at the same time. The one direct exception to the
+derivation is `reportCompileFailure`, which records `Applied=False/CompileFailed` itself for a
+policy the compiler rejected outright — there is no evaluation result to derive anything from,
+since nothing compiled.
+
+This is the mechanism behind
 the "fail loud, not silent" rule: a network target the runtime cannot program (IPv6, a CIDR wider
 than `/24`, a hostname) is reported as a typed `egressfilter.RejectedTarget`, logged at `V(0)`,
 **and** surfaced as `TargetsValid=False` with the per-value reason; an open or exec path that

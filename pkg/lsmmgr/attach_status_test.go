@@ -127,6 +127,62 @@ func TestPodsMatchedCondition(t *testing.T) {
 	}
 }
 
+// TestPodsMatchedUpdatesOnPodEventsAlone pins a bug Copilot's review caught: a
+// policy re-evaluated on RuntimePolicyEvent recomputes PodsMatched, but pod
+// create/update/delete previously never did, so a policy created with zero
+// matches stayed PodsMatched=False (and, since Applied now derives from it,
+// Applied=False) forever after a matching pod later showed up, until the
+// policy itself happened to be re-evaluated. No RuntimePolicyEvent update is
+// sent anywhere in this test — every transition below has to come from the
+// pod events alone.
+func TestPodsMatchedUpdatesOnPodEventsAlone(t *testing.T) {
+	h := newHarness(t)
+	rp := result("rp1", compiler.ModeEnforce, labels.SelectorFromSet(map[string]string{"app": "web"}),
+		pair(nil, []string{"/etc/shadow"}), nil)
+	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("create: unexpected error: %v", err)
+	}
+	got := condOfType(t, h.status, "rp1", v1alpha1.ConditionPodsMatched)
+	if got.Status != metav1.ConditionFalse {
+		t.Fatalf("before any pod: PodsMatched = %v, want False", got.Status)
+	}
+
+	// a matching pod is created: PodsMatched must flip on this event alone
+	if err := h.l.PodEvent(testPod("pod-1", map[string]string{"app": "web"}), nil, cgs(1), events.EventTypeCreate); err != nil {
+		t.Fatalf("PodEvent create: unexpected error: %v", err)
+	}
+	got = condOfType(t, h.status, "rp1", v1alpha1.ConditionPodsMatched)
+	if got.Status != metav1.ConditionTrue {
+		t.Fatalf("after a matching pod is created: PodsMatched = %v, want True", got.Status)
+	}
+
+	// the pod is relabelled out of the selector: PodsMatched must flip back
+	if err := h.l.PodEvent(testPod("pod-1", map[string]string{"app": "other"}), nil, cgs(1), events.EventTypeUpdate); err != nil {
+		t.Fatalf("PodEvent update: unexpected error: %v", err)
+	}
+	got = condOfType(t, h.status, "rp1", v1alpha1.ConditionPodsMatched)
+	if got.Status != metav1.ConditionFalse {
+		t.Fatalf("after the pod relabels out: PodsMatched = %v, want False", got.Status)
+	}
+
+	// relabel it back in, then delete it outright: PodsMatched must flip back
+	// to False on the delete, not stay stuck True
+	if err := h.l.PodEvent(testPod("pod-1", map[string]string{"app": "web"}), nil, cgs(1), events.EventTypeUpdate); err != nil {
+		t.Fatalf("PodEvent re-label: unexpected error: %v", err)
+	}
+	got = condOfType(t, h.status, "rp1", v1alpha1.ConditionPodsMatched)
+	if got.Status != metav1.ConditionTrue {
+		t.Fatalf("after the pod relabels back in: PodsMatched = %v, want True", got.Status)
+	}
+	if err := h.l.PodDeleted("pod-1"); err != nil {
+		t.Fatalf("PodDeleted: unexpected error: %v", err)
+	}
+	got = condOfType(t, h.status, "rp1", v1alpha1.ConditionPodsMatched)
+	if got.Status != metav1.ConditionFalse {
+		t.Errorf("after the last matching pod is deleted: PodsMatched = %v, want False", got.Status)
+	}
+}
+
 // TestPodsMatchedZeroLogsOnce pins the fix for V(0) log spam: a policy
 // re-evaluated repeatedly with the same zero-match outcome (an
 // EvaluationInterval tick, or an informer resync) must not re-trigger the log

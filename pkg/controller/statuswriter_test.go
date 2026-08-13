@@ -319,6 +319,85 @@ func TestStatusWriterAppliedDerivedFromAttachmentOutcome(t *testing.T) {
 	}
 }
 
+// TestStatusWriterAppliedGatedByPodsMatched: a policy whose
+// podSelector/namespaceSelector matches zero pods on this node must not read
+// the same as one that is enforcing/observing something, even though its
+// attachment itself succeeded.
+func TestStatusWriterAppliedGatedByPodsMatched(t *testing.T) {
+	tests := []struct {
+		mode string
+	}{
+		{mode: compiler.ModeEnforce},
+		{mode: compiler.ModeMonitor},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.mode, func(t *testing.T) {
+			sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+			if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", tc.mode, labels.Everything()), events.EventTypeCreate); err != nil {
+				t.Fatal(err)
+			}
+			sw.RecordCondition("uid-1", "p", metav1.Condition{
+				Type: v1alpha1.ConditionPodsMatched, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonNoMatchingPods,
+				Message: "no pod on this node matches the policy's podSelector/namespaceSelector",
+			})
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+
+			got := getPolicy(t, client, "p")
+			applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+			if applied.Status != metav1.ConditionFalse || applied.Reason != v1alpha1.ReasonNoMatchingPods {
+				t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, v1alpha1.ReasonNoMatchingPods)
+			}
+			if applied.Message == "" {
+				t.Error("Applied carries no message explaining why nothing matched")
+			}
+
+			// a pod now matches and the manager reasserts it
+			sw.RecordCondition("uid-1", "p", metav1.Condition{
+				Type: v1alpha1.ConditionPodsMatched, Status: metav1.ConditionTrue, Reason: v1alpha1.ReasonPodsMatched,
+				Message: "1 pod(s) on this node match the policy",
+			})
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatalf("flush after a pod matches: %v", err)
+			}
+			got = getPolicy(t, client, "p")
+			applied = conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+			if applied.Status != metav1.ConditionTrue {
+				t.Errorf("Applied once a pod matches = %s, want True", applied.Status)
+			}
+		})
+	}
+}
+
+// TestStatusWriterAppliedPrefersAttachmentFailureOverPodsMatched: when both
+// gates are False at once, the attachment failure — the more actionable of
+// the two — is what Applied's reason/message must carry, not PodsMatched.
+func TestStatusWriterAppliedPrefersAttachmentFailureOverPodsMatched(t *testing.T) {
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionPodsMatched, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonNoMatchingPods,
+	})
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionEnforcementAvailable, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonEnforcementUnavailable,
+		Message: "BPF-LSM is not active on this node",
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	got := getPolicy(t, client, "p")
+	applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+	if applied.Status != metav1.ConditionFalse || applied.Reason != v1alpha1.ReasonEnforcementUnavailable {
+		t.Errorf("Applied = (%s, %s), want (False, %s): the attachment failure must win over PodsMatched",
+			applied.Status, applied.Reason, v1alpha1.ReasonEnforcementUnavailable)
+	}
+}
+
 // TestStatusWriterAppliedIgnoresUnrelatedGate makes sure the derivation only
 // looks at the condition that gates the policy's own mode: an enforce-mode
 // policy must not be downgraded by an ObservationAvailable=False left over

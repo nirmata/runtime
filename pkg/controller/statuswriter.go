@@ -174,9 +174,11 @@ func (s *StatusWriter) baseAppliedCondition(mode string) metav1.Condition {
 
 // appliedCondition derives Applied from the mode plus whatever the owning
 // manager (lsmmgr for open/exec, egressmgr for network/protocol) has recorded
-// about whether attachment for that mode actually succeeded on this node. A
-// mode that promises enforcement or observation but whose attachment failed
-// must not read the same as one that is working.
+// about whether attachment for that mode actually succeeded on this node, and
+// whether the policy's selector currently matches any pod here at all. A mode
+// that promises enforcement or observation, but whose attachment failed or
+// whose selector matches nothing on this node, must not read the same as one
+// that is working.
 func (s *StatusWriter) appliedCondition(mode string, conditions map[string]metav1.Condition) metav1.Condition {
 	cond := s.baseAppliedCondition(mode)
 
@@ -190,13 +192,21 @@ func (s *StatusWriter) appliedCondition(mode string, conditions map[string]metav
 		return cond
 	}
 
-	gate, ok := conditions[gateType]
-	if !ok || gate.Status != metav1.ConditionFalse {
+	// an attachment that never took is checked first: it is the more
+	// actionable of the two (fix the node) and would otherwise be masked by
+	// a selector that also happens to match nothing on this node.
+	if gate, ok := conditions[gateType]; ok && gate.Status == metav1.ConditionFalse {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = gate.Reason
+		cond.Message = gate.Message
 		return cond
 	}
-	cond.Status = metav1.ConditionFalse
-	cond.Reason = gate.Reason
-	cond.Message = gate.Message
+
+	if gate, ok := conditions[v1alpha1.ConditionPodsMatched]; ok && gate.Status == metav1.ConditionFalse {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = gate.Reason
+		cond.Message = gate.Message
+	}
 	return cond
 }
 
