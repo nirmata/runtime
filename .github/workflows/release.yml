@@ -19,6 +19,38 @@ env:
   CHAINSAW_VERSION: v0.2.15
 
 jobs:
+  # ---------------------------------------------------------------- ASSERTION
+  #
+  # Queries the nightly workflow's own run history instead of trusting a
+  # status this workflow computes itself, so a red nightly actually blocks a
+  # tag rather than just being documented as something that should. Fails
+  # closed: no completed run on main is treated the same as a red one, because
+  # neither tells us the enforcement path this release ships still works.
+  nightly-gate:
+    name: "Gate: most recent nightly run (BPF-LSM, egress load) is green"
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check the most recent nightly run on main
+        run: |
+          set -euo pipefail
+          run_json="$(gh api "repos/${{ github.repository }}/actions/workflows/nightly.yml/runs?branch=main&status=completed&per_page=1" --jq '.workflow_runs[0]')"
+          if [ -z "${run_json}" ] || [ "${run_json}" = "null" ]; then
+            echo "No completed nightly run found on main. Run the Nightly workflow" \
+                 "and confirm it is green before tagging a release."
+            exit 1
+          fi
+          conclusion="$(echo "${run_json}" | jq -r '.conclusion')"
+          html_url="$(echo "${run_json}" | jq -r '.html_url')"
+          echo "most recent nightly run: ${html_url} (conclusion: ${conclusion})"
+          if [ "${conclusion}" != "success" ]; then
+            echo "Nightly is ${conclusion}. Fix it before tagging a release: ${html_url}"
+            exit 1
+          fi
+
   lint-test:
     name: Lint & Unit Tests
     runs-on: ubuntu-latest
@@ -66,7 +98,7 @@ jobs:
   publish-candidate:
     name: Build & Push Candidate Image
     runs-on: ubuntu-latest
-    needs: [lint-test]
+    needs: [lint-test, nightly-gate]
     outputs:
       candidate_tag: ${{ steps.candidate.outputs.tag }}
 
