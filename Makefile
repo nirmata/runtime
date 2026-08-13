@@ -48,18 +48,22 @@ verify-crds:
 # tag. Bump it deliberately and regenerate every object in the same commit.
 BPF_BUILDER_IMAGE ?= kyverno-runtime-bpf-builder:clang19
 BPF_OBJECTS := 'pkg/bpf/*/*_bpfe*.o' 'pkg/bpf/*/*_bpfe*.go'
+BPF_GOMODCACHE := $(shell go env GOMODCACHE)
 
 bpf-builder-image:
 	docker build -t $(BPF_BUILDER_IMAGE) hack/bpf-builder
 
 # Regenerate pkg/bpf/**/*_bpfe{l,b}.{go,o} from the _cprog sources. The container
 # runs as the invoking user so the regenerated files are never root-owned on the
-# host, even when generation fails partway.
+# host, even when generation fails partway. Docker creates a missing bind-mount
+# source as root, which that unprivileged container then cannot write to, so the
+# module cache has to exist on the host before the mount.
 generate-bpf: bpf-builder-image
+	@mkdir -p $(BPF_GOMODCACHE)
 	docker run --rm \
 		--user $(shell id -u):$(shell id -g) \
 		-v $(CURDIR):/src -w /src \
-		-v $(shell go env GOMODCACHE):/go/pkg/mod \
+		-v $(BPF_GOMODCACHE):/go/pkg/mod \
 		-e GOFLAGS=-buildvcs=false \
 		-e HOME=/tmp \
 		-e GOCACHE=/tmp/gocache \
