@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,11 +150,11 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 }
 
 // baseAppliedCondition reports what spec.mode alone promises: nothing has yet
-// asked whether that promise was kept on this node.
+// asked whether that promise was kept.
 func (s *StatusWriter) baseAppliedCondition(mode string) metav1.Condition {
 	status := metav1.ConditionTrue
 	reason := v1alpha1.ReasonEnforcing
-	message := "the policy is being enforced on this node"
+	message := "the policy is being enforced"
 	switch mode {
 	case compiler.ModeMonitor:
 		reason = v1alpha1.ReasonMonitoring
@@ -172,13 +173,10 @@ func (s *StatusWriter) baseAppliedCondition(mode string) metav1.Condition {
 	}
 }
 
-// appliedCondition derives Applied from the mode plus whatever the owning
-// manager (lsmmgr for open/exec, egressmgr for network/protocol) has recorded
-// about whether attachment for that mode actually succeeded on this node, and
-// whether the policy's selector currently matches any pod here at all. A mode
-// that promises enforcement or observation, but whose attachment failed or
-// whose selector matches nothing on this node, must not read the same as one
-// that is working.
+// appliedCondition derives Applied from the mode plus the availability and
+// pods-matched conditions handed to it. A mode that promises enforcement or
+// observation, but whose attachment failed or whose selector matches no pod,
+// must not read the same as one that is working.
 func (s *StatusWriter) appliedCondition(mode string, conditions map[string]metav1.Condition) metav1.Condition {
 	cond := s.baseAppliedCondition(mode)
 
@@ -194,7 +192,7 @@ func (s *StatusWriter) appliedCondition(mode string, conditions map[string]metav
 
 	// an attachment that never took is checked first: it is the more
 	// actionable of the two (fix the node) and would otherwise be masked by
-	// a selector that also happens to match nothing on this node.
+	// a selector that also happens to match nothing.
 	if gate, ok := conditions[gateType]; ok && gate.Status == metav1.ConditionFalse {
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = gate.Reason
@@ -240,8 +238,15 @@ func (s *StatusWriter) Run(ctx context.Context) error {
 type flushItem struct {
 	uid        string
 	name       string
+	mode       string
 	conditions []metav1.Condition
-	gen        uint64
+	// shard carries this node's compact signals; NodeName and
+	// LastEvaluatedTime are the flusher's to fill.
+	shard v1alpha1.NodePolicyStatus
+	// explicitApplied marks a directly recorded Applied, which the derived
+	// cluster-scoped one must stand aside for.
+	explicitApplied bool
+	gen             uint64
 }
 
 // Flush writes every dirty policy's shard. It is exported so the daemon (and
@@ -273,29 +278,32 @@ func (s *StatusWriter) snapshot() []flushItem {
 			s.log.V(2).Info("policy status pending: no name known yet", "policyUid", uid)
 			continue
 		}
-		conds := make([]metav1.Condition, 0, len(st.conditions)+1)
-		// reportCompileFailure records Applied directly — nothing compiled, so
-		// nothing else about the policy is relevant to whether it applied — and
-		// that verdict must not be duplicated alongside the derived one below for
-		// the same slot.
-		if explicit, ok := st.conditions[v1alpha1.ConditionApplied]; ok {
-			conds = append(conds, explicit)
-		} else {
-			conds = append(conds, s.appliedCondition(st.mode, st.conditions))
+		item := flushItem{
+			uid:   uid,
+			name:  st.name,
+			mode:  st.mode,
+			shard: signalShard(st.conditions),
+			gen:   st.gen,
 		}
-		for _, c := range st.conditions {
-			if c.Type == v1alpha1.ConditionApplied {
+		conds := make([]metav1.Condition, 0, len(st.conditions))
+		for t, c := range st.conditions {
+			switch t {
+			case v1alpha1.ConditionApplied:
+				// reportCompileFailure records Applied directly: nothing
+				// compiled, so nothing else bears on whether the policy applied
+				item.explicitApplied = true
+			case v1alpha1.ConditionEnforcementAvailable,
+				v1alpha1.ConditionObservationAvailable,
+				v1alpha1.ConditionPodsMatched:
+				// these reach the status through this node's shard and the
+				// cluster aggregation, never as direct cluster-scoped writes
 				continue
 			}
 			conds = append(conds, c)
 		}
 		sort.Slice(conds, func(i, j int) bool { return conds[i].Type < conds[j].Type })
-		items = append(items, flushItem{
-			uid:        uid,
-			name:       st.name,
-			conditions: conds,
-			gen:        st.gen,
-		})
+		item.conditions = conds
+		items = append(items, item)
 	}
 	return items
 }
@@ -345,10 +353,10 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 			return fmt.Errorf("deep copy of RuntimePolicy %s returned an unexpected type", item.name)
 		}
 
-		setNodeShard(&updated.Status, v1alpha1.NodePolicyStatus{
-			NodeName:          s.nodeName,
-			LastEvaluatedTime: &now,
-		})
+		shard := item.shard
+		shard.NodeName = s.nodeName
+		shard.LastEvaluatedTime = &now
+		setNodeShard(&updated.Status, shard)
 		recomputeLastEvaluated(&updated.Status)
 		for _, cond := range item.conditions {
 			if cond.Reason == "" {
@@ -360,6 +368,7 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 			}
 			apimeta.SetStatusCondition(&updated.Status.Conditions, cond)
 		}
+		s.setClusterConditions(&updated.Status, item.mode, item.explicitApplied)
 
 		if apiequality.Semantic.DeepEqual(before, updated.Status) {
 			// nothing to say; skip the write entirely
@@ -411,4 +420,134 @@ func recomputeLastEvaluated(status *v1alpha1.RuntimePolicyStatus) {
 	if latest != nil {
 		status.LastEvaluatedTime = latest
 	}
+}
+
+// signalShard reduces recorded conditions to the compact per-node fields the
+// cluster-scoped aggregation reads.
+func signalShard(conditions map[string]metav1.Condition) v1alpha1.NodePolicyStatus {
+	var shard v1alpha1.NodePolicyStatus
+	if c, ok := conditions[v1alpha1.ConditionEnforcementAvailable]; ok {
+		shard.EnforcementAvailable = conditionBool(c)
+	}
+	if c, ok := conditions[v1alpha1.ConditionObservationAvailable]; ok {
+		shard.ObservationAvailable = conditionBool(c)
+	}
+	if c, ok := conditions[v1alpha1.ConditionPodsMatched]; ok {
+		shard.PodsMatched = conditionBool(c)
+	}
+	for _, t := range []string{v1alpha1.ConditionEnforcementAvailable, v1alpha1.ConditionObservationAvailable} {
+		if c, ok := conditions[t]; ok && c.Status == metav1.ConditionFalse {
+			shard.Message = c.Message
+			break
+		}
+	}
+	return shard
+}
+
+func conditionBool(c metav1.Condition) *bool {
+	v := c.Status == metav1.ConditionTrue
+	return &v
+}
+
+// setClusterConditions derives the cluster-scoped availability, pods-matched
+// and Applied conditions from the per-node shards, so every daemon publishes
+// the same top-level answer instead of its own node's.
+func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus, mode string, explicitApplied bool) {
+	now := metav1.NewTime(s.clock())
+	agg := make(map[string]metav1.Condition, 3)
+	record := func(c metav1.Condition, ok bool) {
+		if ok {
+			agg[c.Type] = c
+			apimeta.SetStatusCondition(&status.Conditions, c)
+		}
+	}
+	record(aggregateAvailability(status.Nodes, now, v1alpha1.ConditionEnforcementAvailable,
+		v1alpha1.ReasonEnforcementAvailable, v1alpha1.ReasonEnforcementUnavailable,
+		func(n *v1alpha1.NodePolicyStatus) *bool { return n.EnforcementAvailable }))
+	record(aggregateAvailability(status.Nodes, now, v1alpha1.ConditionObservationAvailable,
+		v1alpha1.ReasonObservationAvailable, v1alpha1.ReasonObservationUnavailable,
+		func(n *v1alpha1.NodePolicyStatus) *bool { return n.ObservationAvailable }))
+	record(aggregatePodsMatched(status.Nodes, now))
+	if !explicitApplied {
+		apimeta.SetStatusCondition(&status.Conditions, s.appliedCondition(mode, agg))
+	}
+}
+
+// aggregateAvailability is all-true across the nodes reporting the value: one
+// node that cannot enforce or observe leaves that node's workloads uncovered
+// no matter how many other nodes can. It reports nothing when no node does.
+func aggregateAvailability(nodes []v1alpha1.NodePolicyStatus, now metav1.Time,
+	condType, trueReason, falseReason string, value func(*v1alpha1.NodePolicyStatus) *bool) (metav1.Condition, bool) {
+	var reporting int
+	var failing []string
+	for i := range nodes {
+		v := value(&nodes[i])
+		if v == nil {
+			continue
+		}
+		reporting++
+		if *v {
+			continue
+		}
+		entry := nodes[i].NodeName
+		if nodes[i].Message != "" {
+			entry += ": " + nodes[i].Message
+		}
+		failing = append(failing, entry)
+	}
+	if reporting == 0 {
+		return metav1.Condition{}, false
+	}
+	cond := metav1.Condition{Type: condType, LastTransitionTime: now}
+	if len(failing) == 0 {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = trueReason
+		cond.Message = fmt.Sprintf("available on all %d reporting node(s)", reporting)
+		return cond, true
+	}
+	cond.Status = metav1.ConditionFalse
+	cond.Reason = falseReason
+	cond.Message = fmt.Sprintf("unavailable on %d of %d reporting node(s): %s",
+		len(failing), reporting, truncatedNodeList(failing))
+	return cond, true
+}
+
+// aggregatePodsMatched is any-true: a policy's pods typically run on a few
+// nodes, so the nodes where none are scheduled must not read as a selector
+// that matches nothing.
+func aggregatePodsMatched(nodes []v1alpha1.NodePolicyStatus, now metav1.Time) (metav1.Condition, bool) {
+	var reporting, matching int
+	for i := range nodes {
+		if nodes[i].PodsMatched == nil {
+			continue
+		}
+		reporting++
+		if *nodes[i].PodsMatched {
+			matching++
+		}
+	}
+	if reporting == 0 {
+		return metav1.Condition{}, false
+	}
+	cond := metav1.Condition{Type: v1alpha1.ConditionPodsMatched, LastTransitionTime: now}
+	if matching > 0 {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = v1alpha1.ReasonPodsMatched
+		cond.Message = fmt.Sprintf("pods match the policy on %d of %d reporting node(s)", matching, reporting)
+		return cond, true
+	}
+	cond.Status = metav1.ConditionFalse
+	cond.Reason = v1alpha1.ReasonNoMatchingPods
+	cond.Message = fmt.Sprintf("no pod on any of %d reporting node(s) matches the policy's podSelector/namespaceSelector", reporting)
+	return cond, true
+}
+
+const maxReportedNodes = 5
+
+func truncatedNodeList(entries []string) string {
+	if len(entries) > maxReportedNodes {
+		entries = append(entries[:maxReportedNodes:maxReportedNodes],
+			fmt.Sprintf("and %d more", len(entries)-maxReportedNodes))
+	}
+	return strings.Join(entries, "; ")
 }

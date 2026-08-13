@@ -54,8 +54,9 @@ Work through these in order.
 5. **Does the selector match any pod on this node?** A `podSelector` /
    `namespaceSelector` that is well-formed but selects nothing looks identical to a
    working policy from the outside — the pod that would have triggered it simply never
-   existed on this node. Check `status.conditions` type `PodsMatched`; `False` with
-   reason `NoMatchingPods` means exactly that.
+   existed. Check `status.conditions` type `PodsMatched`; `False` with reason
+   `NoMatchingPods` means no pod on any node matches, and `status.nodes[*].podsMatched`
+   carries each node's own answer.
 
    ```bash
    kubectl get rpol <name> -o jsonpath='{.status.conditions[?(@.type=="PodsMatched")]}'
@@ -90,11 +91,11 @@ allow list of each default-denying policy. See
 - Allow up to about 20 seconds: BPF counters are drained every `--observe-interval`
   (default 10s), and findings are buffered and flushed every 10 seconds.
 - Check `status.conditions` for `ObservationAvailable=False`: it means observation
-  could not be attached at all (a node without BPF-LSM) or a loaded LSM program has no
-  observation maps, so a monitor-mode policy on that node would silently produce no
-  findings.
+  could not be attached on at least one node (named in the message; a node without
+  BPF-LSM, or a loaded LSM program with no observation maps), so a monitor-mode policy
+  on that node would silently produce no findings.
 - Check `status.conditions` for `PodsMatched=False`: the policy's selector matches no
-  pod on this node, so there is nothing here that could produce a finding.
+  pod on any node, so there is nothing that could produce a finding.
 - A finding for a pod whose namespace is not a valid DNS-1123 label is dropped rather
   than written to an invalid object name.
 
@@ -212,13 +213,14 @@ nothing to restart.
 are attached, nothing is blocked and no findings are produced. Set `enforce` or `monitor`.
 
 `EnforcementUnavailable` (enforce mode) and `ObservationUnavailable` (monitor mode) mean
-attaching the enforcer for `open` or `exec` failed on this node — the `Applied` message
-borrows its message from `EnforcementAvailable` / `ObservationAvailable`, which usually
-names a node without BPF-LSM, see [step 2](#the-policy-is-applied-but-nothing-is-blocked).
+attaching the enforcer for `open` or `exec` failed on at least one node — the `Applied`
+message borrows its message from `EnforcementAvailable` / `ObservationAvailable`, which
+names the failing nodes and usually BPF-LSM absence, see
+[step 2](#the-policy-is-applied-but-nothing-is-blocked).
 Both clear on their own once a later attempt succeeds, without restarting the policy.
 
 `NoMatchingPods` means `spec.podSelector` / `spec.namespaceSelector` currently selects no
-pod on this node — the `Applied` message borrows its message from `PodsMatched`, see
+pod on any node — the `Applied` message borrows its message from `PodsMatched`, see
 [step 5](#the-policy-is-applied-but-nothing-is-blocked). This reason is only reported when
 `EnforcementAvailable` / `ObservationAvailable` is not itself `False`: an attachment failure
 is checked first and, if both are `False` at once, is what `Applied` reports instead.

@@ -505,13 +505,33 @@ spec:
                 items:
                   description: |-
                     NodePolicyStatus is one node's shard of a RuntimePolicy's status, written
-                    only by that node's daemon.
+                    only by that node's daemon. The cluster-scoped Applied, EnforcementAvailable,
+                    ObservationAvailable and PodsMatched conditions are derived from the shards.
                   properties:
+                    enforcementAvailable:
+                      description: |-
+                        EnforcementAvailable reports whether the kernel programs and maps
+                        enforcing this policy are attached and programmed on this node.
+                      type: boolean
                     lastEvaluatedTime:
                       format: date-time
                       type: string
+                    message:
+                      description: Message explains a false EnforcementAvailable or
+                        ObservationAvailable.
+                      type: string
                     nodeName:
                       type: string
+                    observationAvailable:
+                      description: |-
+                        ObservationAvailable reports whether observation for this policy is
+                        attached on this node.
+                      type: boolean
+                    podsMatched:
+                      description: |-
+                        PodsMatched reports whether any pod on this node currently matches the
+                        policy's podSelector/namespaceSelector.
+                      type: boolean
                   required:
                   - nodeName
                   type: object

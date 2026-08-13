@@ -728,20 +728,31 @@ instead of clobbering each other.
 Conditions are merged by type: `TargetsValid` comes from `egressmgr`; `EnforcementAvailable`,
 `ObservationAvailable`, `ExecRulesValid` and `OpenRulesValid` come from `lsmmgr`;
 `EnforcementAvailable` and `PodsMatched` are written by both, since either manager can fail to
-attach or match pods for its own behaviors. All of these are merged into `status.conditions`
+attach or match pods for its own behaviors. `TargetsValid`, `ExecRulesValid` and `OpenRulesValid`
+are answers about the spec, identical on every node, so they are merged into `status.conditions`
 verbatim. Each behavior gets its own condition type because conditions are keyed by type and
 last-write-wins.
 
-`Applied` is the one exception: rather than being recorded directly, `StatusWriter` derives it at
-flush time from `spec.mode` plus whatever the mode's own `EnforcementAvailable` /
-`ObservationAvailable` and the shared `PodsMatched` currently say — a mode that promises
-enforcement or observation does not read as applied when the attachment behind it never took, or
-when the policy's selector matches no pod on this node. The two are checked in that order, so an
-attachment failure (the more actionable case) is reported ahead of, and is never masked by, a
-selector that also happens to match nothing at the same time. The one direct exception to the
-derivation is `reportCompileFailure`, which records `Applied=False/CompileFailed` itself for a
-policy the compiler rejected outright — there is no evaluation result to derive anything from,
-since nothing compiled.
+`EnforcementAvailable`, `ObservationAvailable` and `PodsMatched` are answers about a node, so a
+recorded condition of those types lands in this node's `status.nodes` shard as a compact signal
+(`enforcementAvailable`, `observationAvailable`, `podsMatched`, plus a `message` naming what is
+unavailable) instead of being written cluster-scoped. Every flush then derives the cluster-scoped
+condition of each type from all the shards: availability is all-true — one node that cannot
+enforce or observe leaves its workloads uncovered no matter how many others can, and the `False`
+message names the failing nodes — while `PodsMatched` is any-true, since a policy's pods typically
+run on a few nodes and the nodes where none are scheduled must not read as a selector matching
+nothing. On a mixed cluster the top-level conditions therefore state something true of the
+cluster instead of flapping to whichever node flushed last.
+
+`Applied` is derived rather than recorded: `StatusWriter` computes it at flush time from
+`spec.mode` plus the aggregated `EnforcementAvailable` / `ObservationAvailable` for that mode and
+the aggregated `PodsMatched` — a mode that promises enforcement or observation does not read as
+applied while any node's attachment behind it never took, or while no node has a matching pod.
+The two are checked in that order, so an attachment failure (the more actionable case) is
+reported ahead of, and is never masked by, a selector that also happens to match nothing at the
+same time. The one direct exception to the derivation is `reportCompileFailure`, which records
+`Applied=False/CompileFailed` itself for a policy the compiler rejected outright — there is no
+evaluation result to derive anything from, since nothing compiled.
 
 This is the mechanism behind
 the "fail loud, not silent" rule: a network target the runtime cannot program (IPv6, a CIDR wider
