@@ -129,6 +129,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 }
 
 func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
+	delete(l.zeroMatchLogged, compiledRp.UID)
 	la, ok := l.lsmAttachments[compiledRp.UID]
 	if !ok {
 		return
@@ -233,6 +234,9 @@ func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *com
 		// drop the prog state even if the close failed: keeping a closed enforcer
 		// would make every later sync operate on dead bpf maps
 		delete(la.progs, progType)
+		// a program type that no longer exists must not keep the shared
+		// availability condition False on its account
+		l.markGood(rpUID, progType, la.observe)
 		if closeErr != nil {
 			return closeErr
 		}

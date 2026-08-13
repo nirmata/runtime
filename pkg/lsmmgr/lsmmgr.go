@@ -3,6 +3,7 @@ package lsmmgr
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,11 @@ type LsmManager struct {
 	// one more centralized dependency to consult on every read
 	pods           map[string]*podRepresentation
 	lsmAttachments map[string]*lsmAttachment
+
+	// zeroMatchLogged tracks which policies already got the "matches no pods"
+	// V(0) log line, so a policy re-evaluated on every EvaluationInterval tick
+	// while genuinely idle on this node logs it once instead of every tick.
+	zeroMatchLogged map[string]bool
 }
 
 type podRepresentation struct {
@@ -74,6 +80,14 @@ type lsmAttachment struct {
 	// maps and default-deny unset, so the program cannot return -EPERM. they only
 	// count open and exec paths per cgroup
 	observe bool
+
+	// badProgs names, for each program type currently failing (an attach that
+	// never took, or a later cgid/observation operation that did), why. The
+	// shared EnforcementAvailable/ObservationAvailable condition is written as
+	// an aggregate over this set rather than from any single operation's
+	// outcome, so one program type recovering can never mask another that is
+	// still broken, and vice versa.
+	badProgs map[string]string
 }
 
 func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, cgroupSinks ...CgroupSink) *LsmManager {
@@ -89,9 +103,10 @@ func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder,
 			}
 			return enf, nil
 		},
-		clock:          time.Now,
-		pods:           make(map[string]*podRepresentation),
-		lsmAttachments: make(map[string]*lsmAttachment),
+		clock:           time.Now,
+		pods:            make(map[string]*podRepresentation),
+		lsmAttachments:  make(map[string]*lsmAttachment),
+		zeroMatchLogged: make(map[string]bool),
 	}
 }
 
@@ -231,12 +246,7 @@ func (l *LsmManager) observationUnavailable(rpUID, progType, msg string, err err
 	} else {
 		l.logger.Error(err, msg, "uid", rpUID, "progType", progType)
 	}
-	l.recordCondition(rpUID, metav1.Condition{
-		Type:    v1alpha1.ConditionObservationAvailable,
-		Status:  metav1.ConditionFalse,
-		Reason:  v1alpha1.ReasonObservationUnavailable,
-		Message: msg + " for " + progType + ": " + err.Error(),
-	})
+	l.markBad(rpUID, progType, true, msg+" for "+progType+": "+err.Error())
 }
 
 // enforcementUnavailable records a policy condition for a kernel map the
@@ -244,13 +254,7 @@ func (l *LsmManager) observationUnavailable(rpUID, progType, msg string, err err
 // is invisible everywhere else.
 func (l *LsmManager) enforcementUnavailable(rpUID, progType, msg string, err error) {
 	l.logger.Error(err, msg, "uid", rpUID, "progType", progType)
-	l.recordCondition(rpUID, metav1.Condition{
-		Type:               v1alpha1.ConditionEnforcementAvailable,
-		Status:             metav1.ConditionFalse,
-		Reason:             v1alpha1.ReasonEnforcementUnavailable,
-		Message:            msg + " for " + progType + ": " + err.Error(),
-		LastTransitionTime: metav1.NewTime(l.clock()),
-	})
+	l.markBad(rpUID, progType, false, msg+" for "+progType+": "+err.Error())
 }
 
 // reportAttachFailure records why an enforcer could not be built or attached
@@ -271,21 +275,81 @@ func (l *LsmManager) reportAttachFailure(rpUID, progType string, observe bool, e
 // succeeds — this is on the requeue path, so a transient cause (unlike a
 // missing BPF-LSM) can clear between attempts.
 func (l *LsmManager) clearAttachFailure(rpUID, progType string, observe bool) {
-	if observe {
-		l.recordCondition(rpUID, metav1.Condition{
-			Type:               v1alpha1.ConditionObservationAvailable,
-			Status:             metav1.ConditionTrue,
-			Reason:             v1alpha1.ReasonObservationAvailable,
-			Message:            "the " + progType + " enforcer is attached and observing",
-			LastTransitionTime: metav1.NewTime(l.clock()),
-		})
+	l.markGood(rpUID, progType, observe)
+}
+
+// markBad records progType as currently failing for rpUID's attachment and
+// reasserts EnforcementAvailable/ObservationAvailable as an aggregate over
+// every program type that attachment currently knows about. A policy with no
+// tracked attachment yet — the very first attach attempt, before rpCreated
+// has stored one — has nothing to aggregate against, so the condition is
+// written directly instead.
+func (l *LsmManager) markBad(rpUID, progType string, observe bool, message string) {
+	if la, ok := l.lsmAttachments[rpUID]; ok {
+		if la.badProgs == nil {
+			la.badProgs = make(map[string]string)
+		}
+		la.badProgs[progType] = message
+		l.recordAttachAggregate(rpUID, la, observe)
 		return
 	}
+	l.recordAvailability(rpUID, observe, metav1.ConditionFalse, message)
+}
+
+// markGood is markBad's inverse: it clears progType out of a tracked
+// attachment's bad set once it recovers, so a different program type that is
+// still bad keeps the aggregate condition False instead of being masked by
+// this one's recovery.
+func (l *LsmManager) markGood(rpUID, progType string, observe bool) {
+	if la, ok := l.lsmAttachments[rpUID]; ok {
+		delete(la.badProgs, progType)
+		l.recordAttachAggregate(rpUID, la, observe)
+		return
+	}
+	l.recordAvailability(rpUID, observe, metav1.ConditionTrue, "the "+progType+" enforcer is attached and programmed")
+}
+
+// recordAttachAggregate writes EnforcementAvailable/ObservationAvailable from
+// la's current bad set: True only when it is empty, False naming every
+// program type still in it otherwise.
+func (l *LsmManager) recordAttachAggregate(rpUID string, la *lsmAttachment, observe bool) {
+	if len(la.badProgs) == 0 {
+		l.recordAvailability(rpUID, observe, metav1.ConditionTrue, "every attached program type is programmed and functioning")
+		return
+	}
+	progTypes := make([]string, 0, len(la.badProgs))
+	for p := range la.badProgs {
+		progTypes = append(progTypes, p)
+	}
+	sort.Strings(progTypes)
+	parts := make([]string, 0, len(progTypes))
+	for _, p := range progTypes {
+		parts = append(parts, p+": "+la.badProgs[p])
+	}
+	l.recordAvailability(rpUID, observe, metav1.ConditionFalse, strings.Join(parts, "; "))
+}
+
+// recordAvailability writes EnforcementAvailable (enforce mode) or
+// ObservationAvailable (monitor mode), the one shared condition type every
+// program type of a policy reports through.
+func (l *LsmManager) recordAvailability(rpUID string, observe bool, status metav1.ConditionStatus, message string) {
+	condType := v1alpha1.ConditionEnforcementAvailable
+	reason := v1alpha1.ReasonEnforcementUnavailable
+	if observe {
+		condType = v1alpha1.ConditionObservationAvailable
+		reason = v1alpha1.ReasonObservationUnavailable
+	}
+	if status == metav1.ConditionTrue {
+		reason = v1alpha1.ReasonEnforcementAvailable
+		if observe {
+			reason = v1alpha1.ReasonObservationAvailable
+		}
+	}
 	l.recordCondition(rpUID, metav1.Condition{
-		Type:               v1alpha1.ConditionEnforcementAvailable,
-		Status:             metav1.ConditionTrue,
-		Reason:             v1alpha1.ReasonEnforcementAvailable,
-		Message:            "the " + progType + " enforcer is attached and programmed",
+		Type:               condType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
 		LastTransitionTime: metav1.NewTime(l.clock()),
 	})
 }
@@ -369,9 +433,15 @@ func rejectionMessage(rejected []compiler.RejectedTarget) string {
 // recordPodsMatchedCondition reports whether this node currently has any pod
 // selected by the policy, so a podSelector/namespaceSelector that matches
 // nothing does not read the same as an attachment that is doing something.
+// The V(0) log line for the zero case fires once per policy, not on every
+// call: a policy re-evaluated on every EvaluationInterval tick while
+// genuinely idle on this node would otherwise spam it forever.
 func (l *LsmManager) recordPodsMatchedCondition(rpUID string, matched int) {
 	if matched == 0 {
-		l.logger.V(0).Info("runtime policy matches no pods on this node", "uid", rpUID)
+		if !l.zeroMatchLogged[rpUID] {
+			l.logger.V(0).Info("runtime policy matches no pods on this node", "uid", rpUID)
+			l.zeroMatchLogged[rpUID] = true
+		}
 		l.recordCondition(rpUID, metav1.Condition{
 			Type:               v1alpha1.ConditionPodsMatched,
 			Status:             metav1.ConditionFalse,
@@ -381,6 +451,7 @@ func (l *LsmManager) recordPodsMatchedCondition(rpUID string, matched int) {
 		})
 		return
 	}
+	delete(l.zeroMatchLogged, rpUID)
 	l.recordCondition(rpUID, metav1.Condition{
 		Type:               v1alpha1.ConditionPodsMatched,
 		Status:             metav1.ConditionTrue,

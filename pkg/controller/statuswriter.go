@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -263,10 +264,22 @@ func (s *StatusWriter) snapshot() []flushItem {
 			continue
 		}
 		conds := make([]metav1.Condition, 0, len(st.conditions)+1)
-		conds = append(conds, s.appliedCondition(st.mode, st.conditions))
+		// reportCompileFailure records Applied directly — nothing compiled, so
+		// nothing else about the policy is relevant to whether it applied — and
+		// that verdict must not be duplicated alongside the derived one below for
+		// the same slot.
+		if explicit, ok := st.conditions[v1alpha1.ConditionApplied]; ok {
+			conds = append(conds, explicit)
+		} else {
+			conds = append(conds, s.appliedCondition(st.mode, st.conditions))
+		}
 		for _, c := range st.conditions {
+			if c.Type == v1alpha1.ConditionApplied {
+				continue
+			}
 			conds = append(conds, c)
 		}
+		sort.Slice(conds, func(i, j int) bool { return conds[i].Type < conds[j].Type })
 		items = append(items, flushItem{
 			uid:        uid,
 			name:       st.name,

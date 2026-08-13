@@ -491,6 +491,43 @@ func TestStatusWriterRecordedNameMakesConditionFlushable(t *testing.T) {
 	}
 }
 
+// TestStatusWriterExplicitAppliedWinsOverDerivation guards the interaction
+// between reportCompileFailure, which records Applied directly (it is the
+// only place the offending field path and value reach the operator), and
+// snapshot's own derivation of Applied: the two must never both land in the
+// flushed condition list for the same event, with the explicit one kept.
+// Repeated because snapshot iterates a map, whose order is randomized per
+// run, so a single pass could miss a regression that only shows up under a
+// particular iteration order.
+func TestStatusWriterExplicitAppliedWinsOverDerivation(t *testing.T) {
+	for i := range 30 {
+		sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+		sw.RecordCondition("uid-1", "p", metav1.Condition{
+			Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonCompileFailed,
+			Message: "spec.behaviors[0].network: Invalid value",
+		})
+		if err := sw.Flush(context.Background()); err != nil {
+			t.Fatalf("iteration %d: flush: %v", i, err)
+		}
+
+		got := getPolicy(t, client, "p")
+		var count int
+		var applied metav1.Condition
+		for _, c := range got.Status.Conditions {
+			if c.Type == v1alpha1.ConditionApplied {
+				count++
+				applied = c
+			}
+		}
+		if count != 1 {
+			t.Fatalf("iteration %d: %d Applied conditions, want exactly 1 (have %+v)", i, count, got.Status.Conditions)
+		}
+		if applied.Reason != v1alpha1.ReasonCompileFailed || applied.Message == "" {
+			t.Fatalf("iteration %d: Applied = %+v, want reason %s with its message intact", i, applied, v1alpha1.ReasonCompileFailed)
+		}
+	}
+}
+
 func TestStatusWriterPolicyDeleteDropsState(t *testing.T) {
 	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
 	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {

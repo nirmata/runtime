@@ -43,6 +43,11 @@ type EgressManager struct {
 	pods map[string]*podAttachment
 	rps  map[string]*compiler.EvaluationResult
 
+	// zeroMatchLogged tracks which policies already got the "matches no pods"
+	// V(0) log line, so a policy re-evaluated on every EvaluationInterval tick
+	// while genuinely idle on this node logs it once instead of every tick.
+	zeroMatchLogged map[string]bool
+
 	newFilter      filterFactory
 	newProtoFilter protoFilterFactory
 	clock          func() time.Time
@@ -75,11 +80,12 @@ type podAttachment struct {
 
 func NewEgressManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc) *EgressManager {
 	return &EgressManager{
-		logger: logger,
-		status: status,
-		onLoss: onLoss,
-		pods:   make(map[string]*podAttachment),
-		rps:    make(map[string]*compiler.EvaluationResult),
+		logger:          logger,
+		status:          status,
+		onLoss:          onLoss,
+		pods:            make(map[string]*podAttachment),
+		rps:             make(map[string]*compiler.EvaluationResult),
+		zeroMatchLogged: make(map[string]bool),
 		newFilter: func(logger *logr.Logger) (egressFilter, error) {
 			return egressfilter.New(logger)
 		},
@@ -349,9 +355,15 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 // recordPodsMatchedCondition reports whether this node currently has any pod
 // selected by the policy, so a podSelector/namespaceSelector that matches
 // nothing does not read the same as an attachment that is doing something.
+// The V(0) log line for the zero case fires once per policy, not on every
+// call: a policy re-evaluated on every EvaluationInterval tick while
+// genuinely idle on this node would otherwise spam it forever.
 func (e *EgressManager) recordPodsMatchedCondition(uid string, matched int) {
 	if matched == 0 {
-		e.logger.V(0).Info("runtime policy matches no pods on this node", "uid", uid)
+		if !e.zeroMatchLogged[uid] {
+			e.logger.V(0).Info("runtime policy matches no pods on this node", "uid", uid)
+			e.zeroMatchLogged[uid] = true
+		}
 		e.recordCondition(uid, metav1.Condition{
 			Type:               v1alpha1.ConditionPodsMatched,
 			Status:             metav1.ConditionFalse,
@@ -361,6 +373,7 @@ func (e *EgressManager) recordPodsMatchedCondition(uid string, matched int) {
 		})
 		return
 	}
+	delete(e.zeroMatchLogged, uid)
 	e.recordCondition(uid, metav1.Condition{
 		Type:               v1alpha1.ConditionPodsMatched,
 		Status:             metav1.ConditionTrue,
