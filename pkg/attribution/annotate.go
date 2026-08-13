@@ -1,7 +1,7 @@
 package attribution
 
 import (
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 const stageName = "attribution"

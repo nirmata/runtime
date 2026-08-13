@@ -18,7 +18,7 @@ limitations under the License.
 package fake
 
 import (
-	runtimev1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	runtimev1alpha1 "github.com/nirmata/runtime/api/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"

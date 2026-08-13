@@ -36,7 +36,12 @@ Work through these in order.
 
    Expect `cgroup2fs`.
 
-4. **What do the policy's own conditions say?**
+4. **For `network` policies: is the traffic IPv4?** The egress filter reads IPv4
+   packets only, so on a dual-stack cluster a connection made over IPv6 is neither
+   blocked nor observed, whatever the policy says. See
+   [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
+
+5. **What do the policy's own conditions say?**
 
    ```bash
    kubectl get rpol <name> -o yaml
@@ -46,9 +51,20 @@ Work through these in order.
    and in which mode; `TargetsValid` says whether every `network` target in the policy
    could be programmed.
 
+## A path I allowed is still blocked
+
+For `open` and `exec`, each policy attaches its own LSM program and the kernel denies
+when any of them denies. A policy with `deny.values: ["*"]` blocks every path absent
+from its **own** `allow` list, whatever another policy allows — so check every policy
+matching the pod, not only the one carrying the allow entry. The path has to be in the
+allow list of each default-denying policy. See
+[multiple policies on one pod](reference/runtimepolicy.md#multiple-policies-on-one-pod).
+
 ## No Reports appear in monitor mode
 
-- `spec.mode` must be `monitor`. `enforce` mode blocks but never emits findings.
+- `spec.mode` must be set. A `monitor` policy reports every observation its lists match;
+  an `enforce` policy reports only operations the kernel actually denied, so a workload
+  staying inside an enforcing policy's rules produces no Reports at all.
 - Allow up to about 20 seconds: BPF counters are drained every `--observe-interval`
   (default 10s), and findings are buffered and flushed every 10 seconds.
 - Check `status.conditions` for `ObservationAvailable=False`: it means a loaded LSM

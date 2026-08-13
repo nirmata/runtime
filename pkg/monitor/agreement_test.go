@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/compiler"
 )
 
 // valueCorpus mixes every shape a policy can put in an open or exec values

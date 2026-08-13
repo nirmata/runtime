@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/metrics"
+	"github.com/nirmata/runtime/pkg/metrics"
 
 	"github.com/go-logr/logr"
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"

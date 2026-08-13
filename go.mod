@@ -1,4 +1,4 @@
-module github.com/nirmata/kyverno-runtime
+module github.com/nirmata/runtime
 
 go 1.26.0
 

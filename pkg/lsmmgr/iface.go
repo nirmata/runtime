@@ -1,8 +1,8 @@
 package lsmmgr
 
 import (
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/lsm"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/compiler"
 
 	"github.com/cilium/ebpf/link"
 )

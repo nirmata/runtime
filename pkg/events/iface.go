@@ -1,8 +1,8 @@
 package events
 
 import (
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/containers"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/containers"
 
 	corev1 "k8s.io/api/core/v1"
 )

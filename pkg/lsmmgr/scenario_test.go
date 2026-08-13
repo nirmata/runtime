@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
 )
 
 // TestScenario_PolicyAndPodLifecycle walks a realistic event sequence and checks the

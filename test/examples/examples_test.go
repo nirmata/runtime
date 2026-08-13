@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/pkg/compiler"
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 )

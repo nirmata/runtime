@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/google/go-cmp/cmp"
 )

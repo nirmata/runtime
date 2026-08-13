@@ -1,7 +1,7 @@
 package compiler
 
 import (
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/api/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )

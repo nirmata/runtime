@@ -46,8 +46,10 @@ spec:
         expression: "..."
 ```
 
-- `network`: IPv4 addresses, IPv4 CIDRs, cluster Service DNS names, and fully qualified
-  domain names for egress.
+- `network`: IPv4 addresses, IPv4 CIDRs of `/24` or narrower, cluster Service DNS names,
+  and fully qualified domain names for egress. The filter reads IPv4 packets only, which
+  on a dual-stack cluster is a real boundary — see
+  [Limits of network enforcement](#limits-of-network-enforcement).
 - `exec`: command names/paths.
 - `open`: file paths.
 - `protocol`: application protocols for egress, classified in the kernel from the first data
@@ -69,16 +71,13 @@ spec:
   nothing about whether the traffic is encrypted: `ssh` and `quic` both carry their own
   encryption, they just do not use TLS records.
 - `dns`: the DNS names a workload is expected to resolve. Observation only, and its allow
-  list is inverted relative to the other three — see [DNS reporting](#dns-reporting).
+  list is inverted relative to the other behaviors — see [DNS reporting](#dns-reporting).
 - `deny.values: ["*"]` (or an expression that returns `["*"]`) is treated as a
-  **default deny** for that behavior (`network`, `exec`, `open`, or `protocol`); on a `dns`
-  behavior the same sentinel means "report every name". This is
-  evaluated across all `RuntimePolicy` objects matching a pod: if any one of
-  them sets a default deny for a behavior, that behavior becomes
-  deny-all-except-allowed, and the allow list is the union of `allow` entries
-  from every matching policy. If none of the matching policies set a default
-  deny for that behavior, it defaults to allow-all-except-denied, where the
-  deny list is the union of `deny` entries from every matching policy.
+  **default deny** for that behavior (`network`, `exec`, `open`, or `protocol`): the
+  behavior flips from allow-all-except-denied to deny-all-except-allowed. On a `dns`
+  behavior the same sentinel means "report every name". When several policies match
+  one pod, how their lists combine differs by behavior — see
+  [Multiple policies on one pod](#multiple-policies-on-one-pod).
 - A `network` value that is a name is resolved by one of two mechanisms, chosen by the
   shape of the name alone: a cluster Service DNS name resolves from API server informers
   (see [Cluster Service targets](#cluster-service-targets)), any other fully qualified
@@ -98,6 +97,37 @@ rejected at admission by a CEL validation rule on the CRD.
 
 Expression syntax, the available CEL libraries, and the `resource`/`http`/`json` helpers
 are in [CEL in RuntimePolicy](cel.md).
+
+## Multiple policies on one pod
+
+Every `RuntimePolicy` matching a pod is in force on it at once. How their rules combine
+differs by behavior, because the kernel objects differ, and the difference matters most
+under a default deny.
+
+For `network` and `protocol`, the daemon programs one egress filter per pod and merges
+every matching enforce-mode policy into it: the `deny` entries of all policies are
+programmed together, the `allow` entries of all policies are programmed together, and a
+default deny set by any one policy applies to the pod. A connection is denied if it
+matches any policy's `deny` entry, or if some policy sets a default deny and the
+connection matches no policy's `allow` entry. An explicit `deny` entry always denies:
+no `allow` entry overrides it, whichever policy carries either.
+
+For `open` and `exec`, each policy attaches its own LSM program with its own maps, and
+the kernel denies when any attached program denies. `deny` entries therefore combine
+the same way — a path denied by any policy is denied — but default deny does not: a
+policy that sets `deny.values: ["*"]` blocks every path absent from **its own** `allow`
+list, whatever any other policy allows. Two default-deny policies on the same pod each
+block the other's allowed paths, so the effective allowed set is the intersection of
+their `allow` lists, not the union. A default-deny `open` or `exec` policy cannot be
+relaxed by another policy; every path the pod needs must be in that policy's own
+`allow` list.
+
+`dns` only reports, and each matching policy evaluates and reports on its own.
+
+`monitor`-mode policies contribute no entries to the kernel maps under any behavior;
+each one evaluates its own lists in userspace and reports independently of every other
+policy. A monitor policy's findings therefore always reflect that one policy's lists,
+never a combination.
 
 ## Targeting namespaces
 
@@ -414,6 +444,31 @@ current limits:
 - **IPv4 only, on both sides.** Only A records are read, and only from answers carried
   over IPv4, matching the IPv4-only egress maps.
 
+## Limits of network enforcement
+
+The egress filter reads IPv4 packets and nothing else. That is a security boundary an
+operator has to know about, not a missing convenience:
+
+- **IPv6 traffic is not filtered.** The egress program passes any packet that is not
+  IPv4 without looking at it, so on a dual-stack cluster a default-deny `network`
+  behavior does not deny IPv6 connections: a destination reachable over IPv6 is
+  reachable whatever the policy says, and nothing observes or reports the connection.
+  A workload that must be contained by `network` rules needs to run without IPv6
+  connectivity — a single-stack IPv4 cluster, or pods with no IPv6 address. A
+  `protocol` behavior does classify and enforce IPv6 flows, so a protocol default deny
+  still constrains what an IPv6 connection may carry, but never where it goes.
+- **IPv6 literals are rejected as values**, at compile time when written literally and
+  through `TargetsValid=False` when produced by an `expression`, so a policy cannot
+  appear to cover a family the filter does not read.
+- **A CIDR is expanded into addresses, not stored as a prefix.** The maps hold
+  individual IPv4 addresses, so a CIDR of `/24` or narrower is expanded into its
+  addresses — at most 256 per value — and a wider one is rejected with
+  `TargetsValid=False` rather than partially covered. The per-pod allow and deny maps
+  hold 1024 addresses each; a set of policies whose expansions exceed that fails to
+  program and is surfaced through the policy's status conditions.
+- **No port granularity.** An address allows or denies every port on it; no policy
+  value carries a port.
+
 ## DNS reporting
 
 A `dns` behavior declares the DNS names a selected workload is *expected* to resolve, and
@@ -454,7 +509,8 @@ Relabeling a pod starts or stops observation like any other selector change.
 
 ### The allow list is inverted
 
-For `network`, `exec`, and `open`, an `allow` entry only matters under a default deny. For
+For `network`, `protocol`, `exec`, and `open`, an `allow` entry only matters under a
+default deny. For
 `dns`, `allow` *is* the expected set, so a name matching none of its entries is reported on
 its own:
 
@@ -604,9 +660,14 @@ name the destination as a domain (or an address, or a Service) on a `network` be
 
 | `spec.mode` | Kernel programs attached | Deny/allow maps programmed | Blocks | Emits findings |
 | --- | --- | --- | --- | --- |
-| `enforce` | yes | yes | yes | no |
+| `enforce` | yes | yes | yes | denials only |
 | `monitor` | yes | **no** (maps stay empty) | no | yes |
 | omitted | no | no | no | no |
+
+An `enforce` finding is the record that the kernel blocked an operation, carrying
+`enforced: "true"`; operations the policy permits produce nothing. A `monitor` finding is
+a counterfactual — an enforcing form of this policy would have blocked this (see
+[Findings and Reports](#findings-and-reports)).
 
 A `dns` behavior exists only on the `monitor` row. Pairing it with `enforce` fails the
 policy to compile and points at the `network` behavior, which is where a destination named
@@ -689,7 +750,8 @@ Conditions:
 | `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServices` | Whether every `network` and `protocol` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServices` lists the Service and endpoint names that are not in cache. |
 | `ExecRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `exec` path could be programmed. `UnsupportedPaths` lists the rejected values and why. |
 | `OpenRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `open` path could be programmed. |
-| `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy would silently produce no findings. |
+| `ObservationAvailable` | `ObservationUnavailable` | Set to `False` when a loaded LSM program has no observation maps, so a monitor-mode policy on that node would silently produce no findings. |
+| `EnforcementAvailable` | `EnforcementUnavailable` | Set to `False` when a kernel map could not be programmed — a full map, a failed update — so part of the policy is not enforced on that pod. |
 
 A target or path the runtime cannot program is never silently skipped, and which condition
 carries it depends on where the value came from: a literal is checked when the policy compiles
@@ -699,7 +761,8 @@ also reaches an operator-visible log line.
 
 ## Findings and Reports
 
-Monitor-mode matches are written as [OpenReports](https://openreports.io) `Report` objects in
+Findings — monitor-mode matches and enforce-mode denials alike — are written as
+[OpenReports](https://openreports.io) `Report` objects in
 the offending pod's namespace, one Report per (namespace, node), named
 `kyverno-runtime-<nodeName>`, labeled `runtime.nirmata.io/node: <nodeName>`.
 
@@ -718,9 +781,10 @@ Each result carries `policy` (the RuntimePolicy name), `rule` (the behavior: `ne
 `result` is `fail` for `network`, `open`, and `exec`, and `warn` for `dns`: a question was
 observed, nothing was blocked, and nothing would have been.
 
-`enforced` distinguishes a blocked operation from one that only matched: it is `"false"` on
-findings from a `monitor` policy, where the behavior was observed but allowed to proceed.
-It is always `"false"` on a `dns` finding.
+`enforced` distinguishes a blocked operation from one that only matched: it is `"true"`
+on findings from an `enforce` policy, where the kernel denied the operation, and
+`"false"` on findings from a `monitor` policy, where the behavior was observed but
+allowed to proceed. It is always `"false"` on a `dns` finding.
 
 Details worth knowing:
 
@@ -893,7 +957,8 @@ exception in shape — a program of its own, streamed rather than counted — an
   `(path, decision)` keys; a workload touching more than that within one poll interval loses
   the excess. The read-and-reset drain mitigates this but does not eliminate it.
 - **Network observation is IPv4 only**, with no port or protocol, because the egress maps are
-  keyed on a `u32` IPv4 address.
+  keyed on a `u32` IPv4 address. An IPv6 connection is not observed at all — see
+  [Limits of network enforcement](#limits-of-network-enforcement).
 - **A destination is named only when the snooper learned it.** An observation carries a
   domain when the address came from a DNS answer for a name some policy already names
   (see [Limits of domain names](#limits-of-domain-names)); every other destination is

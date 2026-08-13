@@ -4,9 +4,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	fakeversioned "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned/fake"
-	"github.com/nirmata/kyverno-runtime/pkg/events"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	fakeversioned "github.com/nirmata/runtime/pkg/client/clientset/versioned/fake"
+	"github.com/nirmata/runtime/pkg/events"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"

@@ -21,7 +21,7 @@ import (
 	fmt "fmt"
 	http "net/http"
 
-	runtimev1alpha1 "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned/typed/api/v1alpha1"
+	runtimev1alpha1 "github.com/nirmata/runtime/pkg/client/clientset/versioned/typed/api/v1alpha1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"

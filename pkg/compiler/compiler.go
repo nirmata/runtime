@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/api/v1alpha1"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"

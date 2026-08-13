@@ -20,8 +20,8 @@ package v1alpha1
 import (
 	context "context"
 
-	apiv1alpha1 "github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	scheme "github.com/nirmata/kyverno-runtime/pkg/client/clientset/versioned/scheme"
+	apiv1alpha1 "github.com/nirmata/runtime/api/v1alpha1"
+	scheme "github.com/nirmata/runtime/pkg/client/clientset/versioned/scheme"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"

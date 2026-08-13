@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/utils"
+	"github.com/nirmata/runtime/pkg/utils"
 
 	"github.com/cilium/ebpf"
 )

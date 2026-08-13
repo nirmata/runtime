@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 // PollFunc returns the events observed since the previous call. It is called

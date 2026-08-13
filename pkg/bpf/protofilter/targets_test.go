@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/compiler"
 
 	"github.com/google/go-cmp/cmp"
 )

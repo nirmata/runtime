@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/api/v1alpha1"
 
 	"github.com/google/go-cmp/cmp"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"

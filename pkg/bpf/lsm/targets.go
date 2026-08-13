@@ -1,7 +1,7 @@
 package lsm
 
 import (
-	"github.com/nirmata/kyverno-runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/compiler"
 )
 
 // PathKeys returns the banned/allowed map keys for one behavior's path values:

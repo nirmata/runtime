@@ -58,7 +58,7 @@ Tooling for the from-source paths below: Docker, [kind](https://kind.sigs.k8s.io
 ### From source, on a kind cluster
 
 ```bash
-git clone https://github.com/nirmata/kyverno-runtime.git
+git clone https://github.com/nirmata/runtime.git
 cd kyverno-runtime
 make kind
 ```

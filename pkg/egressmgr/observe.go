@@ -7,9 +7,9 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/egressfilter"
-	"github.com/nirmata/kyverno-runtime/pkg/bpf/protofilter"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
+	"github.com/nirmata/runtime/pkg/bpf/protofilter"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 // CollectObservations drains the IPv4 and protocol observation counters of

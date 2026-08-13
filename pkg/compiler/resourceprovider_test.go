@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/api/v1alpha1"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

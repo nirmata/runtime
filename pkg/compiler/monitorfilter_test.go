@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/kyverno-runtime/api/v1alpha1"
-	"github.com/nirmata/kyverno-runtime/pkg/runtimeevent"
+	"github.com/nirmata/runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/google/go-cmp/cmp"
 	apiservercel "k8s.io/apiserver/pkg/cel"

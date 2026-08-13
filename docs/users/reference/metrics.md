@@ -21,10 +21,10 @@ Label values:
 
 | Label | Values |
 | --- | --- |
-| `source` | `egress-observe`, `lsm-observe` (the two poll sources), `dnsquery` (the DNS question source), `monitor`, `reporter` |
-| `kind` | `net`, `exec`, `open`, `dns` |
+| `source` | `egress-observe`, `lsm-observe` (the two poll sources), `dnsquery` (the DNS question source), `exec-trace` (the streamed exec source), `monitor`, `reporter` |
+| `kind` | `net`, `protocol`, `exec`, `open`, `dns` |
 | `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `count_map_full`, `ringbuf_full`, `name_unreadable`, `undecodable` |
-| `behavior` | `network`, `exec`, `open`, `dns` |
+| `behavior` | `network`, `protocol`, `exec`, `open`, `dns` |
 | `result` | `ok`, `error`, `skipped` |
 
 The pipeline-wide drop reasons:
