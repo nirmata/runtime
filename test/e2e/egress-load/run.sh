@@ -81,7 +81,7 @@ count_map_full_drops() {
   grep '^nirmata_runtime_events_dropped_total{' "$1" 2>/dev/null \
     | grep "source=\"$2\"" \
     | grep 'reason="count_map_full"' \
-    | awk '{s += $NF} END {print s + 0}'
+    | awk '{s += $NF} END {print s + 0}' || true
 }
 
 daemon_restarts() {
