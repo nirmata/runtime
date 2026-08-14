@@ -14,6 +14,10 @@ rules:
 - apiGroups: [""]
   resources: ["namespaces"]
   verbs: ["get", "list", "watch"]
+# daemon: watches node existence to prune status shards left by deleted nodes
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: ["runtime.nirmata.io"]
   resources: ["runtimepolicies"]
   verbs: ["get", "list", "watch"]

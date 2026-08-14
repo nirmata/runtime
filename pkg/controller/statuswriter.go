@@ -64,6 +64,10 @@ type StatusWriter struct {
 	log      logr.Logger
 	// clock is injectable for tests.
 	clock func() time.Time
+	// nodeGone answers only when it can be authoritative: true means the
+	// named node no longer exists, false means it exists or the caller
+	// cannot yet tell. A nil func disables shard pruning.
+	nodeGone func(name string) bool
 
 	mu sync.Mutex
 	// policies is keyed by policy UID.
@@ -72,7 +76,7 @@ type StatusWriter struct {
 
 // NewStatusWriter builds a StatusWriter for this node. A non-positive interval
 // falls back to DefaultStatusFlushInterval.
-func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval time.Duration, log logr.Logger) *StatusWriter {
+func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval time.Duration, log logr.Logger, nodeGone func(name string) bool) *StatusWriter {
 	if interval <= 0 {
 		interval = DefaultStatusFlushInterval
 	}
@@ -82,6 +86,7 @@ func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval 
 		interval: interval,
 		log:      log.WithName("statuswriter"),
 		clock:    time.Now,
+		nodeGone: nodeGone,
 		policies: make(map[string]*policyStatusState),
 	}
 }
@@ -117,6 +122,15 @@ func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventT
 		st.name = res.Name
 	}
 	st.mode = res.Mode
+	// an availability condition recorded under the other mode has no writer
+	// left to correct it: the managers only record the type matching the
+	// current mode, so it would sit stale in the map forever
+	switch res.Mode {
+	case compiler.ModeEnforce:
+		delete(st.conditions, v1alpha1.ConditionObservationAvailable)
+	case compiler.ModeMonitor:
+		delete(st.conditions, v1alpha1.ConditionEnforcementAvailable)
+	}
 	st.touch()
 	return nil
 }
@@ -353,6 +367,7 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 			return fmt.Errorf("deep copy of RuntimePolicy %s returned an unexpected type", item.name)
 		}
 
+		s.pruneDeletedNodeShards(&updated.Status)
 		shard := item.shard
 		shard.NodeName = s.nodeName
 		shard.LastEvaluatedTime = &now
@@ -378,6 +393,25 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 		_, err = rpClient.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
 		return err
 	})
+}
+
+// pruneDeletedNodeShards drops the shards left behind by nodes that no longer
+// exist, so a deleted node's last-known signals stop feeding the aggregate.
+// This node's own shard is never pruned: the flush about to rewrite it is
+// proof the node is alive, whatever the watch behind nodeGone currently says.
+func (s *StatusWriter) pruneDeletedNodeShards(status *v1alpha1.RuntimePolicyStatus) {
+	if s.nodeGone == nil {
+		return
+	}
+	kept := status.Nodes[:0]
+	for _, n := range status.Nodes {
+		if n.NodeName != s.nodeName && s.nodeGone(n.NodeName) {
+			s.log.V(2).Info("dropping the status shard of a deleted node", "node", n.NodeName)
+			continue
+		}
+		kept = append(kept, n)
+	}
+	status.Nodes = kept
 }
 
 // setNodeShard replaces this node's entry in status.nodes, leaving every other
@@ -455,11 +489,15 @@ func conditionBool(c metav1.Condition) *bool {
 func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus, mode string, explicitApplied bool) {
 	now := metav1.NewTime(s.clock())
 	agg := make(map[string]metav1.Condition, 3)
+	// a type no shard reports is removed rather than left as written: keeping
+	// it would preserve a value the shards no longer back
 	record := func(c metav1.Condition, ok bool) {
-		if ok {
-			agg[c.Type] = c
-			apimeta.SetStatusCondition(&status.Conditions, c)
+		if !ok {
+			apimeta.RemoveStatusCondition(&status.Conditions, c.Type)
+			return
 		}
+		agg[c.Type] = c
+		apimeta.SetStatusCondition(&status.Conditions, c)
 	}
 	record(aggregateAvailability(status.Nodes, now, v1alpha1.ConditionEnforcementAvailable,
 		v1alpha1.ReasonEnforcementAvailable, v1alpha1.ReasonEnforcementUnavailable,
@@ -496,7 +534,7 @@ func aggregateAvailability(nodes []v1alpha1.NodePolicyStatus, now metav1.Time,
 		failing = append(failing, entry)
 	}
 	if reporting == 0 {
-		return metav1.Condition{}, false
+		return metav1.Condition{Type: condType}, false
 	}
 	cond := metav1.Condition{Type: condType, LastTransitionTime: now}
 	if len(failing) == 0 {
@@ -527,7 +565,7 @@ func aggregatePodsMatched(nodes []v1alpha1.NodePolicyStatus, now metav1.Time) (m
 		}
 	}
 	if reporting == 0 {
-		return metav1.Condition{}, false
+		return metav1.Condition{Type: v1alpha1.ConditionPodsMatched}, false
 	}
 	cond := metav1.Condition{Type: v1alpha1.ConditionPodsMatched, LastTransitionTime: now}
 	if matching > 0 {

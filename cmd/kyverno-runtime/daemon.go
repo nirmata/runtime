@@ -27,9 +27,11 @@ import (
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
@@ -168,8 +170,30 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	rep := reporter.New(orClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName})
 
+	// nodeFactory backs shard pruning: the status writer drops another node's
+	// entry from status.nodes only when this watch says the node is gone. The
+	// transform keeps just the name, which is all the existence check reads.
+	nodeFactory := informers.NewSharedInformerFactory(k8sClient, 0)
+	nodeInformer := nodeFactory.Core().V1().Nodes().Informer()
+	_ = nodeInformer.SetTransform(func(obj any) (any, error) {
+		if n, ok := obj.(*corev1.Node); ok {
+			return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: n.Name}}, nil
+		}
+		return obj, nil
+	})
+	nodeFactory.Start(ctx.Done())
+	nodeGone := func(name string) bool {
+		// before the first sync the watch cannot distinguish a deleted node
+		// from one it has not listed yet
+		if !nodeInformer.HasSynced() {
+			return false
+		}
+		_, exists, err := nodeInformer.GetStore().GetByKey(name)
+		return err == nil && !exists
+	}
+
 	// sw owns this node's shard of every RuntimePolicy status.
-	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"))
+	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"), nodeGone)
 
 	em := egressmgr.NewEgressManager(logger, sw, func(reason string, delta uint64) {
 		m.EventsDropped.WithLabelValues(egressObserveSource, reason).Add(float64(delta))

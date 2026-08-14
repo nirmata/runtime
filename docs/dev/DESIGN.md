@@ -742,7 +742,15 @@ enforce or observe leaves its workloads uncovered no matter how many others can,
 message names the failing nodes — while `PodsMatched` is any-true, since a policy's pods typically
 run on a few nodes and the nodes where none are scheduled must not read as a selector matching
 nothing. On a mixed cluster the top-level conditions therefore state something true of the
-cluster instead of flapping to whichever node flushed last.
+cluster instead of flapping to whichever node flushed last. A type no shard reports is removed
+from `status.conditions` rather than left at whatever an older writer put there.
+
+Shards themselves are pruned at flush time: each daemon watches Node existence (a name-only
+metadata watch) and drops another node's entry from `status.nodes` once that node is gone, so a
+deleted node's last-known signals stop feeding the aggregate. A daemon never prunes its own
+shard, and never prunes before its node watch has synced. A node that still exists but no longer
+runs a daemon (a taint, an unscheduled DaemonSet) keeps its shard; the watch only answers
+whether the node object is there.
 
 `Applied` is derived rather than recorded: `StatusWriter` computes it at flush time from
 `spec.mode` plus the aggregated `EnforcementAvailable` / `ObservationAvailable` for that mode and

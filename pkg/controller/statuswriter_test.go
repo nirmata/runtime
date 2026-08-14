@@ -28,7 +28,7 @@ var fixedNow = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 func newTestStatusWriter(t *testing.T, nodeName string, objs ...runtime.Object) (*StatusWriter, *fakeversioned.Clientset) {
 	t.Helper()
 	client := fakeversioned.NewSimpleClientset(objs...)
-	sw := NewStatusWriter(client, nodeName, time.Hour, logr.Discard())
+	sw := NewStatusWriter(client, nodeName, time.Hour, logr.Discard(), nil)
 	sw.clock = func() time.Time { return fixedNow }
 	return sw, client
 }
@@ -786,7 +786,7 @@ func TestClusterConditionsUniformHealthyCluster(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
 			swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard())
+			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
 			swB.clock = func() time.Time { return fixedNow }
 
 			for _, sw := range []*StatusWriter{swA, swB} {
@@ -825,7 +825,7 @@ func TestClusterAvailabilityFalseWhenAnyNodeLacksIt(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
 			swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard())
+			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
 			swB.clock = func() time.Time { return fixedNow }
 
 			recordAndFlush(t, swA, tc.mode,
@@ -860,7 +860,7 @@ func TestClusterAvailabilityFalseWhenAnyNodeLacksIt(t *testing.T) {
 // from every shard instead of overwriting the incapable node's answer.
 func TestClusterConditionsSurviveHealthyNodeFlushingLast(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard())
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	recordAndFlush(t, swB, compiler.ModeEnforce,
@@ -885,7 +885,7 @@ func TestClusterConditionsSurviveHealthyNodeFlushingLast(t *testing.T) {
 // policy at cluster scope while another node's matching pods are covered.
 func TestClusterAppliedTrueDespiteUnmatchedNode(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard())
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	recordAndFlush(t, swA, compiler.ModeEnforce,
@@ -908,7 +908,7 @@ func TestClusterAppliedTrueDespiteUnmatchedNode(t *testing.T) {
 
 func TestClusterPodsMatchedFalseOnlyWhenNoNodeMatches(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard())
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	for _, sw := range []*StatusWriter{swA, swB} {
@@ -1066,6 +1066,111 @@ func TestAggregatePodsMatched(t *testing.T) {
 
 func ptrBool(v bool) *bool { return &v }
 
+// TestFlushPrunesShardsOfDeletedNodes: a node that leaves the cluster must
+// stop feeding the aggregate, or its last-known false would pin the
+// cluster-scoped condition forever.
+func TestFlushPrunesShardsOfDeletedNodes(t *testing.T) {
+	existing := policyObj("p", "uid-1")
+	existing.Status.Nodes = []v1alpha1.NodePolicyStatus{
+		{NodeName: "node-b", EnforcementAvailable: ptrBool(true), PodsMatched: ptrBool(true)},
+		{NodeName: "node-gone", EnforcementAvailable: ptrBool(false), Message: "BPF-LSM is not active on this node"},
+	}
+	sw, client := newTestStatusWriter(t, "node-a", existing)
+	sw.nodeGone = func(name string) bool { return name == "node-gone" }
+
+	recordAndFlush(t, sw, compiler.ModeEnforce,
+		availabilityCondition(v1alpha1.ConditionEnforcementAvailable, metav1.ConditionTrue, "attached"),
+		podsMatchedCondition(metav1.ConditionTrue))
+
+	got := getPolicy(t, client, "p")
+	var names []string
+	for _, n := range got.Status.Nodes {
+		names = append(names, n.NodeName)
+	}
+	if diff := cmp.Diff([]string{"node-a", "node-b"}, names); diff != "" {
+		t.Errorf("shard node names mismatch (-want +got):\n%s", diff)
+	}
+	gate := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionEnforcementAvailable)
+	if gate.Status != metav1.ConditionTrue {
+		t.Errorf("EnforcementAvailable = (%s, %q), want True once the deleted node's shard is gone", gate.Status, gate.Message)
+	}
+}
+
+// TestFlushNeverPrunesOwnShard: the flush rewriting this node's shard is proof
+// the node is alive, whatever the node watch currently claims.
+func TestFlushNeverPrunesOwnShard(t *testing.T) {
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	sw.nodeGone = func(string) bool { return true }
+
+	recordAndFlush(t, sw, compiler.ModeEnforce,
+		podsMatchedCondition(metav1.ConditionTrue))
+
+	got := getPolicy(t, client, "p")
+	if len(got.Status.Nodes) != 1 || got.Status.Nodes[0].NodeName != "node-a" {
+		t.Errorf("nodes = %+v, want exactly this node's shard kept", got.Status.Nodes)
+	}
+}
+
+// TestClusterConditionsRemovedWhenNoShardReports: a condition no shard backs
+// is removed instead of left at whatever an older writer put there.
+func TestClusterConditionsRemovedWhenNoShardReports(t *testing.T) {
+	existing := policyObj("p", "uid-1")
+	existing.Status.Conditions = []metav1.Condition{
+		{Type: v1alpha1.ConditionEnforcementAvailable, Status: metav1.ConditionFalse,
+			Reason: v1alpha1.ReasonEnforcementUnavailable, LastTransitionTime: metav1.NewTime(fixedNow.Add(-time.Hour))},
+		{Type: v1alpha1.ConditionObservationAvailable, Status: metav1.ConditionTrue,
+			Reason: v1alpha1.ReasonObservationAvailable, LastTransitionTime: metav1.NewTime(fixedNow.Add(-time.Hour))},
+		{Type: v1alpha1.ConditionPodsMatched, Status: metav1.ConditionTrue,
+			Reason: v1alpha1.ReasonPodsMatched, LastTransitionTime: metav1.NewTime(fixedNow.Add(-time.Hour))},
+	}
+	sw, client := newTestStatusWriter(t, "node-a", existing)
+
+	recordAndFlush(t, sw, compiler.ModeEnforce)
+
+	got := getPolicy(t, client, "p")
+	for _, condType := range []string{v1alpha1.ConditionEnforcementAvailable,
+		v1alpha1.ConditionObservationAvailable, v1alpha1.ConditionPodsMatched} {
+		if hasCondition(got.Status.Conditions, condType) {
+			t.Errorf("%s survived although no shard reports it", condType)
+		}
+	}
+	applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+	if applied.Status != metav1.ConditionTrue || applied.Reason != v1alpha1.ReasonEnforcing {
+		t.Errorf("Applied = (%s, %s), want (True, %s)", applied.Status, applied.Reason, v1alpha1.ReasonEnforcing)
+	}
+}
+
+// TestModeChangeClearsStaleAvailabilitySignal: an availability condition
+// recorded under the previous mode has no writer left to correct it, so a
+// mode change must drop it, or the shard's message would name the wrong
+// cause and the aggregate would keep reporting a mode nothing runs in.
+func TestModeChangeClearsStaleAvailabilitySignal(t *testing.T) {
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	recordAndFlush(t, sw, compiler.ModeMonitor,
+		availabilityCondition(v1alpha1.ConditionObservationAvailable, metav1.ConditionFalse, "the LSM program has no observation maps"),
+		podsMatchedCondition(metav1.ConditionTrue))
+
+	recordAndFlush(t, sw, compiler.ModeEnforce,
+		availabilityCondition(v1alpha1.ConditionEnforcementAvailable, metav1.ConditionFalse, "BPF-LSM is not active on this node"))
+
+	got := getPolicy(t, client, "p")
+	shard := got.Status.Nodes[0]
+	if shard.ObservationAvailable != nil {
+		t.Errorf("shard.observationAvailable = %v, want it cleared on the mode change", *shard.ObservationAvailable)
+	}
+	if shard.Message != "BPF-LSM is not active on this node" {
+		t.Errorf("shard.message = %q, want the enforce-mode cause", shard.Message)
+	}
+	if hasCondition(got.Status.Conditions, v1alpha1.ConditionObservationAvailable) {
+		t.Error("ObservationAvailable survived the switch to enforce mode")
+	}
+	applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+	if applied.Reason != v1alpha1.ReasonEnforcementUnavailable || !strings.Contains(applied.Message, "BPF-LSM is not active on this node") {
+		t.Errorf("Applied = (%s, %q), want %s carrying the enforce-mode cause",
+			applied.Reason, applied.Message, v1alpha1.ReasonEnforcementUnavailable)
+	}
+}
+
 func TestRecomputeLastEvaluated(t *testing.T) {
 	early := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	late := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -1083,7 +1188,7 @@ func TestRecomputeLastEvaluated(t *testing.T) {
 }
 
 func TestNewStatusWriterDefaultsInterval(t *testing.T) {
-	sw := NewStatusWriter(fakeversioned.NewSimpleClientset(), "node-a", 0, logr.Discard())
+	sw := NewStatusWriter(fakeversioned.NewSimpleClientset(), "node-a", 0, logr.Discard(), nil)
 	if sw.interval != DefaultStatusFlushInterval {
 		t.Errorf("interval = %v, want the %v default", sw.interval, DefaultStatusFlushInterval)
 	}
