@@ -1,0 +1,204 @@
+# Nightly regression signal for lanes ci.yml cannot run on a hosted PR runner.
+#
+# lsm-behavior is a full duplicate of the workflow_dispatch-gated job of the
+# same name in ci.yml, kept for on-demand manual runs there. egress-load has
+# no job-level counterpart in ci.yml: it mirrors test-e2e-egress-load, a
+# workflow_dispatch-gated step inside ci.yml's always-on e2e-egress job. Both
+# are duplicated here rather than refactored into a shared reusable workflow:
+# ci.yml's job list is matched by name from the repository ruleset (see
+# "Build & Unit Test" there), and this file's schedule trigger must not put
+# every hosted PR job on a nightly cadence it does not need. A dedicated
+# workflow keeps that risk out of ci.yml entirely, at the cost of two step
+# lists to keep in sync when either side changes.
+#
+# lsm-behavior needs a runner actually booted with the `lsm=...,bpf` kernel
+# parameter, which no GitHub-hosted runner is. Point it at one by setting the
+# repository variable LSM_RUNNER_LABEL to the label of a self-hosted runner (or
+# a hosted runner driving a nested VM booted that way) registered with that
+# label. Until that variable is set, this job targets the placeholder label
+# `self-hosted-lsm-bpf`, which resolves to no runner and the job stays queued
+# rather than reporting a false green.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  KIND_CLUSTER_NAME: kyverno-runtime
+  CHAINSAW_VERSION: v0.2.15
+
+jobs:
+  # ------------------------------------------------- ASSERTION (kernel-bound)
+  lsm-behavior:
+    name: "Assert: BPF-LSM open/exec enforcement (needs a runner booted with lsm=...,bpf)"
+    runs-on: ${{ vars.LSM_RUNNER_LABEL || 'self-hosted-lsm-bpf' }}
+    timeout-minutes: 60
+    env:
+      DOCKER_CONFIG: /tmp/.docker
+      # Turns the LSM smoke test's skip into a hard failure, so a runner that
+      # does not qualify says so instead of reporting green.
+      NIRMATA_RUNTIME_REQUIRE_BPF_LSM: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      # The two failures have different fixes, so they get different messages:
+      # an unreadable list means securityfs is not mounted here, which is not
+      # evidence about the kernel.
+      - name: Require BPF-LSM (fails loudly on a non-qualifying runner)
+        run: |
+          set -euo pipefail
+          if ! lsm=$(cat /sys/kernel/security/lsm); then
+            echo "ERROR: /sys/kernel/security/lsm could not be read, so the active"
+            echo "       LSM list is unknown. This is NOT proof that BPF-LSM is off."
+            echo "       Mount securityfs where this job can see it."
+            exit 1
+          fi
+          echo "active LSMs: ${lsm}"
+          case ",${lsm}," in
+            *,bpf,*) echo "BPF-LSM active" ;;
+            *)
+              echo "ERROR: this runner was not booted with BPF-LSM."
+              echo "       Set the LSM_RUNNER_LABEL repository variable to a runner"
+              echo "       registered with lsm=...,bpf."
+              exit 1
+              ;;
+          esac
+
+      - name: Load every committed BPF program, LSM included (verifier log on rejection)
+        run: sudo -E env "PATH=$PATH" NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 make test-bpf-verify
+
+      - name: LSM program map writes + attach smoke
+        run: sudo -E env "PATH=$PATH" NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 make test-bpf-smoke
+
+      - name: Set up kind
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          config: test/e2e/kind-config.yaml
+
+      # Installed by hand rather than via a marketplace action so the pin is a
+      # release tarball we control (matches the previous e2e workflow).
+      - name: Install Chainsaw
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) arch=amd64 ;;
+            arm64|aarch64) arch=arm64 ;;
+            *) echo "Unsupported architecture: $arch"; exit 1 ;;
+          esac
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          mkdir -p "$HOME/.local/bin"
+          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
+          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
+          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
+          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/chainsaw" version
+
+      - name: Build image and install the chart into kind (gate)
+        run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
+
+      - name: LSM enforcement behavior (open deny/allow, exec deny/allow)
+        run: make test-e2e-lsm
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get runtimepolicies -o yaml || true
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=400 || true
+
+  # ------------------------------------------------- ASSERTION (kernel-bound)
+  #
+  # test-e2e-egress-load is dispatch-gated in ci.yml because it is a load run
+  # against the hosted e2e-egress job's cluster, not because it needs anything
+  # a hosted runner lacks: cgroup v2 and BPF support, which ubuntu-latest has.
+  # It has never executed on a schedule before this job.
+  egress-load:
+    name: "Assert: egress observation under load (k6)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DOCKER_CONFIG: /tmp/.docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@d982fec422852203cfb2053a8ec6ad302280d04d # v0.8
+        with:
+          version: v0.17.1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Set up kind
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          config: test/e2e/kind-config.yaml
+
+      - name: Kernel preconditions
+        run: |
+          set -euo pipefail
+          uname -a
+          test -r /sys/kernel/btf/vmlinux || { echo "no BTF: the daemon cannot load its programs"; exit 1; }
+          fs=$(stat -fc %T /sys/fs/cgroup)
+          echo "cgroup fs: $fs"
+          [ "$fs" = "cgroup2fs" ] || { echo "cgroup v2 unified hierarchy required for egress attach"; exit 1; }
+
+      - name: Build image and install the chart into kind (gate)
+        run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
+
+      - name: Egress observation under load (k6)
+        run: make test-e2e-egress-load
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get runtimepolicies -o yaml || true
+          kubectl -n kyverno-runtime get all || true
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=400 || true

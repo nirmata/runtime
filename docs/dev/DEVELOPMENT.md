@@ -164,7 +164,7 @@ and CI checks it.
 
 ## CI workflows
 
-Three workflows in `.github/workflows/`. Each job name says whether it is an assertion (it fails
+Four workflows in `.github/workflows/`. Each job name says whether it is an assertion (it fails
 when the product misbehaves) or a gate (it fails when the build or install breaks).
 
 ### `ci.yml`
@@ -185,14 +185,53 @@ Runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
 job name. Renaming it leaves pull requests permanently unmergeable with no failure anywhere to
 explain why; if it is renamed, the ruleset changes in the same commit.
 
+### `nightly.yml`
+
+Runs on a nightly schedule and manual dispatch. `lsm-behavior` duplicates the
+`workflow_dispatch`-gated job of the same name in `ci.yml`, kept there for on-demand runs.
+`egress-load` has no job-level counterpart in `ci.yml`: it mirrors `test-e2e-egress-load`, a
+`workflow_dispatch`-gated step inside `ci.yml`'s always-on `e2e-egress` job. Both are duplicated
+here rather than shared because `ci.yml`'s triggers are not factored for reuse and this workflow's
+schedule must not put every hosted PR job on a nightly cadence it does not need.
+
+| Job | Kind | What it runs | Runner |
+| --- | --- | --- | --- |
+| `lsm-behavior` | assertion | `make test-bpf-verify`, `make test-bpf-smoke`, `make kind-install`, `make test-e2e-lsm` | `vars.LSM_RUNNER_LABEL`, default `self-hosted-lsm-bpf` |
+| `egress-load` | assertion | `make kind-install`, `make test-e2e-egress-load` (k6) | `ubuntu-latest` |
+
+**Required manual step: registering an LSM-capable runner.** `lsm-behavior` needs a kernel booted
+with the `lsm=...,bpf` boot parameter, which no GitHub-hosted runner has (see the BPF-LSM section
+above). Until an operator does the following, the job stays queued indefinitely rather than
+reporting a false green:
+
+1. Provision a Linux host (or VM) booted with `bpf` present in `/sys/kernel/security/lsm` — set
+   via the `lsm=` kernel boot parameter, for example `lsm=lockdown,capability,landlock,yama,apparmor,bpf`.
+2. Register it as a GitHub Actions self-hosted runner
+   ([docs](https://docs.github.com/en/actions/hosting-your-own-runners)) with a custom label, e.g.
+   `self-hosted-lsm-bpf`.
+3. Set the repository variable `LSM_RUNNER_LABEL` to that label (Settings → Secrets and variables
+   → Actions → Variables), or leave it unset to use the `self-hosted-lsm-bpf` default.
+
+`egress-load` needs no special runner: it is dispatch-gated in `ci.yml` only because a k6 load run
+is slower than the correctness suite it would otherwise join, not because hosted runners lack
+something it needs.
+
+**A red nightly is release-blocking.** `release.yml`'s `nightly-gate` job queries the most recent
+completed run of this workflow on `main` via the GitHub API and fails the release if it is not
+`success` — including if no completed run exists yet, so a repository that has never registered
+the LSM runner cannot tag a release either. See `release.yml` below.
+
 ### `release.yml`
 
 Runs on tag pushes (`v*`):
 
+- `nightly-gate` queries the most recent completed run of `nightly.yml` on `main` and fails the
+  release if it did not succeed (or does not exist). This is the actual enforcement behind "a red
+  nightly blocks a release" — not a documented expectation, a status this workflow checks itself.
 - `lint-test` gates everything downstream: `gofmt`, `make lint`, `make lint-docs`, a build of
   `./cmd/kyverno-runtime`, and `make test`.
-- `publish-candidate` pushes `ghcr.io/nirmata/kyverno-runtime:candidate-<sha>` for
-  `linux/amd64,linux/arm64`.
+- `publish-candidate` needs both `lint-test` and `nightly-gate`, and pushes
+  `ghcr.io/nirmata/kyverno-runtime:candidate-<sha>` for `linux/amd64,linux/arm64`.
 - `release-e2e` pulls that candidate, installs it into kind with `make kind-install-prebuilt`,
   and runs `make test-e2e-gate` and `make test-e2e-egress`. BPF-LSM `open`/`exec` behavior is
   not covered, for the same reason it is not covered in `ci.yml`: hosted runners are not booted
