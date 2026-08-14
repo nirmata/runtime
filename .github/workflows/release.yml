@@ -86,6 +86,12 @@ jobs:
       - name: Lint docs
         run: make lint-docs
 
+      - name: CRD codegen drift
+        run: make verify-crds
+
+      - name: BPF object drift
+        run: make verify-bpf
+
       - name: Build
         run: go build ./cmd/kyverno-runtime
 
@@ -176,23 +182,9 @@ jobs:
           config: test/e2e/kind-config.yaml
 
       - name: Install Chainsaw
-        shell: bash
-        run: |
-          set -euo pipefail
-          arch="$(uname -m)"
-          case "$arch" in
-            x86_64) arch=amd64 ;;
-            arm64|aarch64) arch=arm64 ;;
-            *) echo "Unsupported architecture: $arch"; exit 1 ;;
-          esac
-          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          mkdir -p "$HOME/.local/bin"
-          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
-          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
-          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
-          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/chainsaw" version
+        uses: ./.github/actions/install-chainsaw
+        with:
+          version: ${{ env.CHAINSAW_VERSION }}
 
       - name: Kernel preconditions
         run: |
@@ -238,6 +230,11 @@ jobs:
     name: Promote Candidate to Release Tag
     runs-on: ubuntu-latest
     needs: [publish-candidate, release-e2e]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Log in to GitHub Container Registry
@@ -257,12 +254,56 @@ jobs:
             "${IMAGE_REPOSITORY}:${CANDIDATE_TAG}"
           docker buildx imagetools inspect "${IMAGE_REPOSITORY}:${GITHUB_REF_NAME}"
 
+      - name: Resolve release image digest
+        id: image_digest
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE_REPOSITORY}:${GITHUB_REF_NAME}" --format '{{.Manifest.Digest}}')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Signs the resolved digest, not the release tag: a tag is mutable and can be
+      # repointed after signing, the digest is the exact artifact release-e2e passed.
+      - name: Sign the release image
+        run: cosign sign --yes "${IMAGE_REPOSITORY}@${{ steps.image_digest.outputs.digest }}"
+
+      - name: Generate SBOM for the release image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE_REPOSITORY }}@${{ steps.image_digest.outputs.digest }}
+          format: spdx-json
+          output-file: kyverno-runtime-${{ github.ref_name }}.spdx.json
+          upload-artifact: false
+
+      - name: Attach SBOM to the release image
+        run: |
+          set -euo pipefail
+          cosign attach sbom \
+            --sbom "kyverno-runtime-${GITHUB_REF_NAME}.spdx.json" \
+            "${IMAGE_REPOSITORY}@${{ steps.image_digest.outputs.digest }}"
+
+      - name: Attest build provenance for the release image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.image_digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish release with SBOM
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: kyverno-runtime-${{ github.ref_name }}.spdx.json
+
   publish-chart:
     name: Package & Publish Helm Chart
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
+      id-token: write
+      attestations: write
     env:
       DOCKER_CONFIG: /tmp/.docker
     # The chart's appVersion points at the release image tag, so it must not publish
@@ -331,10 +372,25 @@ jobs:
       # appends the chart name, so this resolves to ghcr.io/nirmata/charts/kyverno-runtime
       # and never collides with the ghcr.io/nirmata/kyverno-runtime image.
       - name: Push chart to GHCR (OCI)
+        id: chart_push
         shell: bash
         run: |
           set -euo pipefail
           CHART_PACKAGE=".cr-release-packages/kyverno-runtime-${{ steps.chart_version.outputs.version }}.tgz"
-          helm push "$CHART_PACKAGE" oci://ghcr.io/nirmata/charts
+          push_output="$(helm push "$CHART_PACKAGE" oci://ghcr.io/nirmata/charts 2>&1)"
+          echo "$push_output"
+          digest="$(echo "$push_output" | awk '/^Digest:/{print $2}')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      - name: Sign the chart OCI artifact
+        run: cosign sign --yes "ghcr.io/nirmata/charts/kyverno-runtime@${{ steps.chart_push.outputs.digest }}"
+
+      - name: Attest build provenance for the chart
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/nirmata/charts/kyverno-runtime
+          subject-digest: ${{ steps.chart_push.outputs.digest }}
+          push-to-registry: true

@@ -227,26 +227,10 @@ jobs:
         with:
           cluster_name: crd-conformance
 
-      # Installed by hand rather than via a marketplace action so the pin is a
-      # release tarball we control (matches the previous e2e workflow).
       - name: Install Chainsaw
-        shell: bash
-        run: |
-          set -euo pipefail
-          arch="$(uname -m)"
-          case "$arch" in
-            x86_64) arch=amd64 ;;
-            arm64|aarch64) arch=arm64 ;;
-            *) echo "Unsupported architecture: $arch"; exit 1 ;;
-          esac
-          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          mkdir -p "$HOME/.local/bin"
-          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
-          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
-          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
-          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/chainsaw" version
+        uses: ./.github/actions/install-chainsaw
+        with:
+          version: ${{ env.CHAINSAW_VERSION }}
 
       - name: Chainsaw CRD conformance (valid accepted, invalid rejected)
         run: make test-chainsaw
@@ -354,26 +338,10 @@ jobs:
           cluster_name: ${{ env.KIND_CLUSTER_NAME }}
           config: test/e2e/kind-config.yaml
 
-      # Installed by hand rather than via a marketplace action so the pin is a
-      # release tarball we control (matches the previous e2e workflow).
       - name: Install Chainsaw
-        shell: bash
-        run: |
-          set -euo pipefail
-          arch="$(uname -m)"
-          case "$arch" in
-            x86_64) arch=amd64 ;;
-            arm64|aarch64) arch=arm64 ;;
-            *) echo "Unsupported architecture: $arch"; exit 1 ;;
-          esac
-          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          mkdir -p "$HOME/.local/bin"
-          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
-          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
-          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
-          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/chainsaw" version
+        uses: ./.github/actions/install-chainsaw
+        with:
+          version: ${{ env.CHAINSAW_VERSION }}
 
       - name: Kernel preconditions
         run: |
@@ -521,26 +489,10 @@ jobs:
           cluster_name: ${{ env.KIND_CLUSTER_NAME }}
           config: test/e2e/kind-config.yaml
 
-      # Installed by hand rather than via a marketplace action so the pin is a
-      # release tarball we control (matches the previous e2e workflow).
       - name: Install Chainsaw
-        shell: bash
-        run: |
-          set -euo pipefail
-          arch="$(uname -m)"
-          case "$arch" in
-            x86_64) arch=amd64 ;;
-            arm64|aarch64) arch=arm64 ;;
-            *) echo "Unsupported architecture: $arch"; exit 1 ;;
-          esac
-          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          mkdir -p "$HOME/.local/bin"
-          url="https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_${os}_${arch}.tar.gz"
-          curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
-          tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
-          install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/chainsaw" version
+        uses: ./.github/actions/install-chainsaw
+        with:
+          version: ${{ env.CHAINSAW_VERSION }}
 
       - name: Build image and install the chart into kind (gate)
         run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
