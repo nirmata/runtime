@@ -174,6 +174,8 @@ func (s *StatusWriter) baseAppliedCondition(mode string) metav1.Condition {
 		reason = v1alpha1.ReasonMonitoring
 		message = "the policy is observed and reported but never blocks"
 	case "":
+		// Spec.Mode's structural default means the API server never serves this;
+		// it only guards a spec built without going through API-server defaulting.
 		status = metav1.ConditionFalse
 		reason = v1alpha1.ReasonNoMode
 		message = "the policy sets no spec.mode, so it is neither enforced nor reported"

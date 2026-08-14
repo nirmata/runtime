@@ -117,7 +117,7 @@ so newly-observed pods are evaluated against the full set of currently-known pol
 | `evaluationInterval` | `*metav1.Duration` | If set, the policy is periodically re-evaluated (`controller.evaluateForInterval`) instead of only on create/update. |
 | `variables` | `[]admissionregistrationv1.Variable` | Named CEL expressions reusable across behaviors via `variables.<name>`. |
 | `behaviors` | `[]PolicyBehavior` | The allow/deny rules, one entry per behavior type. |
-| `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. `enforce` programs the deny/allow maps; `monitor` attaches the same programs with empty maps and evaluates observations in userspace (see [The event plane](#the-event-plane)). Optional with no default: a policy that omits `mode` is inert — see [Known Gaps](#known-gaps--future-work). |
+| `mode` | `*RuntimePolicyMode` | `monitor` or `enforce`. `enforce` programs the deny/allow maps; `monitor` attaches the same programs with empty maps and evaluates observations in userspace (see [The event plane](#the-event-plane)). Defaults to `monitor` (`+kubebuilder:default=monitor`), so an omitted `mode` is observed and reported rather than inert. |
 | `monitorFilter` | optional, `expressions` list of `name`/`expression` | A per-event CEL predicate narrowing which monitor-mode observations become findings (see [Filtering findings](#filtering-findings-specmonitorfilter)). Bounded by `MinItems=1`/`MaxItems=64`, and refused alongside `mode: enforce`. |
 
 Each `PolicyBehavior` entry must set **exactly one** of `network`, `exec`, `open`, `protocol`, or
@@ -813,12 +813,6 @@ namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,re
 These are verified, current limitations — not planned features to build toward, which belong in a
 future `PLAN.md`.
 
-- **An omitted `spec.mode` still leaves a policy inert.** `mode` is `+optional` with no
-  `+kubebuilder:default` (`api/v1alpha1/runtimepolicy_types.go`), so it compiles to `""`, which is
-  neither `enforce` nor an observe mode, and both managers return early. `monitor` now works (see
-  [The event plane](#the-event-plane)), but a policy that omits the field enforces nothing and
-  reports nothing. Untracked; a `+kubebuilder:default=enforce` or an admission-time requirement is
-  the obvious fix and is a breaking change either way.
 - **Monitor-mode observation has two transports, and both are lossy at their own edges.** The
   `network`/`open`/`exec` observations ride the counters the enforcing objects already keep;
   `pkg/bpf/exectrace` additionally streams per-occurrence exec events with argv, and the DNS

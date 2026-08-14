@@ -41,6 +41,21 @@ verify-crds:
 		exit 1; \
 	}
 
+generate-deepcopy:
+	go tool controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/v1alpha1/...
+
+# verify-deepcopy fails if the committed deepcopy funcs do not match what the
+# pinned controller-gen produces from api/v1alpha1. Run in CI so a types
+# change that forgets `make generate-deepcopy` cannot merge.
+verify-deepcopy:
+	$(MAKE) generate-deepcopy
+	@git diff --exit-code -- ./api/v1alpha1/zz_generated.deepcopy.go || { \
+		echo ""; \
+		echo "ERROR: api/v1alpha1/zz_generated.deepcopy.go is out of date."; \
+		echo "Run 'make generate-deepcopy' (controller-gen pinned in go.mod) and commit the result."; \
+		exit 1; \
+	}
+
 # BPF object generation runs in a container: bpf2go needs clang and llvm-strip,
 # which developer hosts (darwin) do not have with a BPF target. clang compiles
 # with -target bpfel/bpfeb, so the image architecture does not affect the emitted
@@ -380,4 +395,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: wait-crds generate-crds verify-crds generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-hosted test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-egress-load test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-deepcopy verify-deepcopy generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-hosted test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-egress-load test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto

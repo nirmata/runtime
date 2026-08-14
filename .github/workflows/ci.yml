@@ -182,6 +182,9 @@ jobs:
       - name: CRD codegen drift (pinned controller-gen)
         run: make verify-crds
 
+      - name: Deepcopy codegen drift (pinned controller-gen)
+        run: make verify-deepcopy
+
   # -------------------------------------------------------------------- GATE
   bpf-object-drift:
     name: "Gate: BPF object drift (committed *_bpfe*.o match _cprog sources)"

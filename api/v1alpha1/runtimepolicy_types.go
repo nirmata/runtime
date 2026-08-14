@@ -1,11 +1,8 @@
 package v1alpha1
 
 import (
-	"encoding/json"
-
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // RuntimePolicySpec defines a runtime policy for enforcing or monitoring behaviors.
@@ -138,13 +135,13 @@ type PolicyBehavior struct {
 	DNS *Behavior `json:"dns,omitempty"`
 }
 
-// Behavoior defines the allowed and denied entries of a given type.
+// Behavior defines the allowed and denied entries of a given type.
 type Behavior struct {
-	// Allow specifies allowed network access.
+	// Allow specifies allowed entries for this behavior type.
 	// +optional
 	Allow *BehaviorRule `json:"allow,omitempty"`
 
-	// Deny specifies denied network access.
+	// Deny specifies denied entries for this behavior type.
 	// +optional
 	Deny *BehaviorRule `json:"deny,omitempty"`
 }
@@ -267,27 +264,4 @@ type RuntimePolicyList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []RuntimePolicy `json:"items"`
-}
-
-func (in *RuntimePolicy) DeepCopyObject() runtime.Object {
-	if in == nil {
-		return nil
-	}
-	out := new(RuntimePolicy)
-	deepCopyViaJSON(in, out)
-	return out
-}
-
-func (in *RuntimePolicyList) DeepCopyObject() runtime.Object {
-	if in == nil {
-		return nil
-	}
-	out := new(RuntimePolicyList)
-	deepCopyViaJSON(in, out)
-	return out
-}
-
-func deepCopyViaJSON(in any, out any) {
-	b, _ := json.Marshal(in)
-	_ = json.Unmarshal(b, out)
 }

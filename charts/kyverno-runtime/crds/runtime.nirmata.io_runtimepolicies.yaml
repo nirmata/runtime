@@ -81,7 +81,8 @@ spec:
                         discovers what a workload resolves before writing an allow list.
                       properties:
                         allow:
-                          description: Allow specifies allowed network access.
+                          description: Allow specifies allowed entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -95,7 +96,8 @@ spec:
                               type: array
                           type: object
                         deny:
-                          description: Deny specifies denied network access.
+                          description: Deny specifies denied entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -113,7 +115,8 @@ spec:
                       description: Exec defines command execution behavior rules.
                       properties:
                         allow:
-                          description: Allow specifies allowed network access.
+                          description: Allow specifies allowed entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -127,7 +130,8 @@ spec:
                               type: array
                           type: object
                         deny:
-                          description: Deny specifies denied network access.
+                          description: Deny specifies denied entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -145,7 +149,8 @@ spec:
                       description: Network defines network behavior rules.
                       properties:
                         allow:
-                          description: Allow specifies allowed network access.
+                          description: Allow specifies allowed entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -159,7 +164,8 @@ spec:
                               type: array
                           type: object
                         deny:
-                          description: Deny specifies denied network access.
+                          description: Deny specifies denied entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -177,7 +183,8 @@ spec:
                       description: Open defines file open behavior rules.
                       properties:
                         allow:
-                          description: Allow specifies allowed network access.
+                          description: Allow specifies allowed entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -191,7 +198,8 @@ spec:
                               type: array
                           type: object
                         deny:
-                          description: Deny specifies denied network access.
+                          description: Deny specifies denied entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -211,7 +219,8 @@ spec:
                         against the first data segment of a connection.
                       properties:
                         allow:
-                          description: Allow specifies allowed network access.
+                          description: Allow specifies allowed entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
@@ -225,7 +234,8 @@ spec:
                               type: array
                           type: object
                         deny:
-                          description: Deny specifies denied network access.
+                          description: Deny specifies denied entries for this behavior
+                            type.
                           properties:
                             expression:
                               description: Expression is a CEL expression that evaluates
