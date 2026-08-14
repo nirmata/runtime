@@ -17,12 +17,16 @@ kubectl get rpol
 kubectl get rpol <name> -o yaml
 ```
 
-`network` targets below are destination-based detection and attribution, not a
-replacement for your CNI's NetworkPolicy: connectivity, identity-based policy, FQDN
-egress, ingress, and encryption stay with the CNI. What a `RuntimePolicy` adds is
-`protocol`, classified from a flow's first data segment rather than its declared port;
-`exec` and `open`, enforced alongside `protocol` and `network` in one policy object; and
-`monitor` mode, which reports the attempt a NetworkPolicy drop never surfaces. See
+Every behavior below is enforced or only reported depending on `spec.mode`, not on
+which behavior it is: `enforce` blocks the operation in the kernel, `monitor` only
+reports it (see [Modes](#modes-enforce-and-monitor)). A `network` behavior in `enforce`
+mode does block traffic, the same as any other behavior's `deny` rule — it is not
+detection-only. What it is not is a replacement for your CNI's NetworkPolicy:
+connectivity, identity-based policy, FQDN egress, ingress, and encryption stay with the
+CNI. What a `RuntimePolicy` adds over that is `protocol`, classified from a flow's first
+data segment rather than its declared port; `exec` and `open`, enforced alongside
+`protocol` and `network` in one policy object; and findings that attribute a
+policy-violating attempt to the pod, container, and classified protocol behind it. See
 [why a runtime layer](../why-runtime.md#cooperation-is-the-dividing-line) for the layer
 comparison and [known and shadow workloads](../why-runtime.md#known-and-shadow-workloads)
 for what each behavior delivers depending on whether the workload cooperates.
