@@ -104,7 +104,6 @@ kubectl get report "kyverno-runtime-${NODE}" -o yaml
   policy: report-unexpected-dns
   rule: dns
   category: Runtime Security
-  severity: medium
   result: warn
   scored: true
   description: resolved unexpected DNS name metrics.evil.example.com, not expected by policy report-unexpected-dns

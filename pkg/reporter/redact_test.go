@@ -140,7 +140,6 @@ func TestRedactionChokepoint(t *testing.T) {
 		PolicyUID:  "policy-uid-" + canaries[0].value,
 		Behavior:   "network " + canaries[1].value,
 		Target:     "api.example.com " + canaries[5].value,
-		Severity:   "critical " + canaries[2].value,
 		Result:     "fail " + canaries[3].value,
 		Message:    "denied request carrying " + canaries[2].value + " with body " + canaries[7].value + " and " + canaries[8].value,
 		Pod: runtimeevent.PodIdentity{
@@ -233,7 +232,7 @@ func TestRedactionChokepoint(t *testing.T) {
 // TestRedactionChokepoint. It is a structural reminder, not a value check.
 func TestRedactionChokepointCoversEveryFindingStringField(t *testing.T) {
 	wantFindingFields := []string{
-		"PolicyName", "PolicyUID", "Behavior", "Target", "Severity", "Result", "Enforced", "Message",
+		"PolicyName", "PolicyUID", "Behavior", "Target", "Result", "Enforced", "Message",
 		"Pod", "Net", "DNS", "Process", "Timestamp",
 	}
 	if diff := cmp.Diff(wantFindingFields, structFieldNames(Finding{})); diff != "" {

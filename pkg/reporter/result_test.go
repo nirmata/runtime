@@ -76,8 +76,8 @@ func TestBuildResultEmitsOnlyTheFixedKeySet(t *testing.T) {
 	if res.Result != openreportsv1alpha1.Result(ResultFail) {
 		t.Errorf("buildResult result = %q, want %q", res.Result, ResultFail)
 	}
-	if res.Severity != openreportsv1alpha1.ResultSeverity(SeverityHigh) {
-		t.Errorf("buildResult severity = %q, want %q", res.Severity, SeverityHigh)
+	if res.Severity != "" {
+		t.Errorf("buildResult severity = %q, want unset: nothing in Finding can populate it", res.Severity)
 	}
 	if res.Timestamp.Seconds != last.Unix() {
 		t.Errorf("buildResult timestamp = %d, want %d", res.Timestamp.Seconds, last.Unix())
@@ -257,6 +257,79 @@ func TestApplyResultsSkipsNoOpUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMergingClearsLegacySeverityOnExistingResult covers a ReportResult
+// written before Severity was removed: applyResults must clear it even when
+// the entry is only touched via a duplicate-count merge, and even when
+// nothing in that flush's incoming batch matches its fingerprint at all —
+// otherwise an upgraded cluster keeps a stale severity forever.
+func TestMergingClearsLegacySeverityOnExistingResult(t *testing.T) {
+	legacy := func(fingerprint string, count int, first, last string) openreportsv1alpha1.ReportResult {
+		r := resultFor(fingerprint, count, first, last)
+		r.Severity = "medium"
+		return r
+	}
+
+	t.Run("at capacity with only a duplicate fingerprint", func(t *testing.T) {
+		existing := []openreportsv1alpha1.ReportResult{
+			legacy("fp-a", 1, "2026-07-27T09:00:00Z", "2026-07-27T09:00:00Z"),
+		}
+		incoming := []openreportsv1alpha1.ReportResult{
+			resultFor("fp-a", 1, "2026-07-27T09:30:00Z", "2026-07-27T09:30:00Z"),
+		}
+
+		got, _, _, changed := applyResults(existing, incoming, 1)
+
+		if !changed {
+			t.Fatal("applyResults reported no change while clearing a legacy severity")
+		}
+		if len(got) != 1 || got[0].Severity != "" {
+			t.Fatalf("Severity = %q, want cleared", got[0].Severity)
+		}
+	})
+
+	t.Run("entry not present in this flush's incoming batch", func(t *testing.T) {
+		existing := []openreportsv1alpha1.ReportResult{
+			legacy("fp-a", 1, "2026-07-27T09:00:00Z", "2026-07-27T09:00:00Z"),
+		}
+		incoming := []openreportsv1alpha1.ReportResult{
+			resultFor("fp-b", 1, "2026-07-27T09:30:00Z", "2026-07-27T09:30:00Z"),
+		}
+
+		got, _, _, changed := applyResults(existing, incoming, 10)
+
+		if !changed {
+			t.Fatal("applyResults reported no change while clearing a legacy severity")
+		}
+		var fpA *openreportsv1alpha1.ReportResult
+		for i := range got {
+			if got[i].Properties[propFingerprint] == "fp-a" {
+				fpA = &got[i]
+			}
+		}
+		if fpA == nil {
+			t.Fatal("fp-a missing from applyResults output")
+		}
+		if fpA.Severity != "" {
+			t.Errorf("Severity = %q, want cleared", fpA.Severity)
+		}
+	})
+
+	t.Run("no legacy severity keeps the no-op skip at capacity", func(t *testing.T) {
+		existing := []openreportsv1alpha1.ReportResult{
+			resultFor("fp-a", 1, "2026-07-27T09:00:00Z", "2026-07-27T09:00:00Z"),
+		}
+		incoming := []openreportsv1alpha1.ReportResult{
+			resultFor("fp-a", 1, "2026-07-27T09:30:00Z", "2026-07-27T09:30:00Z"),
+		}
+
+		_, _, _, changed := applyResults(existing, incoming, 1)
+
+		if changed {
+			t.Error("applyResults reported a change with nothing new and no legacy severity to clear")
+		}
+	})
 }
 
 func TestSummarizeCountsByResult(t *testing.T) {

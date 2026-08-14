@@ -136,7 +136,7 @@ func (r *Reporter) Report(f Finding) {
 	policy := sanitize(f.PolicyName)
 	behavior := sanitize(f.Behavior)
 	if r.metrics != nil {
-		r.metrics.FindingsEmitted.WithLabelValues(policy, behavior, normalizeSeverity(f.Severity)).Inc()
+		r.metrics.FindingsEmitted.WithLabelValues(policy, behavior).Inc()
 	}
 	r.log.V(4).Info("finding buffered", "policy", policy, "behavior", behavior,
 		"namespace", f.Pod.Namespace, "fingerprint", fp)

@@ -782,7 +782,7 @@ An empty value disables the endpoint without disabling the counters.
 
 `pkg/metrics/metrics.go` registers exactly six collectors, all under the `nirmata_runtime`
 namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,reason}`,
-`attribution_misses_total`, `findings_emitted_total{policy,behavior,severity}`,
+`attribution_misses_total`, `findings_emitted_total{policy,behavior}`,
 `monitor_filter_eval_errors_total{policy,expression}`, and
 `report_writes_total{result}`. The `reason` values something produces are `buffer_full`
 (`pkg/collector`), `unattributed` (`pkg/monitor`, `pkg/reporter`),

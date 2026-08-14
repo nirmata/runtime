@@ -64,7 +64,7 @@ type pending struct {
 
 // merge folds a repeat occurrence of the same fingerprint into p. The newest
 // finding wins for the descriptive fields so a report always shows the most
-// recent message and severity for a fingerprint.
+// recent message for a fingerprint.
 func (p *pending) merge(f Finding, at time.Time) {
 	p.finding = f
 	p.count++
@@ -125,7 +125,6 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 		Policy:      sanitize(f.PolicyName),
 		Rule:        sanitize(f.Behavior),
 		Category:    Category,
-		Severity:    openreportsv1alpha1.ResultSeverity(normalizeSeverity(f.Severity)),
 		Result:      openreportsv1alpha1.Result(normalizeResult(f.Result)),
 		Scored:      true,
 		Timestamp:   metav1.Timestamp{Seconds: p.last.Unix()},
@@ -156,11 +155,12 @@ func formatTime(t time.Time) string {
 //
 // changed reports whether the Report needs an API write at all: when the
 // report is already at capacity and every incoming result is a duplicate
-// count increment, the write is skipped to spare the API server (the
-// pre-f806f25 contract).
+// count increment carrying no legacy Severity to clear, the write is
+// skipped to spare the API server (the pre-f806f25 contract).
 func applyResults(existing, incoming []openreportsv1alpha1.ReportResult, max int) (results []openreportsv1alpha1.ReportResult, summary openreportsv1alpha1.ReportSummary, truncated, changed bool) {
 	merged := make([]openreportsv1alpha1.ReportResult, len(existing))
 	copy(merged, existing)
+	legacySeverityCleared := clearLegacySeverity(merged)
 
 	index := make(map[string]int, len(merged))
 	for i, res := range merged {
@@ -190,18 +190,33 @@ func applyResults(existing, incoming []openreportsv1alpha1.ReportResult, max int
 	}
 
 	atCapacity := len(existing) >= max
-	if atCapacity && !addedNew {
+	if atCapacity && !addedNew && !legacySeverityCleared {
 		return existing, summarize(existing), len(existing) > max, false
 	}
 
 	bounded, truncated := truncateResults(merged, max)
 	summary = summarize(bounded)
-	changed = addedNew || !resultsEqual(existing, bounded)
+	changed = addedNew || legacySeverityCleared || !resultsEqual(existing, bounded)
 	return bounded, summary, truncated, changed
 }
 
+// clearLegacySeverity zeroes Severity on every entry in results in place and
+// reports whether any entry carried a value. buildResult never sets
+// Severity, so this keeps every Report converging toward no-severity
+// results even for entries a flush does not otherwise touch.
+func clearLegacySeverity(results []openreportsv1alpha1.ReportResult) bool {
+	cleared := false
+	for i := range results {
+		if results[i].Severity != "" {
+			results[i].Severity = ""
+			cleared = true
+		}
+	}
+	return cleared
+}
+
 // mergeResult folds a freshly built result for an already-known fingerprint
-// into the stored one. next is the base (newest message/severity wins); only
+// into the stored one. next is the base (newest message wins); only
 // the accumulated count and the earliest firstTimestamp survive from prev.
 func mergeResult(prev, next openreportsv1alpha1.ReportResult) openreportsv1alpha1.ReportResult {
 	out := *next.DeepCopy()

@@ -28,7 +28,7 @@ func TestNew_CountersIncrement(t *testing.T) {
 		},
 		{
 			name: "FindingsEmitted",
-			inc:  func() { m.FindingsEmitted.WithLabelValues("deny-egress", "network", "high").Inc() },
+			inc:  func() { m.FindingsEmitted.WithLabelValues("deny-egress", "network").Inc() },
 			coll: m.FindingsEmitted,
 		},
 		{
@@ -76,7 +76,7 @@ func TestNew_MetricsAreRegisteredAgainstProvidedRegisterer(t *testing.T) {
 	m.EventsIngested.WithLabelValues("s", "k").Inc()
 	m.EventsDropped.WithLabelValues("s", "buffer_full").Inc()
 	m.AttributionMisses.Inc()
-	m.FindingsEmitted.WithLabelValues("p", "network", "low").Inc()
+	m.FindingsEmitted.WithLabelValues("p", "network").Inc()
 	m.ReportWrites.WithLabelValues("ok").Inc()
 
 	mfs, err := reg.Gather()

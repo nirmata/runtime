@@ -35,9 +35,8 @@ type Finding struct {
 	Behavior   string // "network"|"open"|"exec"|"protocol"|"dns"
 	// Target is the behavior's object: the destination, path, executed
 	// binary, protocol[/alpn], or question name the message names.
-	Target   string
-	Severity string // info|low|medium|high|critical (default medium)
-	Result   string // "fail"|"warn" (observation-only findings are "warn")
+	Target string
+	Result string // "fail"|"warn" (observation-only findings are "warn")
 	// Enforced is true when the kernel actually denied the operation (an
 	// enforce-mode policy's maps blocked it); false for monitor mode's
 	// "would have been denied" counterfactual findings.
@@ -67,26 +66,6 @@ type ProcessSummary struct {
 	Argv string
 }
 
-// Severity values accepted by OpenReports.
-const (
-	SeverityInfo     = "info"
-	SeverityLow      = "low"
-	SeverityMedium   = "medium"
-	SeverityHigh     = "high"
-	SeverityCritical = "critical"
-)
-
-// DefaultSeverity is used when a finding carries no (or an unknown) severity.
-const DefaultSeverity = SeverityMedium
-
-var knownSeverities = map[string]struct{}{
-	SeverityInfo:     {},
-	SeverityLow:      {},
-	SeverityMedium:   {},
-	SeverityHigh:     {},
-	SeverityCritical: {},
-}
-
 // Result values emitted by this package. Monitor findings are "fail"; "warn"
 // is available for advisory findings. No other OpenReports result value is
 // ever produced by kyverno-runtime.
@@ -94,16 +73,6 @@ const (
 	ResultFail = "fail"
 	ResultWarn = "warn"
 )
-
-// normalizeSeverity lowercases and validates sev, falling back to
-// DefaultSeverity for empty or unrecognized input.
-func normalizeSeverity(sev string) string {
-	s := strings.ToLower(strings.TrimSpace(sev))
-	if _, ok := knownSeverities[s]; ok {
-		return s
-	}
-	return DefaultSeverity
-}
 
 // normalizeResult maps res onto the two result values this package emits.
 func normalizeResult(res string) string {

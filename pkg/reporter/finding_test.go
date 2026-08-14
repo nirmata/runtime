@@ -13,7 +13,6 @@ func baseFinding() Finding {
 		PolicyName: "block-egress",
 		PolicyUID:  "policy-uid-1",
 		Behavior:   "network",
-		Severity:   SeverityHigh,
 		Result:     ResultFail,
 		Message:    "egress to 1.2.3.4 denied",
 		Pod: runtimeevent.PodIdentity{
@@ -47,7 +46,6 @@ func TestFingerprintIsStable(t *testing.T) {
 	}{
 		{"message", func(f *Finding) { f.Message = "totally different message" }},
 		{"timestamp", func(f *Finding) { f.Timestamp = f.Timestamp.Add(time.Hour) }},
-		{"severity", func(f *Finding) { f.Severity = SeverityLow }},
 		{"result", func(f *Finding) { f.Result = ResultWarn }},
 		{"policyName", func(f *Finding) { f.PolicyName = "renamed" }},
 		{"podName", func(f *Finding) { f.Pod.Name = "app-2" }},
@@ -138,26 +136,6 @@ func TestFingerprintEncodingIsUnambiguous(t *testing.T) {
 	}
 	if a, b := f("/a\x00b", "").Fingerprint(), f("/a", "b").Fingerprint(); a == b {
 		t.Errorf("a NUL in the target yields the same fingerprint as a split field: %q", a)
-	}
-}
-
-func TestNormalizeSeverity(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"", DefaultSeverity},
-		{"medium", SeverityMedium},
-		{"  HIGH  ", SeverityHigh},
-		{"Critical", SeverityCritical},
-		{"info", SeverityInfo},
-		{"low", SeverityLow},
-		{"catastrophic", DefaultSeverity},
-		{"Bearer sk-ant-secret", DefaultSeverity},
-	}
-	for _, tc := range tests {
-		t.Run(tc.in, func(t *testing.T) {
-			if got := normalizeSeverity(tc.in); got != tc.want {
-				t.Errorf("normalizeSeverity(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
 	}
 }
 
