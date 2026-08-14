@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "kyverno-runtime.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kyverno-runtime.labels" . | nindent 4 }}
 spec:

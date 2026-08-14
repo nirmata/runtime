@@ -62,6 +62,7 @@ scrape_metrics() {
       >/tmp/egress-load-pf.log 2>&1 &
     pf_pid=$!
     scraped=0
+    sleep 3   # give a moment to the port foward to be fully initialized
     for _ in $(seq 1 30); do
       if curl -sS -m 2 "http://127.0.0.1:${METRICS_PORT}/metrics" >> "${out}"; then
         scraped=1

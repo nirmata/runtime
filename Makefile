@@ -336,7 +336,7 @@ test-e2e-overlap:
 # deliberately not discoverable as one -- a two-minute load run has no business
 # in the parallel correctness lane.
 test-e2e-egress-load:
-	./test/e2e/egress-load/run.sh
+	METRICS_PORT=9090 ./test/e2e/egress-load/run.sh
 
 # BPF-LSM open/exec enforcement behavior on its own. REQUIRES a host booted with
 # BPF-LSM ('bpf' in /sys/kernel/security/lsm); test-e2e runs it alongside the
