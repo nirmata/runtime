@@ -15,9 +15,10 @@
 # parameter, which no GitHub-hosted runner is. Point it at one by setting the
 # repository variable LSM_RUNNER_LABEL to the label of a self-hosted runner (or
 # a hosted runner driving a nested VM booted that way) registered with that
-# label. Until that variable is set, this job targets the placeholder label
-# `self-hosted-lsm-bpf`, which resolves to no runner and the job stays queued
-# rather than reporting a false green.
+# label. Until that variable is set, the job is skipped rather than queuing
+# against a runner that will never claim it — release.yml's nightly-gate reads
+# this workflow's overall conclusion, and a job stuck in "queued" forever would
+# keep that conclusion from ever landing.
 name: Nightly
 
 on:
@@ -40,7 +41,8 @@ jobs:
   # ------------------------------------------------- ASSERTION (kernel-bound)
   lsm-behavior:
     name: "Assert: BPF-LSM open/exec enforcement (needs a runner booted with lsm=...,bpf)"
-    runs-on: ${{ vars.LSM_RUNNER_LABEL || 'self-hosted-lsm-bpf' }}
+    if: ${{ vars.LSM_RUNNER_LABEL != '' }}
+    runs-on: ${{ vars.LSM_RUNNER_LABEL }}
     timeout-minutes: 60
     env:
       DOCKER_CONFIG: /tmp/.docker
