@@ -229,7 +229,9 @@ Runs on tag pushes (`v*`):
   release if it did not succeed (or does not exist). This is the actual enforcement behind "a red
   nightly blocks a release" — not a documented expectation, a status this workflow checks itself.
 - `lint-test` gates everything downstream: `gofmt`, `make lint`, `make lint-docs`, a build of
-  `./cmd/kyverno-runtime`, and `make test`.
+  `./cmd/kyverno-runtime`, `make test`, and the same drift checks the PR lane runs —
+  `make verify-crds` and `make verify-bpf` — so a tag cannot ship CRDs or BPF bytecode that
+  have drifted from their committed source.
 - `publish-candidate` needs both `lint-test` and `nightly-gate`, and pushes
   `ghcr.io/nirmata/kyverno-runtime:candidate-<sha>` for `linux/amd64,linux/arm64`.
 - `release-e2e` pulls that candidate, installs it into kind with `make kind-install-prebuilt`,
@@ -238,13 +240,21 @@ Runs on tag pushes (`v*`):
   with `lsm=...,bpf`.
 - `promote-image` retags the tested digest with the git tag using
   `docker buildx imagetools create`, so the released image is the exact artifact e2e ran
-  against and the manifest list keeps both platforms. There is no `latest` tag.
+  against and the manifest list keeps both platforms. There is no `latest` tag. It then signs
+  the image keyless with cosign (by digest, via GitHub OIDC), generates an SPDX SBOM for each
+  platform manifest, attaches both to their respective platform images with
+  `cosign attach sbom`, and attests build provenance with `actions/attest-build-provenance`.
 - Derives the chart version from the tag (`v0.2.0` → `0.2.0`), updates
   `charts/kyverno-runtime/Chart.yaml` `version` and `appVersion`, then runs `helm lint` and
   `helm package`.
 - Pushes the packaged chart to `oci://ghcr.io/nirmata/charts`, which resolves to
   `ghcr.io/nirmata/charts/kyverno-runtime` and keeps the chart package separate from the
-  `ghcr.io/nirmata/kyverno-runtime` image package.
+  `ghcr.io/nirmata/kyverno-runtime` image package, then signs the chart digest with cosign
+  and attests its build provenance the same way as the image.
+- `publish-release` waits on both `promote-image` and `publish-chart`, then creates the
+  GitHub Release for the tag with both platform SBOMs attached as assets. Gating the release
+  page on both jobs means it only appears once every supply-chain artifact it links actually
+  exists.
 
 ### Publishing a chart by hand
 

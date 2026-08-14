@@ -1,0 +1,37 @@
+name: Install Chainsaw
+description: Download, checksum-verify, and install the Chainsaw CLI
+
+inputs:
+  version:
+    description: Chainsaw release tag to install (e.g. v0.2.15)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Chainsaw
+      shell: bash
+      run: |
+        set -euo pipefail
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64) arch=amd64 ;;
+          arm64|aarch64) arch=arm64 ;;
+          *) echo "Unsupported architecture: $arch"; exit 1 ;;
+        esac
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+        case "${{ inputs.version }}_${os}_${arch}" in
+          v0.2.15_linux_amd64) sha256=295d226c89f126c0a97775d364be149f47a810c8a3f9829ee410583d0c1abe3c ;;
+          v0.2.15_linux_arm64) sha256=fecf5f3ea74d11da2cd5d95a4c016d5d2543cbc4844ce21adf5e727e7ffd9e44 ;;
+          *) echo "No pinned checksum for ${{ inputs.version }} ${os}_${arch}"; exit 1 ;;
+        esac
+
+        mkdir -p "$HOME/.local/bin"
+        url="https://github.com/kyverno/chainsaw/releases/download/${{ inputs.version }}/chainsaw_${os}_${arch}.tar.gz"
+        curl -sSfL "$url" -o /tmp/chainsaw.tar.gz
+        echo "${sha256}  /tmp/chainsaw.tar.gz" | sha256sum -c -
+        tar -xzf /tmp/chainsaw.tar.gz -C /tmp chainsaw
+        install -m 0755 /tmp/chainsaw "$HOME/.local/bin/chainsaw"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/chainsaw" version
