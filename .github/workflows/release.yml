@@ -330,8 +330,6 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    env:
-      DOCKER_CONFIG: /tmp/.docker
     # The chart's appVersion points at the release image tag, so it must not publish
     # before that tag exists and has passed e2e.
     needs: [release-e2e, promote-image]
