@@ -29,6 +29,9 @@ spec:
     spec:
       serviceAccountName: {{ include "kyverno-runtime.serviceAccountName" . }}
       automountServiceAccountToken: true
+      {{- with .Values.daemon.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       hostPID: true
       containers:
       - name: daemon
@@ -57,6 +60,13 @@ spec:
         - name: metrics
           containerPort: {{ .Values.daemon.metrics.port }}
           protocol: TCP
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
         resources:
           {{- toYaml .Values.daemon.resources | nindent 10 }}
       {{- with .Values.daemon.nodeSelector }}

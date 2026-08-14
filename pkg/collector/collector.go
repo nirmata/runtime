@@ -52,8 +52,9 @@ type Collector struct {
 
 	events chan taggedEvent
 
-	dropped atomic.Int64
-	started atomic.Bool
+	dropped   atomic.Int64
+	started   atomic.Bool
+	heartbeat atomic.Int64
 
 	// after is the sleep seam used for restart backoff; tests replace it to
 	// keep restart behavior deterministic. Must be set before Run.
@@ -108,6 +109,17 @@ func (c *Collector) AddSink(s runtimeevent.Sink) {
 // Dropped returns the total number of events dropped for any reason
 // (buffer full, or rejected/panicked stage) since New.
 func (c *Collector) Dropped() int64 { return c.dropped.Load() }
+
+// Healthy reports whether the dispatch loop has ticked within maxAge. It is
+// false before Run starts and after it stops, and detects a dispatch
+// goroutine that is stuck rather than merely idle.
+func (c *Collector) Healthy(maxAge time.Duration) bool {
+	last := c.heartbeat.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, last)) <= maxAge
+}
 
 // Run starts one goroutine per source plus a single dispatch goroutine, and
 // blocks until ctx is cancelled. It returns nil on cancellation; a second
@@ -215,14 +227,24 @@ func (c *Collector) forward(ctx context.Context, source string, in <-chan runtim
 	}
 }
 
-// dispatch drains the fan-in buffer through stages, then sinks.
+// dispatch drains the fan-in buffer through stages, then sinks. It ticks the
+// heartbeat on every wakeup, including idle ones, so Healthy reflects a live
+// loop rather than event volume.
 func (c *Collector) dispatch(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	defer c.heartbeat.Store(0)
+
+	c.heartbeat.Store(time.Now().UnixNano())
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case te := <-c.events:
 			c.process(te)
+			c.heartbeat.Store(time.Now().UnixNano())
+		case <-ticker.C:
+			c.heartbeat.Store(time.Now().UnixNano())
 		}
 	}
 }

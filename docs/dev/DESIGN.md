@@ -774,7 +774,9 @@ it is the forbidden failure mode.
 `pkg/metrics.New(reg)` registers every collector against a caller-supplied `prometheus.Registerer`
 — the daemon passes a fresh private `prometheus.Registry` rather than the global default, so
 repeated wiring (and tests) cannot panic on duplicate registration. `metrics.Serve(ctx, addr, reg,
-log)` exposes `/metrics` and returns cleanly on context cancellation.
+health, log)` exposes `/metrics` and `/healthz`, and returns cleanly on context cancellation.
+`/healthz` fails while the runtime policy informer has not synced or the collector's dispatch loop
+has not ticked recently, and is otherwise honest about having nothing else to check.
 
 `--metrics-addr` (default `:9090`) selects the bind address; the chart passes
 `--metrics-addr=:{{ .Values.daemon.metrics.port }}` and declares the matching `containerPort`.
