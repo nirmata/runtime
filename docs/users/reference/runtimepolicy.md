@@ -717,12 +717,17 @@ program must never inherit deny entries and an enforcing one must not start from
 ## Status
 
 `status` is written per node. Each daemon owns exactly one entry in `status.nodes` (keyed by
-`nodeName`) and never touches another node's entry; `status.lastEvaluatedTime` is the newest shard
-timestamp. Updates are flushed every 30 seconds with conflict retry.
+`nodeName`) and never touches another node's entry; each shard carries that node's compact
+answers — `enforcementAvailable`, `observationAvailable`, `podsMatched`, and a `message` naming
+what is unavailable there. `status.lastEvaluatedTime` is the newest shard timestamp, and the
+cluster-scoped `Applied`, `EnforcementAvailable`, `ObservationAvailable` and `PodsMatched`
+conditions are derived from the shards, so on a mixed cluster the top-level value states
+something true of the cluster rather than of whichever node wrote last. Updates are flushed
+every 30 seconds with conflict retry.
 
 Per-pod detail is not in the status. Which pods a policy matched and which of them violated it are
 in the Reports (which name them) and in the Prometheus counters; the status answers "is this policy
-loaded on this node, in which mode, and when was it last evaluated".
+loaded, on which nodes, in which mode, and when was it last evaluated".
 
 ```yaml
 status:
@@ -730,6 +735,8 @@ status:
   nodes:
   - nodeName: node-1
     lastEvaluatedTime: "2026-07-27T10:15:04Z"
+    observationAvailable: true
+    podsMatched: true
   - nodeName: node-2
   conditions:
   - type: Applied
@@ -746,13 +753,13 @@ Conditions:
 
 | Type | Reasons | Meaning |
 | --- | --- | --- |
-| `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed`, `EnforcementUnavailable`, `ObservationUnavailable`, `NoMatchingPods` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for a policy that omits `spec.mode`, which is neither enforced nor reported. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in such a policy is applied, including the rules either side of the bad one. `EnforcementUnavailable` / `ObservationUnavailable` report `False` when this node's `EnforcementAvailable` / `ObservationAvailable` condition (below) is `False` for the policy's mode: a mode that promises enforcement or observation does not read as applied when the attachment behind it never took. `NoMatchingPods` reports `False` when this node's `PodsMatched` condition (below) is `False` and the mode's own `EnforcementAvailable` / `ObservationAvailable` is not — that is, is either `True` or was never recorded at all, which is the normal case for a policy whose behaviors never hit a programming failure. When both conditions are `False` at once, `EnforcementUnavailable` / `ObservationUnavailable` takes priority and `NoMatchingPods` is not reported. |
+| `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed`, `EnforcementUnavailable`, `ObservationUnavailable`, `NoMatchingPods` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for a policy that omits `spec.mode`, which is neither enforced nor reported. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in such a policy is applied, including the rules either side of the bad one. `EnforcementUnavailable` / `ObservationUnavailable` report `False` when the `EnforcementAvailable` / `ObservationAvailable` condition (below) is `False` for the policy's mode: a mode that promises enforcement or observation does not read as applied while any node's attachment behind it never took. `NoMatchingPods` reports `False` when the `PodsMatched` condition (below) is `False` — no node has a matching pod — and the mode's own `EnforcementAvailable` / `ObservationAvailable` is not — that is, is either `True` or was never recorded at all, which is the normal case for a policy whose behaviors never hit a programming failure. When both conditions are `False` at once, `EnforcementUnavailable` / `ObservationUnavailable` takes priority and `NoMatchingPods` is not reported. |
 | `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServices` | Whether every `network` and `protocol` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServices` lists the Service and endpoint names that are not in cache. |
 | `ExecRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `exec` path could be programmed. `UnsupportedPaths` lists the rejected values and why. |
 | `OpenRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `open` path could be programmed. |
-| `ObservationAvailable` | `ObservationAvailable`, `ObservationUnavailable` | Set to `False` when observation could not be attached at all — including a node not booted with `lsm=bpf`, named explicitly in the message — or when a loaded LSM program has no observation maps; either way a monitor-mode policy on that node silently produces no findings until this clears. Set to `True` once an attach that previously failed succeeds. |
-| `EnforcementAvailable` | `EnforcementAvailable`, `EnforcementUnavailable` | Set to `False` when a kernel map could not be programmed or attached at all — including a node not booted with `lsm=bpf`, named explicitly in the message — a full map, a failed update — so part of the policy is not enforced on that pod. Set to `True` once an attach that previously failed succeeds. |
-| `PodsMatched` | `PodsMatched`, `NoMatchingPods` | Whether this node currently has any pod selected by `spec.podSelector` / `spec.namespaceSelector`. `NoMatchingPods` catches a selector that is well-formed but matches nothing on this node — otherwise indistinguishable from a policy that is enforcing on pods that simply never triggered it. |
+| `ObservationAvailable` | `ObservationAvailable`, `ObservationUnavailable` | Set to `False` when observation could not be attached on at least one node — a node not booted with `lsm=bpf`, or a loaded LSM program with no observation maps — with the failing nodes and their causes named in the message; a monitor-mode policy on such a node silently produces no findings until this clears. Set to `True` when every node reporting it has observation attached. Each node's own answer is `status.nodes[*].observationAvailable`. |
+| `EnforcementAvailable` | `EnforcementAvailable`, `EnforcementUnavailable` | Set to `False` when a kernel map could not be programmed or attached on at least one node — a node not booted with `lsm=bpf`, a full map, a failed update — with the failing nodes and their causes named in the message, so part of the policy is not enforced there. Set to `True` when every node reporting it has enforcement programmed. Each node's own answer is `status.nodes[*].enforcementAvailable`. |
+| `PodsMatched` | `PodsMatched`, `NoMatchingPods` | Whether any node currently has a pod selected by `spec.podSelector` / `spec.namespaceSelector`. `NoMatchingPods` catches a selector that is well-formed but matches nothing anywhere — otherwise indistinguishable from a policy that is enforcing on pods that simply never triggered it. Nodes where none of the policy's pods are scheduled do not make it `False`. Each node's own answer is `status.nodes[*].podsMatched`. |
 
 A target or path the runtime cannot program is never silently skipped, and which condition
 carries it depends on where the value came from: a literal is checked when the policy compiles

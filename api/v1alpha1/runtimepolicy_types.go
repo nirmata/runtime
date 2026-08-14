@@ -206,7 +206,7 @@ const (
 	ReasonEnforcementUnavailable  = "EnforcementUnavailable"
 	ReasonEnforcementAvailable    = "EnforcementAvailable"
 
-	// ConditionPodsMatched reports whether this node currently has any pod
+	// ConditionPodsMatched reports whether any node currently has a pod
 	// selected by the policy's podSelector/namespaceSelector, so a selector
 	// that matches nothing does not read the same as a working policy.
 	ConditionPodsMatched = "PodsMatched"
@@ -215,12 +215,32 @@ const (
 )
 
 // NodePolicyStatus is one node's shard of a RuntimePolicy's status, written
-// only by that node's daemon.
+// only by that node's daemon. The cluster-scoped Applied, EnforcementAvailable,
+// ObservationAvailable and PodsMatched conditions are derived from the shards.
 type NodePolicyStatus struct {
 	NodeName string `json:"nodeName"`
 
 	// +optional
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
+
+	// EnforcementAvailable reports whether the kernel programs and maps
+	// enforcing this policy are attached and programmed on this node.
+	// +optional
+	EnforcementAvailable *bool `json:"enforcementAvailable,omitempty"`
+
+	// ObservationAvailable reports whether observation for this policy is
+	// attached on this node.
+	// +optional
+	ObservationAvailable *bool `json:"observationAvailable,omitempty"`
+
+	// PodsMatched reports whether any pod on this node currently matches the
+	// policy's podSelector/namespaceSelector.
+	// +optional
+	PodsMatched *bool `json:"podsMatched,omitempty"`
+
+	// Message explains a false EnforcementAvailable or ObservationAvailable.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // +genclient
