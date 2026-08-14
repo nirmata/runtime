@@ -794,10 +794,11 @@ namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,re
 `charts/kyverno-runtime/` installs:
 
 - A `DaemonSet` (`templates/daemonset.yaml`) running `kyverno-runtime daemon`, always installed,
-  privileged, `hostPID: true`, with host mounts for `/`, `/run`, `/var/run`, `/sys/fs/bpf`,
-  `/sys/kernel/debug`, and `/sys/kernel/tracing`, `NODE_NAME` injected from `spec.nodeName`, and
-  `--metrics-addr=:{{ .Values.daemon.metrics.port }}` (default 9090) with a matching
-  `containerPort` named `metrics`.
+  privileged, `hostPID: true`, no host filesystem mounts, `NODE_NAME` injected from
+  `spec.nodeName`, and `--metrics-addr=:{{ .Values.daemon.metrics.port }}` (default 9090) with a
+  matching `containerPort` named `metrics`. `hostPID` and `privileged` keep the pod outside the
+  `baseline` Pod Security Standard, so its namespace needs
+  `pod-security.kubernetes.io/enforce: privileged`.
 - A shared `ClusterRole`/`ClusterRoleBinding`/`ServiceAccount`
   (`templates/clusterrole.yaml`, `templates/clusterrolebinding.yaml`, `templates/serviceaccount.yaml`)
   granting pod/policy reads, `runtimepolicies/status` `[get,update,patch]` for the status writer,

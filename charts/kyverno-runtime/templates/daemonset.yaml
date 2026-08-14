@@ -9,6 +9,10 @@ spec:
     matchLabels:
       {{- include "kyverno-runtime.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: daemon
+  {{- with .Values.daemon.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   template:
     metadata:
       labels:
@@ -23,14 +27,14 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "kyverno-runtime.serviceAccountName" . }}
+      automountServiceAccountToken: true
       hostPID: true
       containers:
       - name: daemon
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         securityContext:
-          privileged: true
-          runAsUser: 0
+          {{- toYaml .Values.daemon.securityContext | nindent 10 }}
         args:
         - daemon
         - --metrics-addr=:{{ .Values.daemon.metrics.port }}
@@ -44,8 +48,6 @@ spec:
         - --cluster-domain={{ . }}
         {{- end }}
         env:
-        - name: HOST_ROOT
-          value: /host
         - name: NODE_NAME
           valueFrom:
             fieldRef:
@@ -54,47 +56,8 @@ spec:
         - name: metrics
           containerPort: {{ .Values.daemon.metrics.port }}
           protocol: TCP
-        volumeMounts:
-        - name: host-root
-          mountPath: /host
-          readOnly: true
-        - name: host-run
-          mountPath: /run
-        - name: host-var-run
-          mountPath: /var/run
-        - name: host-sys-fs-bpf
-          mountPath: /sys/fs/bpf
-        - name: host-sys-kernel-debug
-          mountPath: /sys/kernel/debug
-        - name: host-sys-kernel-tracing
-          mountPath: /sys/kernel/tracing
         resources:
           {{- toYaml .Values.daemon.resources | nindent 10 }}
-      volumes:
-      - name: host-root
-        hostPath:
-          path: /
-          type: Directory
-      - name: host-run
-        hostPath:
-          path: /run
-          type: Directory
-      - name: host-var-run
-        hostPath:
-          path: /var/run
-          type: Directory
-      - name: host-sys-fs-bpf
-        hostPath:
-          path: /sys/fs/bpf
-          type: DirectoryOrCreate
-      - name: host-sys-kernel-debug
-        hostPath:
-          path: /sys/kernel/debug
-          type: DirectoryOrCreate
-      - name: host-sys-kernel-tracing
-        hostPath:
-          path: /sys/kernel/tracing
-          type: DirectoryOrCreate
       {{- with .Values.daemon.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
