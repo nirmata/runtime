@@ -182,9 +182,6 @@ jobs:
       - name: CRD codegen drift (pinned controller-gen)
         run: make verify-crds
 
-      # Same guarantee as the CRD check above, for the generated deepcopy
-      # funcs in api/v1alpha1: they must match what the PINNED controller-gen
-      # produces from the current types.
       - name: Deepcopy codegen drift (pinned controller-gen)
         run: make verify-deepcopy
 
