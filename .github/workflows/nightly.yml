@@ -1,13 +1,15 @@
 # Nightly regression signal for lanes ci.yml cannot run on a hosted PR runner.
 #
-# Both jobs below exist in ci.yml too, gated to workflow_dispatch only, and stay
-# there for on-demand manual runs. They are duplicated here rather than
-# refactored into a shared reusable workflow: ci.yml's job list is matched by
-# name from the repository ruleset (see "Build & Unit Test" there), and this
-# file's schedule trigger must not put every hosted PR job on a nightly cadence
-# it does not need. A dedicated workflow keeps that risk out of ci.yml
-# entirely, at the cost of two step lists to keep in sync when either job's
-# steps change.
+# lsm-behavior is a full duplicate of the workflow_dispatch-gated job of the
+# same name in ci.yml, kept for on-demand manual runs there. egress-load has
+# no job-level counterpart in ci.yml: it mirrors test-e2e-egress-load, a
+# workflow_dispatch-gated step inside ci.yml's always-on e2e-egress job. Both
+# are duplicated here rather than refactored into a shared reusable workflow:
+# ci.yml's job list is matched by name from the repository ruleset (see
+# "Build & Unit Test" there), and this file's schedule trigger must not put
+# every hosted PR job on a nightly cadence it does not need. A dedicated
+# workflow keeps that risk out of ci.yml entirely, at the cost of two step
+# lists to keep in sync when either side changes.
 #
 # lsm-behavior needs a runner actually booted with the `lsm=...,bpf` kernel
 # parameter, which no GitHub-hosted runner is. Point it at one by setting the

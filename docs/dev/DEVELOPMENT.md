@@ -187,10 +187,12 @@ explain why; if it is renamed, the ruleset changes in the same commit.
 
 ### `nightly.yml`
 
-Runs on a nightly schedule and manual dispatch. Its two jobs also exist in `ci.yml`, gated to
-`workflow_dispatch` there for on-demand runs; they are duplicated rather than shared because
-`ci.yml`'s triggers are not factored for reuse and this workflow's schedule must not put every
-hosted PR job on a nightly cadence it does not need.
+Runs on a nightly schedule and manual dispatch. `lsm-behavior` duplicates the
+`workflow_dispatch`-gated job of the same name in `ci.yml`, kept there for on-demand runs.
+`egress-load` has no job-level counterpart in `ci.yml`: it mirrors `test-e2e-egress-load`, a
+`workflow_dispatch`-gated step inside `ci.yml`'s always-on `e2e-egress` job. Both are duplicated
+here rather than shared because `ci.yml`'s triggers are not factored for reuse and this workflow's
+schedule must not put every hosted PR job on a nightly cadence it does not need.
 
 | Job | Kind | What it runs | Runner |
 | --- | --- | --- | --- |
