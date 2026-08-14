@@ -1,6 +1,6 @@
-# Nirmata Runtime
+# Nirmata Runtime For Kyverno
 
-Kyverno-style CEL policies for eBPF runtime enforcement.
+**🎉 Kyverno-style CEL policies for eBPF runtime enforcement.**
 
 [![CI](https://github.com/nirmata/runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/nirmata/runtime/actions/workflows/ci.yml)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.29+-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
@@ -24,6 +24,8 @@ Decisions are made in the kernel, so a denied operation never completes.
 Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are custom resources defined in this project and support CEL (Common Expressions Language); findings are written as [OpenReports](https://openreports.io) `Report` objects in the offending pod's namespace, per-node state and conditions live in the policy's `status`, and counters are exposed to Prometheus.
 
 ## 🔥 Why Nirmata Runtime?
+
+As applications become AI-enabled, there is an immediate need to easily monitor and enforce runtime behaviors. Nirmata Runtime complements admission controllers, native RBAC and network policies, and AI gateways by providing an easy to use runtime tool to restrict AI workloads to a bounded set of behaviors and detect rogue agents.
 
 - **Admission Controllers checks the spec; Runtime checks the behavior.** Kyverno at admission validates what a pod *declares* before it starts. Nirmata Runtime enforces what the running process actually *does* — the files it opens, the binaries it execs, the addresses it contacts — after admission has already said yes.
 
