@@ -21,10 +21,10 @@ runs:
         esac
         os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
-        case "${os}_${arch}" in
-          linux_amd64) sha256=295d226c89f126c0a97775d364be149f47a810c8a3f9829ee410583d0c1abe3c ;;
-          linux_arm64) sha256=fecf5f3ea74d11da2cd5d95a4c016d5d2543cbc4844ce21adf5e727e7ffd9e44 ;;
-          *) echo "No pinned checksum for ${os}_${arch}"; exit 1 ;;
+        case "${{ inputs.version }}_${os}_${arch}" in
+          v0.2.15_linux_amd64) sha256=295d226c89f126c0a97775d364be149f47a810c8a3f9829ee410583d0c1abe3c ;;
+          v0.2.15_linux_arm64) sha256=fecf5f3ea74d11da2cd5d95a4c016d5d2543cbc4844ce21adf5e727e7ffd9e44 ;;
+          *) echo "No pinned checksum for ${{ inputs.version }} ${os}_${arch}"; exit 1 ;;
         esac
 
         mkdir -p "$HOME/.local/bin"

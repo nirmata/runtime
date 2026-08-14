@@ -269,20 +269,45 @@ jobs:
       - name: Sign the release image
         run: cosign sign --yes "${IMAGE_REPOSITORY}@${{ steps.image_digest.outputs.digest }}"
 
-      - name: Generate SBOM for the release image
+      # The tag resolves to a manifest list (linux/amd64 + linux/arm64); scanning it
+      # without a platform silently defaults to amd64 and omits arm64 coverage.
+      - name: Resolve per-platform image digests
+        id: platform_digests
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect "${IMAGE_REPOSITORY}:${GITHUB_REF_NAME}" --raw)"
+          amd64_digest="$(echo "$raw" | jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest')"
+          arm64_digest="$(echo "$raw" | jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest')"
+          [ -n "$amd64_digest" ] || { echo "no linux/amd64 manifest found"; exit 1; }
+          [ -n "$arm64_digest" ] || { echo "no linux/arm64 manifest found"; exit 1; }
+          echo "amd64_digest=${amd64_digest}" >> "$GITHUB_OUTPUT"
+          echo "arm64_digest=${arm64_digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM (linux/amd64)
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: ${{ env.IMAGE_REPOSITORY }}@${{ steps.image_digest.outputs.digest }}
+          image: ${{ env.IMAGE_REPOSITORY }}@${{ steps.platform_digests.outputs.amd64_digest }}
           format: spdx-json
-          output-file: kyverno-runtime-${{ github.ref_name }}.spdx.json
+          output-file: kyverno-runtime-${{ github.ref_name }}-linux-amd64.spdx.json
           upload-artifact: false
 
-      - name: Attach SBOM to the release image
+      - name: Generate SBOM (linux/arm64)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE_REPOSITORY }}@${{ steps.platform_digests.outputs.arm64_digest }}
+          format: spdx-json
+          output-file: kyverno-runtime-${{ github.ref_name }}-linux-arm64.spdx.json
+          upload-artifact: false
+
+      - name: Attach SBOMs to their platform images
         run: |
           set -euo pipefail
           cosign attach sbom \
-            --sbom "kyverno-runtime-${GITHUB_REF_NAME}.spdx.json" \
-            "${IMAGE_REPOSITORY}@${{ steps.image_digest.outputs.digest }}"
+            --sbom "kyverno-runtime-${GITHUB_REF_NAME}-linux-amd64.spdx.json" \
+            "${IMAGE_REPOSITORY}@${{ steps.platform_digests.outputs.amd64_digest }}"
+          cosign attach sbom \
+            --sbom "kyverno-runtime-${GITHUB_REF_NAME}-linux-arm64.spdx.json" \
+            "${IMAGE_REPOSITORY}@${{ steps.platform_digests.outputs.arm64_digest }}"
 
       - name: Attest build provenance for the release image
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -291,10 +316,11 @@ jobs:
           subject-digest: ${{ steps.image_digest.outputs.digest }}
           push-to-registry: true
 
-      - name: Publish release with SBOM
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+      - name: Upload SBOMs for the release job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          files: kyverno-runtime-${{ github.ref_name }}.spdx.json
+          name: sboms
+          path: kyverno-runtime-${{ github.ref_name }}-linux-*.spdx.json
 
   publish-chart:
     name: Package & Publish Helm Chart
@@ -394,3 +420,23 @@ jobs:
           subject-name: ghcr.io/nirmata/charts/kyverno-runtime
           subject-digest: ${{ steps.chart_push.outputs.digest }}
           push-to-registry: true
+
+  # Waits on both promote-image and publish-chart so the release page never appears until
+  # every supply-chain artifact it links (image signature, SBOMs, chart) actually exists.
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [promote-image, publish-chart]
+
+    steps:
+      - name: Download SBOMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sboms
+
+      - name: Publish release with SBOMs
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: kyverno-runtime-${{ github.ref_name }}-linux-*.spdx.json
