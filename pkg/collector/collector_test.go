@@ -522,20 +522,20 @@ func TestRunReturnsCleanlyOnContextCancel(t *testing.T) {
 }
 
 func TestHealthyFalseBeforeRunAndTrueOnceStarted(t *testing.T) {
-	c := New(logr.Discard(), DefaultBufferSize, DefaultRestartBackoff, nil)
-	if c.Healthy(time.Second) {
-		t.Error("Healthy() = true before Run, want false")
-	}
+c := New(logr.Discard(), DefaultBufferSize, DefaultRestartBackoff, nil)
+if c.Healthy(testTimeout) {
+	t.Error("Healthy() = true before Run, want false")
+}
 
-	_, stop := runCollector(t, c)
-	deadline := time.Now().Add(testTimeout)
-	for !c.Healthy(time.Second) && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if !c.Healthy(time.Second) {
-		t.Error("Healthy() = false while dispatch loop is running, want true")
-	}
-	stop()
+seen := make(chan runtimeevent.Event, 1)
+c.AddSink(chanSink("health-sync", seen))
+_, stop := runCollector(t, c)
+c.events <- taggedEvent{source: "test", ev: netEvent("heartbeat")}
+recvEvent(t, seen)
+if !c.Healthy(testTimeout) {
+	t.Error("Healthy() = false while dispatch loop is running, want true")
+}
+stop()
 }
 
 func TestRunTwiceReturnsError(t *testing.T) {

@@ -231,8 +231,9 @@ func (c *Collector) forward(ctx context.Context, source string, in <-chan runtim
 // heartbeat on every wakeup, including idle ones, so Healthy reflects a live
 // loop rather than event volume.
 func (c *Collector) dispatch(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
+ticker := time.NewTicker(time.Second)
+defer ticker.Stop()
+defer c.heartbeat.Store(0)
 
 	c.heartbeat.Store(time.Now().UnixNano())
 	for {

@@ -16,8 +16,7 @@ rbac:
 # The container always runs with securityContext.privileged: true. It loads and
 # attaches BPF LSM, raw tracepoint, and cgroup_skb programs — tracing-class
 # program load needs broad privilege on current kernels — and reads
-# /proc/<pid>/cgroup across every process on the node via hostPID. Narrowing
-# this to a discrete capability set is tracked separately from this chart.
+# /proc/<pid>/cgroup across every process on the node via hostPID.
 daemon:
   podLabels: {}
   podAnnotations: {}

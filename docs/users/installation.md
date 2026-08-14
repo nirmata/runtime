@@ -102,7 +102,7 @@ defaults to `ghcr.io/nirmata/kyverno-runtime`.
 | `rbac.create` | `true` | Create the ClusterRole and ClusterRoleBinding. |
 | `daemon.podLabels` | `{}` | Extra labels on the daemon pod. |
 | `daemon.podAnnotations` | `{}` | Extra annotations on the daemon pod. |
-| `daemon.resources` | `requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 512Mi}` | Container resource requests/limits. No CPU limit, so the collector loop is never throttled. |
+| `daemon.resources` | `requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 512Mi}` | Container resource requests/limits. No CPU limit avoids CPU quota throttling of the collector loop. |
 | `daemon.priorityClassName` | `system-node-critical` | Pod priority class. Empty omits the field. |
 | `daemon.nodeSelector` | `{}` | Node selector for the DaemonSet. |
 | `daemon.tolerations` | `[]` | Tolerations for the DaemonSet. |
