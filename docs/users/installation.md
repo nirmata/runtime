@@ -143,8 +143,9 @@ capability set.
 The daemon serves `/healthz` next to `/metrics` on `daemon.metrics.port`. It fails once
 the runtime policy informer has not finished its initial sync, or once the event
 collector's dispatch loop has gone quiet for longer than expected, and passes otherwise.
-The DaemonSet points its `livenessProbe` at it; there is no readiness probe — nothing routes
-traffic to the daemon, so only a liveness probe is needed for now.
+The DaemonSet points its `startupProbe` at it, gating the container as started once the
+informer sync completes; there is no liveness or readiness probe — a stalled dispatch loop
+after startup does not restart the container, and nothing routes traffic to the daemon.
 
 ## Daemon flags
 

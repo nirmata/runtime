@@ -60,7 +60,7 @@ spec:
         - name: metrics
           containerPort: {{ .Values.daemon.metrics.port }}
           protocol: TCP
-        livenessProbe:
+        startupProbe:
           httpGet:
             path: /healthz
             port: metrics
