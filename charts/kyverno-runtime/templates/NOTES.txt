@@ -12,3 +12,8 @@ To verify the installation:
   kubectl get crd runtimepolicies.runtime.nirmata.io
   kubectl get crd reports.openreports.io
   kubectl get crd clusterreports.openreports.io
+
+The daemon pod runs privileged with hostPID, which the `baseline` and
+`restricted` Pod Security Standards forbid. Label the namespace it runs in:
+
+  kubectl label namespace {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=privileged --overwrite

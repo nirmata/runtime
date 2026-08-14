@@ -19,6 +19,15 @@ daemon:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # securityContext: the daemon container's securityContext. Defaults to what
+  # attaching LSM and cgroup eBPF programs on the node currently requires.
+  securityContext:
+    privileged: true
+    runAsUser: 0
+    readOnlyRootFilesystem: true
+  # updateStrategy: passed through to the DaemonSet's spec.updateStrategy.
+  # Empty uses the Kubernetes default (RollingUpdate).
+  updateStrategy: {}
   metrics:
     # port the daemon serves /metrics on, passed through --metrics-addr
     port: 9090

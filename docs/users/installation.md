@@ -21,6 +21,15 @@ cat /sys/kernel/security/lsm     # must contain "bpf" for open/exec enforcement
 test -r /sys/kernel/btf/vmlinux && echo "BTF present"
 ```
 
+The daemon pod runs privileged with `hostPID: true`, which the `baseline` and
+`restricted` Pod Security Standards forbid regardless of any future capability
+scoping. If the target namespace enforces Pod Security admission, label it
+`privileged` before installing:
+
+```bash
+kubectl label namespace kyverno-runtime pod-security.kubernetes.io/enforce=privileged --overwrite
+```
+
 ## Install
 
 The chart is published to GHCR as an OCI artifact. There is no chart repository to add.
@@ -97,6 +106,8 @@ defaults to `ghcr.io/nirmata/kyverno-runtime`.
 | `daemon.nodeSelector` | `{}` | Node selector for the DaemonSet. |
 | `daemon.tolerations` | `[]` | Tolerations for the DaemonSet. |
 | `daemon.affinity` | `{}` | Affinity rules for the DaemonSet. |
+| `daemon.securityContext` | `{privileged: true, runAsUser: 0, readOnlyRootFilesystem: true}` | Container `securityContext`. |
+| `daemon.updateStrategy` | `{}` (Kubernetes default `RollingUpdate`) | DaemonSet `spec.updateStrategy`. |
 | `daemon.metrics.port` | `9090` | Port the daemon serves `/metrics` on, passed through `--metrics-addr`. |
 | `daemon.observeInterval` | `""` (daemon default `10s`) | Sets `--observe-interval`. |
 | `daemon.eventBufferSize` | `""` (daemon default `4096`) | Sets `--event-buffer-size`. |
