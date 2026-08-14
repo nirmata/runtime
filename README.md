@@ -9,16 +9,29 @@ Kyverno-style CEL policies for eBPF runtime enforcement.
 
 ## 🚀 What is Nirmata Runtime?
 
-**Nirmata Runtime** monitors and enforces runtime behaviors with Kyverno-style CEL policies using eBPF. It provides a per-node DaemonSet that attaches eBPF programs to the pods selected by a cluster-scoped `RuntimePolicy`. The `RuntimePolicy` governs five kinds of workload behavior: the files a process opens, the binaries it executes, the destinations it sends traffic to, the application protocols it speaks, and the DNS names it resolves. Decisions are made in the kernel, so a denied operation never completes.
+**Nirmata Runtime** monitors and enforces runtime behaviors with Kyverno-style CEL policies using eBPF. It provides a per-node DaemonSet that attaches eBPF programs to the pods selected by a cluster-scoped `RuntimePolicy`. 
+
+The `RuntimePolicy` governs five kinds of workload behavior:
+
+1. the files a process opens,
+2. the binaries it executes,
+3. the destinations it sends traffic to,
+4. the application protocols it speaks, and;
+5. the DNS names it resolves.
+
+Decisions are made in the kernel, so a denied operation never completes.
 
 Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are custom resources defined in this project and support CEL (Common Expressions Language); findings are written as [OpenReports](https://openreports.io) `Report` objects in the offending pod's namespace, per-node state and conditions live in the policy's `status`, and counters are exposed to Prometheus.
 
-### Why Nirmata Runtime?
+## 🔥 Why Nirmata Runtime?
 
 - **Admission Controllers checks the spec; Runtime checks the behavior.** Kyverno at admission validates what a pod *declares* before it starts. Nirmata Runtime enforces what the running process actually *does* — the files it opens, the binaries it execs, the addresses it contacts — after admission has already said yes.
+
 - **What your CNI can't tell you.** NetworkPolicy decides who may reach whom; it does not know that `port: 443` might carry SSH, an h2c tunnel, or a custom protocol instead of TLS. `protocol` classifies each flow from its first data segment, independent of the declared port, and joins `exec`, `open`, and `network` in one policy object evaluated by one daemon — a cross-domain assertion no CNI expresses, with each finding attributed to the pod and container it came from, including the process for `exec`/`open` findings. Connectivity, identity-based policy, FQDN egress, ingress, and encryption stay with the CNI; see [why a runtime layer](docs/users/why-runtime.md) for the full split.
+
 - **Blocks, not just alerts.** Runtime detection tells you a sensitive file was read. `mode: enforce` returns `-EPERM` from a BPF-LSM hook, so the read never happens. `mode: monitor` gives you the detection workflow first, with the same policy object.
-- **One small CRD, Kyverno CEL, deliberately narrow.** Tetragon is a general tracing and enforcement engine with its own policy schema. KubeArmor attaches to the same BPF-LSM hooks and falls back to AppArmor on nodes without them, which this project does not do. Nirmata Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
+
+- **One small CRD, Kyverno CEL, deliberately narrow.** Nirmata Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
 
 ## ✨ Key Features
 
@@ -28,31 +41,35 @@ Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are c
   A fifth, `dns` (the names a workload resolves), only ever observes: pairing it with
   `mode: enforce` is refused, because blocking a destination named by domain is what a
   `network` behavior does.
+
 - **Enforce or monitor**: `spec.mode` is per policy, so one policy can block a workload
   while another reports on it.
+
 - **Readable findings**: a `monitorFilter` is a per-observation CEL predicate deciding
   which monitor-mode findings are reported, so a discovery policy can watch broadly and
   still produce a Report someone will read.
+
 - **Default deny with allow-lists**: `deny.values: ["*"]` flips a behavior to
   deny-all-except-allowed.
+
 - **CEL-powered rules**: literal `values`, CEL `expression`, reusable `spec.variables`,
   and the Kyverno `resource`, `http`, and `json` libraries alongside the Kubernetes CEL
   libraries.
+
 - **Kubernetes-native output**: OpenReports `Report` objects, per-node `status.nodes`
   shards with `Applied` and `TargetsValid` conditions, and Prometheus counters.
+
 - **Selector scoping**: `podSelector` and `namespaceSelector` label selectors, cluster-wide;
   omitting either selects everything, and an `enforce`-mode policy must set one of them.
+
 - **Periodic re-evaluation**: `evaluationInterval` re-runs the policy's expressions, so
   an externally sourced deny list stays current without editing the policy.
 
 🚨 **WARNING**: This project is pre-1.0 and the API is `v1alpha1`. Here are some known limitations:
 
 - Egress is keyed on IPv4 destination addresses. A domain name or cluster Service name is accepted as a value and resolved to addresses; an IPv6 literal is not.
-- File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are
-typically not booted with it.
-- A policy whose `open` and `exec` rules can never fire on a node — one booted without BPF-LSM — still reports `Applied=True` for that node in `status.nodes`. `Applied=True` says the daemon loaded the policy, not that the policy is blocking anything; the node's kernel is what tells you which. This is an open bug.
+- File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are typically not booted with it.
 - `network`, `protocol`, `open`, and `exec` observations come from eBPF counters that the daemon drains on a poll interval rather than from a stream of events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
-- Nothing reads inside TLS. A destination is named by domain only when the pod's own DNS answer was observed, and no policy value has a port.
 - Exceptions are not yet supported.
 
 ## 🏃 Quick Start
@@ -61,9 +78,11 @@ typically not booted with it.
 
 - A Kubernetes cluster on Linux nodes, plus `kubectl`, `helm`, and `git`. A stock
   [kind](https://kind.sigs.k8s.io/) cluster works.
+
 - Network egress enforcement and observation require only a cgroup v2 host and BPF
   support; a stock kind cluster on a Linux host qualifies. That, plus egress from the
   cluster to the address each sample below probes, is all they need.
+
 - File `open` and process `exec` enforcement need a node booted with BPF-LSM active. Whether
   a managed distribution gives you one is listed in [platforms](docs/users/platforms.md).
 
@@ -247,8 +266,10 @@ policy to `monitor` and read the resulting Report, plus
 
 - 📖 **Examples**: every scenario under [examples/](examples/README.md) is a
   self-contained, CI-validated walkthrough
+
 - 📚 **Spec reference**: [RuntimePolicy](docs/users/reference/runtimepolicy.md) for every
   field, condition, and documented limit
+  
 - 💻 **CEL**: [CEL reference](docs/users/reference/cel.md) for the expression contract and
   the available libraries
 
