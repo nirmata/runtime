@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"time"
 
@@ -46,6 +47,10 @@ const (
 	defaultEventBufferSize      = collector.DefaultBufferSize
 	defaultSourceRestartBackoff = collector.DefaultRestartBackoff
 )
+
+// healthMaxHeartbeatAge is how long the collector's dispatch loop can go
+// without ticking before /healthz reports it stalled.
+const healthMaxHeartbeatAge = 30 * time.Second
 
 // The names the managers' poll sources are registered under, and the source
 // label of every metric attributed to them.
@@ -156,13 +161,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// registration
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
-	if metricsAddr != "" {
-		g.Go(func() error {
-			return metrics.Serve(ctx, metricsAddr, reg, logger.WithName("metrics"))
-		})
-	} else {
-		logger.Info("metrics endpoint disabled (--metrics-addr is empty)")
-	}
 
 	// attribution is both a pod-event handler (it builds the cgroup -> pod map)
 	// and a collector stage (it annotates events and drops unattributed ones).
@@ -263,6 +261,23 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		logger.Error(err, "failed to create runtime policy informer")
 		os.Exit(1)
+	}
+
+	if metricsAddr != "" {
+		health := func() error {
+			if !rpInformer.HasSynced() {
+				return errors.New("runtime policy cache not synced")
+			}
+			if !col.Healthy(healthMaxHeartbeatAge) {
+				return errors.New("collector loop stalled")
+			}
+			return nil
+		}
+		g.Go(func() error {
+			return metrics.Serve(ctx, metricsAddr, reg, health, logger.WithName("metrics"))
+		})
+	} else {
+		logger.Info("metrics endpoint disabled (--metrics-addr is empty)")
 	}
 
 	// a policy compiled from an unsynced service cache resolves its references to

@@ -102,13 +102,14 @@ defaults to `ghcr.io/nirmata/kyverno-runtime`.
 | `rbac.create` | `true` | Create the ClusterRole and ClusterRoleBinding. |
 | `daemon.podLabels` | `{}` | Extra labels on the daemon pod. |
 | `daemon.podAnnotations` | `{}` | Extra annotations on the daemon pod. |
-| `daemon.resources` | `{}` | Container resource requests/limits. |
+| `daemon.resources` | `requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 512Mi}` | Container resource requests/limits. No CPU limit, so the collector loop is never throttled. |
+| `daemon.priorityClassName` | `system-node-critical` | Pod priority class. Empty omits the field. |
 | `daemon.nodeSelector` | `{}` | Node selector for the DaemonSet. |
 | `daemon.tolerations` | `[]` | Tolerations for the DaemonSet. |
 | `daemon.affinity` | `{}` | Affinity rules for the DaemonSet. |
 | `daemon.securityContext` | `{privileged: true, runAsUser: 0, readOnlyRootFilesystem: true}` | Container `securityContext`. |
 | `daemon.updateStrategy` | `{}` (Kubernetes default `RollingUpdate`) | DaemonSet `spec.updateStrategy`. |
-| `daemon.metrics.port` | `9090` | Port the daemon serves `/metrics` on, passed through `--metrics-addr`. |
+| `daemon.metrics.port` | `9090` | Port the daemon serves `/metrics` and `/healthz` on, passed through `--metrics-addr`. |
 | `daemon.observeInterval` | `""` (daemon default `10s`) | Sets `--observe-interval`. |
 | `daemon.eventBufferSize` | `""` (daemon default `4096`) | Sets `--event-buffer-size`. |
 | `daemon.clusterDomain` | `""` (daemon default `cluster.local`) | Sets `--cluster-domain`, the DNS domain that makes a `network` value a cluster Service name. |
@@ -128,6 +129,22 @@ daemon:
       resources: ["configmaps"]
       verbs: ["get", "list", "watch"]
 ```
+
+## Why the daemon runs privileged
+
+The daemon container sets `securityContext.privileged: true`. It loads and attaches BPF
+LSM, raw tracepoint, and cgroup_skb programs — tracing-class program load needs broad
+privilege on current kernels — and reads `/proc/<pid>/cgroup` across every process on
+the node through `hostPID`, so the chart does not attempt to enumerate a narrower
+capability set.
+
+## Health probes
+
+The daemon serves `/healthz` next to `/metrics` on `daemon.metrics.port`. It fails once
+the runtime policy informer has not finished its initial sync, or once the event
+collector's dispatch loop has gone quiet for longer than expected, and passes otherwise.
+The DaemonSet points its `livenessProbe` at it; there is no readiness probe — nothing routes
+traffic to the daemon, so only a liveness probe is needed for now.
 
 ## Daemon flags
 

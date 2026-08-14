@@ -11,11 +11,23 @@ serviceAccount:
 rbac:
   create: true
 
-# daemon: runs the `kyverno-runtime daemon` command as a DaemonSet on every node
+# daemon: runs the `kyverno-runtime daemon` command as a DaemonSet on every node.
+#
+# The container always runs with securityContext.privileged: true. It loads and
+# attaches BPF LSM, raw tracepoint, and cgroup_skb programs — tracing-class
+# program load needs broad privilege on current kernels — and reads
+# /proc/<pid>/cgroup across every process on the node via hostPID. Narrowing
+# this to a discrete capability set is tracked separately from this chart.
 daemon:
   podLabels: {}
   podAnnotations: {}
-  resources: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  priorityClassName: system-node-critical
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -29,7 +41,7 @@ daemon:
   # Empty uses the Kubernetes default (RollingUpdate).
   updateStrategy: {}
   metrics:
-    # port the daemon serves /metrics on, passed through --metrics-addr
+    # port the daemon serves /metrics and /healthz on, passed through --metrics-addr
     port: 9090
   # observeInterval: how often the BPF observation maps are drained. Bounds
   # monitor-mode detection latency. Empty uses the daemon default (10s).

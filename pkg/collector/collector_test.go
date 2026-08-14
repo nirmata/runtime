@@ -521,6 +521,23 @@ func TestRunReturnsCleanlyOnContextCancel(t *testing.T) {
 	stop()
 }
 
+func TestHealthyFalseBeforeRunAndTrueOnceStarted(t *testing.T) {
+	c := New(logr.Discard(), DefaultBufferSize, DefaultRestartBackoff, nil)
+	if c.Healthy(time.Second) {
+		t.Error("Healthy() = true before Run, want false")
+	}
+
+	_, stop := runCollector(t, c)
+	deadline := time.Now().Add(testTimeout)
+	for !c.Healthy(time.Second) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !c.Healthy(time.Second) {
+		t.Error("Healthy() = false while dispatch loop is running, want true")
+	}
+	stop()
+}
+
 func TestRunTwiceReturnsError(t *testing.T) {
 	started := make(chan int, 1)
 	c := New(logr.Discard(), DefaultBufferSize, DefaultRestartBackoff, nil)
