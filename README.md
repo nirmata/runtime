@@ -9,14 +9,14 @@ Kyverno-style CEL policies for eBPF runtime enforcement.
 
 ## 🚀 What is Nirmata Runtime?
 
-**Nirmata Runtime** monitors and enforces runtime behaviors with Kyverno-style CEL policies using eBPF. It provides a per-node DaemonSet that attaches eBPF programs to the pods selected by a cluster-scoped `RuntimePolicy`. 
+**Nirmata Runtime** monitors and enforces runtime behaviors with Kyverno-style CEL policies using eBPF. It provides a per-node DaemonSet that attaches eBPF programs to the pods selected by a cluster-scoped `RuntimePolicy`.
 
 The `RuntimePolicy` governs five kinds of workload behavior:
 
 1. the files a process opens,
 2. the binaries it executes,
 3. the destinations it sends traffic to,
-4. the application protocols it speaks, and;
+4. the application protocols it speaks, and
 5. the DNS names it resolves.
 
 Decisions are made in the kernel, so a denied operation never completes.
