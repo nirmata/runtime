@@ -533,11 +533,15 @@ func TestPodHandleCreateOrUpdateFansOutPartialCgInfos(t *testing.T) {
 }
 
 // TestPodUnresolvableContainerIsRetried covers the retryable branch end to end:
-// a pod whose only container reports an unresolvable id resolves nothing, so the
-// event is requeued rather than silently accepted.
+// a pod whose only running container reports an unresolvable id resolves
+// nothing, so the event is requeued rather than silently accepted.
 func TestPodUnresolvableContainerIsRetried(t *testing.T) {
 	p := pod("ns", "p", "uid-1")
-	p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "c1", ContainerID: ""}}
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:        "c1",
+		ContainerID: "",
+		State:       corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
 	h := &recordingPodHandler{name: "h"}
 	w, _ := newTestPodWatcher(t, podHandlers(h), p)
 

@@ -315,7 +315,7 @@ func (w *podWatcher) handleCreateOrUpdate(pod *corev1.Pod, evType string) error 
 }
 
 // only a total resolution failure is worth a retry, since that is what a
-// container mid-creation looks like
+// running container whose cgroup has not been found yet looks like
 func resolveRetryable(cgInfos []*containers.ContainerCgroupInfo, err error) bool {
 	return err != nil && len(cgInfos) == 0
 }
