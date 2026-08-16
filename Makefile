@@ -18,7 +18,7 @@ CHART_PACKAGE_DIR ?= dist
 # or a tree with no tags at all), and either can still be overridden on the
 # command line to package a release without editing the file.
 GIT_DESCRIBE := $(shell git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --always --dirty 2>/dev/null)
-CHART_VERSION ?= $(if $(filter v%,$(GIT_DESCRIBE)),$(patsubst v%,%,$(GIT_DESCRIBE)),$(shell awk '/^version:/ {print $$2; exit}' $(CHART_DIR)/Chart.yaml))
+CHART_VERSION ?= $(if $(shell echo "$(GIT_DESCRIBE)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+($$|[-+])' && echo yes),$(patsubst v%,%,$(GIT_DESCRIBE)),$(shell awk '/^version:/ {print $$2; exit}' $(CHART_DIR)/Chart.yaml))
 # appVersion names the image tag the packaged chart's DaemonSet pulls, so it
 # defaults to IMAGE_TAG: the tag `build`/`ko-build` actually produced, not
 # Chart.yaml's placeholder.
