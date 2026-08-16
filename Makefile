@@ -12,11 +12,17 @@ CHART_NAME := kyverno-runtime
 # ghcr.io/nirmata/charts/kyverno-runtime and keeps the chart out of the image package.
 CHART_REGISTRY ?= oci://ghcr.io/nirmata/charts
 CHART_PACKAGE_DIR ?= dist
-# Default to whatever Chart.yaml carries; override either on the command line to
-# package a release without editing the file (the release workflow derives both
-# from the git tag).
-CHART_VERSION ?= $(shell awk '/^version:/ {print $$2; exit}' $(CHART_DIR)/Chart.yaml)
-CHART_APP_VERSION ?= $(shell awk '/^appVersion:/ {gsub(/"/, "", $$2); print $$2; exit}' $(CHART_DIR)/Chart.yaml)
+# Chart version must be valid SemVer; a git describe past the exact tag
+# (v0.1.4-5-gabcdef) already is one once the leading v is stripped. Falls back
+# to Chart.yaml's version when no v<semver> tag is reachable (a shallow clone,
+# or a tree with no tags at all), and either can still be overridden on the
+# command line to package a release without editing the file.
+GIT_DESCRIBE := $(shell git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --always --dirty 2>/dev/null)
+CHART_VERSION ?= $(if $(filter v%,$(GIT_DESCRIBE)),$(patsubst v%,%,$(GIT_DESCRIBE)),$(shell awk '/^version:/ {print $$2; exit}' $(CHART_DIR)/Chart.yaml))
+# appVersion names the image tag the packaged chart's DaemonSet pulls, so it
+# defaults to IMAGE_TAG: the tag `build`/`ko-build` actually produced, not
+# Chart.yaml's placeholder.
+CHART_APP_VERSION ?= $(IMAGE_TAG)
 CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 
 # Pinned tool versions. controller-gen stamps its own version into the
