@@ -31,6 +31,10 @@ const AnnotationTruncatedResults = "runtime.nirmata.io/truncated-results"
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelNode      = "runtime.nirmata.io/node"
+	// LabelPodUID identifies which incarnation of the Report's named pod its
+	// results describe, so a pod recreated under the same name is detected as
+	// a new incarnation instead of inheriting its predecessor's findings.
+	LabelPodUID = "runtime.nirmata.io/pod-uid"
 )
 
 // Property keys. This is the COMPLETE, fixed key set: buildResult writes no

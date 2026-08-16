@@ -210,6 +210,74 @@ func TestWritesOneReportPerPod(t *testing.T) {
 	}
 }
 
+func TestReportSetsPodOwnerReferenceAndIncarnationLabel(t *testing.T) {
+	c := newRecordingClient(t)
+	r, _ := newTestReporter(t, c, Options{NodeName: "node-a"})
+
+	f := findingIn("default", "pod-1", fixedTime)
+	r.Report(f)
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	report := getReport(t, c, "default", reportNameForPod(f.Pod.Name))
+	if got := report.Labels[LabelPodUID]; got != f.Pod.UID {
+		t.Errorf("pod-uid label = %q, want %q", got, f.Pod.UID)
+	}
+	if len(report.OwnerReferences) != 1 {
+		t.Fatalf("owner references = %d, want 1", len(report.OwnerReferences))
+	}
+	owner := report.OwnerReferences[0]
+	if owner.Kind != "Pod" || owner.Name != f.Pod.Name || string(owner.UID) != f.Pod.UID {
+		t.Errorf("owner reference = %+v, want Pod/%s (uid %s)", owner, f.Pod.Name, f.Pod.UID)
+	}
+}
+
+// TestPodRecreatedUnderTheSameNameResetsTheReport covers a stable pod name
+// (a StatefulSet member, a directly-named Pod) outliving its own pod: a new
+// incarnation's findings must not accumulate alongside its predecessor's
+// under the Report name they both address.
+func TestPodRecreatedUnderTheSameNameResetsTheReport(t *testing.T) {
+	c := newRecordingClient(t)
+	r, _ := newTestReporter(t, c, Options{NodeName: "node-a"})
+
+	first := findingIn("default", "uid-old", fixedTime)
+	first.Pod.Name = "recreated-pod"
+	r.Report(first)
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush first incarnation: %v", err)
+	}
+
+	name := reportNameForPod(first.Pod.Name)
+	before := getReport(t, c, "default", name)
+	if len(before.Results) != 1 {
+		t.Fatalf("first incarnation wrote %d results, want 1", len(before.Results))
+	}
+
+	second := findingIn("default", "uid-new", fixedTime.Add(time.Minute))
+	second.Pod.Name = "recreated-pod"
+	second.Target = "5.6.7.8"
+	second.Net = &NetSummary{DestIP: "5.6.7.8"}
+	r.Report(second)
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush second incarnation: %v", err)
+	}
+
+	after := getReport(t, c, "default", name)
+	if len(after.Results) != 1 {
+		t.Fatalf("report holds %d results after recreation, want 1 (predecessor's results dropped)", len(after.Results))
+	}
+	if got := after.Results[0].Properties[propDestIP]; got != "5.6.7.8" {
+		t.Errorf("surviving result destIP = %q, want 5.6.7.8 (the new incarnation's finding)", got)
+	}
+	if got := after.Labels[LabelPodUID]; got != "uid-new" {
+		t.Errorf("pod-uid label after reset = %q, want uid-new", got)
+	}
+	if got := string(after.OwnerReferences[0].UID); got != "uid-new" {
+		t.Errorf("owner reference uid after reset = %q, want uid-new", got)
+	}
+}
+
 func TestReportDedupMergesCountAndTimestamps(t *testing.T) {
 	c := newRecordingClient(t)
 	r, _ := newTestReporter(t, c, Options{NodeName: "node-a"})
@@ -480,6 +548,10 @@ func TestLongPodNamesProduceDistinctValidReportNames(t *testing.T) {
 		}
 		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
 			t.Errorf("report name %q is not a valid object name: %v", name, errs[0])
+		}
+		suffix := name[strings.LastIndex(name, "-")+1:]
+		if len(suffix) != 16 {
+			t.Errorf("report name %q has a %d-hex-char digest, want 16 (64 bits of collision resistance)", name, len(suffix))
 		}
 	}
 	if again := reportNameForPod(shared + "-x"); again != nameX {

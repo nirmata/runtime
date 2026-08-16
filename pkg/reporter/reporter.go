@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nirmata/runtime/pkg/metrics"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
@@ -258,17 +259,20 @@ func (r *Reporter) requeue(key reportKey, items map[string]*pending) {
 	}
 }
 
-// writeReport creates or updates the Report addressed by key.
+// writeReport creates or updates the Report addressed by key. The Report is
+// owned by the pod items currently describe, so it is garbage collected with
+// that pod rather than persisting indefinitely.
 func (r *Reporter) writeReport(ctx context.Context, key reportKey, items map[string]*pending) error {
 	incoming := r.buildResults(items)
 	namespace, name := key.Namespace, key.Name
+	pod := currentPod(items)
 
 	existing := &openreportsv1alpha1.Report{}
 	err := r.client.Get(ctx, k8stypes.NamespacedName{Namespace: namespace, Name: name}, existing)
 	switch {
 	case apierrors.IsNotFound(err):
 		results, summary, truncated, _ := applyResults(nil, incoming, r.opts.MaxResultsPerReport)
-		report := r.newReport(namespace, name)
+		report := r.newReport(namespace, name, pod)
 		report.Results = results
 		report.Summary = summary
 		setTruncated(report, truncated)
@@ -286,6 +290,13 @@ func (r *Reporter) writeReport(ctx context.Context, key reportKey, items map[str
 		r.countWrite(writeError)
 		return fmt.Errorf("getting report %s/%s: %w", namespace, name, err)
 	}
+
+	if incarnation := sanitize(pod.UID); existing.Labels[LabelPodUID] != "" && existing.Labels[LabelPodUID] != incarnation {
+		r.log.V(2).Info("report name reused by a new pod incarnation, resetting",
+			"namespace", namespace, "name", name)
+		existing.Results = nil
+	}
+	setReportOwner(existing, r.opts.NodeName, pod)
 
 	results, summary, truncated, changed := applyResults(existing.Results, incoming, r.opts.MaxResultsPerReport)
 	if !changed {
@@ -311,6 +322,20 @@ func (r *Reporter) writeReport(ctx context.Context, key reportKey, items map[str
 	return nil
 }
 
+// currentPod returns the pod identity of the most recently observed finding
+// in items, the same newest-wins rule pending.merge applies within a single
+// fingerprint, extended across a whole batch: it is what a Report's owner
+// reference and incarnation label should describe.
+func currentPod(items map[string]*pending) runtimeevent.PodIdentity {
+	var newest *pending
+	for _, p := range items {
+		if newest == nil || p.last.After(newest.last) {
+			newest = p
+		}
+	}
+	return newest.finding.Pod
+}
+
 // buildResults renders the buffered findings in deterministic fingerprint
 // order so repeated runs produce byte-identical reports.
 func (r *Reporter) buildResults(items map[string]*pending) []openreportsv1alpha1.ReportResult {
@@ -327,20 +352,35 @@ func (r *Reporter) buildResults(items map[string]*pending) []openreportsv1alpha1
 	return results
 }
 
-func (r *Reporter) newReport(namespace, name string) *openreportsv1alpha1.Report {
-	return &openreportsv1alpha1.Report{
-		TypeMeta: metav1.TypeMeta{APIVersion: "openreports.io/v1alpha1", Kind: "Report"},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespace,
-			Name:      name,
-			Labels: map[string]string{
-				LabelManagedBy: Source,
-				LabelNode:      r.opts.NodeName,
-			},
-		},
+func (r *Reporter) newReport(namespace, name string, pod runtimeevent.PodIdentity) *openreportsv1alpha1.Report {
+	report := &openreportsv1alpha1.Report{
+		TypeMeta:      metav1.TypeMeta{APIVersion: "openreports.io/v1alpha1", Kind: "Report"},
+		ObjectMeta:    metav1.ObjectMeta{Namespace: namespace, Name: name},
 		Source:        Source,
 		Configuration: reportConfiguration(r.opts.MaxResultsPerReport),
 	}
+	setReportOwner(report, r.opts.NodeName, pod)
+	return report
+}
+
+// setReportOwner (re)stamps the labels and owner reference tying a Report to
+// the node writing it and the pod incarnation its results describe. Called on
+// both create and update so an update refreshes them exactly like a create
+// would, and an owner reference to the pod lets Kubernetes garbage collect
+// the Report once that pod is gone instead of it persisting indefinitely.
+func setReportOwner(report *openreportsv1alpha1.Report, nodeName string, pod runtimeevent.PodIdentity) {
+	if report.Labels == nil {
+		report.Labels = map[string]string{}
+	}
+	report.Labels[LabelManagedBy] = Source
+	report.Labels[LabelNode] = nodeName
+	report.Labels[LabelPodUID] = sanitize(pod.UID)
+	report.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "v1",
+		Kind:       "Pod",
+		Name:       sanitize(pod.Name),
+		UID:        k8stypes.UID(sanitize(pod.UID)),
+	}}
 }
 
 func reportConfiguration(max int) *openreportsv1alpha1.ReportConfiguration {
@@ -350,15 +390,17 @@ func reportConfiguration(max int) *openreportsv1alpha1.ReportConfiguration {
 }
 
 // reportNameForPod derives the Report name for a pod. Names over the 63-char
-// object-name limit are truncated and suffixed with a hash of the full name,
-// so two long pod names sharing a prefix never address the same Report.
+// object-name limit are truncated and suffixed with a 64-bit hash of the full
+// name, so two long pod names sharing a prefix collide only astronomically
+// rarely rather than at the one-in-a-few-thousand rate an 8-hex-digit (32-bit)
+// suffix would.
 func reportNameForPod(podName string) string {
 	name := "kyverno-runtime-" + podName
 	if len(name) <= 63 {
 		return name
 	}
 	sum := sha256.Sum256([]byte(name))
-	return strings.TrimRight(name[:54], "-.") + "-" + hex.EncodeToString(sum[:])[:8]
+	return strings.TrimRight(name[:46], "-.") + "-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // setTruncated adds or clears the truncation annotation.
