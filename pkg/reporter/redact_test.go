@@ -144,8 +144,8 @@ func TestRedactionChokepoint(t *testing.T) {
 		Message:    "denied request carrying " + canaries[2].value + " with body " + canaries[7].value + " and " + canaries[8].value,
 		Pod: runtimeevent.PodIdentity{
 			UID:            "pod-uid-" + canaries[0].value,
-			Namespace:      "default", // a real namespace: see the sibling subtest
-			Name:           "pod-" + canaries[3].value,
+			Namespace:      "default", // a real namespace: see the dropped siblings below
+			Name:           "pod-1",   // a real pod name: see the dropped siblings below
 			Labels:         map[string]string{"prompt": canaries[9].value, canaries[9].value: "x"},
 			Container:      "app-" + canaries[4].value,
 			ContainerID:    "containerd://" + canaries[0].value,
@@ -170,11 +170,14 @@ func TestRedactionChokepoint(t *testing.T) {
 
 	r.Report(planted)
 
-	// A finding whose namespace itself carries a secret cannot address a
-	// Report and is dropped before anything is written.
+	// A finding whose namespace or pod name itself carries a secret cannot
+	// address a Report and is dropped before anything is written.
 	nsPlanted := planted
 	nsPlanted.Pod.Namespace = canaries[1].value
 	r.Report(nsPlanted)
+	namePlanted := planted
+	namePlanted.Pod.Name = canaries[3].value
+	r.Report(namePlanted)
 
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -182,7 +185,7 @@ func TestRedactionChokepoint(t *testing.T) {
 
 	reports := listReports(t, c)
 	if len(reports) != 1 {
-		t.Fatalf("wrote %d reports, want 1 (the secret-shaped namespace must be dropped)", len(reports))
+		t.Fatalf("wrote %d reports, want 1 (secret-shaped namespaces and pod names must be dropped)", len(reports))
 	}
 	if n := len(reports[0].Results); n != 1 {
 		t.Fatalf("report holds %d results, want 1", n)

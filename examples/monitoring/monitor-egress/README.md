@@ -57,7 +57,7 @@ Two things have to be true: the connection succeeded, and it was still reported.
 
   ```bash
   kubectl get reports -A
-  kubectl get report "kyverno-runtime-$(kubectl get pod egress-client -o jsonpath='{.spec.nodeName}')" \
+  kubectl get report kyverno-runtime-egress-client \
     -o yaml
   ```
 

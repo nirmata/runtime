@@ -84,8 +84,7 @@ Exec observations arrive on a ring buffer as they happen, but findings are flush
 seconds, so allow about that long.
 
 ```bash
-NODE=$(kubectl get pod ai-workload -o jsonpath='{.spec.nodeName}')
-kubectl get report "kyverno-runtime-${NODE}" -o yaml
+kubectl get report kyverno-runtime-ai-workload -o yaml
 ```
 
 - Three results, each naming what was launched in its `argv` property:

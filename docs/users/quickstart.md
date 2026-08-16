@@ -140,7 +140,7 @@ kubectl exec egress-client -- wget -q -T 3 -O - "http://$DENIED:8080/"
 
 Within about twenty seconds (a 10s counter poll plus a 10s finding flush) the match shows
 up as an [OpenReports](https://openreports.io) `Report` in the client pod's namespace, one
-per node, named `kyverno-runtime-<nodeName>`:
+per pod, named `kyverno-runtime-<podName>`:
 
 ```bash
 kubectl get reports -A

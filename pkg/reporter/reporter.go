@@ -2,9 +2,12 @@ package reporter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +29,7 @@ const (
 	// defaultFlushTimeout bounds the final flush performed after ctx is
 	// cancelled, which must not use the cancelled context.
 	defaultFlushTimeout = 30 * time.Second
-	// unknownNode names reports written by a daemon with no NODE_NAME.
+	// unknownNode labels reports written by a daemon with no NODE_NAME.
 	unknownNode = "unknown"
 )
 
@@ -41,8 +44,8 @@ const (
 // default. Note that no option touches redaction — that is deliberate and
 // permanent (DESIGN §4).
 type Options struct {
-	// NodeName names the reports this daemon owns: one Report per
-	// (namespace, node), named kyverno-runtime-<NodeName>.
+	// NodeName is the value of the node label on every Report this daemon
+	// writes.
 	NodeName string
 	// MaxResultsPerReport caps results per Report (default 500). Reports at
 	// the cap carry the truncated-results annotation.
@@ -62,8 +65,15 @@ type Reporter struct {
 	opts    Options
 
 	mu sync.Mutex
-	// pending maps namespace -> fingerprint -> accumulated finding.
-	pending map[string]map[string]*pending
+	// pending maps report -> fingerprint -> accumulated finding.
+	pending map[reportKey]map[string]*pending
+}
+
+// reportKey addresses one Report: the pod's namespace and the Report name
+// derived from the pod's name.
+type reportKey struct {
+	Namespace string
+	Name      string
 }
 
 // New creates a Reporter writing through c. m may be nil.
@@ -79,7 +89,7 @@ func New(c client.Client, log logr.Logger, m *metrics.Metrics, opts Options) *Re
 	}
 	if opts.NodeName == "" {
 		opts.NodeName = unknownNode
-		log.V(0).Info("reporter has no node name; reports will be named for an unknown node", "reportName", reportNameFor(unknownNode))
+		log.V(0).Info("reporter has no node name; reports will carry the unknown node label", "nodeLabel", unknownNode)
 	}
 
 	return &Reporter{
@@ -87,7 +97,7 @@ func New(c client.Client, log logr.Logger, m *metrics.Metrics, opts Options) *Re
 		log:     log,
 		metrics: m,
 		opts:    opts,
-		pending: map[string]map[string]*pending{},
+		pending: map[reportKey]map[string]*pending{},
 	}
 }
 
@@ -95,14 +105,18 @@ func New(c client.Client, log logr.Logger, m *metrics.Metrics, opts Options) *Re
 // fingerprint merge into the buffered entry (count, firstTimestamp,
 // lastTimestamp) and the next flush writes the merged result.
 //
-// Findings without a usable namespace are dropped: they cannot address a
-// namespaced Report. Attribution normally guarantees one (unattributed events
-// are dropped upstream), so this is both a safety net and — because an
-// unvalidated namespace would otherwise be echoed into object metadata,
-// bypassing sanitize — part of the redaction boundary.
+// Findings without a usable pod namespace and name are dropped: they cannot
+// address a namespaced Report. Attribution normally guarantees both
+// (unattributed events are dropped upstream), so this is both a safety net
+// and — because an unvalidated value would otherwise be echoed into object
+// metadata, bypassing sanitize — part of the redaction boundary.
 func (r *Reporter) Report(f Finding) {
-	if errs := validation.IsDNS1123Label(f.Pod.Namespace); len(errs) > 0 {
-		r.log.V(0).Info("dropping finding with unusable namespace",
+	errs := validation.IsDNS1123Label(f.Pod.Namespace)
+	if len(errs) == 0 {
+		errs = validation.IsDNS1123Subdomain(f.Pod.Name)
+	}
+	if len(errs) > 0 {
+		r.log.V(0).Info("dropping finding with unusable pod identity",
 			"policy", sanitize(f.PolicyName), "podUid", sanitize(f.Pod.UID), "reason", errs[0])
 		if r.metrics != nil {
 			r.metrics.EventsDropped.WithLabelValues("reporter", "unattributed").Inc()
@@ -117,12 +131,13 @@ func (r *Reporter) Report(f Finding) {
 	at = at.UTC()
 
 	fp := f.Fingerprint()
+	key := reportKey{Namespace: f.Pod.Namespace, Name: reportNameForPod(f.Pod.Name)}
 
 	r.mu.Lock()
-	byFingerprint, ok := r.pending[f.Pod.Namespace]
+	byFingerprint, ok := r.pending[key]
 	if !ok {
 		byFingerprint = map[string]*pending{}
-		r.pending[f.Pod.Namespace] = byFingerprint
+		r.pending[key] = byFingerprint
 	}
 	if p, found := byFingerprint[fp]; found {
 		p.merge(f, at)
@@ -150,7 +165,7 @@ func (r *Reporter) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	r.log.V(2).Info("reporter started", "flushInterval", r.opts.FlushInterval,
-		"maxResultsPerReport", r.opts.MaxResultsPerReport, "reportName", r.reportName())
+		"maxResultsPerReport", r.opts.MaxResultsPerReport)
 
 	for {
 		select {
@@ -172,32 +187,37 @@ func (r *Reporter) Run(ctx context.Context) error {
 	}
 }
 
-// flush writes one Report per namespace holding buffered findings. A namespace
-// whose write fails is re-buffered so the next flush retries it.
+// flush writes one Report per (namespace, pod) holding buffered findings. A
+// report whose write fails is re-buffered so the next flush retries it.
 func (r *Reporter) flush(ctx context.Context) error {
 	batch := r.drain()
 	if len(batch) == 0 {
 		return nil
 	}
 
-	namespaces := make([]string, 0, len(batch))
-	for ns := range batch {
-		namespaces = append(namespaces, ns)
+	keys := make([]reportKey, 0, len(batch))
+	for key := range batch {
+		keys = append(keys, key)
 	}
-	sort.Strings(namespaces)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Namespace != keys[j].Namespace {
+			return keys[i].Namespace < keys[j].Namespace
+		}
+		return keys[i].Name < keys[j].Name
+	})
 
 	var errs []error
-	for _, ns := range namespaces {
-		if err := r.writeNamespace(ctx, ns, batch[ns]); err != nil {
+	for _, key := range keys {
+		if err := r.writeReport(ctx, key, batch[key]); err != nil {
 			errs = append(errs, err)
-			r.requeue(ns, batch[ns])
+			r.requeue(key, batch[key])
 		}
 	}
 	return errors.Join(errs...)
 }
 
 // drain removes and returns everything buffered.
-func (r *Reporter) drain() map[string]map[string]*pending {
+func (r *Reporter) drain() map[reportKey]map[string]*pending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -205,18 +225,18 @@ func (r *Reporter) drain() map[string]map[string]*pending {
 		return nil
 	}
 	batch := r.pending
-	r.pending = map[string]map[string]*pending{}
+	r.pending = map[reportKey]map[string]*pending{}
 	return batch
 }
 
 // requeue folds a failed batch back into the buffer without double counting.
-func (r *Reporter) requeue(namespace string, items map[string]*pending) {
+func (r *Reporter) requeue(key reportKey, items map[string]*pending) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	byFingerprint, ok := r.pending[namespace]
+	byFingerprint, ok := r.pending[key]
 	if !ok {
-		r.pending[namespace] = items
+		r.pending[key] = items
 		return
 	}
 	for fp, item := range items {
@@ -235,10 +255,10 @@ func (r *Reporter) requeue(namespace string, items map[string]*pending) {
 	}
 }
 
-// writeNamespace creates or updates this node's Report in namespace.
-func (r *Reporter) writeNamespace(ctx context.Context, namespace string, items map[string]*pending) error {
+// writeReport creates or updates the Report addressed by key.
+func (r *Reporter) writeReport(ctx context.Context, key reportKey, items map[string]*pending) error {
 	incoming := r.buildResults(items)
-	name := r.reportName()
+	namespace, name := key.Namespace, key.Name
 
 	existing := &openreportsv1alpha1.Report{}
 	err := r.client.Get(ctx, k8stypes.NamespacedName{Namespace: namespace, Name: name}, existing)
@@ -326,10 +346,17 @@ func reportConfiguration(max int) *openreportsv1alpha1.ReportConfiguration {
 	}
 }
 
-// reportName is the Report name this daemon owns in every namespace.
-func (r *Reporter) reportName() string { return reportNameFor(r.opts.NodeName) }
-
-func reportNameFor(nodeName string) string { return "kyverno-runtime-" + nodeName }
+// reportNameForPod derives the Report name for a pod. Names over the 63-char
+// object-name limit are truncated and suffixed with a hash of the full name,
+// so two long pod names sharing a prefix never address the same Report.
+func reportNameForPod(podName string) string {
+	name := "kyverno-runtime-" + podName
+	if len(name) <= 63 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return strings.TrimRight(name[:54], "-.") + "-" + hex.EncodeToString(sum[:])[:8]
+}
 
 // setTruncated adds or clears the truncation annotation.
 func setTruncated(report *openreportsv1alpha1.Report, truncated bool) {
