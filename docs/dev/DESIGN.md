@@ -681,7 +681,8 @@ enforcing form of this behavior to attribute). `result()` grades it `warn` rathe
 
 `Reporter` buffers findings, deduplicates them by `Finding.Fingerprint()` (a SHA-256 over policy,
 behavior, pod, and target), and flushes every 10 seconds into one namespaced OpenReports `Report`
-per (namespace, node) named `kyverno-runtime-<nodeName>`. Merging preserves `count`,
+per pod named `kyverno-runtime-<podName>`, truncated and hash-suffixed when the pod name would
+push it past the 63-character object-name limit. Merging preserves `count`,
 `firstTimestamp`, and `lastTimestamp`; results are capped at 500 with a
 `runtime.nirmata.io/truncated-results` annotation; a flush whose results are byte-identical to
 what is already stored is skipped rather than written. `Run(ctx)` flushes once more after

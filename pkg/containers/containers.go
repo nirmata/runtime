@@ -57,8 +57,8 @@ func detectedCgroup() (*cgroupInfo, error) {
 
 // ResolveCgInfos resolves the cgroup identity of every running container of
 // pod. It never panics and never lets a single unresolvable container discard
-// its healthy siblings: containers whose ID is missing (not started yet) or
-// whose cgroup path cannot be found are skipped, and the infos that could be
+// its healthy siblings: running containers whose ID is malformed or whose
+// cgroup path cannot be found are skipped, and the infos that could be
 // resolved are returned together with a joined error describing the rest, so
 // callers may retry later.
 func ResolveCgInfos(pod *corev1.Pod) ([]*ContainerCgroupInfo, error) {
@@ -70,9 +70,14 @@ func ResolveCgInfos(pod *corev1.Pod) ([]*ContainerCgroupInfo, error) {
 	var errs []error
 	for i := range pod.Status.ContainerStatuses {
 		cs := &pod.Status.ContainerStatuses[i]
+		// a waiting or terminated container has no cgroup to resolve, and its
+		// start or restart arrives as its own pod update, so skipping it is not
+		// a failure worth retrying
+		if cs.State.Running == nil {
+			continue
+		}
 		cgInfo, err := cgroupInfoFromContainer(pod, cs)
 		if err != nil {
-			// V(2): expected for containers that are still being created.
 			log.V(2).Info("skipping container with unresolvable cgroup",
 				"pod", pod.Name, "namespace", pod.Namespace, "container", cs.Name, "reason", err.Error())
 			errs = append(errs, err)

@@ -325,9 +325,9 @@ func TestParseContainerID(t *testing.T) {
 	}
 }
 
-// TestResolveCgInfosDoesNotPanicOnUnstartedContainers pins that a pod with an
-// unstarted container must not crash the daemon.
-func TestResolveCgInfosDoesNotPanicOnUnstartedContainers(t *testing.T) {
+// TestResolveCgInfosDoesNotPanicOnMalformedContainerIDs pins that a running
+// container with a malformed CRI reference must not crash the daemon.
+func TestResolveCgInfosDoesNotPanicOnMalformedContainerIDs(t *testing.T) {
 	setCgroupMount(t, t.TempDir(), 2)
 
 	tests := []struct {
@@ -345,8 +345,12 @@ func TestResolveCgInfosDoesNotPanicOnUnstartedContainers(t *testing.T) {
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns", UID: "1-2-3"},
 				Status: corev1.PodStatus{
-					QOSClass:          corev1.PodQOSBurstable,
-					ContainerStatuses: []corev1.ContainerStatus{{Name: "app", ContainerID: tt.containerID}},
+					QOSClass: corev1.PodQOSBurstable,
+					ContainerStatuses: []corev1.ContainerStatus{{
+						Name:        "app",
+						ContainerID: tt.containerID,
+						State:       corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+					}},
 				},
 			}
 			got, err := ResolveCgInfos(pod)
@@ -360,8 +364,8 @@ func TestResolveCgInfosDoesNotPanicOnUnstartedContainers(t *testing.T) {
 	}
 }
 
-// TestResolveCgInfosPartialSuccess pins that one waiting container must not
-// discard the cgroup info of its running siblings.
+// TestResolveCgInfosPartialSuccess pins that one unresolvable container must
+// not discard the cgroup info of its running siblings.
 func TestResolveCgInfosPartialSuccess(t *testing.T) {
 	root := t.TempDir()
 	setCgroupMount(t, root, 2)
@@ -377,16 +381,24 @@ func TestResolveCgInfosPartialSuccess(t *testing.T) {
 		Status: corev1.PodStatus{
 			QOSClass: corev1.PodQOSBurstable,
 			ContainerStatuses: []corev1.ContainerStatus{
-				{Name: "pending"}, // never started
-				{Name: "running", ContainerID: "containerd://aaa"},      // resolvable
-				{Name: "gone", ContainerID: "containerd://nonexistent"}, // id set, no cgroup dir
+				{
+					Name:        "running",
+					ContainerID: "containerd://aaa",
+					State:       corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+				},
+				{
+					// id set, no cgroup dir
+					Name:        "gone",
+					ContainerID: "containerd://nonexistent",
+					State:       corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+				},
 			},
 		},
 	}
 
 	cgInfos, err := ResolveCgInfos(pod)
 	if err == nil {
-		t.Errorf("expected a joined error for the two unresolvable containers, got nil")
+		t.Errorf("expected a joined error for the unresolvable container, got nil")
 	}
 	if diff := cmp.Diff([]string{running}, ExtractCgPaths(cgInfos)); diff != "" {
 		t.Errorf("resolved paths mismatch (-want +got):\n%s", diff)
@@ -396,6 +408,78 @@ func TestResolveCgInfosPartialSuccess(t *testing.T) {
 	}
 	if cgInfos[0].ID == 0 {
 		t.Errorf("expected a non zero cgroup inode, got %d", cgInfos[0].ID)
+	}
+}
+
+// TestResolveCgInfosNonRunningContainersHaveNoCgroup pins that waiting and
+// terminated containers are skipped without an error: their cgroup does not
+// exist, no retry can make it appear, and the transition to running arrives as
+// its own pod update.
+func TestResolveCgInfosNonRunningContainersHaveNoCgroup(t *testing.T) {
+	root := t.TempDir()
+	setCgroupMount(t, root, 2)
+
+	running := filepath.Join(root, "kubepods.slice", "kubepods-burstable.slice",
+		"kubepods-burstable-pod1_2_3.slice", "cri-containerd-aaa.scope")
+	if err := os.MkdirAll(running, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	terminated := corev1.ContainerStatus{
+		// the id of a container whose cgroup directory is already gone
+		Name:        "done",
+		ContainerID: "containerd://stale",
+		State:       corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}},
+	}
+	waiting := corev1.ContainerStatus{
+		Name:  "pending",
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}},
+	}
+	runningStatus := corev1.ContainerStatus{
+		Name:        "app",
+		ContainerID: "containerd://aaa",
+		State:       corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}
+
+	tests := []struct {
+		name      string
+		statuses  []corev1.ContainerStatus
+		wantPaths []string
+	}{
+		{
+			name:      "terminated container with a stale id",
+			statuses:  []corev1.ContainerStatus{terminated},
+			wantPaths: []string{},
+		},
+		{
+			name:      "waiting container",
+			statuses:  []corev1.ContainerStatus{waiting},
+			wantPaths: []string{},
+		},
+		{
+			name:      "running sibling of non-running containers still resolves",
+			statuses:  []corev1.ContainerStatus{terminated, runningStatus, waiting},
+			wantPaths: []string{running},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns", UID: "1-2-3"},
+				Status: corev1.PodStatus{
+					QOSClass:          corev1.PodQOSBurstable,
+					ContainerStatuses: tt.statuses,
+				},
+			}
+			cgInfos, err := ResolveCgInfos(pod)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if diff := cmp.Diff(tt.wantPaths, ExtractCgPaths(cgInfos)); diff != "" {
+				t.Errorf("resolved paths mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -456,8 +540,12 @@ func TestResolveCgInfosResolvesEveryRuntimeLayout(t *testing.T) {
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns", UID: "1-2-3"},
 				Status: corev1.PodStatus{
-					QOSClass:          tt.qos,
-					ContainerStatuses: []corev1.ContainerStatus{{Name: "app", ContainerID: tt.containerID}},
+					QOSClass: tt.qos,
+					ContainerStatuses: []corev1.ContainerStatus{{
+						Name:        "app",
+						ContainerID: tt.containerID,
+						State:       corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+					}},
 				},
 			}
 

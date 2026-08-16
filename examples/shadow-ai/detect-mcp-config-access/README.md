@@ -76,8 +76,7 @@ by default) and findings are flushed every 10s, so allow up to about 20 seconds.
 - One result names the MCP config, and none names `/root/.gitconfig`:
 
   ```bash
-  NODE=$(kubectl get pod mcp-client -o jsonpath='{.spec.nodeName}')
-  kubectl get report "kyverno-runtime-${NODE}" -o yaml
+  kubectl get report kyverno-runtime-mcp-client -o yaml
   ```
 
   ```yaml

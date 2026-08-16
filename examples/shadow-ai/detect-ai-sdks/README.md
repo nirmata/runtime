@@ -90,8 +90,7 @@ Observations are drained on a poll interval, 10 seconds by default (`--observe-i
 allow about twenty.
 
 ```bash
-NODE=$(kubectl get pod ai-workload -o jsonpath='{.spec.nodeName}')
-kubectl get report "kyverno-runtime-${NODE}" -o yaml
+kubectl get report kyverno-runtime-ai-workload -o yaml
 ```
 
 - Three results, one per path read:

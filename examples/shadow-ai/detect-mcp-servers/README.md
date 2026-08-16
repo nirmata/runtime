@@ -78,8 +78,7 @@ Exec observations arrive on a ring buffer as they happen, but findings are flush
 seconds, so allow about that long.
 
 ```bash
-NODE=$(kubectl get pod mcp-agent -o jsonpath='{.spec.nodeName}')
-kubectl get report "kyverno-runtime-${NODE}" -o yaml
+kubectl get report kyverno-runtime-mcp-agent -o yaml
 ```
 
 - Two results, one per MCP server, each naming the package in its `argv` property:

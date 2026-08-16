@@ -25,7 +25,7 @@ spec:
           apiVersion: apps/v1
           kind: DaemonSet
           metadata:
-            name: kyverno-runtime-kyverno-runtime
+            name: kyverno-runtime
             namespace: kyverno-runtime
           status:
             (numberReady == desiredNumberScheduled): true
@@ -84,7 +84,7 @@ spec:
           apiVersion: apps/v1
           kind: DaemonSet
           metadata:
-            name: kyverno-runtime-kyverno-runtime
+            name: kyverno-runtime
             namespace: kyverno-runtime
           status:
             (numberReady == desiredNumberScheduled): true

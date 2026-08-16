@@ -221,8 +221,7 @@ reach userspace as they happen and findings are flushed every 10 seconds, so all
 that long:
 
 ```bash
-NODE=$(kubectl get pod dns-client -o jsonpath='{.spec.nodeName}')
-kubectl get report "kyverno-runtime-${NODE}" \
+kubectl get report kyverno-runtime-dns-client \
   -o jsonpath='{range .results[?(@.rule=="dns")]}{.properties.dnsName}{"\n"}{end}'
 ```
 

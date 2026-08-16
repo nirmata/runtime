@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -138,7 +140,7 @@ func findingIn(namespace, podUID string, at time.Time) Finding {
 	}
 }
 
-func TestWritesOneReportPerNamespacePerNode(t *testing.T) {
+func TestWritesOneReportPerPod(t *testing.T) {
 	c := newRecordingClient(t)
 	r, m := newTestReporter(t, c, Options{NodeName: "node-a"})
 
@@ -151,12 +153,20 @@ func TestWritesOneReportPerNamespacePerNode(t *testing.T) {
 	}
 
 	reports := listReports(t, c)
-	if len(reports) != 2 {
-		t.Fatalf("wrote %d reports, want 2 (one per namespace)", len(reports))
+	if len(reports) != 3 {
+		t.Fatalf("wrote %d reports, want 3 (one per pod)", len(reports))
 	}
 
-	gotKeys := []string{reports[0].Namespace + "/" + reports[0].Name, reports[1].Namespace + "/" + reports[1].Name}
-	wantKeys := []string{"default/kyverno-runtime-node-a", "kube-system/kyverno-runtime-node-a"}
+	gotKeys := []string{
+		reports[0].Namespace + "/" + reports[0].Name,
+		reports[1].Namespace + "/" + reports[1].Name,
+		reports[2].Namespace + "/" + reports[2].Name,
+	}
+	wantKeys := []string{
+		"default/kyverno-runtime-pod-pod-1",
+		"default/kyverno-runtime-pod-pod-2",
+		"kube-system/kyverno-runtime-pod-pod-3",
+	}
 	if diff := cmp.Diff(wantKeys, gotKeys); diff != "" {
 		t.Errorf("report names (-want +got):\n%s", diff)
 	}
@@ -165,11 +175,11 @@ func TestWritesOneReportPerNamespacePerNode(t *testing.T) {
 	if def.Source != Source {
 		t.Errorf("report source = %q, want %q", def.Source, Source)
 	}
-	if len(def.Results) != 2 {
-		t.Errorf("default report holds %d results, want 2", len(def.Results))
+	if len(def.Results) != 1 {
+		t.Errorf("pod-1 report holds %d results, want 1", len(def.Results))
 	}
-	if def.Summary.Fail != 2 {
-		t.Errorf("default report summary.Fail = %d, want 2", def.Summary.Fail)
+	if def.Summary.Fail != 1 {
+		t.Errorf("pod-1 report summary.Fail = %d, want 1", def.Summary.Fail)
 	}
 	if got := def.Labels[LabelNode]; got != "node-a" {
 		t.Errorf("report node label = %q, want node-a", got)
@@ -183,21 +193,88 @@ func TestWritesOneReportPerNamespacePerNode(t *testing.T) {
 	if _, ok := def.Annotations[AnnotationTruncatedResults]; ok {
 		t.Error("untruncated report carries the truncation annotation")
 	}
-	if got := testutil.ToFloat64(m.ReportWrites.WithLabelValues(writeOK)); got != 2 {
-		t.Errorf("ReportWrites{ok} = %v, want 2", got)
+	if got := testutil.ToFloat64(m.ReportWrites.WithLabelValues(writeOK)); got != 3 {
+		t.Errorf("ReportWrites{ok} = %v, want 3", got)
 	}
 
-	// A second node writes its own report, never touching this one.
-	r2, _ := newTestReporter(t, c, Options{NodeName: "node-b"})
-	r2.Report(findingIn("default", "pod-9", fixedTime))
-	if err := r2.flush(context.Background()); err != nil {
-		t.Fatalf("flush node-b: %v", err)
+	// Another pod's findings never touch an existing pod's report.
+	r.Report(findingIn("default", "pod-9", fixedTime))
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush pod-9: %v", err)
 	}
-	if reports := listReports(t, c); len(reports) != 3 {
-		t.Fatalf("wrote %d reports after node-b flush, want 3", len(reports))
+	if reports := listReports(t, c); len(reports) != 4 {
+		t.Fatalf("wrote %d reports after pod-9 flush, want 4", len(reports))
 	}
-	if got := len(getReport(t, c, "default", "kyverno-runtime-node-a").Results); got != 2 {
-		t.Errorf("node-a report has %d results after node-b flush, want 2", got)
+	if got := len(getReport(t, c, "default", "kyverno-runtime-pod-pod-1").Results); got != 1 {
+		t.Errorf("pod-1 report has %d results after pod-9 flush, want 1", got)
+	}
+}
+
+func TestReportSetsPodOwnerReferenceAndIncarnationLabel(t *testing.T) {
+	c := newRecordingClient(t)
+	r, _ := newTestReporter(t, c, Options{NodeName: "node-a"})
+
+	f := findingIn("default", "pod-1", fixedTime)
+	r.Report(f)
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	report := getReport(t, c, "default", reportNameForPod(f.Pod.Name))
+	if got := report.Labels[LabelPodUID]; got != f.Pod.UID {
+		t.Errorf("pod-uid label = %q, want %q", got, f.Pod.UID)
+	}
+	if len(report.OwnerReferences) != 1 {
+		t.Fatalf("owner references = %d, want 1", len(report.OwnerReferences))
+	}
+	owner := report.OwnerReferences[0]
+	if owner.Kind != "Pod" || owner.Name != f.Pod.Name || string(owner.UID) != f.Pod.UID {
+		t.Errorf("owner reference = %+v, want Pod/%s (uid %s)", owner, f.Pod.Name, f.Pod.UID)
+	}
+}
+
+// TestPodRecreatedUnderTheSameNameResetsTheReport covers a stable pod name
+// (a StatefulSet member, a directly-named Pod) outliving its own pod: a new
+// incarnation's findings must not accumulate alongside its predecessor's
+// under the Report name they both address.
+func TestPodRecreatedUnderTheSameNameResetsTheReport(t *testing.T) {
+	c := newRecordingClient(t)
+	r, _ := newTestReporter(t, c, Options{NodeName: "node-a"})
+
+	first := findingIn("default", "uid-old", fixedTime)
+	first.Pod.Name = "recreated-pod"
+	r.Report(first)
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush first incarnation: %v", err)
+	}
+
+	name := reportNameForPod(first.Pod.Name)
+	before := getReport(t, c, "default", name)
+	if len(before.Results) != 1 {
+		t.Fatalf("first incarnation wrote %d results, want 1", len(before.Results))
+	}
+
+	second := findingIn("default", "uid-new", fixedTime.Add(time.Minute))
+	second.Pod.Name = "recreated-pod"
+	second.Target = "5.6.7.8"
+	second.Net = &NetSummary{DestIP: "5.6.7.8"}
+	r.Report(second)
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush second incarnation: %v", err)
+	}
+
+	after := getReport(t, c, "default", name)
+	if len(after.Results) != 1 {
+		t.Fatalf("report holds %d results after recreation, want 1 (predecessor's results dropped)", len(after.Results))
+	}
+	if got := after.Results[0].Properties[propDestIP]; got != "5.6.7.8" {
+		t.Errorf("surviving result destIP = %q, want 5.6.7.8 (the new incarnation's finding)", got)
+	}
+	if got := after.Labels[LabelPodUID]; got != "uid-new" {
+		t.Errorf("pod-uid label after reset = %q, want uid-new", got)
+	}
+	if got := string(after.OwnerReferences[0].UID); got != "uid-new" {
+		t.Errorf("owner reference uid after reset = %q, want uid-new", got)
 	}
 }
 
@@ -218,7 +295,7 @@ func TestReportDedupMergesCountAndTimestamps(t *testing.T) {
 		t.Fatalf("flush: %v", err)
 	}
 
-	report := getReport(t, c, "default", "kyverno-runtime-node-a")
+	report := getReport(t, c, "default", "kyverno-runtime-pod-pod-1")
 	if len(report.Results) != 1 {
 		t.Fatalf("report holds %d results, want 1 (deduplicated)", len(report.Results))
 	}
@@ -243,7 +320,7 @@ func TestReportDedupMergesCountAndTimestamps(t *testing.T) {
 		t.Fatalf("second flush: %v", err)
 	}
 
-	report = getReport(t, c, "default", "kyverno-runtime-node-a")
+	report = getReport(t, c, "default", "kyverno-runtime-pod-pod-1")
 	if len(report.Results) != 1 {
 		t.Fatalf("report holds %d results after second flush, want 1", len(report.Results))
 	}
@@ -296,7 +373,7 @@ func TestOpenFindingsSplitByPathAndRepeatsMerge(t *testing.T) {
 		t.Fatalf("flush: %v", err)
 	}
 
-	report := getReport(t, c, "default", "kyverno-runtime-node-a")
+	report := getReport(t, c, "default", "kyverno-runtime-pod-pod-1")
 	if len(report.Results) != 2 {
 		t.Fatalf("report holds %d results, want 2 (one per path)", len(report.Results))
 	}
@@ -327,15 +404,15 @@ func TestFlushCapsResultsAndAnnotatesTruncation(t *testing.T) {
 	c := newRecordingClient(t)
 	r, _ := newTestReporter(t, c, Options{NodeName: "node-a", MaxResultsPerReport: 2})
 
-	r.Report(findingIn("default", "pod-1", fixedTime.Add(1*time.Minute)))
-	r.Report(findingIn("default", "pod-2", fixedTime.Add(2*time.Minute)))
-	r.Report(findingIn("default", "pod-3", fixedTime.Add(3*time.Minute)))
+	r.Report(openFindingIn("default", "pod-1", "/etc/one", fixedTime.Add(1*time.Minute)))
+	r.Report(openFindingIn("default", "pod-1", "/etc/two", fixedTime.Add(2*time.Minute)))
+	r.Report(openFindingIn("default", "pod-1", "/etc/three", fixedTime.Add(3*time.Minute)))
 
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 
-	report := getReport(t, c, "default", "kyverno-runtime-node-a")
+	report := getReport(t, c, "default", "kyverno-runtime-pod-pod-1")
 	if len(report.Results) != 2 {
 		t.Fatalf("report holds %d results, want 2 (capped)", len(report.Results))
 	}
@@ -349,9 +426,9 @@ func TestFlushCapsResultsAndAnnotatesTruncation(t *testing.T) {
 	// The most recently seen findings are the ones kept.
 	kept := map[string]bool{}
 	for _, res := range report.Results {
-		kept[res.Subjects[0].Name] = true
+		kept[res.Properties[propTarget]] = true
 	}
-	if !kept["pod-pod-3"] || !kept["pod-pod-2"] {
+	if !kept["/etc/three"] || !kept["/etc/two"] {
 		t.Errorf("truncation dropped the newest findings, kept %v", kept)
 	}
 }
@@ -409,6 +486,79 @@ func TestReportDropsFindingWithUnusableNamespace(t *testing.T) {
 	}
 }
 
+func TestReportDropsFindingWithInvalidPodName(t *testing.T) {
+	c := newRecordingClient(t)
+	r, m := newTestReporter(t, c, Options{NodeName: "node-a"})
+
+	for _, name := range []string{"", "UPPER", "has/slash", "trailing-"} {
+		f := findingIn("default", "pod-1", fixedTime)
+		f.Pod.Name = name
+		r.Report(f)
+	}
+
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if reports := listReports(t, c); len(reports) != 0 {
+		t.Fatalf("wrote %d reports for unusable pod names, want 0", len(reports))
+	}
+	if got := testutil.ToFloat64(m.EventsDropped.WithLabelValues("reporter", "unattributed")); got != 4 {
+		t.Errorf("EventsDropped = %v, want 4", got)
+	}
+}
+
+// TestReportAtHighVerbosityLogsEveryBehaviorWithoutPanicking exercises the
+// per-event log line at the verbosity an operator would raise to stream
+// events, across every behavior's summary shape.
+func TestReportAtHighVerbosityLogsEveryBehaviorWithoutPanicking(t *testing.T) {
+	c := newRecordingClient(t)
+	log := testr.NewWithOptions(t, testr.Options{Verbosity: 4})
+	r := New(c, log, nil, Options{NodeName: "node-a", Clock: func() time.Time { return fixedTime }})
+
+	base := findingIn("default", "pod-1", fixedTime)
+	base.Net = nil
+
+	dns := base
+	dns.Behavior = "dns"
+	dns.DNS = &DNSSummary{QName: "example.com"}
+
+	process := base
+	process.Behavior = "exec"
+	process.Process = &ProcessSummary{Comm: "cat", Argv: "cat /etc/hosts"}
+
+	for _, f := range []Finding{findingIn("default", "pod-1", fixedTime), dns, process} {
+		r.Report(f)
+	}
+}
+
+func TestLongPodNamesProduceDistinctValidReportNames(t *testing.T) {
+	if got := reportNameForPod("dns-client"); got != "kyverno-runtime-dns-client" {
+		t.Errorf("reportNameForPod(dns-client) = %q, want kyverno-runtime-dns-client", got)
+	}
+
+	shared := strings.Repeat("a", 80)
+	nameX := reportNameForPod(shared + "-x")
+	nameY := reportNameForPod(shared + "-y")
+	if nameX == nameY {
+		t.Fatalf("pod names sharing a long prefix collided on report name %q", nameX)
+	}
+	for _, name := range []string{nameX, nameY} {
+		if len(name) > 63 {
+			t.Errorf("report name %q is %d chars, want <= 63", name, len(name))
+		}
+		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+			t.Errorf("report name %q is not a valid object name: %v", name, errs[0])
+		}
+		suffix := name[strings.LastIndex(name, "-")+1:]
+		if len(suffix) != 16 {
+			t.Errorf("report name %q has a %d-hex-char digest, want 16 (64 bits of collision resistance)", name, len(suffix))
+		}
+	}
+	if again := reportNameForPod(shared + "-x"); again != nameX {
+		t.Errorf("report name is not stable: %q then %q", nameX, again)
+	}
+}
+
 func TestFlushRequeuesFindingsOnWriteError(t *testing.T) {
 	c := newRecordingClient(t)
 	c.failCreate = errors.New("apiserver unavailable")
@@ -428,7 +578,7 @@ func TestFlushRequeuesFindingsOnWriteError(t *testing.T) {
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatalf("retry flush: %v", err)
 	}
-	report := getReport(t, c, "default", "kyverno-runtime-node-a")
+	report := getReport(t, c, "default", "kyverno-runtime-pod-pod-1")
 	if len(report.Results) != 1 {
 		t.Fatalf("report holds %d results after retry, want 1", len(report.Results))
 	}
@@ -451,7 +601,7 @@ func TestRunFlushesOnShutdown(t *testing.T) {
 		t.Fatalf("Run returned %v, want nil on clean shutdown", err)
 	}
 
-	report := getReport(t, c, "default", "kyverno-runtime-node-a")
+	report := getReport(t, c, "default", "kyverno-runtime-pod-pod-1")
 	if len(report.Results) != 1 {
 		t.Errorf("shutdown flush wrote %d results, want 1", len(report.Results))
 	}
@@ -470,8 +620,8 @@ func TestNewAppliesDefaults(t *testing.T) {
 	if r.opts.Clock == nil {
 		t.Error("Clock was not defaulted")
 	}
-	if got := r.reportName(); got != "kyverno-runtime-unknown" {
-		t.Errorf("reportName() = %q, want kyverno-runtime-unknown", got)
+	if r.opts.NodeName != unknownNode {
+		t.Errorf("NodeName = %q, want %q", r.opts.NodeName, unknownNode)
 	}
 
 	// Nil metrics must not panic anywhere on the hot path.

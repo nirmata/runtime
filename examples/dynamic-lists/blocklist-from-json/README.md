@@ -78,7 +78,7 @@ reported.
   ~20 seconds.
 
   ```bash
-  kubectl get report "kyverno-runtime-$(kubectl get pod json-client -o jsonpath='{.spec.nodeName}')" \
+  kubectl get report kyverno-runtime-json-client \
     -o yaml
   ```
 

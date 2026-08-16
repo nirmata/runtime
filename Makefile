@@ -244,17 +244,17 @@ kind-install-manifests:
 # suites a cluster with no daemon on it. Poll for a scheduled pod first.
 	@i=0; \
 	while [ "$$i" -lt 60 ]; do \
-		n=$$(kubectl -n kyverno-runtime get daemonset/kyverno-runtime-kyverno-runtime -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null); \
+		n=$$(kubectl -n kyverno-runtime get daemonset/kyverno-runtime -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null); \
 		[ -n "$$n" ] && [ "$$n" -gt 0 ] 2>/dev/null && break; \
 		i=$$((i + 1)); \
 		sleep 1; \
 	done; \
 	if [ "$$i" -ge 60 ]; then \
-		echo "ERROR: daemonset/kyverno-runtime-kyverno-runtime scheduled onto no node within 60s."; \
+		echo "ERROR: daemonset/kyverno-runtime scheduled onto no node within 60s."; \
 		kubectl -n kyverno-runtime get daemonset,nodes || true; \
 		exit 1; \
 	fi
-	kubectl -n kyverno-runtime rollout status daemonset/kyverno-runtime-kyverno-runtime --timeout=180s
+	kubectl -n kyverno-runtime rollout status daemonset/kyverno-runtime --timeout=180s
 	@if [ -f ./charts/kyverno-runtime/templates/default-policies.yaml ]; then \
 		echo "Verifying default policies are installed..."; \
 		for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \

@@ -59,7 +59,7 @@ default) and findings are flushed every 10s, so allow up to ~20 seconds.
 
 ```bash
 kubectl get reports -A
-kubectl get report "kyverno-runtime-$(kubectl get pod baseline-workload -o jsonpath='{.spec.nodeName}')" \
+kubectl get report kyverno-runtime-baseline-workload \
   -o yaml
 ```
 
@@ -73,7 +73,7 @@ kubectl get report "kyverno-runtime-$(kubectl get pod baseline-workload -o jsonp
 Extract the observed paths for the enforcing version of the policy:
 
 ```bash
-kubectl get report "kyverno-runtime-$(kubectl get pod baseline-workload -o jsonpath='{.spec.nodeName}')" \
+kubectl get report kyverno-runtime-baseline-workload \
   -o jsonpath='{range .results[*]}{.rule}{"\t"}{.description}{"\n"}{end}'
 ```
 

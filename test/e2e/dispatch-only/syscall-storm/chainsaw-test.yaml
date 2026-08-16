@@ -150,8 +150,7 @@ spec:
           # +2 covers the poll straddling each end of the window.
           max_polls=$(( elapsed / observe_interval + 2 ))
 
-          node=$(kubectl -n "${NAMESPACE}" get pod syscall-storm -o jsonpath='{.spec.nodeName}')
-          report="kyverno-runtime-${node}"
+          report="kyverno-runtime-syscall-storm"
 
           kubectl -n "${NAMESPACE}" get reports.openreports.io "${report}" \
             -o jsonpath='{range .results[*]}{.policy}{" "}{.rule}{" "}{.properties.target}{" "}{.properties.count}{"\n"}{end}' \

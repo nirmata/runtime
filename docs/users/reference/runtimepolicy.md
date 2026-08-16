@@ -790,12 +790,14 @@ also reaches an operator-visible log line.
 
 Findings — monitor-mode matches and enforce-mode denials alike — are written as
 [OpenReports](https://openreports.io) `Report` objects in
-the offending pod's namespace, one Report per (namespace, node), named
-`kyverno-runtime-<nodeName>`, labeled `runtime.nirmata.io/node: <nodeName>`.
+the offending pod's namespace, one Report per pod, named
+`kyverno-runtime-<podName>` (long pod names are truncated and suffixed with a
+hash to fit the 63-character object-name limit), labeled
+`runtime.nirmata.io/node: <nodeName>`.
 
 ```bash
 kubectl get reports -A
-kubectl get report kyverno-runtime-node-1 -n default -o yaml
+kubectl get report kyverno-runtime-my-pod -n default -o yaml
 ```
 
 Each result carries `policy` (the RuntimePolicy name), `rule` (the behavior: `network`,
