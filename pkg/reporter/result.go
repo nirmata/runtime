@@ -76,19 +76,14 @@ func (p *pending) merge(f Finding, at time.Time) {
 	}
 }
 
-// buildResult renders one deduplicated finding as an OpenReports result.
-//
-// Every value it emits goes through sanitize, and it
-// emits only the fixed key set declared above. PodIdentity.Labels are never
-// emitted: arbitrary user-controlled key/values do not belong in a Report.
-func buildResult(p *pending) openreportsv1alpha1.ReportResult {
-	f := p.finding
-
+// findingProperties renders the sanitized, fixed key set that describes a
+// single finding — everything buildResult emits except the aggregation
+// fields (fingerprint, count, first/last timestamp), which only exist once
+// occurrences are merged. buildResult and the reporter's per-event log line
+// both describe "what a finding looks like" from this one function, so the
+// two can never drift.
+func findingProperties(f Finding) map[string]string {
 	props := map[string]string{
-		propFingerprint:    f.Fingerprint(),
-		propCount:          strconv.Itoa(p.count),
-		propFirstTimestamp: formatTime(p.first),
-		propLastTimestamp:  formatTime(p.last),
 		// always emitted: "was denied" (true) vs "would have been denied"
 		// (false) is the difference a report consumer acts on
 		propEnforced: strconv.FormatBool(f.Enforced),
@@ -119,6 +114,23 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 		put(propComm, f.Process.Comm)
 		put(propArgv, f.Process.Argv)
 	}
+
+	return props
+}
+
+// buildResult renders one deduplicated finding as an OpenReports result.
+//
+// Every value it emits goes through sanitize, and it
+// emits only the fixed key set declared above. PodIdentity.Labels are never
+// emitted: arbitrary user-controlled key/values do not belong in a Report.
+func buildResult(p *pending) openreportsv1alpha1.ReportResult {
+	f := p.finding
+
+	props := findingProperties(f)
+	props[propFingerprint] = f.Fingerprint()
+	props[propCount] = strconv.Itoa(p.count)
+	props[propFirstTimestamp] = formatTime(p.first)
+	props[propLastTimestamp] = formatTime(p.last)
 
 	return openreportsv1alpha1.ReportResult{
 		Source:      Source,

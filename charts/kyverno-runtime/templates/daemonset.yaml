@@ -51,6 +51,9 @@ spec:
         {{- with .Values.daemon.clusterDomain }}
         - --cluster-domain={{ . }}
         {{- end }}
+        {{- with .Values.daemon.logLevel }}
+        - --log-level={{ . }}
+        {{- end }}
         env:
         - name: NODE_NAME
           valueFrom:

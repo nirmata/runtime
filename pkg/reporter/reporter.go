@@ -153,8 +153,11 @@ func (r *Reporter) Report(f Finding) {
 	if r.metrics != nil {
 		r.metrics.FindingsEmitted.WithLabelValues(policy, behavior).Inc()
 	}
-	r.log.V(4).Info("finding buffered", "policy", policy, "behavior", behavior,
-		"namespace", f.Pod.Namespace, "fingerprint", fp)
+	if r.log.V(4).Enabled() {
+		r.log.V(4).Info("finding buffered", "policy", policy, "behavior", behavior,
+			"pod", sanitize(f.Pod.Name), "namespace", f.Pod.Namespace, "fingerprint", fp,
+			"result", normalizeResult(f.Result), "properties", findingProperties(f))
+	}
 }
 
 // Run flushes buffered findings every FlushInterval until ctx is done, then

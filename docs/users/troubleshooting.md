@@ -246,5 +246,19 @@ by design.
 kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime
 ```
 
-`--log-level` controls verbosity (default `0`; higher is more verbose). The chart does
-not currently expose it as a value.
+`--log-level` controls verbosity (default `0`; higher is more verbose), exposed by the
+chart as `daemon.logLevel`:
+
+```bash
+helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
+  --namespace kyverno-runtime --set daemon.logLevel=4
+```
+
+At level 4, every finding — network, `open`, `exec`, and `dns` alike — is logged as it is
+buffered, with the same policy, behavior, target, and destination/command/DNS-name detail
+that ends up in the finding's Report result, before the flush interval groups it into that
+Report:
+
+```bash
+kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime -f
+```

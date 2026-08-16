@@ -439,6 +439,30 @@ func TestReportDropsFindingWithInvalidPodName(t *testing.T) {
 	}
 }
 
+// TestReportAtHighVerbosityLogsEveryBehaviorWithoutPanicking exercises the
+// per-event log line at the verbosity an operator would raise to stream
+// events, across every behavior's summary shape.
+func TestReportAtHighVerbosityLogsEveryBehaviorWithoutPanicking(t *testing.T) {
+	c := newRecordingClient(t)
+	log := testr.NewWithOptions(t, testr.Options{Verbosity: 4})
+	r := New(c, log, nil, Options{NodeName: "node-a", Clock: func() time.Time { return fixedTime }})
+
+	base := findingIn("default", "pod-1", fixedTime)
+	base.Net = nil
+
+	dns := base
+	dns.Behavior = "dns"
+	dns.DNS = &DNSSummary{QName: "example.com"}
+
+	process := base
+	process.Behavior = "exec"
+	process.Process = &ProcessSummary{Comm: "cat", Argv: "cat /etc/hosts"}
+
+	for _, f := range []Finding{findingIn("default", "pod-1", fixedTime), dns, process} {
+		r.Report(f)
+	}
+}
+
 func TestLongPodNamesProduceDistinctValidReportNames(t *testing.T) {
 	if got := reportNameForPod("dns-client"); got != "kyverno-runtime-dns-client" {
 		t.Errorf("reportNameForPod(dns-client) = %q, want kyverno-runtime-dns-client", got)
