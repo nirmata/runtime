@@ -379,7 +379,7 @@ make ko-build
 
 ```bash
 make kind-load-image
-kubectl -n kyverno-runtime rollout restart daemonset/kyverno-runtime-kyverno-runtime
+kubectl -n kyverno-runtime rollout restart daemonset/kyverno-runtime
 ```
 
 **Tests time out.** Raise the timeout in the relevant `.chainsaw.yaml`, or check the daemon is
