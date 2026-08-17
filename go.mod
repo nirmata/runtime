@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/cilium/ebpf v0.21.0
-	github.com/go-logr/logr v1.4.3
+	github.com/go-logr/logr v1.4.4
 	github.com/google/cel-go v0.31.0
 	github.com/google/go-cmp v0.7.0
 	github.com/kyverno/sdk v0.0.0-20260710162940-953f943fc2d0
