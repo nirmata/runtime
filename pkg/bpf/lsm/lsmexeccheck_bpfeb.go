@@ -19,6 +19,20 @@ type lsmExecCheckPathEventKey struct {
 	Decision uint32
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	lsmExecCheckMapAllowed            = "allowed"
+	lsmExecCheckMapBanned             = "banned"
+	lsmExecCheckMapCgids              = "cgids"
+	lsmExecCheckMapDefaultDeny        = "default_deny"
+	lsmExecCheckMapInnerOpenEvents    = "inner_open_events"
+	lsmExecCheckMapOpenEvents         = "open_events"
+	lsmExecCheckMapStats              = "stats"
+	lsmExecCheckProgGenericLsmHandler = "generic_lsm_handler"
+)
+
 // loadLsmExecCheck returns the embedded CollectionSpec for lsmExecCheck.
 func loadLsmExecCheck() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_LsmExecCheckBytes)
@@ -39,7 +53,7 @@ func loadLsmExecCheck() (*ebpf.CollectionSpec, error) {
 //	*lsmExecCheckMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadLsmExecCheckObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadLsmExecCheckObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadLsmExecCheck()
 	if err != nil {
 		return err

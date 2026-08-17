@@ -43,6 +43,18 @@ type protoClassifierProtoKey struct {
 	Alpn  [16]int8
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	protoClassifierMapAllowedProtos = "allowed_protos"
+	protoClassifierMapBannedProtos  = "banned_protos"
+	protoClassifierMapFlags         = "flags"
+	protoClassifierMapFlows         = "flows"
+	protoClassifierMapProtoEvents   = "proto_events"
+	protoClassifierProgProtoEgress  = "proto_egress"
+)
+
 // loadProtoClassifier returns the embedded CollectionSpec for protoClassifier.
 func loadProtoClassifier() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_ProtoClassifierBytes)
@@ -63,7 +75,7 @@ func loadProtoClassifier() (*ebpf.CollectionSpec, error) {
 //	*protoClassifierMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadProtoClassifierObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadProtoClassifierObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadProtoClassifier()
 	if err != nil {
 		return err

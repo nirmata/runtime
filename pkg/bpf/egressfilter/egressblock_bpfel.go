@@ -25,6 +25,23 @@ type egressBlockIpEventKey struct {
 	DomainId uint32
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	egressBlockMapAllowedDomains    = "allowed_domains"
+	egressBlockMapAllowedIps        = "allowed_ips"
+	egressBlockMapBannedDomains     = "banned_domains"
+	egressBlockMapBannedIps         = "banned_ips"
+	egressBlockMapDomainIds         = "domain_ids"
+	egressBlockMapFlags             = "flags"
+	egressBlockMapIpDomain          = "ip_domain"
+	egressBlockMapIpEvents          = "ip_events"
+	egressBlockMapStats             = "stats"
+	egressBlockProgCgroupDnsIngress = "cgroup_dns_ingress"
+	egressBlockProgCgroupEgress     = "cgroup_egress"
+)
+
 // loadEgressBlock returns the embedded CollectionSpec for egressBlock.
 func loadEgressBlock() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_EgressBlockBytes)
@@ -45,7 +62,7 @@ func loadEgressBlock() (*ebpf.CollectionSpec, error) {
 //	*egressBlockMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadEgressBlockObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadEgressBlockObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadEgressBlock()
 	if err != nil {
 		return err

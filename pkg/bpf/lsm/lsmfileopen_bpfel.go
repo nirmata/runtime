@@ -19,6 +19,20 @@ type lsmFileOpenPathEventKey struct {
 	Decision uint32
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	lsmFileOpenMapAllowed            = "allowed"
+	lsmFileOpenMapBanned             = "banned"
+	lsmFileOpenMapCgids              = "cgids"
+	lsmFileOpenMapDefaultDeny        = "default_deny"
+	lsmFileOpenMapInnerOpenEvents    = "inner_open_events"
+	lsmFileOpenMapOpenEvents         = "open_events"
+	lsmFileOpenMapStats              = "stats"
+	lsmFileOpenProgGenericLsmHandler = "generic_lsm_handler"
+)
+
 // loadLsmFileOpen returns the embedded CollectionSpec for lsmFileOpen.
 func loadLsmFileOpen() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_LsmFileOpenBytes)
@@ -39,7 +53,7 @@ func loadLsmFileOpen() (*ebpf.CollectionSpec, error) {
 //	*lsmFileOpenMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadLsmFileOpenObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadLsmFileOpenObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadLsmFileOpen()
 	if err != nil {
 		return err

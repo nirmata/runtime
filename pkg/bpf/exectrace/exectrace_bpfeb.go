@@ -12,6 +12,16 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	execTraceMapCgids      = "cgids"
+	execTraceMapEvents     = "events"
+	execTraceMapStats      = "stats"
+	execTraceProgTraceExec = "trace_exec"
+)
+
 // loadExecTrace returns the embedded CollectionSpec for execTrace.
 func loadExecTrace() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_ExecTraceBytes)
@@ -32,7 +42,7 @@ func loadExecTrace() (*ebpf.CollectionSpec, error) {
 //	*execTraceMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadExecTraceObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadExecTraceObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadExecTrace()
 	if err != nil {
 		return err
