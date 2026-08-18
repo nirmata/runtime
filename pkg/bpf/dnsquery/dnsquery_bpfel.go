@@ -12,6 +12,16 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	dnsQueryMapCgids            = "cgids"
+	dnsQueryMapEvents           = "events"
+	dnsQueryMapStats            = "stats"
+	dnsQueryProgCgroupDnsEgress = "cgroup_dns_egress"
+)
+
 // loadDnsQuery returns the embedded CollectionSpec for dnsQuery.
 func loadDnsQuery() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_DnsQueryBytes)
@@ -32,7 +42,7 @@ func loadDnsQuery() (*ebpf.CollectionSpec, error) {
 //	*dnsQueryMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadDnsQueryObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadDnsQueryObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadDnsQuery()
 	if err != nil {
 		return err
