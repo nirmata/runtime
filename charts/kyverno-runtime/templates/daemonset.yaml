@@ -82,14 +82,22 @@ spec:
           failureThreshold: 3
         resources:
           {{- toYaml .Values.daemon.resources | nindent 10 }}
-        {{- if .Values.daemon.push.target }}
         volumeMounts:
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+          mountPropagation: HostToContainer
+        {{- if .Values.daemon.push.target }}
         - name: push-tls
           mountPath: {{ $pushTLSDir }}
           readOnly: true
         {{- end }}
-      {{- if .Values.daemon.push.target }}
       volumes:
+      # needed for BPF LSM map pinning
+      - name: bpffs
+        hostPath:
+          path: /sys/fs/bpf
+          type: Directory
+      {{- if .Values.daemon.push.target }}
       - name: push-tls
         secret:
           secretName: {{ .Values.daemon.push.tls.secretName }}

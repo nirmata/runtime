@@ -60,12 +60,10 @@ When several policies match one pod, how they combine differs by behavior. For
 enforce-mode policy: the `deny` entries of all policies are programmed together, the
 `allow` entries of all policies are programmed together, and a default deny set by any
 one policy applies to the pod, denying whatever matches no policy's `allow` entry. An
-explicit `deny` entry always denies, whichever policy carries a matching `allow`. For
-`open` and `exec`, each policy attaches its own LSM program and the kernel denies when
-any program denies: a path denied by any policy is denied, and a default-deny policy
-blocks every path absent from its own `allow` list, whatever any other policy allows —
-multiple default-deny policies compose as an intersection of their allow lists, not a
-union. See
+explicit `deny` entry always denies, whichever policy carries a matching `allow`.
+`open` and `exec` combine the same way: every matching policy's kernel program runs as
+one chain sharing a verdict, so denies and allows union across policies and any
+policy's `allow` entry survives any policy's default deny. See
 [multiple policies on one pod](reference/runtimepolicy.md#multiple-policies-on-one-pod).
 
 ## Modes
@@ -159,12 +157,8 @@ for the authoritative list.
 
 ## Known gaps
 
-Two boundaries worth reading twice before relying on enforcement:
+A boundary worth reading twice before relying on enforcement:
 
-- A default-deny `open` or `exec` policy cannot be relaxed by another policy's `allow`
-  list: each policy's LSM program decides from its own maps, so the pod's effective
-  allowed set is the intersection of every default-denying policy's allow list. See
-  [multiple policies on one pod](reference/runtimepolicy.md#multiple-policies-on-one-pod).
 - The egress filter reads IPv4 packets only, so on a dual-stack cluster a default-deny
   `network` behavior neither blocks nor observes IPv6 connections. See
   [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
