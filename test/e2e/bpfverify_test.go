@@ -70,7 +70,7 @@ var bpfObjects = []bpfObjectSpec{
 		}},
 	},
 	{
-		object: "pkg/bpf/lsm/lsmfileopen_bpfel.o",
+		object: "pkg/bpf/lsm/lsmdispatcherfileopen_bpfel.o",
 		pre:    needBPFLSM,
 		progs: []progCheck{{
 			name:       "generic_lsm_handler",
@@ -81,7 +81,7 @@ var bpfObjects = []bpfObjectSpec{
 		}},
 	},
 	{
-		object: "pkg/bpf/lsm/lsmexeccheck_bpfel.o",
+		object: "pkg/bpf/lsm/lsmdispatcherexeccheck_bpfel.o",
 		pre:    needBPFLSM,
 		progs: []progCheck{{
 			name:       "generic_lsm_handler",
@@ -89,6 +89,21 @@ var bpfObjects = []bpfObjectSpec{
 			attach:     ebpf.AttachLSMMac,
 			attachTo:   "bprm_check_security",
 			insnBudget: 2000,
+		}},
+	},
+	{
+		// The enforcer is hook-agnostic; the lane loads it as file_open, which
+		// is also how it becomes the first user of its placeholder chain_progs
+		// array, so no dispatcher has to be loaded alongside it.
+		object: "pkg/bpf/lsm/lsmruntimepolicy_bpfel.o",
+		pre:    needBPFLSM,
+		progs: []progCheck{{
+			name:       "runtime_policy_executor",
+			typ:        ebpf.LSM,
+			attach:     ebpf.AttachLSMMac,
+			attachTo:   "file_open",
+			// The unrolled 128-slot tail-call walk dominates: ~3.3k processed.
+			insnBudget: 6000,
 		}},
 	},
 	{
@@ -225,10 +240,13 @@ func verifyObject(t *testing.T, path string, progs []progCheck) {
 	// A map-of-maps carries its inner map as an ELF "entry" at key 0. That is a
 	// template, not data, and cilium/ebpf cannot marshal it as a key; the
 	// production loaders drop it as well. Nothing here verifies map contents.
+	// Pinning is stripped too: the lane verifies programs, and pinned-by-name
+	// maps would otherwise demand a writable bpffs path.
 	for _, m := range spec.Maps {
 		if m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps {
 			m.Contents = nil
 		}
+		m.Pinning = ebpf.PinNone
 	}
 
 	coll, err := ebpf.NewCollection(spec)

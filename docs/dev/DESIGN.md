@@ -159,12 +159,14 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
   be a second spelling of one intent with only one of them working.
 - `docs/users/reference/runtimepolicy.md` specifies the multi-policy case as a **union across all `RuntimePolicy`
   objects matching a pod** — any matching policy asserting default-deny flips the behavior, and the
-  effective allow (or deny) list is the union of every matching policy's entries. **That is only
-  implemented for `network`.** `pkg/egressmgr` attaches one filter per pod and merges every matching
-  policy's IPs into it, tracking the set of policy UIDs that assert default-deny in
-  `podAttachment.defaultDeny` so the eBPF flag is cleared only once none remain. `pkg/lsmmgr` has no
-  such bookkeeping: it attaches a separate LSM program per policy, so `open`/`exec` compose as an
-  intersection rather than a union — see [Known Gaps](#known-gaps--future-work).
+  effective allow (or deny) list is the union of every matching policy's entries. The two enforcing
+  managers implement it differently. `pkg/egressmgr` unions in userspace: one filter per pod, every
+  matching policy's IPs merged into it, with the set of policy UIDs asserting default-deny tracked
+  in `podAttachment.defaultDeny` so the eBPF flag is cleared only once none remain. `pkg/lsmmgr`
+  unions in the kernel: each policy keeps its own enforcer and map set, but the enforcers for a
+  hook run as one tail-call chain sharing a verdict in `ctx_map`, so one policy's explicit allow
+  lifts another policy's default-deny (see
+  [File open and exec](#file-open-and-exec-pkglsmmgr-pkgbpflsm)).
 - A `monitorFilter` is refused on an `enforce` policy by a spec-level `XValidation` rule and again
   by the compiler. The asymmetry between the two kinds of finding is the reason: a monitor finding
   is a counterfactual, and under `deny: ["*"]` that is every open and every exec, while an enforce
@@ -289,23 +291,38 @@ entries** via `createForProgType`:
 | `open` | `lsm.PROG_TYPE_LSM_OPEN` | `file_open` |
 | `exec` | `lsm.PROG_TYPE_LSM_EXEC` | `bprm_check_security` |
 
-Both are compiled from the same source (`pkg/bpf/lsm/_cprog/lsm.bpf.c`) into two distinct BPF
-objects — `lsmFileOpen` and `lsmExecCheck` — via `bpf2go` with mutually exclusive
-`-DLSM_FILE_OPEN` / `-DLSM_EXEC_CHECK` build flags; the source `#error`s if neither or both are
-set. The split replaced the earlier single `lsmGeneric` object that branched on a runtime
-`argtypes` map entry, which the verifier rejects for `bprm_check_security` because the context
-argument's type is only known at attach time (#51, `3568f42`). `LsmEnforcer` (`pkg/bpf/lsm/lsm.go`)
-hides the two object types behind generic `prog`/`cgids`/`banned`/`allowed`/`defaultDeny` fields
-plus an `io.Closer`, so `pkg/lsmmgr` is program-type agnostic.
+Per hook there is exactly one program attached to the kernel: a **dispatcher**
+(`pkg/bpf/lsm/_cprog/dispatcher.c`, `lsm.Dispatcher`), loaded and attached once by `NewLsmManager`
+via `link.AttachLSM` (`ebpf.AttachLSMMac`). The dispatcher is compiled per hook via `bpf2go` with
+mutually exclusive `-DLSM_FILE_OPEN` / `-DLSM_EXEC_CHECK` flags (the source `#error`s if neither or
+both are set) because it is the one program that reads the hook's argument to resolve the opened or
+executed path with `bpf_d_path`. Enforcers — one per policy per behavior type — are never attached:
+the dispatcher `bpf_tail_call`s through a bpffs-pinned prog array (`open_progs`/`exec_progs`), and
+each enforcer in the chain tail-calls the next slot, with `prog_count` terminating the walk. The
+per-CPU pinned `ctx_map` carries the resolved path and the running verdict (`deny`, `reason`,
+`next_prog_idx`, `have_executed`) across the chain. `NewLsmManager` wipes the pin directory
+(`lsm.ClearPins`) before loading, since a pin surviving from a previous process is only a stale map
+spec — the links die with the process, so nothing keeps enforcing across a restart.
+
+The enforcer (`pkg/bpf/lsm/_cprog/lsm.bpf.c`) is compiled once and never reads the hook argument,
+but the kernel still forces a hook identity on it: an LSM program must be loaded with the
+`attach_btf_id` of a real hook, and a program may only tail-call through prog arrays whose first
+user had the same identity. A single object referencing both prog arrays is therefore unloadable
+once both dispatchers exist. The enforcer instead references one placeholder array
+(`chain_progs`), and `lsm.NewForAttachTarget` binds it to the chaining dispatcher's real array at
+load time via `ebpf.CollectionOptions.MapReplacements`, keeping the C hook-agnostic.
 
 Per enforcer, `createForProgType` populates the `banned`/`allowed` path maps from that behavior's
 `AllowDenyPair` — **unless the mode is an observe mode, in which case both maps are left empty and
-`default_deny` is never set** — sets the `default_deny` map entry if the deny list contains `"*"`, and attaches
-with `link.AttachLSM` (`ebpf.AttachLSMMac`); on any failure the partially-built enforcer is closed.
-Matched pods' cgroup IDs (resolved by `pkg/containers`) go into that enforcer's `cgids` map, and the
-BPF program returns 0 immediately for any cgroup not in it. In the kernel the decision is a pure map
-lookup: if `default_deny` is set, allow only paths present in `allowed`, otherwise deny only paths
-present in `banned`; `-EPERM` otherwise.
+`default_deny` is never set** — sets the `default_deny` map entry if the deny list contains `"*"`,
+and registers the program in the dispatcher's prog array (`Dispatcher.AddProgram`); on any failure
+the partially-built enforcer is closed. Matched pods' cgroup IDs (resolved by `pkg/containers`) go
+into that enforcer's `cgids` map, and an enforcer passes straight to the next chain slot for any
+cgroup not in it. The decision composes across the chain through `ctx_map`: a path in a program's
+`banned` map is an explicit deny and returns `-EPERM` immediately; a path in a program's `allowed`
+map is an explicit allow; `default_deny` imposes an implicit deny only while no program in the
+chain has explicitly allowed the path. The chain's tail returns `-EPERM` if the accumulated verdict
+is deny.
 
 State per policy lives in `lsmAttachment{progs map[string]*progState, selector, attachedPods}`,
 where `progState` pairs an enforcer with the `AllowDenyPair` it was last programmed with, and
@@ -318,10 +335,11 @@ reconciles cgids against the (possibly changed) selector. `rpDeleted` closes eve
 policy and drops it from each pod's `attachedLsms`. `PodEvent` adds/removes cgids across all of a
 matching policy's enforcers.
 
-Note the consequence of one program per policy: N enforce-mode policies matching a pod attach N LSM
-programs to the same hook, each with its own map set. The kernel denies if any of them denies, so
-`open`/`exec` rules from separate policies intersect rather than union
-(see [Known Gaps](#known-gaps--future-work)).
+The chain is what makes separate policies union rather than intersect: N enforce-mode policies
+matching a pod put N enforcers in one hook's chain, and because the verdict accumulates in
+`ctx_map`, one policy's explicit allow lifts another policy's `default_deny` for that path. An
+explicit deny still short-circuits the chain, so `deny` entries beat `allow` entries across
+policies.
 
 The two exec-related kernel programs have complementary, non-overlapping capabilities:
 `bprm_check_security` can return `-EPERM` but reads only `bprm->file->f_path`, so it cannot see
@@ -885,16 +903,8 @@ future `PLAN.md`.
     only UDP datagrams to port 53 are read, so DNS over HTTPS, DNS over TLS and DNS over TCP/53
     produce no observation, no answer or query type is recorded, and a cached or shared answer
     means no question was asked at all. A resolution is also not a connection.
-- **`open`/`exec` rules from separate policies intersect instead of unioning.**
-  `docs/users/reference/runtimepolicy.md` specifies default-deny and allow/deny lists as being unioned across all
-  policies matching a pod. `pkg/egressmgr` does that for `network`, but `pkg/lsmmgr` gives each
-  policy its own LSM program with its own `allowed`/`banned`/`default_deny` maps and has no
-  cross-policy default-deny tracking. Since the kernel denies when any attached LSM program returns
-  `-EPERM`, a policy that default-denies `open` cannot be relaxed by a second policy's `allow` list:
-  paths that policy A does not allow stay blocked no matter what policy B says. Untracked — no
-  issue filed yet.
 - **The kernel-side counters are always on, even for enforce-only nodes.** What used to be
-  learning-mode residue is now the substrate of monitor mode: both LSM variants increment per-path
+  learning-mode residue is now the substrate of monitor mode: every LSM enforcer increments per-path
   counters in the `open_events` hash-of-maps on every hook invocation regardless of mode, and
   `probe.c` counts destination addresses whenever the `OBSERVE`/`LEARNING_MODE` flag bit is set.
   Userspace only enables the egress flag for pods with an observe-mode policy, but the LSM path
