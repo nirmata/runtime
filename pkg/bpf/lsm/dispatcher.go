@@ -189,6 +189,10 @@ func (d *Dispatcher) bumpCount(delta int) error {
 	if err := d.progCount.Lookup(&d.progCountKey, &pc); err != nil {
 		return err
 	}
-	pc = uint8(int(pc) + delta)
+	next := int(pc) + delta
+	if next < 0 || next > int(d.progArray.MaxEntries()) {
+		return fmt.Errorf("prog_count out of range for %s: %d", d.dispatcherType, next)
+	}
+	pc = uint8(next)
 	return d.progCount.Update(&d.progCountKey, &pc, ebpf.UpdateAny)
 }
