@@ -222,13 +222,10 @@ func TestPathEventKernelKeyLayout(t *testing.T) {
 	if got := int(unsafe.Sizeof(pathEventKernelKey{})); got != want {
 		t.Errorf("sizeof(pathEventKernelKey) = %d, want %d", got, want)
 	}
-	if got := int(unsafe.Sizeof(lsmFileOpenPathEventKey{})); got != want {
-		t.Errorf("sizeof(lsmFileOpenPathEventKey) = %d, want %d (generated from the C)", got, want)
+	if got := int(unsafe.Sizeof(lsmRuntimePolicyPathEventKey{})); got != want {
+		t.Errorf("sizeof(lsmRuntimePolicyPathEventKey) = %d, want %d (generated from the C)", got, want)
 	}
-	if got := int(unsafe.Sizeof(lsmExecCheckPathEventKey{})); got != want {
-		t.Errorf("sizeof(lsmExecCheckPathEventKey) = %d, want %d (generated from the C)", got, want)
-	}
-	if got, want := unsafe.Offsetof(pathEventKernelKey{}.Decision), unsafe.Offsetof(lsmFileOpenPathEventKey{}.Decision); got != want {
+	if got, want := unsafe.Offsetof(pathEventKernelKey{}.Decision), unsafe.Offsetof(lsmRuntimePolicyPathEventKey{}.Decision); got != want {
 		t.Errorf("offsetof(Decision) = %d, want %d (generated from the C)", got, want)
 	}
 }

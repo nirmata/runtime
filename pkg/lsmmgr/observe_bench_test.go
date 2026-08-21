@@ -27,10 +27,9 @@ func reseed(seeds []benchSeed) {
 }
 
 func benchManager() *LsmManager {
-	l := NewLsmManager(logr.Discard(), newFakeStatus(), nil)
-	l.newEnforcer = func(_ *logr.Logger, target string) (lsmEnforcer, error) {
+	l := newLsmManager(logr.Discard(), newFakeStatus(), nil, func(_ *logr.Logger, target string) (lsmEnforcer, error) {
 		return newFakeEnforcer(target, nil), nil
-	}
+	})
 	l.clock = func() time.Time { return fixedTime }
 	return l
 }
