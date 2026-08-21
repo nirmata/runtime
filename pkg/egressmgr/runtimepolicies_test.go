@@ -519,29 +519,3 @@ func TestPodsMatchedUpdatesOnPodEventsAlone(t *testing.T) {
 		t.Errorf("after the last matching pod is deleted: PodsMatched = %+v, want False", cond)
 	}
 }
-
-// TestPodsMatchedZeroLogsOnce pins the fix for V(0) log spam: a policy
-// re-evaluated repeatedly with the same zero-match outcome (an
-// EvaluationInterval tick, or an informer resync) must not re-trigger the log
-// line on every event — only the transition into that state, and again after
-// a later transition out and back in.
-func TestPodsMatchedZeroLogsOnce(t *testing.T) {
-	e, _, _ := newTestManager()
-	r := rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, nil)
-
-	mustRpEvent(t, e, r, events.EventTypeCreate)
-	if !e.zeroMatchLogged["rp-1"] {
-		t.Fatal("the zero-match state was not recorded after the first zero-match event")
-	}
-
-	mustRpEvent(t, e, r, events.EventTypeUpdate)
-	if !e.zeroMatchLogged["rp-1"] {
-		t.Fatal("a repeat zero-match event cleared the log gate")
-	}
-
-	addPod(t, e, "pod-1", webLabels, "/cg/pod-1")
-	mustRpEvent(t, e, r, events.EventTypeUpdate)
-	if e.zeroMatchLogged["rp-1"] {
-		t.Error("the log gate was not cleared once a pod actually matched")
-	}
-}

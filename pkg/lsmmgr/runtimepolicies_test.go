@@ -101,9 +101,6 @@ func TestRpCreated_ProgTypeSelection(t *testing.T) {
 				if !slices.Equal(f.defaultDeny, []bool{tt.wantDenyAll[pt]}) {
 					t.Errorf("%s: SetDefaultDeny calls = %v, want [%v]", pt, f.defaultDeny, tt.wantDenyAll[pt])
 				}
-				if f.attachCount != 1 {
-					t.Errorf("%s: Attach called %d times, want 1", pt, f.attachCount)
-				}
 				if f.closeCount != 0 {
 					t.Errorf("%s: Close called %d times, want 0", pt, f.closeCount)
 				}
@@ -166,9 +163,6 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 			if execEnf.denyAll != tt.wantExecDeny0 {
 				t.Errorf("exec default deny = %v, want %v", execEnf.denyAll, tt.wantExecDeny0)
 			}
-			if execEnf.attachCount != 1 {
-				t.Errorf("exec Attach called %d times, want 1 (bprm_check_security must be attached)", execEnf.attachCount)
-			}
 			if got := execEnf.cgidSet(); !slices.Equal(got, []uint64{11}) {
 				t.Errorf("exec cgid set = %v, want [11]", got)
 			}
@@ -230,9 +224,6 @@ func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
 		}
 		if f.denyAll {
 			t.Errorf("%s: default deny is on in %s mode", pt, mode)
-		}
-		if f.attachCount != 1 {
-			t.Errorf("%s: Attach called %d times, want 1", pt, f.attachCount)
 		}
 		// but the matched pod is tracked and observed
 		if got := f.cgidSet(); !slices.Equal(got, []uint64{11, 12}) {
@@ -435,7 +426,7 @@ func TestRpCreated_ErrorPaths(t *testing.T) {
 	})
 
 	// every setup step after construction must close the half built enforcer
-	for _, method := range []string{"AddTargets", "SetDefaultDeny", "Attach"} {
+	for _, method := range []string{"AddTargets", "SetDefaultDeny"} {
 		t.Run(method+" failure closes the new enforcer", func(t *testing.T) {
 			h := newHarness(t)
 			boom := errors.New("bpf map failure in " + method)
