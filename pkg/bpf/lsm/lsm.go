@@ -9,7 +9,6 @@ import (
 	"github.com/nirmata/runtime/pkg/compiler"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
 )
 
@@ -20,12 +19,16 @@ const (
 	PROG_TYPE_LSM_EXEC = "bprm_check_security"
 )
 
-//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmFileOpen ./_cprog/lsm.bpf.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmExecCheck ./_cprog/lsm.bpf.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmDispatcherFileOpen ./_cprog/dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmDispatcherExecCheck ./_cprog/dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go lsmRuntimePolicy ./_cprog/lsm.bpf.c -- -I../include -I./_cprog/include -I./_cprog
 type LsmEnforcer struct {
 	logger *logr.Logger
-	link   link.Link
 	closer io.Closer
+
+	// dispatcher owns the lsm hook this enforcer is tail-called from; the
+	// enforcer registers itself there on creation and leaves on Close.
+	dispatcher *Dispatcher
 
 	prog        *ebpf.Program
 	cgids       *ebpf.Map
@@ -48,28 +51,69 @@ type LsmEnforcer struct {
 	observed  map[uint64]*ebpf.Map
 }
 
-func NewForAttachTarget(logger *logr.Logger, target string) (*LsmEnforcer, error) {
+func NewForAttachTarget(d *Dispatcher, logger *logr.Logger, target string) (*LsmEnforcer, error) {
 	switch target {
-	case PROG_TYPE_LSM_OPEN:
-		return newForFileOpen(logger)
-	case PROG_TYPE_LSM_EXEC:
-		return newForExec(logger)
+	case PROG_TYPE_LSM_OPEN, PROG_TYPE_LSM_EXEC:
 	default:
 		return nil, fmt.Errorf("unknown lsm attach target %q", target)
 	}
+	if d.dispatcherType != target {
+		return nil, fmt.Errorf("dispatcher for %q cannot chain a %q enforcer", d.dispatcherType, target)
+	}
+
+	l := &LsmEnforcer{logger: logger, dispatcher: d}
+
+	spec, err := loadLsmRuntimePolicy()
+	if err != nil {
+		return nil, err
+	}
+	// the program is never linked to the hook itself, but loading an lsm
+	// program still requires the BTF id of a real hook, and tail calls only
+	// reach programs loaded for the same hook as the dispatcher
+	spec.Programs["runtime_policy_executor"].AttachTo = target
+	spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
+
+	innerSpec := prepareOpenEvents(spec)
+
+	objs := &lsmRuntimePolicyObjects{}
+	opts := &ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{PinPath: pinDir},
+		// bind the placeholder chain_progs to this dispatcher's prog array; the
+		// program can then only reference one array, whose owner hook matches
+		// its own AttachTo, which is what the kernel's tail-call ownership
+		// check demands
+		MapReplacements: map[string]*ebpf.Map{"chain_progs": d.progArray},
+	}
+	if err := spec.LoadAndAssign(objs, opts); err != nil {
+		return nil, err
+	}
+	l.innerSpec = innerSpec
+	// hoist the collection's objects into generic fields so the rest of the
+	// code never has to ask which variant is loaded
+	l.closer = objs
+	l.prog = objs.RuntimePolicyExecutor
+	l.cgids = objs.Cgids
+	l.banned = objs.Banned
+	l.allowed = objs.Allowed
+	l.defaultDeny = objs.DefaultDeny
+	l.openEvents = objs.OpenEvents
+	l.stats = objs.Stats
+
+	if err := d.AddProgram(l.prog.FD()); err != nil {
+		_ = objs.Close()
+		return nil, err
+	}
+
+	return l, nil
 }
 
-// prepareOpenEvents clears the ELF-provided contents of the open_events
-// hash-of-maps, whose single entry is the template inner map at key 0 rather
-// than a real cgroup id, and returns a copy of that template. nil means
-// observation is unavailable for this program.
+// prepareOpenEvents returns a copy of the open_events inner-map template.
+// nil means observation is unavailable for this program.
 func prepareOpenEvents(spec *ebpf.CollectionSpec) *ebpf.MapSpec {
 	outer := spec.Maps["open_events"]
 	if outer == nil {
 		return nil
 	}
-	outer.Contents = nil
-
 	inner := outer.InnerMap
 	if inner == nil {
 		inner = spec.Maps["inner_open_events"]
@@ -80,67 +124,17 @@ func prepareOpenEvents(spec *ebpf.CollectionSpec) *ebpf.MapSpec {
 	return inner.Copy()
 }
 
-func newForFileOpen(logger *logr.Logger) (*LsmEnforcer, error) {
-	l := &LsmEnforcer{logger: logger}
-
-	spec, err := loadLsmFileOpen()
-	if err != nil {
-		return nil, err
-	}
-	spec.Programs["generic_lsm_handler"].AttachTo = PROG_TYPE_LSM_OPEN
-	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
-
-	innerSpec := prepareOpenEvents(spec)
-
-	objs := &lsmFileOpenObjects{}
-	if err := spec.LoadAndAssign(objs, nil); err != nil {
-		return nil, err
-	}
-	l.innerSpec = innerSpec
-	// hoist the program-specific objects into generic fields so the rest of the
-	// code never has to ask which variant is loaded
-	l.closer = objs
-	l.prog = objs.GenericLsmHandler
-	l.cgids = objs.Cgids
-	l.banned = objs.Banned
-	l.allowed = objs.Allowed
-	l.defaultDeny = objs.DefaultDeny
-	l.openEvents = objs.OpenEvents
-	l.stats = objs.Stats
-	return l, nil
-}
-
-func newForExec(logger *logr.Logger) (*LsmEnforcer, error) {
-
-	l := &LsmEnforcer{logger: logger}
-	spec, err := loadLsmExecCheck()
-	if err != nil {
-		return nil, err
-	}
-	spec.Programs["generic_lsm_handler"].AttachTo = PROG_TYPE_LSM_EXEC
-	spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
-	innerSpec := prepareOpenEvents(spec)
-
-	objs := &lsmExecCheckObjects{}
-	if err := spec.LoadAndAssign(objs, nil); err != nil {
-		return nil, err
-	}
-	l.innerSpec = innerSpec
-	l.closer = objs
-	l.prog = objs.GenericLsmHandler
-	l.cgids = objs.Cgids
-	l.banned = objs.Banned
-	l.allowed = objs.Allowed
-	l.defaultDeny = objs.DefaultDeny
-	l.openEvents = objs.OpenEvents
-	l.stats = objs.Stats
-
-	return l, nil
-}
-
 func (l *LsmEnforcer) Close() error {
 	var retErr error
-	// release the observation inner maps first; the kernel keeps its own
+	// leave the tail-call chain before anything is released: the prog array
+	// holds its own reference, so a closed-but-still-registered program would
+	// keep running with its policy maps gone from userspace.
+	if l.dispatcher != nil {
+		if err := l.dispatcher.DeleteProgram(l.prog.FD()); err != nil {
+			retErr = err
+		}
+	}
+	// release the observation inner maps next; the kernel keeps its own
 	// reference through open_events until the outer map goes away.
 	l.observeMu.Lock()
 	for cgid, inner := range l.observed {
@@ -151,29 +145,13 @@ func (l *LsmEnforcer) Close() error {
 	}
 	l.observeMu.Unlock()
 
-	if l.link != nil {
-		if err := l.link.Close(); err != nil {
-			retErr = err
-		}
-	}
 	if l.closer != nil {
 		if err := l.closer.Close(); err != nil && retErr == nil {
 			retErr = err
 		}
 	}
+
 	return retErr
-}
-
-func (l *LsmEnforcer) Attach() (link.Link, error) {
-	link, err := link.AttachLSM(link.LSMOptions{
-		Program: l.prog,
-	})
-	if err != nil {
-		return nil, err
-	}
-	l.link = link
-
-	return link, nil
 }
 
 func (l *LsmEnforcer) AddCgids(cgids []uint64) error {

@@ -210,9 +210,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		execSinks = append(execSinks, execSrc)
 	}
 
-	lsmm := lsmmgr.NewLsmManager(logger, sw, func(reason string, delta uint64) {
+	lsmm, err := lsmmgr.NewLsmManager(logger, sw, func(reason string, delta uint64) {
 		m.EventsDropped.WithLabelValues(lsmObserveSource, reason).Add(float64(delta))
 	}, execSinks...)
+	if err != nil {
+		logger.Error(err, "failed to create lsm manager")
+		os.Exit(1)
+	}
 
 	// mon evaluates observed events against monitor-mode policies and turns
 	// matches into findings.

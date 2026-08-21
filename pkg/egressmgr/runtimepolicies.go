@@ -186,7 +186,6 @@ func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.Evaluat
 func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	e.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
 	delete(e.rps, compiledRp.UID)
-	delete(e.zeroMatchLogged, compiledRp.UID)
 	for podUid, pod := range e.pods {
 		att, ok := pod.attachedFilters[compiledRp.UID]
 		if !ok {

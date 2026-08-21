@@ -3,8 +3,6 @@ package lsmmgr
 import (
 	"github.com/nirmata/runtime/pkg/bpf/lsm"
 	"github.com/nirmata/runtime/pkg/compiler"
-
-	"github.com/cilium/ebpf/link"
 )
 
 // CgroupSink is an observation-only kernel source that must see events from
@@ -17,7 +15,6 @@ type CgroupSink interface {
 // the subset of *lsm.LsmEnforcer the manager uses, so its state machine can be
 // exercised without loading bpf programs.
 type lsmEnforcer interface {
-	Attach() (link.Link, error)
 	Close() error
 	AddCgids(cgids []uint64) error
 	DeleteCgids(cgids []uint64) error
@@ -29,5 +26,3 @@ type lsmEnforcer interface {
 	ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventKey]uint32, error)
 	ReadEventsLost() (uint64, error)
 }
-
-var _ lsmEnforcer = (*lsm.LsmEnforcer)(nil)
