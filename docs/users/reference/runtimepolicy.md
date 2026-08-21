@@ -131,15 +131,12 @@ matches any policy's `deny` entry, or if some policy sets a default deny and the
 connection matches no policy's `allow` entry. An explicit `deny` entry always denies:
 no `allow` entry overrides it, whichever policy carries either.
 
-For `open` and `exec`, each policy attaches its own LSM program with its own maps, and
-the kernel denies when any attached program denies. `deny` entries therefore combine
-the same way — a path denied by any policy is denied — but default deny does not: a
-policy that sets `deny.values: ["*"]` blocks every path absent from **its own** `allow`
-list, whatever any other policy allows. Two default-deny policies on the same pod each
-block the other's allowed paths, so the effective allowed set is the intersection of
-their `allow` lists, not the union. A default-deny `open` or `exec` policy cannot be
-relaxed by another policy; every path the pod needs must be in that policy's own
-`allow` list.
+For `open` and `exec`, each policy keeps its own kernel program and maps, but every
+program matching a pod evaluates as one chain that shares a verdict, so the rules
+combine the same way as for `network`: a path in any policy's `deny` entries is denied,
+a default deny set by any one policy applies to the pod, and a path in any policy's
+`allow` entries survives a default deny — whichever policy set it. An explicit `deny`
+entry always denies here too; no `allow` entry overrides it.
 
 `dns` only reports, and each matching policy evaluates and reports on its own.
 
