@@ -98,10 +98,10 @@ var bpfObjects = []bpfObjectSpec{
 		object: "pkg/bpf/lsm/lsmruntimepolicy_bpfel.o",
 		pre:    needBPFLSM,
 		progs: []progCheck{{
-			name:       "runtime_policy_executor",
-			typ:        ebpf.LSM,
-			attach:     ebpf.AttachLSMMac,
-			attachTo:   "file_open",
+			name:     "runtime_policy_executor",
+			typ:      ebpf.LSM,
+			attach:   ebpf.AttachLSMMac,
+			attachTo: "file_open",
 			// The unrolled 128-slot tail-call walk dominates: ~3.3k processed.
 			insnBudget: 6000,
 		}},
