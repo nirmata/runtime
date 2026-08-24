@@ -3,6 +3,7 @@ package pushsink
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -154,15 +155,23 @@ func (s *GRPCSink) Run(ctx context.Context) error {
 		if opened {
 			backoff = minRetryBackoff
 		}
-		s.log.V(0).Error(err, "push stream failed, reopening", "target", s.opts.Target, "retryIn", backoff)
+		wait := jitteredBackoff(backoff, rand.Float64())
+		s.log.V(0).Error(err, "push stream failed, reopening", "target", s.opts.Target, "retryIn", wait)
 		select {
 		case <-ctx.Done():
 			s.log.V(2).Info("push sink stopped")
 			return nil
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
 		backoff = min(2*backoff, maxRetryBackoff)
 	}
+}
+
+// jitteredBackoff maps u in [0,1) onto [0.8d, 1.2d), spreading a fleet's
+// retries so daemons that lost their streams to one shared outage do not
+// reconnect in lockstep.
+func jitteredBackoff(d time.Duration, u float64) time.Duration {
+	return time.Duration(float64(d) * (0.8 + 0.4*u))
 }
 
 // stream opens one client stream and feeds it until ctx is done or a send
