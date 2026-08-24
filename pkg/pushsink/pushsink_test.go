@@ -1,6 +1,8 @@
 package pushsink
 
 import (
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,6 +85,110 @@ func TestReportDropsOldestWhenTheQueueIsFull(t *testing.T) {
 	}
 	if got := loss[ReasonQueueFull]; got != 1 {
 		t.Errorf("%s = %d, want 1", ReasonQueueFull, got)
+	}
+}
+
+// A consumer racing the drop-oldest path can free a slot between a
+// producer's failed fast-path send and its dropMu acquisition. Report must
+// notice the free slot rather than evicting a finding that no longer needs
+// evicting.
+func TestReportDoesNotEvictWhenTheConsumerMadeRoom(t *testing.T) {
+	// Pin to one OS thread so Gosched below hands off to the producer
+	// goroutine deterministically: it runs until it blocks on dropMu rather
+	// than racing the drain on a separate core.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	for i := 0; i < 200; i++ {
+		loss := lossRecord{}
+		s := newTestSink(t, 2, loss)
+		s.Report(findingNamed("A"))
+		s.Report(findingNamed("B"))
+
+		s.dropMu.Lock()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			s.Report(findingNamed("C"))
+		}()
+
+		runtime.Gosched() // let the producer fail its fast path and block on dropMu
+		<-s.queue         // stands in for the stream consumer freeing a slot
+		s.dropMu.Unlock()
+		<-done
+
+		if got := loss[ReasonQueueFull]; got != 0 {
+			t.Fatalf("iteration %d: %s = %d, want 0", i, ReasonQueueFull, got)
+		}
+		var queued []string
+		for len(s.queue) > 0 {
+			queued = append(queued, (<-s.queue).GetPolicyName())
+		}
+		if diff := cmp.Diff([]string{"B", "C"}, queued); diff != "" {
+			t.Fatalf("iteration %d: queue holds the wrong findings (-want +got):\n%s", i, diff)
+		}
+	}
+}
+
+// Every finding Report accepts must be accounted for: delivered to the
+// queue, still sitting in it, or counted as lost. None may vanish.
+func TestReportAccountsForEveryFindingUnderConcurrency(t *testing.T) {
+	const (
+		producers   = 8
+		perProducer = 500
+		total       = producers * perProducer
+		queueSize   = 16
+	)
+
+	var mu sync.Mutex
+	loss := lossRecord{}
+	s := newTestSink(t, queueSize, loss)
+	s.opts.LossFunc = func(reason string, delta uint64) {
+		mu.Lock()
+		defer mu.Unlock()
+		loss[reason] += delta
+	}
+
+	drained := 0
+	drainDone := make(chan struct{})
+	stopDraining := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for {
+			select {
+			case <-s.queue:
+				drained++
+			case <-stopDraining:
+				for {
+					select {
+					case <-s.queue:
+						drained++
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(producers)
+	for p := 0; p < producers; p++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perProducer; i++ {
+				s.Report(findingNamed("x"))
+			}
+		}()
+	}
+	wg.Wait()
+	close(stopDraining)
+	<-drainDone
+
+	mu.Lock()
+	lost := loss[ReasonQueueFull]
+	mu.Unlock()
+	if got := drained + len(s.queue) + int(lost); got != total {
+		t.Errorf("drained(%d) + queued(%d) + lost(%d) = %d, want %d", drained, len(s.queue), lost, got, total)
 	}
 }
 
