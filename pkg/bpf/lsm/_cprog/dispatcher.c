@@ -31,11 +31,17 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     prog_ctx->reason = IMPLICIT_ALLOW;
     /* the slot still holds the previous event's path; the tail after the new
      * string must be zeros or it splits hash keys derived from it */
-    __builtin_memset(prog_ctx->path, 0, sizeof(prog_ctx->path));
+    __builtin_memset(prog_ctx->path, 0, sizeof(prog_ctx->path));    
 
     #if defined(LSM_FILE_OPEN)
         struct file *f = (struct file *)args[0];
         prog_ctx->prog_type = PROG_TYPE_LSM_OPEN;
+
+        /* we have no programs, don't proceed */
+        __u32 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
+        if (!prog_cnt || *prog_cnt == 0) {
+            return 0;
+        }
 
         bpf_d_path(&f->f_path, buf, sizeof(buf));
         bpf_probe_read_kernel_str(prog_ctx->path, sizeof(prog_ctx->path), buf);
@@ -44,6 +50,12 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     #elif defined(LSM_EXEC_CHECK)
         struct linux_binprm *bprm = (struct linux_binprm *)args[0];
         prog_ctx->prog_type = PROG_TYPE_LSM_EXEC;
+
+         /* we have no programs, don't proceed */
+        __u32 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
+        if (!prog_cnt || *prog_cnt == 0) {
+            return 0;
+        }
 
         bpf_d_path(&bprm->file->f_path, buf, sizeof(buf));
         bpf_probe_read_kernel_str(prog_ctx->path, sizeof(prog_ctx->path), buf);
