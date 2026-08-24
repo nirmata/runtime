@@ -119,6 +119,12 @@ func (s *GRPCSink) Report(f reporter.Finding) {
 	}
 
 	s.dropMu.Lock()
+	defer s.dropMu.Unlock()
+	select {
+	case s.queue <- msg:
+		return
+	default:
+	}
 	select {
 	case <-s.queue:
 		s.lost(ReasonQueueFull, 1)
@@ -129,7 +135,6 @@ func (s *GRPCSink) Report(f reporter.Finding) {
 	default:
 		s.lost(ReasonQueueFull, 1)
 	}
-	s.dropMu.Unlock()
 }
 
 // Run streams queued findings until ctx is done, reopening the stream after a
