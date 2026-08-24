@@ -28,7 +28,7 @@ Label values:
 | --- | --- |
 | `source` | `egress-observe`, `lsm-observe` (the two poll sources), `dnsquery` (the DNS question source), `exec-trace` (the streamed exec source), `monitor`, `reporter` |
 | `kind` | `net`, `protocol`, `exec`, `open`, `dns` |
-| `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `count_map_full`, `ringbuf_full`, `name_unreadable`, `undecodable` |
+| `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `count_map_full`, `ringbuf_full`, `name_unreadable`, `undecodable`, `queue_full`, `send_failed` |
 | `behavior` | `network`, `protocol`, `exec`, `open`, `dns` |
 | `result` | `ok`, `error`, `skipped` |
 
@@ -79,6 +79,28 @@ is counted per record, as it happens.
 Silence here is meaningful in one direction only: a flat counter means no question was lost,
 not that questions were asked. `nirmata_runtime_events_ingested_total{kind="dns"}` is what
 says observation is producing.
+
+## Push sink loss
+
+The push sink counts two ways a finding can fail to reach the collector, both under
+`nirmata_runtime_events_dropped_total{source="pushsink"}`. Neither affects the `Report`
+objects, which are written on an independent path:
+
+| `reason` | Meaning |
+| --- | --- |
+| `queue_full` | The send queue was full, so the oldest queued finding was dropped to make room. The sink never blocks the event path. |
+| `send_failed` | The stream refused a finding. The stream is reopened and the next finding goes out on the new one. |
+
+How to read them:
+
+- `queue_full` climbing means findings are being produced faster than the collector accepts
+  them, or the collector has stopped reading. The queue holds 4096 findings; what it drops is
+  the oldest, so a burst costs the beginning of the burst.
+- `send_failed` climbing means the stream keeps breaking. Check the collector, then the
+  certificates: a daemon whose client certificate the collector rejects keeps reconnecting,
+  backing off to one attempt a minute.
+
+Both are flat at zero when `--push-target` is unset, because nothing is queued at all.
 
 ## Reading them
 

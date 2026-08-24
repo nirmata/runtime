@@ -592,7 +592,9 @@ read-only so the plane does not copy a label map per event. Sinks must not mutat
 
 ### Monitor (`pkg/monitor`)
 
-`Monitor` is the `Sink` that turns observations into findings. It tracks monitor- AND
+`Monitor` is the `Sink` that turns observations into findings, handing each one to every
+registered `FindingSink` under its own `utils.Guard` so one sink's panic does not cost the others
+the finding. It tracks monitor- AND
 enforce-mode policies in a per-event-ready form (`trackedPolicy`: mode, compiled selector plus
 `netBehavior`/`pathBehavior`/`nameBehavior` matchers), replacing the whole value on every
 `RuntimePolicyEvent` rather than mutating it — both so `HandleEvent` can read one outside the lock
@@ -690,16 +692,59 @@ cancellation, on a fresh bounded context, so the last window is not lost on shut
 through a `sigs.k8s.io/controller-runtime/pkg/client.Client` built from the daemon's `rest.Config`
 with the OpenReports types installed in the scheme.
 
+### Push sink (`pkg/pushsink`)
+
+`GRPCSink` is the second `FindingSink`: it streams findings to a collector as they are produced,
+for a cluster that wants them live rather than through `Report` objects a consumer has to poll.
+It is enabled by `--push-target` alone; empty means no queue, no connection, and no cost.
+
+The daemon is always the gRPC *client*. `Report(stream Finding) returns (Ack)` is client
+streaming, so a node opens no listening port — this pod is privileged and `hostPID`, and the
+egress-only direction is the point. Transport is mutual TLS with no plaintext mode: the
+collector CA and the daemon's client certificate are file paths, and a missing or unreadable one
+fails at construction rather than at the first violation. `Report` never blocks the event path.
+The send queue is bounded (4096); an overflow drops the *oldest* finding and counts it, the same
+never-block/count-what-is-lost discipline `pkg/collector` and `runtimeevent.LossFunc` follow, so
+a collector that stops reading costs the newest observations rather than the daemon. A broken
+stream is reopened after a backoff that doubles from 5s to a 1-minute cap and resets once a
+stream establishes, so a collector that is gone rather than restarting does not become
+fleet-wide connection churn; a cancelled context drains what is queued and closes the stream,
+so the last window is not lost. That shutdown is bounded rather than best effort: `Send` blocks
+on the stream's own context while the flow control window is shut, which a collector that
+accepts a stream and stops reading holds indefinitely, so cancellation arms a deadline that
+closes the stream out from under a blocked send. The daemon's errgroup is what a DaemonSet
+rollout waits on.
+
+`Finding.Pod.OwnerKind`/`OwnerName` ride this stream as best-effort correlation metadata, not as
+identity. `pkg/attribution.deriveOwner` reads `pod.OwnerReferences[0]` verbatim, and Kubernetes
+validates that field structurally rather than behaviorally: any principal that can create or
+patch a pod can name any owner it likes. In a namespaced `Report` an operator can check a
+suspicious owner against the pods in that namespace; a central collector has no such view, so
+the wire schema documents these fields as unverified and a receiver must not use them as a
+security boundary. Verifying the owner in-daemon is deliberately not the answer — it needs RBAC
+per owner kind and still does not stop an attacker who controls a real object — the control is
+cluster-level admission policy over who may set `ownerReferences`.
+
 ## Redaction chokepoint
 
-Secret material must be structurally incapable of reaching a `Report` or a log line, not merely
-filtered out by policy. One chokepoint, not configurable:
+Secret material must be structurally incapable of reaching a `Report`, a log line, or the wire,
+not merely filtered out by policy. One chokepoint, not configurable:
 
 **`reporter.Finding`.** `Finding` is a *closed* struct of typed scalars: no header
 map, no body field, no free-form properties passthrough. An unredacted payload is not
 representable at the boundary. `buildResult` emits a fixed property key set and every value
 passes `sanitize`. Pod labels — arbitrary user-controlled key/values — are deliberately never
 emitted.
+
+**`reporter.Redact`.** A `Finding` reaches a sink before anything in `pkg/reporter` has touched
+it, still carrying the raw argv and paths the kernel observed: `buildResult` scrubs on the way
+into a `Report`, which is no help to a sink that never builds one. `Redact` is the same
+`sanitize` applied to every string field of a `Finding`, and it is what `pkg/pushsink` calls
+before a finding enters its send queue — so what waits in daemon memory for a collector to come
+back is already scrubbed and bounded. It rebuilds `PodIdentity` field by field rather than
+copying and patching it: a field added there and not added to `Redact` is dropped, never
+forwarded unscrubbed. Pod labels are dropped for the same reason they are never emitted into a
+`Report`.
 
 The argument is structural rather than procedural: there is no option, flag, or field that
 weakens the mechanism, and adding one is a reason to reject a PR
@@ -789,8 +834,9 @@ namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,re
 `monitor_filter_eval_errors_total{policy,expression}`, and
 `report_writes_total{result}`. The `reason` values something produces are `buffer_full`
 (`pkg/collector`), `unattributed` (`pkg/monitor`, `pkg/reporter`),
-`unattributed_kernel_deny` (`pkg/monitor`), and `ringbuf_full` / `name_unreadable` /
-`undecodable` (`pkg/bpf/dnsquery`, all under `source="dnsquery"`).
+`unattributed_kernel_deny` (`pkg/monitor`), `ringbuf_full` / `name_unreadable` /
+`undecodable` (`pkg/bpf/dnsquery`, all under `source="dnsquery"`), and `queue_full` /
+`send_failed` (`pkg/pushsink`, under `source="pushsink"`).
 
 ## Helm chart / deployment shape
 
@@ -808,6 +854,10 @@ namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,re
   and full CRUD on `openreports.io` `reports` for the reporter, with
   `values.daemon.rbac.extraRules` as an escape hatch for granting the daemon access to
   additional resource types referenced by the `resource` CEL library.
+- The push sink's configuration, when `daemon.push.target` is set: `--push-target` plus the three
+  `--push-tls-*` paths, backed by a read-only mount of `daemon.push.tls.secretName` at
+  `/etc/kyverno-runtime/push-tls` holding `ca.crt`, `tls.crt` and `tls.key`. The chart refuses to
+  render a target without that Secret rather than installing a daemon that exits at boot.
 - The `RuntimePolicy` CRD (`charts/kyverno-runtime/crds/`), plus the vendored OpenReports CRDs
   (`openreports.io_*`), which `pkg/reporter` now writes to; the OpenReports API is registered into
   both the daemon's scheme and the controller-runtime client used for those writes.

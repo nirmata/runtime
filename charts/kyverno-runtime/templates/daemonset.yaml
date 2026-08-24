@@ -1,3 +1,7 @@
+{{- $pushTLSDir := "/etc/kyverno-runtime/push-tls" }}
+{{- if and .Values.daemon.push.target (not .Values.daemon.push.tls.secretName) }}
+{{- fail "daemon.push.tls.secretName is required when daemon.push.target is set: the collector connection is mutual TLS" }}
+{{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -54,6 +58,12 @@ spec:
         {{- with .Values.daemon.logLevel }}
         - --log-level={{ . }}
         {{- end }}
+        {{- with .Values.daemon.push.target }}
+        - --push-target={{ . }}
+        - --push-tls-ca={{ $pushTLSDir }}/ca.crt
+        - --push-tls-cert={{ $pushTLSDir }}/tls.crt
+        - --push-tls-key={{ $pushTLSDir }}/tls.key
+        {{- end }}
         env:
         - name: NODE_NAME
           valueFrom:
@@ -72,6 +82,18 @@ spec:
           failureThreshold: 3
         resources:
           {{- toYaml .Values.daemon.resources | nindent 10 }}
+        {{- if .Values.daemon.push.target }}
+        volumeMounts:
+        - name: push-tls
+          mountPath: {{ $pushTLSDir }}
+          readOnly: true
+        {{- end }}
+      {{- if .Values.daemon.push.target }}
+      volumes:
+      - name: push-tls
+        secret:
+          secretName: {{ .Values.daemon.push.tls.secretName }}
+      {{- end }}
       {{- with .Values.daemon.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

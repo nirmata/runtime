@@ -34,7 +34,7 @@ const sinkName = "monitor"
 const reasonUnattributedKernelDeny = "unattributed_kernel_deny"
 
 // FindingSink receives the findings monitor mode produces. *reporter.Reporter
-// satisfies it; tests use a recording fake.
+// and *pushsink.GRPCSink satisfy it; tests use a recording fake.
 type FindingSink interface {
 	Report(reporter.Finding)
 }
@@ -72,7 +72,7 @@ type trackedPolicy struct {
 // state at all.
 type Monitor struct {
 	log     logr.Logger
-	sink    FindingSink
+	sinks   []FindingSink
 	metrics *metrics.Metrics
 
 	mu sync.RWMutex
@@ -85,13 +85,13 @@ type Monitor struct {
 	nsLabels map[string]map[string]string
 }
 
-// New builds a Monitor. findings and m may each be nil: a daemon without a
-// reporter (or without metrics) still evaluates events, it just has fewer
-// places to put the result.
-func New(log logr.Logger, findings FindingSink, m *metrics.Metrics) *Monitor {
+// New builds a Monitor. findings may be empty and m may be nil: a daemon with
+// nowhere to put findings (or without metrics) still evaluates events, it just
+// has fewer places to put the result.
+func New(log logr.Logger, findings []FindingSink, m *metrics.Metrics) *Monitor {
 	return &Monitor{
 		log:      log.WithName(sinkName),
-		sink:     findings,
+		sinks:    findings,
 		metrics:  m,
 		policies: make(map[string]*trackedPolicy),
 		nsLabels: make(map[string]map[string]string),
@@ -345,7 +345,7 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 		return
 	}
 
-	if m.sink == nil {
+	if len(m.sinks) == 0 {
 		return
 	}
 	// A finding without a usable namespace cannot address a namespaced Report
@@ -386,11 +386,15 @@ func (m *Monitor) record(tp *trackedPolicy, behavior, target string, d decision,
 		f.DNS = &reporter.DNSSummary{QName: ev.DNS.QName}
 	}
 
-	if err := utils.Guard("monitor: reporting finding", func() error {
-		m.sink.Report(f)
-		return nil
-	}); err != nil {
-		m.log.Error(err, "reporting finding failed", "policy", tp.name, "uid", tp.uid)
+	// One sink's panic must not cost the others the finding, so each is
+	// guarded separately rather than the loop as a whole.
+	for _, sink := range m.sinks {
+		if err := utils.Guard("monitor: reporting finding", func() error {
+			sink.Report(f)
+			return nil
+		}); err != nil {
+			m.log.Error(err, "reporting finding failed", "policy", tp.name, "uid", tp.uid)
+		}
 	}
 }
 

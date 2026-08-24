@@ -311,3 +311,94 @@ func TestSanitizeIsAppliedToTheReportBoundaryNotJustProperties(t *testing.T) {
 		t.Errorf("a canary survived outside the properties map:\n%s", raw)
 	}
 }
+
+// Redact is the entry point for a sink that transmits a Finding instead of
+// writing it into a Report. It carries the same guarantee buildResult does:
+// every string field scrubbed and bounded, and the pod labels dropped.
+func TestRedactScrubsEveryStringFieldOfAFinding(t *testing.T) {
+	planted := Finding{
+		PolicyName: "policy-" + canaries[6].value,
+		PolicyUID:  "policy-uid-" + canaries[0].value,
+		Behavior:   "network " + canaries[1].value,
+		Target:     "api.example.com " + canaries[5].value,
+		Result:     "fail " + canaries[3].value,
+		Message:    "denied request carrying " + canaries[2].value + " with body " + canaries[7].value,
+		Pod: runtimeevent.PodIdentity{
+			UID:            "pod-uid-" + canaries[0].value,
+			Namespace:      canaries[1].value,
+			Name:           canaries[3].value,
+			Labels:         map[string]string{"prompt": canaries[9].value, canaries[9].value: "x"},
+			Container:      "app-" + canaries[4].value,
+			ContainerID:    "containerd://" + canaries[0].value,
+			OwnerKind:      "Deployment",
+			OwnerName:      "app-" + canaries[5].value,
+			NodeName:       "node-" + canaries[6].value,
+			ServiceAccount: "sa-" + canaries[0].value,
+		},
+		Net:       &NetSummary{DestIP: "1.2.3.4 " + canaries[0].value, DestHost: "api.example.com " + canaries[8].value},
+		DNS:       &DNSSummary{QName: "api.example.com " + canaries[7].value},
+		Process:   &ProcessSummary{Comm: "curl " + canaries[1].value, Argv: "curl -H " + canaries[0].value + " " + canaries[7].value},
+		Timestamp: fixedTime,
+	}
+
+	got := Redact(planted)
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshaling the redacted finding: %v", err)
+	}
+	written := string(raw)
+
+	for _, cn := range canaries {
+		if strings.Contains(written, cn.value) {
+			t.Errorf("planted secret (%s) survived Redact:\n%s", cn.name, written)
+		}
+	}
+	if strings.Contains(written, "CANARY") {
+		t.Errorf("the CANARY marker survived Redact:\n%s", written)
+	}
+	if !strings.Contains(written, Redacted) {
+		t.Error("no value was redacted; the assertions are vacuous")
+	}
+	if got.Pod.Labels != nil {
+		t.Errorf("pod labels survived Redact: %v", got.Pod.Labels)
+	}
+
+	// The caller keeps the finding it passed: the summaries are copied, not
+	// scrubbed in place, so the reporter still sees what monitor observed.
+	if planted.Process.Argv == got.Process.Argv {
+		t.Error("Redact scrubbed the caller's ProcessSummary in place")
+	}
+}
+
+// TestRedactCarriesEveryPodIdentityStringField fails when a field is added to
+// PodIdentity and not to Redact. Dropping it is the safe failure, but a silent
+// one: a finding would reach a collector missing a field the Report has.
+func TestRedactCarriesEveryPodIdentityStringField(t *testing.T) {
+	var id runtimeevent.PodIdentity
+	rv := reflect.ValueOf(&id).Elem()
+	rt := rv.Type()
+
+	want := map[string]string{}
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		if field.Type.Kind() != reflect.String {
+			continue
+		}
+		value := "clean-" + strings.ToLower(field.Name)
+		rv.Field(i).SetString(value)
+		want[field.Name] = value
+	}
+	id.Labels = map[string]string{"team": "payments"}
+
+	got := Redact(Finding{Pod: id}).Pod
+	gv := reflect.ValueOf(got)
+	for name, value := range want {
+		if g := gv.FieldByName(name).String(); g != value {
+			t.Errorf("PodIdentity.%s = %q, want %q: add the field to Redact", name, g, value)
+		}
+	}
+	if got.Labels != nil {
+		t.Errorf("pod labels survived Redact: %v", got.Labels)
+	}
+}

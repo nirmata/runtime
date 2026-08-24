@@ -113,6 +113,8 @@ defaults to `ghcr.io/nirmata/kyverno-runtime`.
 | `daemon.observeInterval` | `""` (daemon default `10s`) | Sets `--observe-interval`. |
 | `daemon.eventBufferSize` | `""` (daemon default `4096`) | Sets `--event-buffer-size`. |
 | `daemon.clusterDomain` | `""` (daemon default `cluster.local`) | Sets `--cluster-domain`, the DNS domain that makes a `network` value a cluster Service name. |
+| `daemon.push.target` | `""` (disabled) | Collector address findings are streamed to, `host:port`. Empty opens no connection. |
+| `daemon.push.tls.secretName` | `""` | Secret holding `ca.crt`, `tls.crt` and `tls.key` for that connection. Required when `daemon.push.target` is set. |
 | `daemon.rbac.extraRules` | `[]` | Extra `PolicyRule` entries appended to the ClusterRole. Ignored if `rbac.create` is `false`. |
 
 The default ClusterRole grants only `pods` (get/list/watch), `runtimepolicies` and
@@ -157,11 +159,46 @@ after startup does not restart the container, and nothing routes traffic to the 
 | `--event-buffer-size` | `4096` | `daemon.eventBufferSize` |
 | `--source-restart-backoff` | `5s` | not exposed by the chart |
 | `--cluster-domain` | `cluster.local` | `daemon.clusterDomain` |
+| `--push-target` | `""` (disabled) | `daemon.push.target` |
+| `--push-tls-ca` | `""` | `daemon.push.tls.secretName` |
+| `--push-tls-cert` | `""` | `daemon.push.tls.secretName` |
+| `--push-tls-key` | `""` | `daemon.push.tls.secretName` |
 
 `--cluster-domain` is the suffix that makes a `network` value a cluster Service name rather
 than an external one, so a cluster whose DNS domain is not `cluster.local` rejects every
 Service target until this matches — see
 [cluster Service targets](reference/runtimepolicy.md#cluster-service-targets).
+
+## Streaming findings to a collector
+
+Findings are always written to namespaced OpenReports `Report` objects. A cluster that wants
+them live as well can point the daemon at a collector, and every finding is streamed as it is
+produced:
+
+```yaml
+daemon:
+  push:
+    target: collector.observability.svc.cluster.local:9443
+    tls:
+      secretName: kyverno-runtime-push-tls
+```
+
+The Secret holds `ca.crt` (the CA that signs the collector's certificate), plus `tls.crt` and
+`tls.key` (the client certificate every daemon presents). The connection is mutual TLS with no
+plaintext mode, and the chart refuses to render a `target` without the Secret rather than
+installing a daemon that exits at boot. The daemon is the client: it dials out and opens no
+listening port of its own.
+
+The queue in front of the stream is bounded. A collector that stops reading costs the oldest
+queued findings, never the event path, and each drop is counted under
+`nirmata_runtime_events_dropped_total{source="pushsink"}` — see
+[metrics](reference/metrics.md). Nothing is dropped from the `Report` objects when this happens:
+the two paths are independent.
+
+Owner attribution on the wire (`ownerKind`, `ownerName`) is correlation metadata read from the
+pod's `ownerReferences`, which Kubernetes does not verify. A receiver must not treat it as an
+authenticated identity; restricting who may set `ownerReferences` is a cluster admission-policy
+question, not something the daemon can settle.
 
 ## Verify the install
 

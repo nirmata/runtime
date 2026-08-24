@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package finding;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nirmata/runtime/pkg/proto/finding";
+
+// FindingService receives the findings a kyverno-runtime daemon produces. The
+// daemon is always the client: it opens the stream and never listens.
+service FindingService {
+  rpc Report(stream Finding) returns (Ack);
+}
+
+// Finding mirrors the closed struct the daemon reports: typed scalar fields
+// only, with no map, no body, and no free-form properties. Every string field
+// is redacted before it is sent.
+message Finding {
+  string policy_name = 1;
+  string policy_uid = 2;
+  // behavior is one of "network", "open", "exec", "protocol", "dns".
+  string behavior = 3;
+  // target is the behavior's object: the destination, path, executed binary,
+  // protocol[/alpn], or question name.
+  string target = 4;
+  // result is "fail" or "warn".
+  string result = 5;
+  // enforced is true when the kernel denied the operation, false for a
+  // monitor-mode policy's "would have been denied" counterfactual.
+  bool enforced = 6;
+  string message = 7;
+  Pod pod = 8;
+  Net net = 9;
+  Dns dns = 10;
+  Process process = 11;
+  google.protobuf.Timestamp timestamp = 12;
+}
+
+// Pod identifies the workload a finding is attributed to. Pod labels are
+// absent by design: arbitrary user-controlled key/values are not sent.
+message Pod {
+  string uid = 1;
+  string namespace = 2;
+  string name = 3;
+  string container = 4;
+  string container_id = 5;
+  // owner_kind and owner_name are best-effort correlation metadata read
+  // verbatim from the pod's ownerReferences. Kubernetes validates that field
+  // structurally, not behaviorally, so any principal able to create or patch a
+  // pod can name any owner it likes. A receiver must not treat these as an
+  // authenticated identity or use them as a security boundary.
+  string owner_kind = 6;
+  string owner_name = 7;
+  string node_name = 8;
+  string service_account = 9;
+}
+
+// Net summarizes the destination of a network finding.
+message Net {
+  string dest_ip = 1;
+  string dest_host = 2;
+}
+
+// Dns summarizes the observed question of a dns finding.
+message Dns {
+  string qname = 1;
+}
+
+// Process summarizes the process of an exec/open finding.
+message Process {
+  string comm = 1;
+  string argv = 2;
+}
+
+// Ack closes the stream, reporting how many findings the collector accepted.
+message Ack {
+  uint64 accepted = 1;
+}

@@ -27,7 +27,7 @@ func (c *countingSink) Report(reporter.Finding) { c.n++ }
 
 func benchMonitor() (*Monitor, *countingSink) {
 	sink := &countingSink{}
-	return New(logr.Discard(), sink, metrics.New(prometheus.NewRegistry())), sink
+	return New(logr.Discard(), []FindingSink{sink}, metrics.New(prometheus.NewRegistry())), sink
 }
 
 func benchPodTarget() compiler.PodTarget {

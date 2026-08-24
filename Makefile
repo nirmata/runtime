@@ -406,6 +406,10 @@ helm-verify:
 	helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime \
 		--set daemon.metrics.port=19090 \
 		| grep -q -- '--metrics-addr=:19090'
+	helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime \
+		--set daemon.push.target=collector.example:443 \
+		--set daemon.push.tls.secretName=push-tls \
+		| grep -q -- '--push-tls-ca=/etc/kyverno-runtime/push-tls/ca.crt'
 	@echo "helm chart renders"
 
 # helm lints and packages the chart into $(CHART_PACKAGE_DIR) for local inspection or a

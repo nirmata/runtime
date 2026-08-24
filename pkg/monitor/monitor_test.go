@@ -59,7 +59,7 @@ func testMonitor(t *testing.T) (*Monitor, *fakeSink, *metrics.Metrics) {
 	t.Helper()
 	sink := &fakeSink{}
 	m := metrics.New(prometheus.NewRegistry())
-	return New(testr.New(t), sink, m), sink, m
+	return New(testr.New(t), []FindingSink{sink}, m), sink, m
 }
 
 // findingsPerPolicy counts the findings emitted per policy uid.
@@ -946,7 +946,7 @@ func TestHandleEvent_ToleratesNilSinkAndMetrics(t *testing.T) {
 }
 
 func TestHandleEvent_NeverPanicsOutward(t *testing.T) {
-	m := New(testr.New(t), &fakeSink{panics: true}, metrics.New(prometheus.NewRegistry()))
+	m := New(testr.New(t), []FindingSink{&fakeSink{panics: true}}, metrics.New(prometheus.NewRegistry()))
 	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("RuntimePolicyEvent: %v", err)
 	}
@@ -958,7 +958,7 @@ func TestHandleEvent_NeverPanicsOutward(t *testing.T) {
 // policy: each Report call is guarded individually.
 func TestHandleEvent_PanickingSinkDoesNotSkipRemainingPolicies(t *testing.T) {
 	sink := &fakeSink{panics: true}
-	m := New(testr.New(t), sink, nil)
+	m := New(testr.New(t), []FindingSink{sink}, nil)
 	for _, uid := range []string{"uid-a", "uid-b"} {
 		if err := m.RuntimePolicyEvent(monitorPolicy(t, uid, uid, pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
 			t.Fatalf("RuntimePolicyEvent: %v", err)
@@ -969,6 +969,25 @@ func TestHandleEvent_PanickingSinkDoesNotSkipRemainingPolicies(t *testing.T) {
 
 	if got := sink.reports(); got != 2 {
 		t.Errorf("Report calls = %d, want 2 despite the first one panicking", got)
+	}
+}
+
+// Every sink sees every finding, and one that panics does not cost its
+// siblings theirs: the guard wraps each Report call, not the fan-out.
+func TestHandleEvent_FansOutToEverySinkDespiteAPanickingOne(t *testing.T) {
+	panicking, healthy := &fakeSink{panics: true}, &fakeSink{}
+	m := New(testr.New(t), []FindingSink{panicking, healthy}, nil)
+	if err := m.RuntimePolicyEvent(monitorPolicy(t, "uid-p", "p", pair(nil, []string{"10.0.0.5"}), nil, nil), events.EventTypeCreate); err != nil {
+		t.Fatalf("RuntimePolicyEvent: %v", err)
+	}
+
+	m.HandleEvent(netEvent("10.0.0.5"))
+
+	if got := panicking.reports(); got != 1 {
+		t.Errorf("panicking sink Report calls = %d, want 1", got)
+	}
+	if got := healthy.all(); len(got) != 1 {
+		t.Errorf("healthy sink received %d findings, want 1", len(got))
 	}
 }
 
