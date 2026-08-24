@@ -3,6 +3,8 @@ package reporter
 import (
 	"regexp"
 	"strings"
+
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
 // Redacted replaces every credential- or payload-shaped substring found in a
@@ -34,6 +36,46 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)?`),            // JWT (header.payload[.signature])
 	regexp.MustCompile(`(?is)"messages"\s*:\s*\[[^]]*\]?`),                                         // LLM chat body
 	regexp.MustCompile(`(?is)"(content|prompt|input|completion|system)"\s*:\s*"(?:\\.|[^"\\])*"?`), // prompt payloads
+}
+
+// Redact returns f with every string field scrubbed and bounded, and the pod
+// labels dropped. A Finding reaches a sink before anything in this package has
+// touched it, still carrying the raw argv and paths the kernel observed, so a
+// sink that transmits one instead of writing it into a Report redacts here.
+//
+// The pod identity is rebuilt field by field rather than copied and patched: a
+// field added to PodIdentity and not added here is dropped, never forwarded
+// unscrubbed.
+func Redact(f Finding) Finding {
+	f.PolicyName = sanitize(f.PolicyName)
+	f.PolicyUID = sanitize(f.PolicyUID)
+	f.Behavior = sanitize(f.Behavior)
+	f.Target = sanitize(f.Target)
+	f.Result = sanitize(f.Result)
+	f.Message = sanitize(f.Message)
+
+	f.Pod = runtimeevent.PodIdentity{
+		UID:            sanitize(f.Pod.UID),
+		Namespace:      sanitize(f.Pod.Namespace),
+		Name:           sanitize(f.Pod.Name),
+		Container:      sanitize(f.Pod.Container),
+		ContainerID:    sanitize(f.Pod.ContainerID),
+		OwnerKind:      sanitize(f.Pod.OwnerKind),
+		OwnerName:      sanitize(f.Pod.OwnerName),
+		NodeName:       sanitize(f.Pod.NodeName),
+		ServiceAccount: sanitize(f.Pod.ServiceAccount),
+	}
+
+	if f.Net != nil {
+		f.Net = &NetSummary{DestIP: sanitize(f.Net.DestIP), DestHost: sanitize(f.Net.DestHost)}
+	}
+	if f.DNS != nil {
+		f.DNS = &DNSSummary{QName: sanitize(f.DNS.QName)}
+	}
+	if f.Process != nil {
+		f.Process = &ProcessSummary{Comm: sanitize(f.Process.Comm), Argv: sanitize(f.Process.Argv)}
+	}
+	return f
 }
 
 // sanitize is applied to EVERY property value emitted into a Report. It

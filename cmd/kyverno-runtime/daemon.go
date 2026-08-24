@@ -19,6 +19,7 @@ import (
 	"github.com/nirmata/runtime/pkg/lsmmgr"
 	"github.com/nirmata/runtime/pkg/metrics"
 	"github.com/nirmata/runtime/pkg/monitor"
+	"github.com/nirmata/runtime/pkg/pushsink"
 	"github.com/nirmata/runtime/pkg/reporter"
 	"github.com/nirmata/runtime/pkg/services"
 
@@ -66,6 +67,10 @@ var (
 	observeInterval      time.Duration
 	eventBufferSize      int
 	sourceRestartBackoff time.Duration
+	pushTarget           string
+	pushTLSCA            string
+	pushTLSCert          string
+	pushTLSKey           string
 )
 
 var daemonCmd = &cobra.Command{
@@ -86,6 +91,14 @@ func init() {
 		"Depth of the collector's fan-in buffer. Events arriving when it is full are dropped and counted.")
 	daemonCmd.Flags().DurationVar(&sourceRestartBackoff, "source-restart-backoff", defaultSourceRestartBackoff,
 		"How long a failed event source waits before it is restarted.")
+	daemonCmd.Flags().StringVar(&pushTarget, "push-target", "",
+		"Address of a collector to stream findings to. Empty disables the push sink and opens no connection.")
+	daemonCmd.Flags().StringVar(&pushTLSCA, "push-tls-ca", "",
+		"PEM bundle verifying the collector named by --push-target. Required with it.")
+	daemonCmd.Flags().StringVar(&pushTLSCert, "push-tls-cert", "",
+		"PEM client certificate this daemon presents to the collector. Required with --push-target.")
+	daemonCmd.Flags().StringVar(&pushTLSKey, "push-tls-key", "",
+		"PEM private key for --push-tls-cert. Required with --push-target.")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -214,9 +227,31 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		m.EventsDropped.WithLabelValues(lsmObserveSource, reason).Add(float64(delta))
 	}, execSinks...)
 
+	// Findings fan out to every sink: the reporter always, and the push sink
+	// when a collector is configured.
+	findingSinks := []monitor.FindingSink{rep}
+
+	var push *pushsink.GRPCSink
+	if pushTarget != "" {
+		push, err = pushsink.New(logger.WithName(pushsink.SourceName), pushsink.Options{
+			Target:   pushTarget,
+			CAFile:   pushTLSCA,
+			CertFile: pushTLSCert,
+			KeyFile:  pushTLSKey,
+			LossFunc: func(reason string, delta uint64) {
+				m.EventsDropped.WithLabelValues(pushsink.SourceName, reason).Add(float64(delta))
+			},
+		})
+		if err != nil {
+			logger.Error(err, "failed to create push sink")
+			os.Exit(1)
+		}
+		findingSinks = append(findingSinks, push)
+	}
+
 	// mon evaluates observed events against monitor-mode policies and turns
 	// matches into findings.
-	mon := monitor.New(logger.WithName("monitor"), rep, m)
+	mon := monitor.New(logger.WithName("monitor"), findingSinks, m)
 
 	// Handlers are dispatched concurrently, so ordering between them is not
 	// guaranteed. An event observed before attribution has indexed its pod is
@@ -320,6 +355,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	g.Go(func() error { return col.Run(ctx) })
 	g.Go(func() error { return sw.Run(ctx) })
 	g.Go(func() error { return rep.Run(ctx) })
+	if push != nil {
+		g.Go(func() error { return push.Run(ctx) })
+	}
 
 	if err := g.Wait(); err != nil {
 		logger.Error(err, "failed to wait for informer threads")

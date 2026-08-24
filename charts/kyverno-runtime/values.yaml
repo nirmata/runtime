@@ -56,6 +56,17 @@ daemon:
   # logLevel: verbosity for the daemon's debug logs (higher is more verbose).
   # Empty uses the daemon default (0).
   logLevel: ""
+  # push: stream findings to a collector as they are produced, alongside the
+  # Report objects the daemon always writes. Empty target disables it, and the
+  # daemon then opens no connection at all.
+  push:
+    # target: the collector's address, host:port.
+    target: ""
+    tls:
+      # secretName: a Secret holding ca.crt (the collector's CA) plus tls.crt
+      # and tls.key (this daemon's client certificate). Required when target is
+      # set: the connection is mutual TLS, and there is no plaintext mode.
+      secretName: ""
   rbac:
     # extraRules: additional PolicyRule entries appended to the shared ClusterRole,
     # e.g. to grant the daemon read access to CRDs referenced by the resource library
