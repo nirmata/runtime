@@ -2,7 +2,7 @@
 # version is the reproducibility contract: `make verify-bpf` recompiles with
 # this image and fails if the committed objects differ. Go is needed because
 # bpf2go is a `tool` directive in go.mod.
-FROM golang:1.26-trixie
+FROM golang:1.27-trixie
 
 ARG BPF_CLANG=19
 
