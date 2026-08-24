@@ -97,9 +97,10 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
   -subj "/CN=pushsink-test-ca" -keyout ca.key -out ca.crt
 
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-  -subj "/CN=localhost" -keyout server.key -out server.csr
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+  -keyout server.key -out server.csr
 openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -days 1 -out server.crt
+  -days 1 -copy_extensions copy -out server.crt
 
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -subj "/CN=kyverno-runtime-daemon" -keyout client.key -out client.csr
@@ -109,6 +110,12 @@ openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
 go run ./hack/pushsink-testcollector \
   --listen :9444 --tls-cert server.crt --tls-key server.key --tls-client-ca ca.crt
 ```
+
+The server certificate needs a subject alternative name because Go's TLS client verifies the
+server against it, not the certificate's common name; `-copy_extensions copy` carries the `-addext`
+SAN from the certificate request into the certificate `x509 -req` issues, which otherwise drops it.
+The client certificate needs no SAN: the collector's `RequireAndVerifyClientCert` checks the
+certificate chain, not a hostname.
 
 Point a daemon at it with the `--push-target`, `--push-tls-ca`, `--push-tls-cert`, and
 `--push-tls-key` flags (or the chart's equivalent Helm values), using `ca.crt`, `client.crt`, and

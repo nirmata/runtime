@@ -124,15 +124,16 @@ func (c *collector) Report(st grpc.ClientStreamingServer[finding.Finding, findin
 			return err
 		}
 
+		if c.refuseAfter > 0 && c.received.Load() >= c.refuseAfter {
+			return status.Error(codes.Unavailable, "refusing findings (--refuse-after reached)")
+		}
+
 		out, err := protojson.MarshalOptions{}.Marshal(msg)
 		if err != nil {
 			return fmt.Errorf("marshaling finding: %w", err)
 		}
 		fmt.Println(string(out))
 		streamCount++
-
-		if total := c.received.Add(1); c.refuseAfter > 0 && total >= c.refuseAfter {
-			return status.Error(codes.Unavailable, "refusing findings (--refuse-after reached)")
-		}
+		c.received.Add(1)
 	}
 }
