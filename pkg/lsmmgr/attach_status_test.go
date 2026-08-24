@@ -31,7 +31,7 @@ func TestAttachFailureReportsUnavailableAndClearsOnRetry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			attachErr := errors.New("attach: operation not permitted")
-			h.failMethod(open, "Attach", attachErr)
+			h.failCreate(open, attachErr)
 
 			rp := result("rp1", tt.mode, labels.Everything(), pair(nil, []string{"/etc/shadow"}), nil)
 			if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err == nil {
@@ -48,7 +48,7 @@ func TestAttachFailureReportsUnavailableAndClearsOnRetry(t *testing.T) {
 
 			// the requeue path in runtimepolicy_informer.go retries the same
 			// event; once the underlying cause clears, the condition must too
-			h.failMethod(open, "Attach", nil)
+			h.failCreate(open, nil)
 			if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 				t.Fatalf("retry: unexpected error: %v", err)
 			}
@@ -180,42 +180,5 @@ func TestPodsMatchedUpdatesOnPodEventsAlone(t *testing.T) {
 	got = condOfType(t, h.status, "rp1", v1alpha1.ConditionPodsMatched)
 	if got.Status != metav1.ConditionFalse {
 		t.Errorf("after the last matching pod is deleted: PodsMatched = %v, want False", got.Status)
-	}
-}
-
-// TestPodsMatchedZeroLogsOnce pins the fix for V(0) log spam: a policy
-// re-evaluated repeatedly with the same zero-match outcome (an
-// EvaluationInterval tick, or an informer resync) must not re-trigger the log
-// line on every event — only the transition into that state, and again after
-// a later transition out and back in.
-func TestPodsMatchedZeroLogsOnce(t *testing.T) {
-	h := newHarness(t)
-	rp := result("rp1", compiler.ModeEnforce, labels.SelectorFromSet(map[string]string{"app": "web"}),
-		pair(nil, []string{"/etc/shadow"}), nil)
-
-	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
-		t.Fatalf("create: unexpected error: %v", err)
-	}
-	if !h.l.zeroMatchLogged["rp1"] {
-		t.Fatal("the zero-match state was not recorded after the first zero-match event")
-	}
-
-	// repeating the same zero-match outcome must leave the gate exactly as is
-	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeUpdate); err != nil {
-		t.Fatalf("update: unexpected error: %v", err)
-	}
-	if !h.l.zeroMatchLogged["rp1"] {
-		t.Fatal("a repeat zero-match event cleared the log gate")
-	}
-
-	// a pod now matches: the gate must clear so a later relapse logs again
-	if err := h.l.PodEvent(testPod("pod-1", map[string]string{"app": "web"}), nil, cgs(1), events.EventTypeCreate); err != nil {
-		t.Fatalf("PodEvent: unexpected error: %v", err)
-	}
-	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeUpdate); err != nil {
-		t.Fatalf("update after pod match: unexpected error: %v", err)
-	}
-	if h.l.zeroMatchLogged["rp1"] {
-		t.Error("the log gate was not cleared once a pod actually matched")
 	}
 }

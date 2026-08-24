@@ -69,7 +69,8 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
 	}
-	l.recordPodsMatchedCondition(compiledRp.UID, len(la.attachedPods))
+
+	l.recordCondition(compiledRp.UID, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 	if len(targetCgids) == 0 {
 		return nil
 	}
@@ -124,12 +125,11 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	l.syncPodAttachment(compiledRp.UID, la)
-	l.recordPodsMatchedCondition(compiledRp.UID, len(la.attachedPods))
+	l.recordCondition(compiledRp.UID, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 	return nil
 }
 
 func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
-	delete(l.zeroMatchLogged, compiledRp.UID)
 	la, ok := l.lsmAttachments[compiledRp.UID]
 	if !ok {
 		return
@@ -194,10 +194,6 @@ func (l *LsmManager) createForProgType(rpUID string, pair *compiler.AllowDenyPai
 		}
 	}
 
-	_, err = enf.Attach()
-	if err != nil {
-		return nil, err
-	}
 	cleanup = false
 	return enf, nil
 }

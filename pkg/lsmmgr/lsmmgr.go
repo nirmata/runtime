@@ -52,11 +52,6 @@ type LsmManager struct {
 	// one more centralized dependency to consult on every read
 	pods           map[string]*podRepresentation
 	lsmAttachments map[string]*lsmAttachment
-
-	// zeroMatchLogged tracks which policies already got the "matches no pods"
-	// V(0) log line, so a policy re-evaluated on every EvaluationInterval tick
-	// while genuinely idle on this node logs it once instead of every tick.
-	zeroMatchLogged map[string]bool
 }
 
 type podRepresentation struct {
@@ -90,23 +85,47 @@ type lsmAttachment struct {
 	badProgs map[string]string
 }
 
-func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, cgroupSinks ...CgroupSink) *LsmManager {
+// NewLsmManager loads and attaches the dispatcher for each lsm hook the
+// manager enforces through. The dispatchers are the only programs linked to
+// the kernel; enforcers built later join their tail-call chains.
+func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, cgroupSinks ...CgroupSink) (*LsmManager, error) {
+	if err := lsm.ClearPins(); err != nil {
+		return nil, err
+	}
+	dispatchers := make(map[string]*lsm.Dispatcher, 2)
+	for _, target := range lsm.ProgTypes {
+		d, err := lsm.NewDispatcherForTarget(target)
+		if err != nil {
+			return nil, fmt.Errorf("loading the %s dispatcher: %w", target, err)
+		}
+		if err := d.Attach(); err != nil {
+			return nil, fmt.Errorf("attaching the %s dispatcher: %w", target, err)
+		}
+		dispatchers[target] = d
+	}
+
+	newEnforcer := func(logger *logr.Logger, target string) (lsmEnforcer, error) {
+		d, ok := dispatchers[target]
+		if !ok {
+			return nil, fmt.Errorf("unknown lsm attach target %q", target)
+		}
+		return lsm.NewForAttachTarget(d, logger)
+	}
+	return newLsmManager(logger, status, onLoss, newEnforcer, cgroupSinks...), nil
+}
+
+// newLsmManager wires the manager around an enforcer factory without touching
+// the kernel, so tests can drive the state machine with fakes.
+func newLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, newEnforcer enforcerFactory, cgroupSinks ...CgroupSink) *LsmManager {
 	return &LsmManager{
-		logger:      logger,
-		status:      status,
-		onLoss:      onLoss,
-		cgroupSinks: cgroupSinks,
-		newEnforcer: func(logger *logr.Logger, target string) (lsmEnforcer, error) {
-			enf, err := lsm.NewForAttachTarget(logger, target)
-			if err != nil {
-				return nil, err
-			}
-			return enf, nil
-		},
-		clock:           time.Now,
-		pods:            make(map[string]*podRepresentation),
-		lsmAttachments:  make(map[string]*lsmAttachment),
-		zeroMatchLogged: make(map[string]bool),
+		logger:         logger,
+		status:         status,
+		onLoss:         onLoss,
+		cgroupSinks:    cgroupSinks,
+		newEnforcer:    newEnforcer,
+		clock:          time.Now,
+		pods:           make(map[string]*podRepresentation),
+		lsmAttachments: make(map[string]*lsmAttachment),
 	}
 }
 
@@ -428,37 +447,6 @@ func rejectionMessage(rejected []compiler.RejectedTarget) string {
 		parts = append(parts, r.String())
 	}
 	return fmt.Sprintf("%d path(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
-}
-
-// recordPodsMatchedCondition reports whether this node currently has any pod
-// selected by the policy, so a podSelector/namespaceSelector that matches
-// nothing does not read the same as an attachment that is doing something.
-// The V(0) log line for the zero case fires once per policy, not on every
-// call: a policy re-evaluated on every EvaluationInterval tick while
-// genuinely idle on this node would otherwise spam it forever.
-func (l *LsmManager) recordPodsMatchedCondition(rpUID string, matched int) {
-	if matched == 0 {
-		if !l.zeroMatchLogged[rpUID] {
-			l.logger.V(0).Info("runtime policy matches no pods on this node", "uid", rpUID)
-			l.zeroMatchLogged[rpUID] = true
-		}
-		l.recordCondition(rpUID, metav1.Condition{
-			Type:               v1alpha1.ConditionPodsMatched,
-			Status:             metav1.ConditionFalse,
-			Reason:             v1alpha1.ReasonNoMatchingPods,
-			Message:            "no pod on this node matches the policy's podSelector/namespaceSelector",
-			LastTransitionTime: metav1.NewTime(l.clock()),
-		})
-		return
-	}
-	delete(l.zeroMatchLogged, rpUID)
-	l.recordCondition(rpUID, metav1.Condition{
-		Type:               v1alpha1.ConditionPodsMatched,
-		Status:             metav1.ConditionTrue,
-		Reason:             v1alpha1.ReasonPodsMatched,
-		Message:            fmt.Sprintf("%d pod(s) on this node match the policy", matched),
-		LastTransitionTime: metav1.NewTime(l.clock()),
-	})
 }
 
 func (l *LsmManager) recordCondition(rpUID string, cond metav1.Condition) {

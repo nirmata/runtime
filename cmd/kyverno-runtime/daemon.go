@@ -223,10 +223,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		execSinks = append(execSinks, execSrc)
 	}
 
-	lsmm := lsmmgr.NewLsmManager(logger, sw, func(reason string, delta uint64) {
-		m.EventsDropped.WithLabelValues(lsmObserveSource, reason).Add(float64(delta))
-	}, execSinks...)
-
 	// Findings fan out to every sink: the reporter always, and the push sink
 	// when a collector is configured.
 	findingSinks := []monitor.FindingSink{rep}
@@ -253,19 +249,33 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// matches into findings.
 	mon := monitor.New(logger.WithName("monitor"), findingSinks, m)
 
-	// Handlers are dispatched concurrently, so ordering between them is not
-	// guaranteed. An event observed before attribution has indexed its pod is
-	// dropped by the attribution stage and counted, never misattributed.
-	podHandlers := []events.PodEventHandler{em, lsmm, attrIdx}
-	policyHandlers := []events.RuntimePolicyEventHandler{em, lsmm, sw, mon}
 	// monitor holds no pod state, so its namespaceSelector input arrives here
 	// rather than on the pod events the other handlers read it from.
 	nsHandlers := []events.NamespaceEventHandler{mon}
 
+	// Handlers are dispatched concurrently, so ordering between them is not
+	// guaranteed. An event observed before attribution has indexed its pod is
+	// dropped by the attribution stage and counted, never misattributed.
+	podHandlers := []events.PodEventHandler{em, attrIdx}
+	policyHandlers := []events.RuntimePolicyEventHandler{em, sw, mon}
+
 	// Poll the managers' observation maps, attribute, then hand to the monitor.
 	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
 	col.AddSource(collector.NewPollSource(egressObserveSource, observeInterval, em.CollectObservations))
-	col.AddSource(collector.NewPollSource(lsmObserveSource, observeInterval, lsmm.CollectObservations))
+
+	// LSM manager init may fail, and in that case only the other enforcers will work.
+	// Try to initialize it and add it to the event sources
+	lsmm, err := lsmmgr.NewLsmManager(logger, sw, func(reason string, delta uint64) {
+		m.EventsDropped.WithLabelValues(lsmObserveSource, reason).Add(float64(delta))
+	}, execSinks...)
+	if err != nil {
+		logger.Error(err, "failed to create lsm manager, exec and open enforcement won't work")
+	} else {
+		podHandlers = append(podHandlers, lsmm)
+		policyHandlers = append(policyHandlers, lsmm)
+		col.AddSource(collector.NewPollSource(lsmObserveSource, observeInterval, lsmm.CollectObservations))
+	}
+
 	// A typed nil in the Source interface is not nil, so the check is here
 	// rather than left to AddSource.
 	if execSrc != nil {

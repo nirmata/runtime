@@ -1,6 +1,9 @@
 package v1alpha1
 
 import (
+	"fmt"
+	"time"
+
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -210,6 +213,27 @@ const (
 	ReasonNoMatchingPods = "NoMatchingPods"
 	ReasonPodsMatched    = "PodsMatched"
 )
+
+// PodsMatchedCondition builds the PodsMatched condition every manager records,
+// so what an operator reads does not depend on which one selected the pods.
+func PodsMatchedCondition(matched int, now time.Time) metav1.Condition {
+	if matched == 0 {
+		return metav1.Condition{
+			Type:               ConditionPodsMatched,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonNoMatchingPods,
+			Message:            "no pod on this node matches the policy's podSelector/namespaceSelector",
+			LastTransitionTime: metav1.NewTime(now),
+		}
+	}
+	return metav1.Condition{
+		Type:               ConditionPodsMatched,
+		Status:             metav1.ConditionTrue,
+		Reason:             ReasonPodsMatched,
+		Message:            fmt.Sprintf("%d pod(s) on this node match the policy", matched),
+		LastTransitionTime: metav1.NewTime(now),
+	}
+}
 
 // NodePolicyStatus is one node's shard of a RuntimePolicy's status, written
 // only by that node's daemon. The cluster-scoped Applied, EnforcementAvailable,

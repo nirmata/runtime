@@ -1,6 +1,7 @@
 package egressmgr
 
 import (
+	"github.com/nirmata/runtime/api/v1alpha1"
 	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/runtime/pkg/compiler"
@@ -30,7 +31,8 @@ func (e *EgressManager) rpCreated(compiledRp *compiler.EvaluationResult) {
 		e.logger.V(2).Info("new runtime policy matches existing pod", "uid", compiledRp.UID, "podUid", podUid)
 		e.attachPolicy(podUid, pod, compiledRp)
 	}
-	e.recordPodsMatchedCondition(compiledRp.UID, matched)
+
+	e.recordCondition(compiledRp.UID, v1alpha1.PodsMatchedCondition(matched, e.clock()))
 }
 
 func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
@@ -151,7 +153,8 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 			e.attachPolicy(podUid, pod, currentRp)
 		}
 	}
-	e.recordPodsMatchedCondition(compiledRp.UID, matched)
+
+	e.recordCondition(compiledRp.UID, v1alpha1.PodsMatchedCondition(matched, e.clock()))
 }
 
 // observeRpUpdated handles an update of a monitor policy. Nothing is ever
@@ -180,13 +183,13 @@ func (e *EgressManager) observeRpUpdated(currentRp, compiledRp *compiler.Evaluat
 			e.detachPolicy(podUid, pod, compiledRp.UID, nil, nil)
 		}
 	}
-	e.recordPodsMatchedCondition(compiledRp.UID, matched)
+
+	e.recordCondition(compiledRp.UID, v1alpha1.PodsMatchedCondition(matched, e.clock()))
 }
 
 func (e *EgressManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	e.logger.V(2).Info("runtime policy deleted", "uid", compiledRp.UID)
 	delete(e.rps, compiledRp.UID)
-	delete(e.zeroMatchLogged, compiledRp.UID)
 	for podUid, pod := range e.pods {
 		att, ok := pod.attachedFilters[compiledRp.UID]
 		if !ok {

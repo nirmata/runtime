@@ -365,10 +365,20 @@ func TestBPFLsmAttaches(t *testing.T) {
 			"the kernel must be booted with lsm=...,bpf -- hosted GitHub runners cannot satisfy this")
 	}
 
-	for _, target := range []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC} {
+	for _, target := range lsm.ProgTypes {
 		t.Run(target, func(t *testing.T) {
 			logger := logr.Discard()
-			enf, err := lsm.NewForAttachTarget(&logger, target)
+			d, err := lsm.NewDispatcherForTarget(target)
+			if err != nil {
+				t.Fatalf("loading dispatcher for %q: %+v", target, err)
+			}
+			// Attaching proves the kernel accepted the program for this hook,
+			// which is the assertion the map writes alone do not make.
+			if err := d.Attach(); err != nil {
+				t.Fatalf("attaching %q: %+v", target, err)
+			}
+
+			enf, err := lsm.NewForAttachTarget(d, &logger)
 			if err != nil {
 				t.Fatalf("loading lsm objects for %q: %+v", target, err)
 			}
@@ -387,15 +397,6 @@ func TestBPFLsmAttaches(t *testing.T) {
 			}
 			if err := enf.SetDefaultDeny(false); err != nil {
 				t.Errorf("clearing default deny: %v", err)
-			}
-			// Attaching proves the kernel accepted the program for this hook,
-			// which is the assertion the map writes alone do not make.
-			link, err := enf.Attach()
-			if err != nil {
-				t.Fatalf("attaching %q: %+v", target, err)
-			}
-			if err := link.Close(); err != nil {
-				t.Errorf("detaching %q: %v", target, err)
 			}
 		})
 	}

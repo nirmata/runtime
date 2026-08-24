@@ -14,7 +14,6 @@ import (
 	"github.com/nirmata/runtime/pkg/containers"
 	"github.com/nirmata/runtime/pkg/runtimeevent"
 
-	"github.com/cilium/ebpf/link"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,7 +45,6 @@ type fakeEnforcer struct {
 	disableObs  [][]uint64
 	readCalls   [][]uint64
 	defaultDeny []bool
-	attachCount int
 	closeCount  int
 
 	// effective state
@@ -89,13 +87,6 @@ func (f *fakeEnforcer) note(method string) error {
 		f.usedClosed = append(f.usedClosed, method)
 	}
 	return f.errs[method]
-}
-
-func (f *fakeEnforcer) Attach() (link.Link, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.attachCount++
-	return nil, f.note("Attach")
 }
 
 func (f *fakeEnforcer) Close() error {
@@ -418,12 +409,11 @@ func newHarness(t *testing.T) *harness {
 		h.created = append(h.created, f)
 		return f, nil
 	}
-	h.l = NewLsmManager(logr.Discard(), h.status, func(reason string, delta uint64) {
+	h.l = newLsmManager(logr.Discard(), h.status, func(reason string, delta uint64) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.losses = append(h.losses, loss{reason: reason, delta: delta})
-	})
-	h.l.newEnforcer = factory
+	}, factory)
 	h.l.clock = func() time.Time { return fixedTime }
 	return h
 }

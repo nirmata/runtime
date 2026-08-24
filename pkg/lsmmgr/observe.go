@@ -12,10 +12,6 @@ import (
 	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
-// progTypeOrder fixes the drain order of the program types of one attachment, so
-// the emitted event slice is reproducible.
-var progTypeOrder = []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC}
-
 // observationKey is the identity of one observed kernel operation: everything a
 // count is attributed to, independent of which program counted it.
 type observationKey struct {
@@ -51,7 +47,7 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 		}
 		maps.Copy(podHints, cgidPods)
 
-		for _, progType := range progTypeOrder {
+		for _, progType := range lsm.ProgTypes {
 			prog, ok := la.progs[progType]
 			if !ok {
 				continue

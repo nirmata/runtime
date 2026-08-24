@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nirmata/runtime/pkg/bpf/lsm"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/events"
 
@@ -27,10 +28,9 @@ func reseed(seeds []benchSeed) {
 }
 
 func benchManager() *LsmManager {
-	l := NewLsmManager(logr.Discard(), newFakeStatus(), nil)
-	l.newEnforcer = func(_ *logr.Logger, target string) (lsmEnforcer, error) {
+	l := newLsmManager(logr.Discard(), newFakeStatus(), nil, func(_ *logr.Logger, target string) (lsmEnforcer, error) {
 		return newFakeEnforcer(target, nil), nil
-	}
+	})
 	l.clock = func() time.Time { return fixedTime }
 	return l
 }
@@ -77,7 +77,7 @@ func benchObservationFixture(b *testing.B, attachments, pathsPerCgid int, shared
 	}
 
 	paths := benchPaths(pathsPerCgid)
-	seeds := make([]benchSeed, 0, attachments*len(progTypeOrder))
+	seeds := make([]benchSeed, 0, attachments*len(lsm.ProgTypes))
 	for i := range attachments {
 		uid := fmt.Sprintf("rp%d", i)
 		rp := result(uid, compiler.ModeMonitor, selFor(label(i)),
@@ -89,7 +89,7 @@ func benchObservationFixture(b *testing.B, attachments, pathsPerCgid int, shared
 		if !ok {
 			b.Fatalf("no lsm attachment for policy %q", uid)
 		}
-		for _, progType := range progTypeOrder {
+		for _, progType := range lsm.ProgTypes {
 			prog, ok := la.progs[progType]
 			if !ok {
 				b.Fatalf("no prog state for policy %q progType %q", uid, progType)
@@ -144,7 +144,7 @@ func BenchmarkCollectObservations(b *testing.B) {
 		for _, paths := range []int{16, 256} {
 			b.Run(fmt.Sprintf("attachments=%d/paths=%d", attachments, paths), func(b *testing.B) {
 				l, seeds := benchObservationFixture(b, attachments, paths, false)
-				runCollectBenchmark(b, l, seeds, attachments*len(progTypeOrder)*paths)
+				runCollectBenchmark(b, l, seeds, attachments*len(lsm.ProgTypes)*paths)
 			})
 		}
 	}
@@ -158,7 +158,7 @@ func BenchmarkCollectObservationsSharedCgid(b *testing.B) {
 	for _, attachments := range []int{1, 8, 64} {
 		b.Run(fmt.Sprintf("attachments=%d", attachments), func(b *testing.B) {
 			l, seeds := benchObservationFixture(b, attachments, paths, true)
-			runCollectBenchmark(b, l, seeds, len(progTypeOrder)*paths)
+			runCollectBenchmark(b, l, seeds, len(lsm.ProgTypes)*paths)
 		})
 	}
 }
