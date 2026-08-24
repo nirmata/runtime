@@ -61,6 +61,9 @@ spec:
         {{- if not .Values.daemon.reports.enabled }}
         - --reports-enabled=false
         {{- end }}
+        {{- if .Values.daemon.events.enabled }}
+        - --events-enabled=true
+        {{- end }}
         {{- with .Values.daemon.push.target }}
         - --push-target={{ . }}
         - --push-tls-ca={{ $pushTLSDir }}/ca.crt

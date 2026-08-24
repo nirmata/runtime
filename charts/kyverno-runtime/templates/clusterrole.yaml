@@ -37,6 +37,12 @@ rules:
   resources: ["reports", "clusterreports"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 {{- end }}
+{{- if .Values.daemon.events.enabled }}
+# daemon: emits Kubernetes Events for policy decisions and errors
+- apiGroups: ["events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+{{- end }}
 {{- with .Values.daemon.rbac.extraRules }}
 # daemon: user-supplied extra rules, e.g. access to CRDs referenced by
 # the resource library in policy expressions

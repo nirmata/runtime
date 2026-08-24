@@ -55,6 +55,10 @@ type Options struct {
 	FlushInterval time.Duration
 	// Clock is injectable for tests; defaults to time.Now.
 	Clock func() time.Time
+	// FlushSink receives each deduplicated finding once per flush, with its
+	// merged occurrence count. The finding is raw: the sink redacts. Nil
+	// disables it.
+	FlushSink func(f Finding, count int)
 }
 
 // Reporter buffers findings, deduplicates them by fingerprint, and flushes
@@ -110,7 +114,7 @@ func New(c client.Client, log logr.Logger, m *metrics.Metrics, opts Options) *Re
 // address a namespaced Report. Attribution normally guarantees both
 // (unattributed events are dropped upstream), so this is both a safety net
 // and — because an unvalidated value would otherwise be echoed into object
-// metadata, bypassing sanitize — part of the redaction boundary.
+// metadata, bypassing Sanitize — part of the redaction boundary.
 func (r *Reporter) Report(f Finding) {
 	errs := validation.IsDNS1123Label(f.Pod.Namespace)
 	if len(errs) == 0 {
@@ -118,7 +122,7 @@ func (r *Reporter) Report(f Finding) {
 	}
 	if len(errs) > 0 {
 		r.log.V(0).Info("dropping finding with unusable pod identity",
-			"policy", sanitize(f.PolicyName), "podUid", sanitize(f.Pod.UID), "reason", errs[0])
+			"policy", Sanitize(f.PolicyName), "podUid", Sanitize(f.Pod.UID), "reason", errs[0])
 		if r.metrics != nil {
 			r.metrics.EventsDropped.WithLabelValues("reporter", "unattributed").Inc()
 		}
@@ -149,14 +153,14 @@ func (r *Reporter) Report(f Finding) {
 
 	// Metric labels and log values are sanitized like everything else this
 	// package emits: /metrics and the log stream are outputs too.
-	policy := sanitize(f.PolicyName)
-	behavior := sanitize(f.Behavior)
+	policy := Sanitize(f.PolicyName)
+	behavior := Sanitize(f.Behavior)
 	if r.metrics != nil {
 		r.metrics.FindingsEmitted.WithLabelValues(policy, behavior).Inc()
 	}
 	if r.log.V(4).Enabled() {
 		r.log.V(4).Info("finding buffered", "policy", policy, "behavior", behavior,
-			"pod", sanitize(f.Pod.Name), "namespace", f.Pod.Namespace, "fingerprint", fp,
+			"pod", Sanitize(f.Pod.Name), "namespace", f.Pod.Namespace, "fingerprint", fp,
 			"result", normalizeResult(f.Result), "properties", findingProperties(f))
 	}
 }
@@ -198,6 +202,7 @@ func (r *Reporter) flush(ctx context.Context) error {
 	if len(batch) == 0 {
 		return nil
 	}
+	r.notifyFlushSink(batch)
 
 	keys := make([]reportKey, 0, len(batch))
 	for key := range batch {
@@ -231,6 +236,20 @@ func (r *Reporter) drain() map[reportKey]map[string]*pending {
 	batch := r.pending
 	r.pending = map[reportKey]map[string]*pending{}
 	return batch
+}
+
+// notifyFlushSink delivers each deduplicated finding in batch to
+// opts.FlushSink once, independent of whether the Report write that follows
+// succeeds.
+func (r *Reporter) notifyFlushSink(batch map[reportKey]map[string]*pending) {
+	if r.opts.FlushSink == nil {
+		return
+	}
+	for _, byFingerprint := range batch {
+		for _, p := range byFingerprint {
+			r.opts.FlushSink(p.finding, p.count)
+		}
+	}
 }
 
 // requeue folds a failed batch back into the buffer without double counting.
@@ -291,7 +310,7 @@ func (r *Reporter) writeReport(ctx context.Context, key reportKey, items map[str
 		return fmt.Errorf("getting report %s/%s: %w", namespace, name, err)
 	}
 
-	if incarnation := sanitize(pod.UID); existing.Labels[LabelPodUID] != "" && existing.Labels[LabelPodUID] != incarnation {
+	if incarnation := Sanitize(pod.UID); existing.Labels[LabelPodUID] != "" && existing.Labels[LabelPodUID] != incarnation {
 		r.log.V(2).Info("report name reused by a new pod incarnation, resetting",
 			"namespace", namespace, "name", name)
 		existing.Results = nil
@@ -374,12 +393,12 @@ func setReportOwner(report *openreportsv1alpha1.Report, nodeName string, pod run
 	}
 	report.Labels[LabelManagedBy] = Source
 	report.Labels[LabelNode] = nodeName
-	report.Labels[LabelPodUID] = sanitize(pod.UID)
+	report.Labels[LabelPodUID] = Sanitize(pod.UID)
 	report.OwnerReferences = []metav1.OwnerReference{{
 		APIVersion: "v1",
 		Kind:       "Pod",
-		Name:       sanitize(pod.Name),
-		UID:        k8stypes.UID(sanitize(pod.UID)),
+		Name:       Sanitize(pod.Name),
+		UID:        k8stypes.UID(Sanitize(pod.UID)),
 	}}
 }
 

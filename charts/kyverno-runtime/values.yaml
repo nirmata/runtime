@@ -71,6 +71,12 @@ daemon:
   # push.target.
   reports:
     enabled: true
+  # events: emit Kubernetes Events for policy violations (Warning), monitor-mode
+  # would-violate findings (Normal), and policy apply errors (Warning). Off by
+  # default: events add API-server write volume on busy clusters. Requires
+  # reports.enabled.
+  events:
+    enabled: false
   rbac:
     # extraRules: additional PolicyRule entries appended to the shared ClusterRole,
     # e.g. to grant the daemon read access to CRDs referenced by the resource library

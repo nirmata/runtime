@@ -68,6 +68,10 @@ type StatusWriter struct {
 	// named node no longer exists, false means it exists or the caller
 	// cannot yet tell. A nil func disables shard pruning.
 	nodeGone func(name string) bool
+	// onConditionChanged fires for a condition that actually changed status,
+	// reason, or message, past RecordCondition's identical-condition
+	// early-return. A nil func disables it.
+	onConditionChanged func(policyUID, policyName string, cond metav1.Condition)
 
 	mu sync.Mutex
 	// policies is keyed by policy UID.
@@ -75,19 +79,22 @@ type StatusWriter struct {
 }
 
 // NewStatusWriter builds a StatusWriter for this node. A non-positive interval
-// falls back to DefaultStatusFlushInterval.
-func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval time.Duration, log logr.Logger, nodeGone func(name string) bool) *StatusWriter {
+// falls back to DefaultStatusFlushInterval. A nil onConditionChanged disables
+// the change callback.
+func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval time.Duration, log logr.Logger,
+	nodeGone func(name string) bool, onConditionChanged func(policyUID, policyName string, cond metav1.Condition)) *StatusWriter {
 	if interval <= 0 {
 		interval = DefaultStatusFlushInterval
 	}
 	return &StatusWriter{
-		client:   client,
-		nodeName: nodeName,
-		interval: interval,
-		log:      log.WithName("statuswriter"),
-		clock:    time.Now,
-		nodeGone: nodeGone,
-		policies: make(map[string]*policyStatusState),
+		client:             client,
+		nodeName:           nodeName,
+		interval:           interval,
+		log:                log.WithName("statuswriter"),
+		clock:              time.Now,
+		nodeGone:           nodeGone,
+		onConditionChanged: onConditionChanged,
+		policies:           make(map[string]*policyStatusState),
 	}
 }
 
@@ -143,7 +150,6 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	st := s.getOrCreate(policyUID)
 	if policyName != "" {
@@ -151,6 +157,7 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 	}
 	if prev, ok := st.conditions[cond.Type]; ok &&
 		prev.Status == cond.Status && prev.Reason == cond.Reason && prev.Message == cond.Message {
+		s.mu.Unlock()
 		return
 	}
 	// apimeta.SetStatusCondition would fill a zero timestamp from time.Now(),
@@ -161,6 +168,12 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 	}
 	st.conditions[cond.Type] = cond
 	st.touch()
+	name := st.name
+	s.mu.Unlock()
+
+	if s.onConditionChanged != nil {
+		s.onConditionChanged(policyUID, name, cond)
+	}
 }
 
 // baseAppliedCondition reports what spec.mode alone promises: nothing has yet

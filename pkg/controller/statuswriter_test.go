@@ -28,7 +28,7 @@ var fixedNow = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 func newTestStatusWriter(t *testing.T, nodeName string, objs ...runtime.Object) (*StatusWriter, *fakeversioned.Clientset) {
 	t.Helper()
 	client := fakeversioned.NewSimpleClientset(objs...)
-	sw := NewStatusWriter(client, nodeName, time.Hour, logr.Discard(), nil)
+	sw := NewStatusWriter(client, nodeName, time.Hour, logr.Discard(), nil, nil)
 	sw.clock = func() time.Time { return fixedNow }
 	return sw, client
 }
@@ -218,6 +218,82 @@ func TestStatusWriterMergesConditions(t *testing.T) {
 	if tv.LastTransitionTime.IsZero() {
 		t.Error("TargetsValid has no lastTransitionTime, which the API rejects")
 	}
+}
+
+// TestRecordConditionNotifiesOnlyOnChange pins RecordCondition's contract with
+// its change callback: it fires past the identical-condition early-return,
+// carries the state's own remembered name even when the caller passed none,
+// and fires again when only the Reason/Message of an already-False condition
+// changes.
+func TestRecordConditionNotifiesOnlyOnChange(t *testing.T) {
+	client := fakeversioned.NewSimpleClientset(policyObj("p", "uid-1"))
+	var calls []metav1.Condition
+	var names []string
+	sw := NewStatusWriter(client, "node-a", time.Hour, logr.Discard(), nil,
+		func(policyUID, policyName string, cond metav1.Condition) {
+			calls = append(calls, cond)
+			names = append(names, policyName)
+		})
+	sw.clock = func() time.Time { return fixedNow }
+
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, Reason: "CompileFailed", Message: "bad policy",
+	})
+	if len(calls) != 1 {
+		t.Fatalf("first record: %d callback calls, want 1", len(calls))
+	}
+	if names[0] != "p" {
+		t.Errorf("callback policyName = %q, want %q", names[0], "p")
+	}
+
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, Reason: "CompileFailed", Message: "bad policy",
+	})
+	if len(calls) != 1 {
+		t.Fatalf("identical re-record: %d callback calls, want still 1", len(calls))
+	}
+
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, Reason: "CompileFailed", Message: "a different field is now invalid",
+	})
+	if len(calls) != 2 {
+		t.Fatalf("changed message: %d callback calls, want 2", len(calls))
+	}
+}
+
+// TestRecordConditionCallbackGetsNameOnceKnown covers the ordering case where a
+// condition is recorded before the policy's name is known: the callback must
+// still receive it once RecordCondition itself is told the name, without
+// requiring the caller to have supplied it.
+func TestRecordConditionCallbackGetsNameOnceKnown(t *testing.T) {
+	client := fakeversioned.NewSimpleClientset(policyObj("p", "uid-1"))
+	var names []string
+	sw := NewStatusWriter(client, "node-a", time.Hour, logr.Discard(), nil,
+		func(policyUID, policyName string, cond metav1.Condition) { names = append(names, policyName) })
+	sw.clock = func() time.Time { return fixedNow }
+
+	sw.RecordCondition("uid-1", "", metav1.Condition{
+		Type: "TargetsValid", Status: metav1.ConditionFalse, Reason: "UnsupportedTargets",
+	})
+	if len(names) != 1 || names[0] != "" {
+		t.Fatalf("first record names = %+v, want one empty name", names)
+	}
+
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: "TargetsValid", Status: metav1.ConditionFalse, Reason: "UnsupportedTargets", Message: "now with a message",
+	})
+	if len(names) != 2 || names[1] != "p" {
+		t.Fatalf("second record names = %+v, want the second entry to be %q", names, "p")
+	}
+}
+
+// TestRecordConditionWithNilCallback covers the default-off path: a
+// StatusWriter built with no onConditionChanged must not panic.
+func TestRecordConditionWithNilCallback(t *testing.T) {
+	sw, _ := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, Reason: "CompileFailed",
+	})
 }
 
 // A policy with no spec.mode neither enforces nor reports, so Applied must not
@@ -786,7 +862,7 @@ func TestClusterConditionsUniformHealthyCluster(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
 			swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 			swB.clock = func() time.Time { return fixedNow }
 
 			for _, sw := range []*StatusWriter{swA, swB} {
@@ -825,7 +901,7 @@ func TestClusterAvailabilityFalseWhenAnyNodeLacksIt(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
 			swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 			swB.clock = func() time.Time { return fixedNow }
 
 			recordAndFlush(t, swA, tc.mode,
@@ -860,7 +936,7 @@ func TestClusterAvailabilityFalseWhenAnyNodeLacksIt(t *testing.T) {
 // from every shard instead of overwriting the incapable node's answer.
 func TestClusterConditionsSurviveHealthyNodeFlushingLast(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	recordAndFlush(t, swB, compiler.ModeEnforce,
@@ -885,7 +961,7 @@ func TestClusterConditionsSurviveHealthyNodeFlushingLast(t *testing.T) {
 // policy at cluster scope while another node's matching pods are covered.
 func TestClusterAppliedTrueDespiteUnmatchedNode(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	recordAndFlush(t, swA, compiler.ModeEnforce,
@@ -908,7 +984,7 @@ func TestClusterAppliedTrueDespiteUnmatchedNode(t *testing.T) {
 
 func TestClusterPodsMatchedFalseOnlyWhenNoNodeMatches(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	for _, sw := range []*StatusWriter{swA, swB} {
@@ -1188,7 +1264,7 @@ func TestRecomputeLastEvaluated(t *testing.T) {
 }
 
 func TestNewStatusWriterDefaultsInterval(t *testing.T) {
-	sw := NewStatusWriter(fakeversioned.NewSimpleClientset(), "node-a", 0, logr.Discard(), nil)
+	sw := NewStatusWriter(fakeversioned.NewSimpleClientset(), "node-a", 0, logr.Discard(), nil, nil)
 	if sw.interval != DefaultStatusFlushInterval {
 		t.Errorf("interval = %v, want the %v default", sw.interval, DefaultStatusFlushInterval)
 	}

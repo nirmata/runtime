@@ -21,6 +21,7 @@ import (
 	"github.com/nirmata/runtime/pkg/monitor"
 	"github.com/nirmata/runtime/pkg/pushsink"
 	"github.com/nirmata/runtime/pkg/reporter"
+	"github.com/nirmata/runtime/pkg/reportevents"
 	"github.com/nirmata/runtime/pkg/services"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
@@ -37,6 +38,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
+	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -72,6 +74,7 @@ var (
 	pushTLSCert          string
 	pushTLSKey           string
 	reportsEnabled       bool
+	eventsEnabled        bool
 )
 
 var daemonCmd = &cobra.Command{
@@ -101,7 +104,9 @@ func init() {
 	daemonCmd.Flags().StringVar(&pushTLSKey, "push-tls-key", "",
 		"PEM private key for --push-tls-cert. Required with --push-target.")
 	daemonCmd.Flags().BoolVar(&reportsEnabled, "reports-enabled", true,
-		"Write findings to namespaced OpenReports Report resources. Set to false for deployments that consume findings only through --push-target.")
+		"Write findings to namespaced OpenReports Report resources. Set to false for deployments that consume findings only through --push-target. Must stay true if --events-enabled is set.")
+	daemonCmd.Flags().BoolVar(&eventsEnabled, "events-enabled", false,
+		"Emit Kubernetes Events for policy violations and policy errors. Off by default; findings always reach the configured reporting sinks regardless. Requires --reports-enabled.")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -117,6 +122,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	ctrl.SetLogger(logger)
 
 	logger.Info("starting kyverno-runtime daemon", "clusterDomain", clusterDomain)
+
+	if eventsEnabled && !reportsEnabled {
+		logger.Error(errors.New("--events-enabled requires --reports-enabled"), "invalid flags")
+		os.Exit(1)
+	}
 
 	// the domain decides whether a network target is a Service or an external
 	// name, so it has to be in place before the first policy is compiled.
@@ -186,9 +196,24 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// and a collector stage (it annotates events and drops unattributed ones).
 	attrIdx := attribution.NewIndex(logger.WithName("attribution"), attribution.WithMetrics(m))
 
+	var eventRec *reportevents.Recorder
+	if eventsEnabled {
+		eb := clientevents.NewBroadcaster(&clientevents.EventSinkImpl{Interface: k8sClient.EventsV1()})
+		if err := eb.StartRecordingToSinkWithContext(ctx); err != nil {
+			logger.Error(err, "failed to start event broadcaster")
+			os.Exit(1)
+		}
+		eventRec = reportevents.New(eb.NewRecorder(scheme, "kyverno-runtime"), logger.WithName("reportevents"))
+	}
+
+	var flushSink func(f reporter.Finding, count int)
+	if eventRec != nil {
+		flushSink = eventRec.FindingFlushed
+	}
+
 	var rep *reporter.Reporter
 	if reportsEnabled {
-		rep = reporter.New(orClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName})
+		rep = reporter.New(orClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName, FlushSink: flushSink})
 	} else {
 		logger.Info("openreports writes disabled (--reports-enabled=false)")
 	}
@@ -215,8 +240,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		return err == nil && !exists
 	}
 
+	var onConditionChanged func(policyUID, policyName string, cond metav1.Condition)
+	if eventRec != nil {
+		onConditionChanged = eventRec.ConditionChanged
+	}
+
 	// sw owns this node's shard of every RuntimePolicy status.
-	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"), nodeGone)
+	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"), nodeGone, onConditionChanged)
 
 	em := egressmgr.NewEgressManager(logger, sw, func(reason string, delta uint64) {
 		m.EventsDropped.WithLabelValues(egressObserveSource, reason).Add(float64(delta))

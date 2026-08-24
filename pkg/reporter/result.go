@@ -80,7 +80,7 @@ func (p *pending) merge(f Finding, at time.Time) {
 	}
 }
 
-// findingProperties renders the sanitized, fixed key set that describes a
+// findingProperties renders the Sanitized, fixed key set that describes a
 // single finding — everything buildResult emits except the aggregation
 // fields (fingerprint, count, first/last timestamp), which only exist once
 // occurrences are merged. buildResult and the reporter's per-event log line
@@ -93,7 +93,7 @@ func findingProperties(f Finding) map[string]string {
 		propEnforced: strconv.FormatBool(f.Enforced),
 	}
 	put := func(key, value string) {
-		if v := sanitize(value); v != "" {
+		if v := Sanitize(value); v != "" {
 			props[key] = v
 		}
 	}
@@ -124,7 +124,7 @@ func findingProperties(f Finding) map[string]string {
 
 // buildResult renders one deduplicated finding as an OpenReports result.
 //
-// Every value it emits goes through sanitize, and it
+// Every value it emits goes through Sanitize, and it
 // emits only the fixed key set declared above. PodIdentity.Labels are never
 // emitted: arbitrary user-controlled key/values do not belong in a Report.
 func buildResult(p *pending) openreportsv1alpha1.ReportResult {
@@ -138,13 +138,13 @@ func buildResult(p *pending) openreportsv1alpha1.ReportResult {
 
 	return openreportsv1alpha1.ReportResult{
 		Source:      Source,
-		Policy:      sanitize(f.PolicyName),
-		Rule:        sanitize(f.Behavior),
+		Policy:      Sanitize(f.PolicyName),
+		Rule:        Sanitize(f.Behavior),
 		Category:    Category,
 		Result:      openreportsv1alpha1.Result(normalizeResult(f.Result)),
 		Scored:      true,
 		Timestamp:   metav1.Timestamp{Seconds: p.last.Unix()},
-		Description: sanitize(f.Message),
+		Description: Sanitize(f.Message),
 		Subjects:    []corev1.ObjectReference{podReference(f.Pod)},
 		Properties:  props,
 	}
@@ -156,9 +156,9 @@ func podReference(id runtimeevent.PodIdentity) corev1.ObjectReference {
 	return corev1.ObjectReference{
 		APIVersion: "v1",
 		Kind:       "Pod",
-		Namespace:  sanitize(id.Namespace),
-		Name:       sanitize(id.Name),
-		UID:        k8stypes.UID(sanitize(id.UID)),
+		Namespace:  Sanitize(id.Namespace),
+		Name:       Sanitize(id.Name),
+		UID:        k8stypes.UID(Sanitize(id.UID)),
 	}
 }
 

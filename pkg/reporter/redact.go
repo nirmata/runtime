@@ -17,7 +17,7 @@ const Redacted = "REDACTED"
 // resource-exhaustion risk.
 const maxPropertyRunes = 256
 
-// truncationSuffix marks a value that sanitize shortened.
+// truncationSuffix marks a value that Sanitize shortened.
 const truncationSuffix = "..."
 
 // secretPatterns match credential-shaped substrings. This list is a minimum
@@ -47,41 +47,41 @@ var secretPatterns = []*regexp.Regexp{
 // field added to PodIdentity and not added here is dropped, never forwarded
 // unscrubbed.
 func Redact(f Finding) Finding {
-	f.PolicyName = sanitize(f.PolicyName)
-	f.PolicyUID = sanitize(f.PolicyUID)
-	f.Behavior = sanitize(f.Behavior)
-	f.Target = sanitize(f.Target)
-	f.Result = sanitize(f.Result)
-	f.Message = sanitize(f.Message)
+	f.PolicyName = Sanitize(f.PolicyName)
+	f.PolicyUID = Sanitize(f.PolicyUID)
+	f.Behavior = Sanitize(f.Behavior)
+	f.Target = Sanitize(f.Target)
+	f.Result = Sanitize(f.Result)
+	f.Message = Sanitize(f.Message)
 
 	f.Pod = runtimeevent.PodIdentity{
-		UID:            sanitize(f.Pod.UID),
-		Namespace:      sanitize(f.Pod.Namespace),
-		Name:           sanitize(f.Pod.Name),
-		Container:      sanitize(f.Pod.Container),
-		ContainerID:    sanitize(f.Pod.ContainerID),
-		OwnerKind:      sanitize(f.Pod.OwnerKind),
-		OwnerName:      sanitize(f.Pod.OwnerName),
-		NodeName:       sanitize(f.Pod.NodeName),
-		ServiceAccount: sanitize(f.Pod.ServiceAccount),
+		UID:            Sanitize(f.Pod.UID),
+		Namespace:      Sanitize(f.Pod.Namespace),
+		Name:           Sanitize(f.Pod.Name),
+		Container:      Sanitize(f.Pod.Container),
+		ContainerID:    Sanitize(f.Pod.ContainerID),
+		OwnerKind:      Sanitize(f.Pod.OwnerKind),
+		OwnerName:      Sanitize(f.Pod.OwnerName),
+		NodeName:       Sanitize(f.Pod.NodeName),
+		ServiceAccount: Sanitize(f.Pod.ServiceAccount),
 	}
 
 	if f.Net != nil {
-		f.Net = &NetSummary{DestIP: sanitize(f.Net.DestIP), DestHost: sanitize(f.Net.DestHost)}
+		f.Net = &NetSummary{DestIP: Sanitize(f.Net.DestIP), DestHost: Sanitize(f.Net.DestHost)}
 	}
 	if f.DNS != nil {
-		f.DNS = &DNSSummary{QName: sanitize(f.DNS.QName)}
+		f.DNS = &DNSSummary{QName: Sanitize(f.DNS.QName)}
 	}
 	if f.Process != nil {
-		f.Process = &ProcessSummary{Comm: sanitize(f.Process.Comm), Argv: sanitize(f.Process.Argv)}
+		f.Process = &ProcessSummary{Comm: Sanitize(f.Process.Comm), Argv: Sanitize(f.Process.Argv)}
 	}
 	return f
 }
 
-// sanitize is applied to EVERY property value emitted into a Report. It
+// Sanitize is applied to EVERY property value emitted into a Report. It
 // scrubs credential- and payload-shaped substrings, strips control
 // characters, and bounds the result to maxPropertyRunes.
-func sanitize(v string) string {
+func Sanitize(v string) string {
 	if v == "" {
 		return ""
 	}
