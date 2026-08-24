@@ -84,6 +84,41 @@ make test-e2e-protocol # protocol enforcement behavior
 `make kind-install` rebuilds and reloads the image every time. Running only the Chainsaw suites
 validates whatever image was loaded last.
 
+### Validating the push sink
+
+`hack/pushsink-testcollector` is a dev-only test double for the findings push sink
+(`pkg/pushsink`): a standalone gRPC server you run locally to watch the daemon's mTLS handshake,
+backoff, and drop-oldest queue paths on the wire. It is not a reference collector for production.
+
+Generate a throwaway CA and a server and client certificate, then run the collector against them:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+  -subj "/CN=pushsink-test-ca" -keyout ca.key -out ca.crt
+
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -subj "/CN=localhost" -keyout server.key -out server.csr
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -days 1 -out server.crt
+
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -subj "/CN=kyverno-runtime-daemon" -keyout client.key -out client.csr
+openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -days 1 -out client.crt
+
+go run ./hack/pushsink-testcollector \
+  --listen :9444 --tls-cert server.crt --tls-key server.key --tls-client-ca ca.crt
+```
+
+Point a daemon at it with the `--push-target`, `--push-tls-ca`, `--push-tls-cert`, and
+`--push-tls-key` flags (or the chart's equivalent Helm values), using `ca.crt`, `client.crt`, and
+`client.key` from above.
+
+Add `--refuse-after 10` to fail the stream once the collector has accepted 10 findings, which
+drives the daemon's reconnect backoff and its `nirmata_runtime_events_dropped_total{source="pushsink",reason="queue_full"}`
+counter. Add `--delay 500ms` to sleep before every read, which exercises live-stream backpressure
+instead.
+
 Documentation-only changes need `make lint-docs`, not `make build` or `make test`.
 
 Commits are signed: `git commit -s`.
