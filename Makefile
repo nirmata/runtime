@@ -319,20 +319,33 @@ kind-install-manifests:
 # same openssl commands as docs/dev/DEVELOPMENT.md's "Validating the push
 # sink" section. The server SAN covers PUSH_HOST plus localhost, since a
 # developer watching the collector directly connects over localhost too.
+#
+# Cached under PUSHSINK_CERT_DIR and reused across reruns with the same
+# PUSH_HOST: the daemon's DaemonSet pod template is unchanged by a Secret's
+# bytes changing underneath it, so an already-rolled-out daemon keeps the
+# in-memory certificate it started with, and regenerating a fresh CA on every
+# run would leave it trusting a CA the collector no longer presents.
+# Regenerates automatically when PUSH_HOST changes, since the server SAN is
+# bound to it.
 kind-push-collector-certs:
-	@mkdir -p $(PUSHSINK_CERT_DIR)
-	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
-		-subj "/CN=pushsink-test-ca" -keyout $(PUSHSINK_CERT_DIR)/ca.key -out $(PUSHSINK_CERT_DIR)/ca.crt
-	openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-		-subj "/CN=$(PUSH_HOST)" \
-		-addext "subjectAltName=DNS:$(PUSH_HOST),DNS:localhost,IP:127.0.0.1" \
-		-keyout $(PUSHSINK_CERT_DIR)/server.key -out $(PUSHSINK_CERT_DIR)/server.csr
-	openssl x509 -req -in $(PUSHSINK_CERT_DIR)/server.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
-		-CAcreateserial -days 1 -copy_extensions copy -out $(PUSHSINK_CERT_DIR)/server.crt
-	openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-		-subj "/CN=kyverno-runtime-daemon" -keyout $(PUSHSINK_CERT_DIR)/client.key -out $(PUSHSINK_CERT_DIR)/client.csr
-	openssl x509 -req -in $(PUSHSINK_CERT_DIR)/client.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
-		-CAcreateserial -days 1 -out $(PUSHSINK_CERT_DIR)/client.crt
+	@if [ -f $(PUSHSINK_CERT_DIR)/ca.crt ] && [ "$$(cat $(PUSHSINK_CERT_DIR)/push-host 2>/dev/null)" = "$(PUSH_HOST)" ]; then \
+		echo "Reusing existing certificates in $(PUSHSINK_CERT_DIR) (PUSH_HOST=$(PUSH_HOST))"; \
+	else \
+		mkdir -p $(PUSHSINK_CERT_DIR); \
+		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+			-subj "/CN=pushsink-test-ca" -keyout $(PUSHSINK_CERT_DIR)/ca.key -out $(PUSHSINK_CERT_DIR)/ca.crt; \
+		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+			-subj "/CN=$(PUSH_HOST)" \
+			-addext "subjectAltName=DNS:$(PUSH_HOST),DNS:localhost,IP:127.0.0.1" \
+			-keyout $(PUSHSINK_CERT_DIR)/server.key -out $(PUSHSINK_CERT_DIR)/server.csr; \
+		openssl x509 -req -in $(PUSHSINK_CERT_DIR)/server.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
+			-CAcreateserial -days 1 -copy_extensions copy -out $(PUSHSINK_CERT_DIR)/server.crt; \
+		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+			-subj "/CN=kyverno-runtime-daemon" -keyout $(PUSHSINK_CERT_DIR)/client.key -out $(PUSHSINK_CERT_DIR)/client.csr; \
+		openssl x509 -req -in $(PUSHSINK_CERT_DIR)/client.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
+			-CAcreateserial -days 1 -out $(PUSHSINK_CERT_DIR)/client.crt; \
+		echo "$(PUSH_HOST)" > $(PUSHSINK_CERT_DIR)/push-host; \
+	fi
 
 kind-push-collector-build:
 	go build -o $(PUSHSINK_BIN) ./hack/pushsink-testcollector
@@ -383,18 +396,21 @@ kind-push-collector-configure: kind-push-collector-secrets kind-push-collector-s
 		--wait
 	$(MAKE) wait-daemon-rollout
 
-# Trigger a real finding and poll the collector's log for it. The client.yaml
-# workload only stages launcher stubs; monitor-mode observation for it is not
-# enabled until the policy is Applied, and nothing runs the stubs on its own,
-# so this execs one after the policy is confirmed applied. Fails loudly with
-# diagnostics from both sides on timeout instead of exiting 0 on missing
-# evidence.
+# Trigger a real finding and poll the collector's log for it. monitor-egress
+# only reports on an actual connection attempt, so this makes one after the
+# policy is confirmed applied. Chosen over the exec-based shadow-ai examples
+# because it needs only cgroup egress BPF, not the kernel's BPF-LSM open/exec
+# hooks, keeping this target's dependency surface to what a stock kind
+# cluster provides. Fails loudly with diagnostics from both sides on timeout
+# instead of exiting 0 on missing evidence.
 kind-push-collector-verify: kind-push-collector-configure
-	kubectl apply -f examples/shadow-ai/detect-agent-cli/client.yaml
-	kubectl wait --for=condition=Ready pod/ai-workload --timeout=60s
-	kubectl apply -f examples/shadow-ai/detect-agent-cli/policy.yaml
-	kubectl wait --for=condition=Applied=True runtimepolicy/detect-agent-cli --timeout=60s
-	kubectl exec ai-workload -- ollama serve >/dev/null 2>&1 &
+	kubectl apply -f examples/monitoring/monitor-egress/target.yaml
+	kubectl apply -f examples/monitoring/monitor-egress/client.yaml
+	kubectl wait --for=condition=Ready pod/egress-target pod/egress-client --timeout=60s
+	kubectl apply -f examples/monitoring/monitor-egress/policy.yaml
+	kubectl wait --for=condition=Applied=True runtimepolicy/monitor-egress --timeout=60s
+	@TARGET=$$(kubectl get pod egress-target -o jsonpath='{.status.podIP}'); \
+	kubectl exec egress-client -- wget -q -T 3 -O /dev/null "http://$${TARGET}:8080/"
 	@i=0; \
 	while [ "$$i" -lt 30 ]; do \
 		if grep -qE '^\{' $(PUSHSINK_LOG) 2>/dev/null; then \
