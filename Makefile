@@ -204,12 +204,20 @@ build: fmt lint
 	go build ./cmd/kyverno-runtime
 
 # A version mismatch reinstalls rather than proceeding: ko stamps the image it
-# produces, so the pin only holds if the binary matches it.
+# produces, so the pin only holds if the binary matches it. `ko version` prints
+# the bare version and nothing else, so compare it exactly: a substring match
+# would accept 0.19.11 for a 0.19.1 pin.
+#
+# setup-go pins GOTOOLCHAIN=local to the version in go.mod, and ko's own go.mod
+# asks for a newer toolchain than that. `go install pkg@version` builds against
+# ko's go.mod, so the install has to be allowed to fetch the toolchain ko names
+# or it fails outright. Scoped to this one command: nothing that compiles this
+# module resolves a toolchain it did not before.
 install-ko:
-	@if [ ! -x '$(KO)' ] || ! '$(KO)' version 2>/dev/null | grep -q '$(patsubst v%,%,$(KO_VERSION))'; then \
+	@if [ ! -x '$(KO)' ] || [ "$$('$(KO)' version 2>/dev/null | sed 's/^v//')" != '$(patsubst v%,%,$(KO_VERSION))' ]; then \
 		echo 'installing ko $(KO_VERSION) into $(LOCALBIN)'; \
 		rm -f '$(KO)'; \
-		GOBIN='$(LOCALBIN)' go install github.com/google/ko@$(KO_VERSION); \
+		GOBIN='$(LOCALBIN)' GOTOOLCHAIN=auto go install github.com/google/ko@$(KO_VERSION); \
 	fi
 
 ko-build: install-ko
