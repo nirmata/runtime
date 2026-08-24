@@ -69,8 +69,8 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 			targetCgids = append(targetCgids, pod.cgids...)
 		}
 	}
-	// (TODO) this function is duplicated
-	l.recordPodsMatchedCondition(compiledRp.UID, len(la.attachedPods))
+
+	l.recordCondition(compiledRp.UID, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 	if len(targetCgids) == 0 {
 		return nil
 	}
@@ -125,7 +125,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	l.syncPodAttachment(compiledRp.UID, la)
-	l.recordPodsMatchedCondition(compiledRp.UID, len(la.attachedPods))
+	l.recordCondition(compiledRp.UID, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 	return nil
 }
 

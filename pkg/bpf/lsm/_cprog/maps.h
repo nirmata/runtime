@@ -7,15 +7,13 @@
 #define DECISION_ALLOW 0
 #define DECISION_DENY 1
 
-// TODO: how do avoid defining those twice
-#define DEFAULT_DENY 1
-#define LEARNING_MODE 2
 
 // programs are limited by tail call count. in the future we can check if we
 // can optimizing this by only tail calling to programs if they target a particular
 // cgid (pod) rather than every program we have
 #define MAX_PROG_COUNT 33
 
+/* these are prog_count keys; the order matches lsm.ProgTypes in the Go layer */
 #define	PROG_TYPE_LSM_OPEN 0
 #define	PROG_TYPE_LSM_EXEC 1
 
@@ -111,7 +109,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 128);
+    __uint(max_entries, MAX_PROG_COUNT);
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -120,7 +118,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 128);
+    __uint(max_entries, MAX_PROG_COUNT);
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
     __uint(pinning, LIBBPF_PIN_BY_NAME);

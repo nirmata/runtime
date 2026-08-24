@@ -93,7 +93,7 @@ func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder,
 		return nil, err
 	}
 	dispatchers := make(map[string]*lsm.Dispatcher, 2)
-	for _, target := range []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC} {
+	for _, target := range lsm.ProgTypes {
 		d, err := lsm.NewDispatcherForTarget(target)
 		if err != nil {
 			return nil, fmt.Errorf("loading the %s dispatcher: %w", target, err)
@@ -109,7 +109,7 @@ func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder,
 		if !ok {
 			return nil, fmt.Errorf("unknown lsm attach target %q", target)
 		}
-		return lsm.NewForAttachTarget(d, logger, target)
+		return lsm.NewForAttachTarget(d, logger)
 	}
 	return newLsmManager(logger, status, onLoss, newEnforcer, cgroupSinks...), nil
 }
@@ -447,26 +447,6 @@ func rejectionMessage(rejected []compiler.RejectedTarget) string {
 		parts = append(parts, r.String())
 	}
 	return fmt.Sprintf("%d path(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
-}
-
-func (l *LsmManager) recordPodsMatchedCondition(rpUID string, matched int) {
-	if matched == 0 {
-		l.recordCondition(rpUID, metav1.Condition{
-			Type:               v1alpha1.ConditionPodsMatched,
-			Status:             metav1.ConditionFalse,
-			Reason:             v1alpha1.ReasonNoMatchingPods,
-			Message:            "no pod on this node matches the policy's podSelector/namespaceSelector",
-			LastTransitionTime: metav1.NewTime(l.clock()),
-		})
-		return
-	}
-	l.recordCondition(rpUID, metav1.Condition{
-		Type:               v1alpha1.ConditionPodsMatched,
-		Status:             metav1.ConditionTrue,
-		Reason:             v1alpha1.ReasonPodsMatched,
-		Message:            fmt.Sprintf("%d pod(s) on this node match the policy", matched),
-		LastTransitionTime: metav1.NewTime(l.clock()),
-	})
 }
 
 func (l *LsmManager) recordCondition(rpUID string, cond metav1.Condition) {

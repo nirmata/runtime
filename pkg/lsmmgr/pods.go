@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/nirmata/runtime/api/v1alpha1"
 	"github.com/nirmata/runtime/pkg/containers"
 	"github.com/nirmata/runtime/pkg/utils"
 
@@ -26,7 +27,7 @@ func (l *LsmManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgIn
 			}
 
 			attach(rpUid, la, string(pod.UID), pr)
-			l.recordPodsMatchedCondition(rpUid, len(la.attachedPods))
+			l.recordCondition(rpUid, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 		}
 	}
 	l.pods[string(pod.UID)] = pr
@@ -80,7 +81,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgIn
 		l.logger.V(2).Info("pod or namespace labels changed, re-evaluating policy targets", "podUid", pod.UID)
 		for rpUid, la := range l.lsmAttachments {
 			l.syncPodAttachment(rpUid, la)
-			l.recordPodsMatchedCondition(rpUid, len(la.attachedPods))
+			l.recordCondition(rpUid, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 		}
 	}
 	return nil
@@ -98,6 +99,6 @@ func (l *LsmManager) podDeleted(podUid string) {
 			l.removePodCgids(rpUid, progType, prog, podAttachment.cgids)
 		}
 		delete(la.attachedPods, podUid)
-		l.recordPodsMatchedCondition(rpUid, len(la.attachedPods))
+		l.recordCondition(rpUid, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 	}
 }

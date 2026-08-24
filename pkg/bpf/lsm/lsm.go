@@ -19,6 +19,21 @@ const (
 	PROG_TYPE_LSM_EXEC = "bprm_check_security"
 )
 
+// ProgTypes is the ordered list of lsm hooks: a hook's index here is the
+// PROG_TYPE_* value the kernel programs write into lsm_ctx.prog_type and use
+// as the prog_count key, so this order is the one in _cprog/maps.h and cannot
+// be changed on one side alone.
+var ProgTypes = []string{PROG_TYPE_LSM_OPEN, PROG_TYPE_LSM_EXEC}
+
+func progCountKey(target string) (uint32, error) {
+	for i, t := range ProgTypes {
+		if t == target {
+			return uint32(i), nil
+		}
+	}
+	return 0, fmt.Errorf("unknown lsm attach target %q", target)
+}
+
 //go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmDispatcherFileOpen ./_cprog/dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
 //go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmDispatcherExecCheck ./_cprog/dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
 //go:generate go tool bpf2go lsmRuntimePolicy ./_cprog/lsm.bpf.c -- -I../include -I./_cprog/include -I./_cprog
@@ -51,14 +66,9 @@ type LsmEnforcer struct {
 	observed  map[uint64]*ebpf.Map
 }
 
-func NewForAttachTarget(d *Dispatcher, logger *logr.Logger, target string) (*LsmEnforcer, error) {
-	switch target {
-	case PROG_TYPE_LSM_OPEN, PROG_TYPE_LSM_EXEC:
-	default:
-		return nil, fmt.Errorf("unknown lsm attach target %q", target)
-	}
-	if d.dispatcherType != target {
-		return nil, fmt.Errorf("dispatcher for %q cannot chain a %q enforcer", d.dispatcherType, target)
+func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*LsmEnforcer, error) {
+	if _, err := progCountKey(d.dispatcherType); err != nil {
+		return nil, err
 	}
 
 	l := &LsmEnforcer{logger: logger, dispatcher: d}
@@ -70,7 +80,7 @@ func NewForAttachTarget(d *Dispatcher, logger *logr.Logger, target string) (*Lsm
 	// the program is never linked to the hook itself, but loading an lsm
 	// program still requires the BTF id of a real hook, and tail calls only
 	// reach programs loaded for the same hook as the dispatcher
-	spec.Programs["runtime_policy_executor"].AttachTo = target
+	spec.Programs["runtime_policy_executor"].AttachTo = d.dispatcherType
 	spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
 
 	innerSpec := prepareOpenEvents(spec)

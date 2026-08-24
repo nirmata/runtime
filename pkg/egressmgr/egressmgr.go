@@ -346,26 +346,6 @@ func (e *EgressManager) recordTargetsCondition(rp *compiler.EvaluationResult) {
 	})
 }
 
-func (e *EgressManager) recordPodsMatchedCondition(uid string, matched int) {
-	if matched == 0 {
-		e.recordCondition(uid, metav1.Condition{
-			Type:               v1alpha1.ConditionPodsMatched,
-			Status:             metav1.ConditionFalse,
-			Reason:             v1alpha1.ReasonNoMatchingPods,
-			Message:            "no pod on this node matches the policy's podSelector/namespaceSelector",
-			LastTransitionTime: metav1.NewTime(e.clock()),
-		})
-		return
-	}
-	e.recordCondition(uid, metav1.Condition{
-		Type:               v1alpha1.ConditionPodsMatched,
-		Status:             metav1.ConditionTrue,
-		Reason:             v1alpha1.ReasonPodsMatched,
-		Message:            fmt.Sprintf("%d pod(s) on this node match the policy", matched),
-		LastTransitionTime: metav1.NewTime(e.clock()),
-	})
-}
-
 // recordCondition resolves the policy's name from the tracked evaluation
 // results so callers that only hold a uid do not have to thread it through. An
 // untracked uid records no name and the recorder waits for one.

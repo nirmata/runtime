@@ -34,7 +34,9 @@ type Dispatcher struct {
 	dispatcherType string
 }
 
-// clear any existing pinned maps
+// ClearPins wipes the pin directory at startup. The pinned maps outlive the
+// process, so a restart would otherwise inherit prog arrays holding fds of
+// programs this process never loaded and a prog_count covering them
 func ClearPins() error {
 	if err := os.RemoveAll(pinDir); err != nil {
 		return fmt.Errorf("removing bpf pin directory: %w", err)
@@ -43,8 +45,14 @@ func ClearPins() error {
 }
 
 func NewDispatcherForTarget(target string) (*Dispatcher, error) {
+	key, err := progCountKey(target)
+	if err != nil {
+		return nil, err
+	}
+
 	d := &Dispatcher{
 		dispatcherType: target,
+		progCountKey:   key,
 		progIdx:        make(map[int]uint32),
 	}
 
@@ -70,7 +78,6 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 		d.prog = objs.GenericLsmHandler
 		d.progCount = objs.ProgCount
 		d.progArray = objs.OpenProgs
-		d.progCountKey = 0
 
 	case PROG_TYPE_LSM_EXEC:
 		spec, err := loadLsmDispatcherExecCheck()
@@ -88,10 +95,6 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 		d.prog = objs.GenericLsmHandler
 		d.progCount = objs.ProgCount
 		d.progArray = objs.ExecProgs
-		d.progCountKey = 1
-
-	default:
-		return nil, fmt.Errorf("unknown lsm attach target %q", target)
 	}
 
 	if err := d.reset(); err != nil {
@@ -159,28 +162,28 @@ func (d *Dispatcher) DeleteProgram(progFd int) error {
 		return fmt.Errorf("program fd %d is not in the %s prog array", progFd, d.dispatcherType)
 	}
 
-	if err := d.bumpCount(-1); err != nil {
-		return err
-	}
-	delete(d.progIdx, progFd)
 	if err := d.progArray.Delete(&idx); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return err
 	}
 
+	if err := d.bumpCount(-1); err != nil {
+		return err
+	}
+	delete(d.progIdx, progFd)
+
 	return nil
 }
 
+// return the first vacant number from the progIdx map. a number between 0
+// and progArray.MaxEntries not being in d.progIdx means that there is no
+// bpf program in the array at that index
 func (d *Dispatcher) freeSlot() (uint32, error) {
 	for i := uint32(0); i < d.progArray.MaxEntries(); i++ {
-		var id uint32
-		err := d.progArray.Lookup(&i, &id)
-		if errors.Is(err, ebpf.ErrKeyNotExist) {
+		if _, ok := d.progIdx[int(i)]; !ok {
 			return i, nil
 		}
-		if err != nil {
-			return 0, err
-		}
 	}
+
 	return 0, fmt.Errorf("the %s prog array is full", d.dispatcherType)
 }
 

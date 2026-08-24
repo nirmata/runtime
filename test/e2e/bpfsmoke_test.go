@@ -365,7 +365,7 @@ func TestBPFLsmAttaches(t *testing.T) {
 			"the kernel must be booted with lsm=...,bpf -- hosted GitHub runners cannot satisfy this")
 	}
 
-	for _, target := range []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC} {
+	for _, target := range lsm.ProgTypes {
 		t.Run(target, func(t *testing.T) {
 			logger := logr.Discard()
 			d, err := lsm.NewDispatcherForTarget(target)
@@ -378,7 +378,7 @@ func TestBPFLsmAttaches(t *testing.T) {
 				t.Fatalf("attaching %q: %+v", target, err)
 			}
 
-			enf, err := lsm.NewForAttachTarget(d, &logger, target)
+			enf, err := lsm.NewForAttachTarget(d, &logger)
 			if err != nil {
 				t.Fatalf("loading lsm objects for %q: %+v", target, err)
 			}

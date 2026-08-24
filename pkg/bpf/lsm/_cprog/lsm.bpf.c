@@ -82,6 +82,8 @@ SEC("lsm/runtime_policy")
 int runtime_policy_executor(void *ctx)
 {
     __u32 k = 0;
+    struct path_event_key ev_k;
+
     struct lsm_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
         return 0;
@@ -89,11 +91,9 @@ int runtime_policy_executor(void *ctx)
 
     __u64 cgid = bpf_get_current_cgroup_id();
     if (bpf_map_lookup_elem(&cgids, &cgid) != NULL) {
-        struct path_event_key ev_k;
         path_decision(prog_ctx, &ev_k);
-        record_path_event(&cgid, &ev_k);
         if (prog_ctx->reason == EXPLICIT_DENY) {
-            return -EPERM;
+            goto end;
         }
     }
 
@@ -116,7 +116,7 @@ end:
     /* reached with fewer than prog_count programs executed when userspace
      * deleted a program we counted. no synchronization needed: return what
      * the programs that did run decided. */
-    // bpf_printk("lsm dbg: chain end deny=%d reason=%d executed=%d", prog_ctx->deny, prog_ctx->reason, prog_ctx->have_executed);
+    record_path_event(&cgid, &ev_k);
     if (prog_ctx->deny) {
         return -EPERM;
     }

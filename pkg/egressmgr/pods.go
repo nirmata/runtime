@@ -3,6 +3,7 @@ package egressmgr
 import (
 	"fmt"
 
+	"github.com/nirmata/runtime/api/v1alpha1"
 	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
 	"github.com/nirmata/runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/runtime/pkg/compiler"
@@ -191,7 +192,8 @@ func (e *EgressManager) recomputePodsMatchedCondition(uid string) {
 			matched++
 		}
 	}
-	e.recordPodsMatchedCondition(uid, matched)
+
+	e.recordCondition(uid, v1alpha1.PodsMatchedCondition(matched, e.clock()))
 }
 
 func (e *EgressManager) podDeleted(podUid string) {
