@@ -32,7 +32,7 @@ rules:
   resources: ["endpointslices"]
   verbs: ["get", "list", "watch"]
 {{- if .Values.daemon.reports.enabled }}
-# daemon: writes OpenReports for observed/violating behaviors (#29)
+# daemon: writes OpenReports for observed/violating behaviors
 - apiGroups: ["openreports.io"]
   resources: ["reports", "clusterreports"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
