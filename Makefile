@@ -32,6 +32,12 @@ CHART_PACKAGE := $(CHART_PACKAGE_DIR)/$(CHART_NAME)-$(CHART_VERSION).tgz
 # in go.mod via the tool directive: bump them there and regenerate.
 CHAINSAW_VERSION ?= v0.2.15
 
+# ko resolves through `go install`, not go.mod's tool directive: its dependency
+# tree would move this module's own.
+KO_VERSION ?= v0.19.1
+LOCALBIN := $(abspath bin)
+KO := $(LOCALBIN)/ko
+
 generate-crds:
 	go tool controller-gen crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
 
@@ -197,11 +203,28 @@ run:
 build: fmt lint
 	go build ./cmd/kyverno-runtime
 
-ko-build:
-	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) ko build ./cmd/kyverno-runtime --local --bare --tags=$(IMAGE_TAG) --platform=$(HOST_PLATFORM)
+# A version mismatch reinstalls rather than proceeding: ko stamps the image it
+# produces, so the pin only holds if the binary matches it. `ko version` prints
+# the bare version and nothing else, so compare it exactly: a substring match
+# would accept 0.19.11 for a 0.19.1 pin.
+#
+# setup-go pins GOTOOLCHAIN=local to the version in go.mod, and ko's own go.mod
+# asks for a newer toolchain than that. `go install pkg@version` builds against
+# ko's go.mod, so the install has to be allowed to fetch the toolchain ko names
+# or it fails outright. Scoped to this one command: nothing that compiles this
+# module resolves a toolchain it did not before.
+install-ko:
+	@if [ ! -x '$(KO)' ] || [ "$$('$(KO)' version 2>/dev/null | sed 's/^v//')" != '$(patsubst v%,%,$(KO_VERSION))' ]; then \
+		echo 'installing ko $(KO_VERSION) into $(LOCALBIN)'; \
+		rm -f '$(KO)'; \
+		GOBIN='$(LOCALBIN)' GOTOOLCHAIN=auto go install github.com/google/ko@$(KO_VERSION); \
+	fi
 
-ko-push:
-	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) ko build ./cmd/kyverno-runtime --push=true --bare --tags=$(IMAGE_TAG) --platform=linux/amd64,linux/arm64
+ko-build: install-ko
+	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) $(KO) build ./cmd/kyverno-runtime --local --bare --tags=$(IMAGE_TAG) --platform=$(HOST_PLATFORM)
+
+ko-push: install-ko
+	KO_DOCKER_REPO=$(IMAGE_REPOSITORY) $(KO) build ./cmd/kyverno-runtime --push=true --bare --tags=$(IMAGE_TAG) --platform=linux/amd64,linux/arm64
 
 # Create a kind cluster and install all components
 kind:
@@ -401,4 +424,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: wait-crds generate-crds verify-crds generate-deepcopy verify-deepcopy generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-hosted test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-egress-load test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-deepcopy verify-deepcopy generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build install-ko ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-hosted test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-egress-load test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
