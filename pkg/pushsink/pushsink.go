@@ -36,9 +36,9 @@ const (
 	// and one error log per node per interval, forever.
 	minRetryBackoff = 5 * time.Second
 	maxRetryBackoff = time.Minute
-	// shutdownTimeout bounds the final drain, which runs on a context the
-	// daemon has already cancelled.
-	shutdownTimeout = 5 * time.Second
+	// defaultShutdownGrace bounds everything the stream does after the daemon's
+	// context is cancelled: the final drain, an in-flight send, and the close.
+	defaultShutdownGrace = 5 * time.Second
 )
 
 // Options configures a GRPCSink. Target and all three TLS paths are required:
@@ -65,10 +65,11 @@ type Options struct {
 // The daemon is the client. Nothing here listens, so a node running this sink
 // opens no port.
 type GRPCSink struct {
-	log   logr.Logger
-	opts  Options
-	creds credentials.TransportCredentials
-	queue chan *finding.Finding
+	log           logr.Logger
+	opts          Options
+	creds         credentials.TransportCredentials
+	queue         chan *finding.Finding
+	shutdownGrace time.Duration
 
 	// dropMu makes the drop-oldest overflow path atomic: it is a receive
 	// followed by a send, and two producers interleaving them can drop two
@@ -93,10 +94,11 @@ func New(log logr.Logger, opts Options) (*GRPCSink, error) {
 	}
 
 	return &GRPCSink{
-		log:   log,
-		opts:  opts,
-		creds: creds,
-		queue: make(chan *finding.Finding, opts.QueueSize),
+		log:           log,
+		opts:          opts,
+		creds:         creds,
+		queue:         make(chan *finding.Finding, opts.QueueSize),
+		shutdownGrace: defaultShutdownGrace,
 	}, nil
 }
 
@@ -176,6 +178,26 @@ func (s *GRPCSink) stream(ctx context.Context, client finding.FindingServiceClie
 	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 
+	// Send blocks while the flow control window is full, and a collector that
+	// accepts a stream and stops reading it holds the window shut. The stream
+	// is what that send waits on, so the deadline is armed here rather than in
+	// the shutdown branch below: a goroutine blocked in Send never reaches it,
+	// and the daemon would hang until the kubelet killed the pod.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-done:
+			return
+		}
+		select {
+		case <-time.After(s.shutdownGrace):
+			cancel()
+		case <-done:
+		}
+	}()
+
 	st, err := client.Report(streamCtx)
 	if err != nil {
 		return false, fmt.Errorf("push sink: opening stream to %s: %w", s.opts.Target, err)
@@ -184,8 +206,6 @@ func (s *GRPCSink) stream(ctx context.Context, client finding.FindingServiceClie
 	for {
 		select {
 		case <-ctx.Done():
-			timer := time.AfterFunc(shutdownTimeout, cancel)
-			defer timer.Stop()
 			s.drain(st)
 			ack, closeErr := st.CloseAndRecv()
 			if closeErr != nil {

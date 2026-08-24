@@ -157,9 +157,35 @@ func (c *recordingCollector) Report(stream grpc.ClientStreamingServer[finding.Fi
 	}
 }
 
+// stalledCollector accepts the stream and never reads it, which is what shuts
+// the flow control window and blocks the sender.
+type stalledCollector struct {
+	finding.UnimplementedFindingServiceServer
+	release chan struct{}
+}
+
+func (c *stalledCollector) Report(stream grpc.ClientStreamingServer[finding.Finding, finding.Ack]) error {
+	<-c.release
+	return stream.SendAndClose(&finding.Ack{})
+}
+
 // startCollector serves the RPC over mutual TLS, requiring and verifying the
 // daemon's client certificate.
 func startCollector(t *testing.T, pki testPKI) (addr string, received chan *finding.Finding) {
+	t.Helper()
+	received = make(chan *finding.Finding, 8)
+	return serve(t, pki, &recordingCollector{received: received}), received
+}
+
+// startStalledCollector serves a collector that never consumes the stream.
+func startStalledCollector(t *testing.T, pki testPKI) string {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	return serve(t, pki, &stalledCollector{release: release})
+}
+
+func serve(t *testing.T, pki testPKI, impl finding.FindingServiceServer) string {
 	t.Helper()
 
 	pair, err := tls.LoadX509KeyPair(pki.serverCert, pki.serverKey)
@@ -180,14 +206,13 @@ func startCollector(t *testing.T, pki testPKI) (addr string, received chan *find
 		t.Fatalf("listening: %v", err)
 	}
 
-	received = make(chan *finding.Finding, 8)
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{pair},
 		ClientCAs:    roots,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		MinVersion:   tls.VersionTLS13,
 	})))
-	finding.RegisterFindingServiceServer(srv, &recordingCollector{received: received})
+	finding.RegisterFindingServiceServer(srv, impl)
 
 	served := make(chan struct{})
 	go func() {
@@ -199,7 +224,7 @@ func startCollector(t *testing.T, pki testPKI) (addr string, received chan *find
 		<-served
 	})
 
-	return lis.Addr().String(), received
+	return lis.Addr().String()
 }
 
 // The end-to-end path: a finding reported on the event path reaches a
@@ -326,3 +351,47 @@ func emptyFile(t *testing.T) string {
 	}
 	return path
 }
+
+// A collector that accepts the stream and stops reading it holds the flow
+// control window shut, and Send blocks on the stream rather than on the
+// daemon's context. Shutdown must still be bounded: the daemon's errgroup is
+// what a DaemonSet rollout waits on, and a sink that never returns is a pod
+// the kubelet has to kill.
+func TestShutdownIsBoundedWhileASendIsBlocked(t *testing.T) {
+	pki := newTestPKI(t)
+	addr := startStalledCollector(t, pki)
+
+	loss := lossRecord{}
+	s, err := New(logr.Discard(), pki.options(addr, loss))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.opts.QueueSize = blockingSendCount
+	s.queue = make(chan *finding.Finding, blockingSendCount)
+	s.shutdownGrace = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	// Enough bytes to exhaust the 64KiB window the collector never reopens.
+	big := findingNamed("blocked")
+	big.Process = &reporter.ProcessSummary{Comm: "curl", Argv: strings.Repeat("a", 250)}
+	for i := 0; i < blockingSendCount; i++ {
+		s.Report(big)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run returned %v, want nil on shutdown", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after cancellation: a blocked send outlives the daemon")
+	}
+}
+
+// blockingSendCount is comfortably more than the default 64KiB stream window
+// holds at roughly 300 bytes a finding.
+const blockingSendCount = 600

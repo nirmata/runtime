@@ -709,7 +709,11 @@ a collector that stops reading costs the newest observations rather than the dae
 stream is reopened after a backoff that doubles from 5s to a 1-minute cap and resets once a
 stream establishes, so a collector that is gone rather than restarting does not become
 fleet-wide connection churn; a cancelled context drains what is queued and closes the stream,
-so the last window is not lost.
+so the last window is not lost. That shutdown is bounded rather than best effort: `Send` blocks
+on the stream's own context while the flow control window is shut, which a collector that
+accepts a stream and stops reading holds indefinitely, so cancellation arms a deadline that
+closes the stream out from under a blocked send. The daemon's errgroup is what a DaemonSet
+rollout waits on.
 
 `Finding.Pod.OwnerKind`/`OwnerName` ride this stream as best-effort correlation metadata, not as
 identity. `pkg/attribution.deriveOwner` reads `pod.OwnerReferences[0]` verbatim, and Kubernetes
