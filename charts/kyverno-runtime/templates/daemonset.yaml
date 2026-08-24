@@ -58,6 +58,9 @@ spec:
         {{- with .Values.daemon.logLevel }}
         - --log-level={{ . }}
         {{- end }}
+        {{- if not .Values.daemon.reports.enabled }}
+        - --reports-enabled=false
+        {{- end }}
         {{- with .Values.daemon.push.target }}
         - --push-target={{ . }}
         - --push-tls-ca={{ $pushTLSDir }}/ca.crt

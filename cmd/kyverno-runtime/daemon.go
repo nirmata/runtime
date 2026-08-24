@@ -71,6 +71,7 @@ var (
 	pushTLSCA            string
 	pushTLSCert          string
 	pushTLSKey           string
+	reportsEnabled       bool
 )
 
 var daemonCmd = &cobra.Command{
@@ -99,6 +100,8 @@ func init() {
 		"PEM client certificate this daemon presents to the collector. Required with --push-target.")
 	daemonCmd.Flags().StringVar(&pushTLSKey, "push-tls-key", "",
 		"PEM private key for --push-tls-cert. Required with --push-target.")
+	daemonCmd.Flags().BoolVar(&reportsEnabled, "reports-enabled", true,
+		"Write findings to namespaced OpenReports Report resources. Set to false for deployments that consume findings only through --push-target.")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -146,11 +149,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	// orClient writes OpenReports Reports; the scheme above already has the
-	// openreports types installed.
-	orClient, err := crclient.New(cfg, crclient.Options{Scheme: scheme})
-	if err != nil {
-		logger.Error(err, "failed to create controller-runtime client")
-		os.Exit(1)
+	// openreports types installed. It is only constructed when the reporter
+	// is, so a disabled reporter opens no OpenReports connection.
+	var orClient crclient.Client
+	if reportsEnabled {
+		orClient, err = crclient.New(cfg, crclient.Options{Scheme: scheme})
+		if err != nil {
+			logger.Error(err, "failed to create controller-runtime client")
+			os.Exit(1)
+		}
 	}
 
 	dclient, err := dynamic.NewForConfig(cfg)
@@ -179,7 +186,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// and a collector stage (it annotates events and drops unattributed ones).
 	attrIdx := attribution.NewIndex(logger.WithName("attribution"), attribution.WithMetrics(m))
 
-	rep := reporter.New(orClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName})
+	var rep *reporter.Reporter
+	if reportsEnabled {
+		rep = reporter.New(orClient, logger.WithName("reporter"), m, reporter.Options{NodeName: nodeName})
+	} else {
+		logger.Info("openreports writes disabled (--reports-enabled=false)")
+	}
 
 	// nodeFactory backs shard pruning: the status writer drops another node's
 	// entry from status.nodes only when this watch says the node is gone. The
@@ -223,10 +235,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		execSinks = append(execSinks, execSrc)
 	}
 
-	// Findings fan out to every sink: the reporter always, and the push sink
-	// when a collector is configured.
-	findingSinks := []monitor.FindingSink{rep}
-
 	var push *pushsink.GRPCSink
 	if pushTarget != "" {
 		push, err = pushsink.New(logger.WithName(pushsink.SourceName), pushsink.Options{
@@ -242,12 +250,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			logger.Error(err, "failed to create push sink")
 			os.Exit(1)
 		}
-		findingSinks = append(findingSinks, push)
 	}
+
+	// Findings fan out to whichever sinks are configured: the reporter when
+	// reports are enabled, and the push sink when a collector target is set.
+	sinks := findingSinks(rep, push)
 
 	// mon evaluates observed events against monitor-mode policies and turns
 	// matches into findings.
-	mon := monitor.New(logger.WithName("monitor"), findingSinks, m)
+	mon := monitor.New(logger.WithName("monitor"), sinks, m)
 
 	// monitor holds no pod state, so its namespaceSelector input arrives here
 	// rather than on the pod events the other handlers read it from.
@@ -364,7 +375,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	g.Go(func() error { return col.Run(ctx) })
 	g.Go(func() error { return sw.Run(ctx) })
-	g.Go(func() error { return rep.Run(ctx) })
+	if rep != nil {
+		g.Go(func() error { return rep.Run(ctx) })
+	}
 	if push != nil {
 		g.Go(func() error { return push.Run(ctx) })
 	}
@@ -375,4 +388,18 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// findingSinks assembles the monitor's fan-out. Absent sinks are skipped here
+// rather than appended: a typed nil in the interface slice would pass every
+// nil check downstream and panic on the first finding.
+func findingSinks(rep *reporter.Reporter, push *pushsink.GRPCSink) []monitor.FindingSink {
+	var sinks []monitor.FindingSink
+	if rep != nil {
+		sinks = append(sinks, rep)
+	}
+	if push != nil {
+		sinks = append(sinks, push)
+	}
+	return sinks
 }
