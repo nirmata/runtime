@@ -1,6 +1,7 @@
 package pushsink
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -92,6 +93,11 @@ func TestReportDropsOldestWhenTheQueueIsFull(t *testing.T) {
 // notice the free slot rather than evicting a finding that no longer needs
 // evicting.
 func TestReportDoesNotEvictWhenTheConsumerMadeRoom(t *testing.T) {
+	// Pin to one OS thread so Gosched below hands off to the producer
+	// goroutine deterministically: it runs until it blocks on dropMu rather
+	// than racing the drain on a separate core.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
 	for i := 0; i < 200; i++ {
 		loss := lossRecord{}
 		s := newTestSink(t, 2, loss)
@@ -105,8 +111,8 @@ func TestReportDoesNotEvictWhenTheConsumerMadeRoom(t *testing.T) {
 			s.Report(findingNamed("C"))
 		}()
 
-		time.Sleep(time.Millisecond)
-		<-s.queue // stands in for the stream consumer freeing a slot
+		runtime.Gosched() // let the producer fail its fast path and block on dropMu
+		<-s.queue         // stands in for the stream consumer freeing a slot
 		s.dropMu.Unlock()
 		<-done
 
