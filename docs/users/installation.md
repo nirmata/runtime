@@ -115,11 +115,14 @@ defaults to `ghcr.io/nirmata/kyverno-runtime`.
 | `daemon.clusterDomain` | `""` (daemon default `cluster.local`) | Sets `--cluster-domain`, the DNS domain that makes a `network` value a cluster Service name. |
 | `daemon.push.target` | `""` (disabled) | Collector address findings are streamed to, `host:port`. Empty opens no connection. |
 | `daemon.push.tls.secretName` | `""` | Secret holding `ca.crt`, `tls.crt` and `tls.key` for that connection. Required when `daemon.push.target` is set. |
+| `daemon.reports.enabled` | `true` | Write findings to namespaced OpenReports `Report` objects. Set `false` for deployments that consume findings only through `daemon.push.target`. |
+| `daemon.events.enabled` | `false` | Emit Kubernetes Events for policy violations and policy errors (see [Kubernetes Events](#kubernetes-events)). Requires `daemon.reports.enabled`; the chart refuses to render otherwise. |
 | `daemon.rbac.extraRules` | `[]` | Extra `PolicyRule` entries appended to the ClusterRole. Ignored if `rbac.create` is `false`. |
 
 The default ClusterRole grants only `pods` (get/list/watch), `runtimepolicies` and
 `runtimepolicies/status`, and `openreports.io` `reports`/`clusterreports` — it does not
-grant access to ConfigMaps or any other resource. A `RuntimePolicy` expression that uses
+grant access to ConfigMaps or any other resource. Setting `daemon.events.enabled` adds
+`events.k8s.io` `events` (create/patch). A `RuntimePolicy` expression that uses
 the `resource` CEL library to read a ConfigMap or another CRD needs that access added
 through `daemon.rbac.extraRules`:
 
@@ -163,6 +166,8 @@ after startup does not restart the container, and nothing routes traffic to the 
 | `--push-tls-ca` | `""` | `daemon.push.tls.secretName` |
 | `--push-tls-cert` | `""` | `daemon.push.tls.secretName` |
 | `--push-tls-key` | `""` | `daemon.push.tls.secretName` |
+| `--reports-enabled` | `true` | `daemon.reports.enabled` |
+| `--events-enabled` | `false` | `daemon.events.enabled` |
 
 `--cluster-domain` is the suffix that makes a `network` value a cluster Service name rather
 than an external one, so a cluster whose DNS domain is not `cluster.local` rejects every
@@ -199,6 +204,29 @@ Owner attribution on the wire (`ownerKind`, `ownerName`) is correlation metadata
 pod's `ownerReferences`, which Kubernetes does not verify. A receiver must not treat it as an
 authenticated identity; restricting who may set `ownerReferences` is a cluster admission-policy
 question, not something the daemon can settle.
+
+## Kubernetes Events
+
+Findings and policy status reach `kubectl describe pod` and the Events API only when
+`daemon.events.enabled` is set:
+
+```yaml
+daemon:
+  events:
+    enabled: true
+```
+
+This emits `PolicyViolation` (Warning) events for enforce-mode violations, `PolicyWouldViolate`
+(Normal) events for monitor mode's counterfactual findings, and `PolicyError` (Warning) events
+when a `RuntimePolicy`'s `Applied` or `TargetsValid` condition goes `False`. Violation events fire
+from the same deduplicated flush that writes a `Report` result — one Event per distinct cause per
+flush interval, not one per kernel occurrence — and every Event message passes through the same
+redaction boundary as everything else `pkg/reporter` emits.
+
+`daemon.events.enabled` requires `daemon.reports.enabled`: violation events are wired onto the
+reporter's flush, so the chart refuses to render the two together with reports disabled. It also
+adds `events.k8s.io` `events` (create/patch) to the ClusterRole; leaving it `false` grants no
+access to the Events API and writes no Events.
 
 ## Verify the install
 
