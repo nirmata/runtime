@@ -110,6 +110,10 @@ is the one-line-per-package index.
 | `pkg/metrics` | Prometheus collectors and the `/metrics` server (`--metrics-addr`). |
 | `cmd/kyverno-runtime` | The `daemon` subcommand; `daemon.go` is the single wiring site. |
 
+`pkg/proto/finding` (the generated findings wire contract `pkg/pushsink` sends over) is its own Go
+module, not a subpackage of the root one — see "Two Go modules" in
+[docs/dev/DEVELOPMENT.md](docs/dev/DEVELOPMENT.md).
+
 ## Runtime event filtering policy
 
 There is one event pipeline: `pkg/collector`, annotated by `pkg/attribution`, consumed by
