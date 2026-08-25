@@ -332,18 +332,18 @@ kind-push-collector-certs:
 		echo "Reusing existing certificates in $(PUSHSINK_CERT_DIR) (PUSH_HOST=$(PUSH_HOST))"; \
 	else \
 		mkdir -p $(PUSHSINK_CERT_DIR); \
-		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
 			-subj "/CN=pushsink-test-ca" -keyout $(PUSHSINK_CERT_DIR)/ca.key -out $(PUSHSINK_CERT_DIR)/ca.crt; \
 		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
 			-subj "/CN=$(PUSH_HOST)" \
 			-addext "subjectAltName=DNS:$(PUSH_HOST),DNS:localhost,IP:127.0.0.1" \
 			-keyout $(PUSHSINK_CERT_DIR)/server.key -out $(PUSHSINK_CERT_DIR)/server.csr; \
 		openssl x509 -req -in $(PUSHSINK_CERT_DIR)/server.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
-			-CAcreateserial -days 1 -copy_extensions copy -out $(PUSHSINK_CERT_DIR)/server.crt; \
+			-CAcreateserial -days 3650 -copy_extensions copy -out $(PUSHSINK_CERT_DIR)/server.crt; \
 		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
 			-subj "/CN=kyverno-runtime-daemon" -keyout $(PUSHSINK_CERT_DIR)/client.key -out $(PUSHSINK_CERT_DIR)/client.csr; \
 		openssl x509 -req -in $(PUSHSINK_CERT_DIR)/client.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
-			-CAcreateserial -days 1 -out $(PUSHSINK_CERT_DIR)/client.crt; \
+			-CAcreateserial -days 3650 -out $(PUSHSINK_CERT_DIR)/client.crt; \
 		echo "$(PUSH_HOST)" > $(PUSHSINK_CERT_DIR)/push-host; \
 	fi
 
@@ -410,7 +410,7 @@ kind-push-collector-verify: kind-push-collector-configure
 	kubectl apply -f examples/monitoring/monitor-egress/policy.yaml
 	kubectl wait --for=condition=Applied=True runtimepolicy/monitor-egress --timeout=60s
 	@TARGET=$$(kubectl get pod egress-target -o jsonpath='{.status.podIP}'); \
-	kubectl exec egress-client -- wget -q -T 3 -O /dev/null "http://$${TARGET}:8080/"
+	kubectl exec egress-client -- wget -q -T 3 -O /dev/null "http://$${TARGET}:8080/" || true
 	@i=0; \
 	while [ "$$i" -lt 30 ]; do \
 		if grep -qE '^\{' $(PUSHSINK_LOG) 2>/dev/null; then \
