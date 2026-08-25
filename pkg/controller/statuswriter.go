@@ -68,9 +68,10 @@ type StatusWriter struct {
 	// named node no longer exists, false means it exists or the caller
 	// cannot yet tell. A nil func disables shard pruning.
 	nodeGone func(name string) bool
-	// onConditionChanged fires for a condition that actually changed status,
-	// reason, or message, past RecordCondition's identical-condition
-	// early-return. A nil func disables it.
+	// onConditionChanged fires once a flush actually persists a condition
+	// whose status, reason, or message changed. It runs from the flush path,
+	// against what was written to the API, not from RecordCondition: see
+	// notifyConditionChanges. A nil func disables it.
 	onConditionChanged func(policyUID, policyName string, cond metav1.Condition)
 
 	mu sync.Mutex
@@ -150,6 +151,7 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 		return
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	st := s.getOrCreate(policyUID)
 	if policyName != "" {
@@ -157,7 +159,6 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 	}
 	if prev, ok := st.conditions[cond.Type]; ok &&
 		prev.Status == cond.Status && prev.Reason == cond.Reason && prev.Message == cond.Message {
-		s.mu.Unlock()
 		return
 	}
 	// apimeta.SetStatusCondition would fill a zero timestamp from time.Now(),
@@ -168,12 +169,6 @@ func (s *StatusWriter) RecordCondition(policyUID, policyName string, cond metav1
 	}
 	st.conditions[cond.Type] = cond
 	st.touch()
-	name := st.name
-	s.mu.Unlock()
-
-	if s.onConditionChanged != nil {
-		s.onConditionChanged(policyUID, name, cond)
-	}
 }
 
 // baseAppliedCondition reports what spec.mode alone promises: nothing has yet
@@ -405,9 +400,39 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 			return nil
 		}
 
-		_, err = rpClient.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
-		return err
+		if _, err := rpClient.UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+		s.notifyConditionChanges(item.uid, item.name, before.Conditions, updated.Status.Conditions)
+		return nil
 	})
+}
+
+// notifyConditionChanges fires onConditionChanged for every condition whose
+// Status, Reason, or Message differs between before and after: what this node
+// actually just persisted, not the raw arguments a caller passed to
+// RecordCondition. Applied is usually never passed to RecordCondition at
+// all — setClusterConditions derives it here, in this method, from
+// EnforcementAvailable/ObservationAvailable/PodsMatched — so a hook on
+// RecordCondition itself would miss most real Applied transitions. Comparing
+// the object's persisted state also means a process restart, which starts
+// this node's in-memory condition cache empty, cannot manufacture a spurious
+// notification: before is read fresh from the API on every flush.
+func (s *StatusWriter) notifyConditionChanges(policyUID, policyName string, before, after []metav1.Condition) {
+	if s.onConditionChanged == nil {
+		return
+	}
+	beforeByType := make(map[string]metav1.Condition, len(before))
+	for _, c := range before {
+		beforeByType[c.Type] = c
+	}
+	for _, c := range after {
+		if prev, ok := beforeByType[c.Type]; ok &&
+			prev.Status == c.Status && prev.Reason == c.Reason && prev.Message == c.Message {
+			continue
+		}
+		s.onConditionChanged(policyUID, policyName, c)
+	}
 }
 
 // pruneDeletedNodeShards drops the shards left behind by nodes that no longer
