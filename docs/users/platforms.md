@@ -119,3 +119,32 @@ All behaviors additionally need BTF at `/sys/kernel/btf/vmlinux` for CO-RE reloc
 the daemon loads its eBPF programs. Every platform in the table above ships it; it is
 called out here only because [Installation](installation.md) checks for it alongside
 cgroup v2 and BPF-LSM.
+
+## fs-verity availability (content-hash matching, planned)
+
+[#172](https://github.com/nirmata/runtime/issues/172) tracks content-hash identity for
+`open`/`exec` — matching on what a file actually contains, not just the path the kernel
+resolved. That work has not started: this section only documents where it could ship,
+and enforces nothing today.
+
+The plan matches a file's `fs-verity` digest via `bpf_get_fsverity_digest()`, which needs
+three things a policy author cannot see from `kubectl`: a kernel with
+`CONFIG_FS_VERITY=y`, a target filesystem that supports it (ext4 or f2fs, with the
+feature enabled at `mkfs` time or later), and the individual file enrolled with
+`fsverity enable` before any policy could reference its digest. Enrollment makes the
+file immutable, so it is a deliberate, per-file step an operator takes — never something
+a policy triggers on your behalf.
+
+Check kernel support:
+
+```bash
+grep -q FS_VERITY=y /boot/config-$(uname -r) && echo "CONFIG_FS_VERITY=y"
+```
+
+Check whether a specific file is already enrolled:
+
+```bash
+fsverity measure /path/to/file   # prints a digest if enrolled, errors otherwise
+```
+
+No `RuntimePolicy` field consumes this yet; see #172 for the phased plan.
