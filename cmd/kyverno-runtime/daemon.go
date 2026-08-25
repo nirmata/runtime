@@ -38,7 +38,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/cache"
-	clientevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -198,12 +197,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	var eventRec *reportevents.Recorder
 	if eventsEnabled {
-		eb := clientevents.NewBroadcaster(&clientevents.EventSinkImpl{Interface: k8sClient.EventsV1()})
-		if err := eb.StartRecordingToSinkWithContext(ctx); err != nil {
-			logger.Error(err, "failed to start event broadcaster")
-			os.Exit(1)
-		}
-		eventRec = reportevents.New(eb.NewRecorder(scheme, "kyverno-runtime"), logger.WithName("reportevents"))
+		eventRec = reportevents.New(k8sClient.EventsV1(), logger.WithName("reportevents"))
 	}
 
 	var flushSink func(f reporter.Finding, count int)
