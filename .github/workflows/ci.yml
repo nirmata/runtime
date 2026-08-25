@@ -109,6 +109,15 @@ jobs:
           path: ~/.cache/go-build
           key: unit-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
+      # pkg/proto/finding is its own module (a nested go.mod is a hard module
+      # boundary), so the root ./... above never touches it.
+      - name: Build and test the pkg/proto/finding submodule
+        working-directory: pkg/proto/finding
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
   # ---------------------------------------------------------------- ASSERTION
   lint:
     # Separate from "Build & Unit Test" because nothing here needs the build and
@@ -145,6 +154,14 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.11.4
+
+      # golangci-lint resolves packages through the nearest go.mod, so the
+      # pkg/proto/finding submodule needs its own invocation.
+      - name: golangci-lint (pkg/proto/finding)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.11.4
+          working-directory: pkg/proto/finding
 
       - name: markdownlint
         run: npx -y markdownlint-cli2 "**/*.md" "#vendor" "#bin"

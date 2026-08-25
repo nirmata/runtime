@@ -8,6 +8,7 @@ require (
 	github.com/google/cel-go v0.31.0
 	github.com/google/go-cmp v0.7.0
 	github.com/kyverno/sdk v0.0.0-20260710162940-953f943fc2d0
+	github.com/nirmata/runtime/pkg/proto/finding v0.0.0-00010101000000-000000000000
 	github.com/openreports/reports-api v0.2.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/spf13/cobra v1.10.2
@@ -110,3 +111,5 @@ tool (
 	k8s.io/code-generator/cmd/lister-gen
 	sigs.k8s.io/controller-tools/cmd/controller-gen
 )
+
+replace github.com/nirmata/runtime/pkg/proto/finding => ./pkg/proto/finding

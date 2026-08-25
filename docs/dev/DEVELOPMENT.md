@@ -176,6 +176,35 @@ kubectl get reports -A
 kubectl delete runtimepolicy --all
 ```
 
+## Two Go modules
+
+`pkg/proto/finding` (the generated `finding.pb.go` / `finding_grpc.pb.go` wire contract that
+`pkg/pushsink` sends findings over) is its own Go module, module path
+`github.com/nirmata/runtime/pkg/proto/finding`, with its own `go.mod`/`go.sum` depending on
+nothing but `google.golang.org/protobuf` and `google.golang.org/grpc`. This is why `go build ./...`
+and `go test ./...` at the repo root never touch it: a nested `go.mod` is a hard module boundary,
+and Go excludes everything below it from the root module's package tree.
+
+The root `go.mod` requires `github.com/nirmata/runtime/pkg/proto/finding` like any external module
+and pairs it with `replace github.com/nirmata/runtime/pkg/proto/finding => ./pkg/proto/finding`, so
+`pkg/pushsink` and `hack/pushsink-testcollector` resolve it from this checkout instead of a
+published tag. Build, vet, and test the submodule from inside it:
+
+```bash
+cd pkg/proto/finding
+go build ./...
+go vet ./...
+go test ./...
+```
+
+The split exists so a consumer that only wants the wire contract (for example a gRPC server
+implementing `finding.FindingServiceServer`) can depend on just that module, without pulling in
+this repo's BPF/Kubernetes/kyverno-sdk dependency graph. There is no root-level `go.work`: it would
+make `go build ./...` reach across both modules for local development, but CI and any external
+consumer resolve the submodule only through the `replace` directive, and a `go.work` file changes
+`go` command behavior for everyone under it unless `GOWORK=off` is set — a divergence between local
+and CI/consumer resolution that isn't worth the convenience.
+
 ## Generated artifacts
 
 Every committed generated file must be reproducible by a pinned toolchain from committed source,
@@ -215,7 +244,7 @@ Runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
 
 | Job | Kind | What it runs |
 | --- | --- | --- |
-| `Build & Unit Test` | assertion | `gofmt -l`, golangci-lint, `markdownlint-cli2`, `go build ./...`, `go vet ./...`, `make test-unit` |
+| `Build & Unit Test` | assertion | `gofmt -l`, golangci-lint (root and `pkg/proto/finding`), `markdownlint-cli2`, `go build ./...`, `go vet ./...`, `make test-unit`, plus `go build`/`go vet`/`go test` for the `pkg/proto/finding` submodule |
 | Helm and CRD drift | gate | `make helm-verify`, `make verify-crds` |
 | BPF object drift | gate | `make verify-bpf` |
 | CRD conformance | assertion | `make test-chainsaw` on a bare kind cluster |
