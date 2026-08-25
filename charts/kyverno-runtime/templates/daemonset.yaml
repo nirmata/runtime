@@ -2,6 +2,9 @@
 {{- if and .Values.daemon.push.target (not .Values.daemon.push.tls.secretName) }}
 {{- fail "daemon.push.tls.secretName is required when daemon.push.target is set: the collector connection is mutual TLS" }}
 {{- end }}
+{{- if and .Values.daemon.events.enabled (not .Values.daemon.reports.enabled) }}
+{{- fail "daemon.events.enabled requires daemon.reports.enabled: violation events are wired onto the reporter's flush" }}
+{{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
