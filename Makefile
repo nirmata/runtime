@@ -38,6 +38,16 @@ KO_VERSION ?= v0.19.1
 LOCALBIN := $(abspath bin)
 KO := $(LOCALBIN)/ko
 
+# PUSH_HOST is where a pod inside the kind cluster reaches the collector
+# running on the host. Docker Desktop resolves it from every container it
+# runs, kind nodes included; a Linux kind setup that does not resolve it
+# overrides this to the docker bridge gateway IP instead.
+PUSH_HOST ?= host.docker.internal
+PUSHSINK_CERT_DIR := $(LOCALBIN)/pushsink-certs
+PUSHSINK_BIN := $(LOCALBIN)/pushsink-testcollector
+PUSHSINK_LOG := $(LOCALBIN)/pushsink-testcollector.log
+PUSHSINK_PID := $(LOCALBIN)/pushsink-testcollector.pid
+
 generate-crds:
 	go tool controller-gen crd paths=./api/v1alpha1/... output:crd:dir=./charts/kyverno-runtime/crds
 
@@ -247,6 +257,24 @@ kind-install-prebuilt:
 	$(MAKE) kind-load-image
 	$(MAKE) kind-install-manifests
 
+# `helm --wait` and `rollout status` both read a fresh daemonset as rolled out
+# while .status.desiredNumberScheduled is still 0, so a caller would see a
+# cluster with no daemon on it. Poll for a scheduled pod first.
+wait-daemon-rollout:
+	@i=0; \
+	while [ "$$i" -lt 60 ]; do \
+		n=$$(kubectl -n kyverno-runtime get daemonset/kyverno-runtime -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null); \
+		[ -n "$$n" ] && [ "$$n" -gt 0 ] 2>/dev/null && break; \
+		i=$$((i + 1)); \
+		sleep 1; \
+	done; \
+	if [ "$$i" -ge 60 ]; then \
+		echo "ERROR: daemonset/kyverno-runtime scheduled onto no node within 60s."; \
+		kubectl -n kyverno-runtime get daemonset,nodes || true; \
+		exit 1; \
+	fi
+	kubectl -n kyverno-runtime rollout status daemonset/kyverno-runtime --timeout=180s
+
 # Shared install logic for both local-build and prebuilt-image flows.
 kind-install-manifests:
 	kubectl apply -f ./charts/kyverno-runtime/crds
@@ -268,22 +296,7 @@ kind-install-manifests:
 	else \
 		echo "Skipping explicit default policy apply: templates/default-policies.yaml not present"; \
 	fi
-# `helm --wait` and `rollout status` both read a fresh daemonset as rolled out
-# while .status.desiredNumberScheduled is still 0, so the install would hand the
-# suites a cluster with no daemon on it. Poll for a scheduled pod first.
-	@i=0; \
-	while [ "$$i" -lt 60 ]; do \
-		n=$$(kubectl -n kyverno-runtime get daemonset/kyverno-runtime -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null); \
-		[ -n "$$n" ] && [ "$$n" -gt 0 ] 2>/dev/null && break; \
-		i=$$((i + 1)); \
-		sleep 1; \
-	done; \
-	if [ "$$i" -ge 60 ]; then \
-		echo "ERROR: daemonset/kyverno-runtime scheduled onto no node within 60s."; \
-		kubectl -n kyverno-runtime get daemonset,nodes || true; \
-		exit 1; \
-	fi
-	kubectl -n kyverno-runtime rollout status daemonset/kyverno-runtime --timeout=180s
+	$(MAKE) wait-daemon-rollout
 	@if [ -f ./charts/kyverno-runtime/templates/default-policies.yaml ]; then \
 		echo "Verifying default policies are installed..."; \
 		for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
@@ -300,6 +313,132 @@ kind-install-manifests:
 	else \
 		echo "Skipping default policy verification: templates/default-policies.yaml not present"; \
 	fi
+
+# Generate a throwaway CA, a server certificate for the collector process
+# running on the host, and a client certificate for the daemon, following the
+# same openssl commands as docs/dev/DEVELOPMENT.md's "Validating the push
+# sink" section. The server SAN covers PUSH_HOST plus localhost, since a
+# developer watching the collector directly connects over localhost too.
+#
+# Cached under PUSHSINK_CERT_DIR and reused across reruns with the same
+# PUSH_HOST: the daemon's DaemonSet pod template is unchanged by a Secret's
+# bytes changing underneath it, so an already-rolled-out daemon keeps the
+# in-memory certificate it started with, and regenerating a fresh CA on every
+# run would leave it trusting a CA the collector no longer presents.
+# Regenerates automatically when PUSH_HOST changes, since the server SAN is
+# bound to it.
+kind-push-collector-certs:
+	@if [ -f $(PUSHSINK_CERT_DIR)/ca.crt ] && [ "$$(cat $(PUSHSINK_CERT_DIR)/push-host 2>/dev/null)" = "$(PUSH_HOST)" ]; then \
+		echo "Reusing existing certificates in $(PUSHSINK_CERT_DIR) (PUSH_HOST=$(PUSH_HOST))"; \
+	else \
+		mkdir -p $(PUSHSINK_CERT_DIR); \
+		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+			-subj "/CN=pushsink-test-ca" -keyout $(PUSHSINK_CERT_DIR)/ca.key -out $(PUSHSINK_CERT_DIR)/ca.crt; \
+		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+			-subj "/CN=$(PUSH_HOST)" \
+			-addext "subjectAltName=DNS:$(PUSH_HOST),DNS:localhost,IP:127.0.0.1" \
+			-keyout $(PUSHSINK_CERT_DIR)/server.key -out $(PUSHSINK_CERT_DIR)/server.csr; \
+		openssl x509 -req -in $(PUSHSINK_CERT_DIR)/server.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
+			-CAcreateserial -days 3650 -copy_extensions copy -out $(PUSHSINK_CERT_DIR)/server.crt; \
+		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+			-subj "/CN=kyverno-runtime-daemon" -keyout $(PUSHSINK_CERT_DIR)/client.key -out $(PUSHSINK_CERT_DIR)/client.csr; \
+		openssl x509 -req -in $(PUSHSINK_CERT_DIR)/client.csr -CA $(PUSHSINK_CERT_DIR)/ca.crt -CAkey $(PUSHSINK_CERT_DIR)/ca.key \
+			-CAcreateserial -days 3650 -out $(PUSHSINK_CERT_DIR)/client.crt; \
+		echo "$(PUSH_HOST)" > $(PUSHSINK_CERT_DIR)/push-host; \
+	fi
+
+kind-push-collector-build:
+	go build -o $(PUSHSINK_BIN) ./hack/pushsink-testcollector
+
+# Create the daemon's client-side TLS secret in-cluster. The dry-run-apply
+# idiom keeps rerunning this idempotent. The collector itself runs on the
+# host and reads its certificate files directly, so it needs no Secret.
+kind-push-collector-secrets: kind-push-collector-certs
+	kubectl -n kyverno-runtime create secret generic pushsink-daemon-push-tls \
+		--from-file=ca.crt=$(PUSHSINK_CERT_DIR)/ca.crt \
+		--from-file=tls.crt=$(PUSHSINK_CERT_DIR)/client.crt \
+		--from-file=tls.key=$(PUSHSINK_CERT_DIR)/client.key \
+		--dry-run=client -o yaml | kubectl apply -f -
+
+# Stop a collector left running from a previous invocation, if any.
+kind-push-collector-stop:
+	@if [ -f $(PUSHSINK_PID) ]; then \
+		kill $$(cat $(PUSHSINK_PID)) 2>/dev/null || true; \
+		rm -f $(PUSHSINK_PID); \
+	fi
+
+# Start the collector as a host process, detached from this `make` invocation
+# so it keeps running (and keeps accepting findings) after the target exits.
+# Always restarts: the certificates just (re)generated above only take effect
+# on a fresh process, so a leftover collector from an earlier run would
+# otherwise keep serving a stale server certificate.
+kind-push-collector-start: kind-push-collector-build kind-push-collector-certs kind-push-collector-stop
+	nohup $(PUSHSINK_BIN) --listen 0.0.0.0:9444 \
+		--tls-cert $(PUSHSINK_CERT_DIR)/server.crt \
+		--tls-key $(PUSHSINK_CERT_DIR)/server.key \
+		--tls-client-ca $(PUSHSINK_CERT_DIR)/ca.crt \
+		> $(PUSHSINK_LOG) 2>&1 & echo $$! > $(PUSHSINK_PID)
+	@sleep 1
+	@if ! kill -0 $$(cat $(PUSHSINK_PID)) 2>/dev/null; then \
+		echo "ERROR: pushsink-testcollector exited immediately; see $(PUSHSINK_LOG)"; \
+		cat $(PUSHSINK_LOG) || true; \
+		exit 1; \
+	fi
+	@echo "pushsink-testcollector listening on :9444 (pid $$(cat $(PUSHSINK_PID)), log $(PUSHSINK_LOG))"
+
+# Point the daemon's push sink at the host collector and wait for the
+# rollout that picks up the new flags and TLS secret.
+kind-push-collector-configure: kind-push-collector-secrets kind-push-collector-start
+	helm upgrade --install kyverno-runtime ./charts/kyverno-runtime \
+		--namespace kyverno-runtime --reuse-values \
+		--set daemon.push.target=$(PUSH_HOST):9444 \
+		--set daemon.push.tls.secretName=pushsink-daemon-push-tls \
+		--wait
+	$(MAKE) wait-daemon-rollout
+
+# Trigger a real finding and poll the collector's log for it. monitor-egress
+# only reports on an actual connection attempt, so this makes one after the
+# policy is confirmed applied. Chosen over the exec-based shadow-ai examples
+# because it needs only cgroup egress BPF, not the kernel's BPF-LSM open/exec
+# hooks, keeping this target's dependency surface to what a stock kind
+# cluster provides. Fails loudly with diagnostics from both sides on timeout
+# instead of exiting 0 on missing evidence.
+kind-push-collector-verify: kind-push-collector-configure
+	kubectl apply -f examples/monitoring/monitor-egress/target.yaml
+	kubectl apply -f examples/monitoring/monitor-egress/client.yaml
+	kubectl wait --for=condition=Ready pod/egress-target pod/egress-client --timeout=60s
+	kubectl apply -f examples/monitoring/monitor-egress/policy.yaml
+	kubectl wait --for=condition=Applied=True runtimepolicy/monitor-egress --timeout=60s
+	@TARGET=$$(kubectl get pod egress-target -o jsonpath='{.status.podIP}'); \
+	kubectl exec egress-client -- wget -q -T 3 -O /dev/null "http://$${TARGET}:8080/" || true
+	@i=0; \
+	while [ "$$i" -lt 30 ]; do \
+		if grep -qE '^\{' $(PUSHSINK_LOG) 2>/dev/null; then \
+			echo "Received a finding on the push collector."; \
+			exit 0; \
+		fi; \
+		i=$$((i + 1)); \
+		sleep 2; \
+	done; \
+	echo "ERROR: no finding observed on the push collector within 60s."; \
+	echo "--- collector log ($(PUSHSINK_LOG)) ---"; \
+	tail -n 200 $(PUSHSINK_LOG) 2>&1 || true; \
+	echo "--- daemon logs ---"; \
+	kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=100 || true; \
+	echo "If PUSH_HOST=$(PUSH_HOST) is not reachable from pods on this setup (for example a Linux host where host.docker.internal is not resolved), rerun with a reachable address, e.g.:"; \
+	echo "  PUSH_HOST=<docker-bridge-gateway-ip> make kind-push-collector"; \
+	exit 1
+
+# End-to-end validation of the gRPC findings push sink against the in-repo dev
+# test collector: runs the collector as a host process, wires the daemon's
+# push TLS at it, and confirms a real finding round-trips. `kind` both
+# creates a cluster when none exists and installs the daemon onto one that
+# already does, so this works either way.
+kind-push-collector: kind kind-push-collector-verify
+	@echo "Push sink validated end to end. Keep watching with:"
+	@echo "  tail -f $(PUSHSINK_LOG)"
+	@echo "Stop the collector with:"
+	@echo "  make kind-push-collector-stop"
 
 # Run the whole Chainsaw e2e suite against a kind cluster with kyverno-runtime
 # installed, LSM tests included. Those need a host booted with lsm=...,bpf and
@@ -431,4 +570,4 @@ helm: helm-verify
 helm-push: helm
 	helm push $(CHART_PACKAGE) $(CHART_REGISTRY)
 
-.PHONY: wait-crds generate-crds verify-crds generate-deepcopy verify-deepcopy generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build install-ko ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests test-e2e test-e2e-hosted test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-egress-load test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
+.PHONY: wait-crds generate-crds verify-crds generate-deepcopy verify-deepcopy generate-client generate-listers generate-informers test test-unit test-examples test-chainsaw fmt lint lint-docs helm-verify helm helm-push run build install-ko ko-build ko-push kind kind-load-image kind-install kind-install-prebuilt kind-install-manifests wait-daemon-rollout kind-push-collector-certs kind-push-collector-build kind-push-collector-secrets kind-push-collector-stop kind-push-collector-start kind-push-collector-configure kind-push-collector-verify kind-push-collector test-e2e test-e2e-hosted test-e2e-gate test-e2e-egress test-e2e-protocol test-e2e-svcref test-e2e-dns test-e2e-overlap test-e2e-egress-load test-e2e-lsm test-bpf-verify test-bpf-smoke smoke-quickstart premerge-smoke test-e2e-install test-e2e-install-prebuilt generate-proto
