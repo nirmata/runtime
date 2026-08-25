@@ -79,6 +79,9 @@ On startup it wires together:
   and the monitor-mode evaluator (see [The event plane](#the-event-plane)).
 - `pkg/metrics`, `pkg/collector`, `pkg/reporter`: the Prometheus registry and `/metrics` server,
   the observation pipeline, and the OpenReports writer.
+- `pkg/reportevents.Recorder`, wired only when `--events-enabled` is set: emits Kubernetes Events
+  from the reporter's flush and from `StatusWriter`'s condition-change callback (see
+  [Kubernetes Events](#kubernetes-events)).
 
 `runDaemon` is the single wiring site; the two typed handler slices are what the compiler checks:
 
@@ -710,6 +713,11 @@ cancellation, on a fresh bounded context, so the last window is not lost on shut
 through a `sigs.k8s.io/controller-runtime/pkg/client.Client` built from the daemon's `rest.Config`
 with the OpenReports types installed in the scheme.
 
+`Options.FlushSink`, when set, is called once per deduplicated finding on every flush — after
+dedup is drained, independent of whether the `Report` write that follows succeeds — with the raw,
+unredacted `Finding` and its merged occurrence count. `pkg/reportevents` is the only current
+subscriber (see [Kubernetes Events](#kubernetes-events)); a nil `FlushSink` costs nothing.
+
 ### Push sink (`pkg/pushsink`)
 
 `GRPCSink` is the second `FindingSink`: it streams findings to a collector as they are produced,
@@ -743,6 +751,28 @@ security boundary. Verifying the owner in-daemon is deliberately not the answer 
 per owner kind and still does not stop an attacker who controls a real object — the control is
 cluster-level admission policy over who may set `ownerReferences`.
 
+### Kubernetes Events
+
+`pkg/reportevents.Recorder` is the third output path, gated by `--events-enabled` (default
+`false`). It has two entry points: `FindingFlushed` is `reporter.Options.FlushSink`, called once
+per deduplicated finding on every `Reporter` flush; `ConditionChanged` is the
+`StatusWriter.onConditionChanged` callback described in [Status reporting](#status-reporting).
+Between them they emit `PolicyViolation`/`PolicyWouldViolate` (from `Finding.Enforced`) and
+`PolicyError` (from `Applied`/`TargetsValid` going `False`).
+
+It writes `eventsv1.Event` objects directly through the typed client rather than through
+`k8s.io/client-go/tools/events`' `EventRecorder`. That recorder's correlator keys its dedup cache
+on `(type, action, reason, reportingController, reportingInstance, regarding, related)` and never
+looks at the note, so two distinct causes sharing those fields — different targets of the same
+policy and pod, or a changed failure reason under an unchanged condition type — would collapse
+into one Event series with only the first message surviving. `Recorder` instead derives each
+Event's name deterministically: a finding's `Fingerprint()` (computed before `Redact`, matching
+the identity `Reporter` itself dedupes by), or the policy UID plus condition type for a policy
+error. A `Create` that hits `AlreadyExists` means the identical cause fired before, so it patches
+that object's `series` and `note` in place rather than creating a new one; a distinct cause always
+gets its own object. Every note passes through `reporter.Redact`/`reporter.Sanitize` first — the
+same boundary described next.
+
 ## Redaction chokepoint
 
 Secret material must be structurally incapable of reaching a `Report`, a log line, or the wire,
@@ -751,18 +781,20 @@ not merely filtered out by policy. One chokepoint, not configurable:
 **`reporter.Finding`.** `Finding` is a *closed* struct of typed scalars: no header
 map, no body field, no free-form properties passthrough. An unredacted payload is not
 representable at the boundary. `buildResult` emits a fixed property key set and every value
-passes `sanitize`. Pod labels — arbitrary user-controlled key/values — are deliberately never
-emitted.
+passes `reporter.Sanitize`. Pod labels — arbitrary user-controlled key/values — are deliberately
+never emitted.
 
 **`reporter.Redact`.** A `Finding` reaches a sink before anything in `pkg/reporter` has touched
 it, still carrying the raw argv and paths the kernel observed: `buildResult` scrubs on the way
 into a `Report`, which is no help to a sink that never builds one. `Redact` is the same
-`sanitize` applied to every string field of a `Finding`, and it is what `pkg/pushsink` calls
-before a finding enters its send queue — so what waits in daemon memory for a collector to come
-back is already scrubbed and bounded. It rebuilds `PodIdentity` field by field rather than
-copying and patching it: a field added there and not added to `Redact` is dropped, never
-forwarded unscrubbed. Pod labels are dropped for the same reason they are never emitted into a
-`Report`.
+`Sanitize` applied to every string field of a `Finding`, and it is what `pkg/pushsink` and
+`pkg/reportevents` call before a finding leaves the daemon as anything other than a `Report` — so
+what waits in a send queue, or lands in an Event's note, is already scrubbed and bounded. It
+rebuilds `PodIdentity` field by field rather than copying and patching it: a field added there and
+not added to `Redact` is dropped, never forwarded unscrubbed. Pod labels are dropped for the same
+reason they are never emitted into a `Report`. `pkg/reportevents.Recorder.ConditionChanged` calls
+`Sanitize` directly on a condition's `Reason`/`Message`, which can carry compiler error text
+quoting policy content and has no `Finding` to route through `Redact`.
 
 The argument is structural rather than procedural: there is no option, flag, or field that
 weakens the mechanism, and adding one is a reason to reject a PR
@@ -833,6 +865,16 @@ than `/24`, a hostname) is reported as a typed `egressfilter.RejectedTarget`, lo
 cannot become a `char[128]` map key does the same through `lsm.RejectedTarget`. Silently skipping
 it is the forbidden failure mode.
 
+An optional `onConditionChanged` callback, injected into `NewStatusWriter`, notifies a caller of
+every condition a flush actually persists whose status, reason, or message changed from what was
+there before. It fires from `flushOne`, after a successful `UpdateStatus`, comparing the object's
+conditions before and after that write — not from `RecordCondition`, since `Applied` is usually
+derived rather than recorded (above) and a hook on `RecordCondition` would therefore miss most of
+its real transitions. Comparing persisted state also means a daemon restart, which starts this
+node's in-memory condition cache empty, cannot manufacture a spurious notification: what changed
+is judged against the API object, fetched fresh on every flush, not against local memory.
+`pkg/reportevents` is the only current subscriber (see [Kubernetes Events](#kubernetes-events)).
+
 ## Metrics
 
 `pkg/metrics.New(reg)` registers every collector against a caller-supplied `prometheus.Registerer`
@@ -876,6 +918,10 @@ namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,re
   `--push-tls-*` paths, backed by a read-only mount of `daemon.push.tls.secretName` at
   `/etc/kyverno-runtime/push-tls` holding `ca.crt`, `tls.crt` and `tls.key`. The chart refuses to
   render a target without that Secret rather than installing a daemon that exits at boot.
+- `--events-enabled=true` when `daemon.events.enabled` is set, which also adds `events.k8s.io`
+  `events` `[create,patch]` to the ClusterRole. The chart refuses to render
+  `daemon.events.enabled: true` with `daemon.reports.enabled: false` rather than installing a
+  daemon that exits at boot, the same way it refuses an incomplete push TLS configuration.
 - The `RuntimePolicy` CRD (`charts/kyverno-runtime/crds/`), plus the vendored OpenReports CRDs
   (`openreports.io_*`), which `pkg/reporter` now writes to; the OpenReports API is registered into
   both the daemon's scheme and the controller-runtime client used for those writes.

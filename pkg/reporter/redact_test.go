@@ -71,8 +71,8 @@ func TestSanitizeScrubsCredentialShapes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sanitize(tc.in); got != tc.want {
-				t.Errorf("sanitize(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := Sanitize(tc.in); got != tc.want {
+				t.Errorf("Sanitize(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -80,7 +80,7 @@ func TestSanitizeScrubsCredentialShapes(t *testing.T) {
 
 func TestSanitizeBoundsValueLength(t *testing.T) {
 	long := strings.Repeat("a", maxPropertyRunes*3)
-	got := sanitize(long)
+	got := Sanitize(long)
 	if n := len([]rune(got)); n != maxPropertyRunes {
 		t.Errorf("sanitize length = %d, want %d", n, maxPropertyRunes)
 	}
@@ -89,7 +89,7 @@ func TestSanitizeBoundsValueLength(t *testing.T) {
 	}
 
 	// Multi-byte runes are counted as runes, never split mid-sequence.
-	if n := len([]rune(sanitize(strings.Repeat("é", maxPropertyRunes*2)))); n != maxPropertyRunes {
+	if n := len([]rune(Sanitize(strings.Repeat("é", maxPropertyRunes*2)))); n != maxPropertyRunes {
 		t.Errorf("sanitize rune length = %d, want %d", n, maxPropertyRunes)
 	}
 }

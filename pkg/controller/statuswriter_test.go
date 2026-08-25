@@ -28,7 +28,7 @@ var fixedNow = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 func newTestStatusWriter(t *testing.T, nodeName string, objs ...runtime.Object) (*StatusWriter, *fakeversioned.Clientset) {
 	t.Helper()
 	client := fakeversioned.NewSimpleClientset(objs...)
-	sw := NewStatusWriter(client, nodeName, time.Hour, logr.Discard(), nil)
+	sw := NewStatusWriter(client, nodeName, time.Hour, logr.Discard(), nil, nil)
 	sw.clock = func() time.Time { return fixedNow }
 	return sw, client
 }
@@ -217,6 +217,173 @@ func TestStatusWriterMergesConditions(t *testing.T) {
 	}
 	if tv.LastTransitionTime.IsZero() {
 		t.Error("TargetsValid has no lastTransitionTime, which the API rejects")
+	}
+}
+
+// TestFlushNotifiesOnDerivedAppliedTransition pins the fix for the callback
+// missing the far more common way Applied actually goes False: nothing ever
+// calls RecordCondition with Type=Applied for an attachment failure, only with
+// the EnforcementAvailable/ObservationAvailable gate that setClusterConditions
+// derives Applied from during flush. The callback must still fire, carrying
+// the derived Applied condition that was actually written.
+func TestFlushNotifiesOnDerivedAppliedTransition(t *testing.T) {
+	client := fakeversioned.NewSimpleClientset(policyObj("p", "uid-1"))
+	var calls []metav1.Condition
+	sw := NewStatusWriter(client, "node-a", time.Hour, logr.Discard(), nil,
+		func(policyUID, policyName string, cond metav1.Condition) { calls = append(calls, cond) })
+	sw.clock = func() time.Time { return fixedNow }
+
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionEnforcementAvailable, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonEnforcementUnavailable,
+		Message: "BPF-LSM is not active on this node",
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	var applied *metav1.Condition
+	for i := range calls {
+		if calls[i].Type == v1alpha1.ConditionApplied {
+			applied = &calls[i]
+		}
+	}
+	if applied == nil {
+		t.Fatalf("callback calls = %+v, want a derived Applied condition among them", calls)
+	}
+	if applied.Status != metav1.ConditionFalse || applied.Reason != v1alpha1.ReasonEnforcementUnavailable {
+		t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, v1alpha1.ReasonEnforcementUnavailable)
+	}
+}
+
+// TestFlushDoesNotNotifyOnNoOpReflush covers the identical-status case a
+// derived condition can hit that RecordCondition's own dedup never sees:
+// flushing the same inputs twice must fire the callback only on the flush
+// that actually changes what is persisted.
+func TestFlushDoesNotNotifyOnNoOpReflush(t *testing.T) {
+	client := fakeversioned.NewSimpleClientset(policyObj("p", "uid-1"))
+	var calls int
+	sw := NewStatusWriter(client, "node-a", time.Hour, logr.Discard(), nil,
+		func(policyUID, policyName string, cond metav1.Condition) { calls++ })
+	sw.clock = func() time.Time { return fixedNow }
+
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionEnforcementAvailable, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonEnforcementUnavailable,
+		Message: "BPF-LSM is not active on this node",
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("first flush: %v", err)
+	}
+	firstFlushCalls := calls
+	if firstFlushCalls == 0 {
+		t.Fatal("first flush notified nothing; the rest of this test is vacuous")
+	}
+
+	// force a re-flush of the identical, already-persisted content
+	sw.mu.Lock()
+	sw.policies["uid-1"].dirty = true
+	sw.mu.Unlock()
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("second flush: %v", err)
+	}
+	if calls != firstFlushCalls {
+		t.Errorf("re-flushing identical content notified %d more times, want 0 more", calls-firstFlushCalls)
+	}
+}
+
+// TestFlushDoesNotNotifyAfterRestart guards the false-positive a hook on
+// RecordCondition would manufacture: a fresh process starts with an empty
+// in-memory condition cache, so re-deriving and re-recording a condition that
+// is already persisted must not read as a change. Comparing against the
+// object's actual persisted state (read fresh from the API every flush) is
+// what makes this safe.
+func TestFlushDoesNotNotifyAfterRestart(t *testing.T) {
+	client := fakeversioned.NewSimpleClientset(policyObj("p", "uid-1"))
+	warm := NewStatusWriter(client, "node-a", time.Hour, logr.Discard(), nil, nil)
+	warm.clock = func() time.Time { return fixedNow }
+	if err := warm.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	warm.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionEnforcementAvailable, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonEnforcementUnavailable,
+		Message: "BPF-LSM is not active on this node",
+	})
+	if err := warm.Flush(context.Background()); err != nil {
+		t.Fatalf("warm flush: %v", err)
+	}
+
+	// simulate a restart: a new StatusWriter, empty in-memory state, pointed
+	// at the same already-persisted RuntimePolicy, re-deriving the identical
+	// signals a manager would report again on startup.
+	var calls int
+	cold := NewStatusWriter(client, "node-a", time.Hour, logr.Discard(), nil,
+		func(policyUID, policyName string, cond metav1.Condition) { calls++ })
+	cold.clock = func() time.Time { return fixedNow }
+	if err := cold.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	cold.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionEnforcementAvailable, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonEnforcementUnavailable,
+		Message: "BPF-LSM is not active on this node",
+	})
+	if err := cold.Flush(context.Background()); err != nil {
+		t.Fatalf("post-restart flush: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("post-restart flush of already-persisted state notified %d times, want 0", calls)
+	}
+}
+
+// TestFlushNotifiesOnExplicitTargetsValid covers the always-explicit
+// condition type: TargetsValid never goes through cluster derivation, so this
+// pins that the flush-path hook still catches it.
+func TestFlushNotifiesOnExplicitTargetsValid(t *testing.T) {
+	client := fakeversioned.NewSimpleClientset(policyObj("p", "uid-1"))
+	var calls []metav1.Condition
+	sw := NewStatusWriter(client, "node-a", time.Hour, logr.Discard(), nil,
+		func(policyUID, policyName string, cond metav1.Condition) { calls = append(calls, cond) })
+	sw.clock = func() time.Time { return fixedNow }
+
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeMonitor, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionTargetsValid, Status: metav1.ConditionFalse, Reason: "UnsupportedTargets",
+		Message: "1 target cannot be programmed",
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	var found bool
+	for _, c := range calls {
+		if c.Type == v1alpha1.ConditionTargetsValid && c.Status == metav1.ConditionFalse {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("callback calls = %+v, want a False TargetsValid condition among them", calls)
+	}
+}
+
+// TestRecordConditionWithNilCallback covers the default-off path: a
+// StatusWriter built with no onConditionChanged must not panic through either
+// RecordCondition or the flush it feeds.
+func TestRecordConditionWithNilCallback(t *testing.T) {
+	sw, _ := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionEnforcementAvailable, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonEnforcementUnavailable,
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
 	}
 }
 
@@ -786,7 +953,7 @@ func TestClusterConditionsUniformHealthyCluster(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
 			swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 			swB.clock = func() time.Time { return fixedNow }
 
 			for _, sw := range []*StatusWriter{swA, swB} {
@@ -825,7 +992,7 @@ func TestClusterAvailabilityFalseWhenAnyNodeLacksIt(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
 			swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+			swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 			swB.clock = func() time.Time { return fixedNow }
 
 			recordAndFlush(t, swA, tc.mode,
@@ -860,7 +1027,7 @@ func TestClusterAvailabilityFalseWhenAnyNodeLacksIt(t *testing.T) {
 // from every shard instead of overwriting the incapable node's answer.
 func TestClusterConditionsSurviveHealthyNodeFlushingLast(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	recordAndFlush(t, swB, compiler.ModeEnforce,
@@ -885,7 +1052,7 @@ func TestClusterConditionsSurviveHealthyNodeFlushingLast(t *testing.T) {
 // policy at cluster scope while another node's matching pods are covered.
 func TestClusterAppliedTrueDespiteUnmatchedNode(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	recordAndFlush(t, swA, compiler.ModeEnforce,
@@ -908,7 +1075,7 @@ func TestClusterAppliedTrueDespiteUnmatchedNode(t *testing.T) {
 
 func TestClusterPodsMatchedFalseOnlyWhenNoNodeMatches(t *testing.T) {
 	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
-	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil)
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 	swB.clock = func() time.Time { return fixedNow }
 
 	for _, sw := range []*StatusWriter{swA, swB} {
@@ -1188,7 +1355,7 @@ func TestRecomputeLastEvaluated(t *testing.T) {
 }
 
 func TestNewStatusWriterDefaultsInterval(t *testing.T) {
-	sw := NewStatusWriter(fakeversioned.NewSimpleClientset(), "node-a", 0, logr.Discard(), nil)
+	sw := NewStatusWriter(fakeversioned.NewSimpleClientset(), "node-a", 0, logr.Discard(), nil, nil)
 	if sw.interval != DefaultStatusFlushInterval {
 		t.Errorf("interval = %v, want the %v default", sw.interval, DefaultStatusFlushInterval)
 	}

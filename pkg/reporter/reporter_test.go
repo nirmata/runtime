@@ -630,3 +630,54 @@ func TestNewAppliesDefaults(t *testing.T) {
 		t.Fatalf("flush with nil metrics: %v", err)
 	}
 }
+
+// TestFlushDeliversEachDedupedFindingToTheFlushSinkOnce pins the volume
+// control the daemon depends on: a repeated fingerprint reaches FlushSink once
+// per flush, carrying its merged occurrence count, not once per Report call.
+func TestFlushDeliversEachDedupedFindingToTheFlushSinkOnce(t *testing.T) {
+	c := newRecordingClient(t)
+	type call struct {
+		finding Finding
+		count   int
+	}
+	var calls []call
+	r, _ := newTestReporter(t, c, Options{
+		FlushSink: func(f Finding, count int) { calls = append(calls, call{finding: f, count: count}) },
+	})
+
+	repeated := findingIn("default", "pod-1", fixedTime)
+	r.Report(repeated)
+	r.Report(repeated)
+	r.Report(repeated)
+	r.Report(findingIn("default", "pod-2", fixedTime))
+
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("FlushSink was called %d times, want 2 (one per fingerprint)", len(calls))
+	}
+	counts := map[string]int{}
+	for _, c := range calls {
+		counts[c.finding.Pod.UID] = c.count
+	}
+	if counts["pod-1"] != 3 {
+		t.Errorf("pod-1 count = %d, want 3", counts["pod-1"])
+	}
+	if counts["pod-2"] != 1 {
+		t.Errorf("pod-2 count = %d, want 1", counts["pod-2"])
+	}
+}
+
+// TestFlushWithNilFlushSinkDoesNotPanic covers the default-off path: the
+// daemon leaves FlushSink unset unless --events-enabled is passed.
+func TestFlushWithNilFlushSinkDoesNotPanic(t *testing.T) {
+	c := newRecordingClient(t)
+	r, _ := newTestReporter(t, c, Options{})
+
+	r.Report(findingIn("default", "pod-1", fixedTime))
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush with nil FlushSink: %v", err)
+	}
+}

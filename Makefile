@@ -552,6 +552,14 @@ helm-verify:
 	helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime \
 		--set daemon.reports.enabled=false \
 		| grep -q -- '--reports-enabled=false'
+	helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime \
+		--set daemon.events.enabled=true \
+		| grep -q -- '--events-enabled=true'
+	@if helm template kyverno-runtime charts/kyverno-runtime --namespace kyverno-runtime \
+		--set daemon.events.enabled=true --set daemon.reports.enabled=false > /dev/null 2>&1; then \
+		echo "ERROR: daemon.events.enabled=true with daemon.reports.enabled=false rendered, want the chart to reject it"; \
+		exit 1; \
+	fi
 	@echo "helm chart renders"
 
 # helm lints and packages the chart into $(CHART_PACKAGE_DIR) for local inspection or a

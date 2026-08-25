@@ -8,7 +8,7 @@
 //     header map, no body field, and no free-form properties passthrough, so
 //     an unredacted payload is not even representable at the boundary.
 //  2. buildResult emits a FIXED key set into ReportResult.Properties, and
-//     every emitted value passes through sanitize (see redact.go).
+//     every emitted value passes through Sanitize (see redact.go).
 //  3. PodIdentity.Labels are deliberately never emitted: arbitrary
 //     user-controlled key/values have no place in a Report.
 //
