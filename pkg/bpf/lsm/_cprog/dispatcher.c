@@ -38,7 +38,7 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
         prog_ctx->prog_type = PROG_TYPE_LSM_OPEN;
 
         /* we have no programs, don't proceed */
-        __u32 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
+        __u8 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
         if (!prog_cnt || *prog_cnt == 0) {
             return 0;
         }
@@ -52,7 +52,7 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
         prog_ctx->prog_type = PROG_TYPE_LSM_EXEC;
 
          /* we have no programs, don't proceed */
-        __u32 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
+        __u8 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
         if (!prog_cnt || *prog_cnt == 0) {
             return 0;
         }

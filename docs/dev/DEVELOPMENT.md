@@ -51,6 +51,8 @@ macOS; the kernel-bound tests skip themselves there.
 | `make kind-install` | `ko-build` + `kind-load-image` + `kind-install-manifests` |
 | `make kind-install-prebuilt` | Same, reusing an image already in local Docker |
 | `make kind-install-manifests` | Apply the CRDs and `helm upgrade --install` the chart |
+| `make kind-push-collector` | End-to-end push sink check: runs the dev collector on the host, points the daemon at it, and confirms a finding round-trips |
+| `make kind-push-collector-stop` | Stop the collector process `make kind-push-collector` started |
 | `make test-e2e-install` | `kind-install` + `test-e2e` |
 | `make test-e2e-install-prebuilt` | `kind-install-prebuilt` + `test-e2e` |
 | `make generate-crds`, `make verify-crds` | Regenerate the CRDs from `api/v1alpha1`, or fail on drift |
@@ -125,6 +127,15 @@ Add `--refuse-after 10` to fail the stream once the collector has accepted 10 fi
 drives the daemon's reconnect backoff and its `nirmata_runtime_events_dropped_total{source="pushsink",reason="queue_full"}`
 counter. Add `--delay 500ms` to sleep before every read, which exercises live-stream backpressure
 instead.
+
+For an end-to-end check with no manual cert juggling, run `make kind-push-collector`. It generates
+the certificates above, builds and starts the collector as a background process on the host (so
+iterating on it needs no image rebuild or reload), points the daemon in kind at it over
+`PUSH_HOST:9444` (`PUSH_HOST` defaults to `host.docker.internal`, which Docker Desktop resolves
+from every container it runs; override it, for example to the docker bridge gateway IP, on a
+Linux setup where that name is not resolved from pods), and confirms at least one finding
+round-trips by polling the collector's log. Stop the background collector with
+`make kind-push-collector-stop`.
 
 Documentation-only changes need `make lint-docs`, not `make build` or `make test`.
 
