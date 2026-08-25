@@ -99,6 +99,16 @@ jobs:
       - name: Unit tests
         run: make test-unit
 
+      # pkg/proto/finding is its own module (a nested go.mod is a hard module
+      # boundary), so the root ./... above never touches it. Runs before the
+      # cache save below so its build output is captured too.
+      - name: Build and test the pkg/proto/finding submodule
+        working-directory: pkg/proto/finding
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
       # Saved on failure too: a post step is skipped when the job fails, which
       # would leave the next run compiling cold exactly while someone iterates
       # on a red suite.
@@ -108,15 +118,6 @@ jobs:
         with:
           path: ~/.cache/go-build
           key: unit-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
-
-      # pkg/proto/finding is its own module (a nested go.mod is a hard module
-      # boundary), so the root ./... above never touches it.
-      - name: Build and test the pkg/proto/finding submodule
-        working-directory: pkg/proto/finding
-        run: |
-          go build ./...
-          go vet ./...
-          go test ./...
 
   # ---------------------------------------------------------------- ASSERTION
   lint:

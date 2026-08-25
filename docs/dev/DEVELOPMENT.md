@@ -255,7 +255,8 @@ Runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
 
 | Job | Kind | What it runs |
 | --- | --- | --- |
-| `Build & Unit Test` | assertion | `gofmt -l`, golangci-lint (root and `pkg/proto/finding`), `markdownlint-cli2`, `go build ./...`, `go vet ./...`, `make test-unit`, plus `go build`/`go vet`/`go test` for the `pkg/proto/finding` submodule |
+| `Build & Unit Test` | assertion | `go build ./...`, `make test-unit`, plus `go build`/`go vet`/`go test` for the `pkg/proto/finding` submodule |
+| `Assert: format, lint and vet` | assertion | `gofmt -l`, golangci-lint (root and `pkg/proto/finding`), `markdownlint-cli2`, `go vet ./...` |
 | Helm and CRD drift | gate | `make helm-verify`, `make verify-crds` |
 | BPF object drift | gate | `make verify-bpf` |
 | CRD conformance | assertion | `make test-chainsaw` on a bare kind cluster |
