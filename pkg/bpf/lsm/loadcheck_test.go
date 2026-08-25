@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/nirmata/runtime/pkg/utils"
+
 	"github.com/cilium/ebpf"
 )
 
@@ -16,6 +18,22 @@ func TestGeneratedObjectsLoad(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to load BPF programs")
 	}
+
+	required := os.Getenv("NIRMATA_RUNTIME_REQUIRE_BPF_LSM") == "1"
+	on, err := utils.BpfLSMEnabled()
+	switch {
+	case err != nil && required:
+		t.Fatalf("NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 but whether BPF-LSM is available could not be determined: %v", err)
+	case err != nil:
+		t.Skipf("cannot determine whether BPF-LSM is available: %v", err)
+	case !on && required:
+		t.Fatal("NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 but BPF-LSM is unavailable: kernel not booted with BPF-LSM " +
+			"('bpf' absent from /sys/kernel/security/lsm); boot it with lsm=...,bpf")
+	case !on:
+		t.Skip("BPF-LSM unavailable: kernel not booted with BPF-LSM ('bpf' absent from /sys/kernel/security/lsm); " +
+			"boot it with lsm=...,bpf")
+	}
+
 	pin := "/sys/fs/bpf/loadcheck"
 	if err := os.MkdirAll(pin, 0o755); err != nil {
 		t.Fatal(err)
