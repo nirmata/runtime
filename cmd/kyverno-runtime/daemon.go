@@ -303,10 +303,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		logger.Error(err, "could not determine BPF-LSM availability; falling back to raw tracepoints")
 		lsmEnabled = false
+		_ = lsmEnabled
 	}
 	execMgr, err := openexecmgr.NewOpenExecManager(logger, sw, func(reason string, delta uint64) {
 		m.EventsDropped.WithLabelValues(openExecSource, reason).Add(float64(delta))
-	}, !lsmEnabled, execSinks...) // (ammar) i reverted this for testing purposes
+	}, false, execSinks...) // (ammar) i reverted this for testing purposes
 	if err != nil {
 		logger.Error(err, "failed to create openexec manager, exec and open enforcement won't work")
 	} else {
