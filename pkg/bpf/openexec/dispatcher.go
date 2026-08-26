@@ -186,7 +186,7 @@ func (d *Dispatcher) Attach() error {
 	if d.dispatcherType == PROG_TYPE_LSM_OPEN || d.dispatcherType == PROG_TYPE_LSM_EXEC {
 		l, err = link.AttachLSM(link.LSMOptions{Program: d.prog})
 	} else {
-		l, err = link.AttachRawTracepoint(link.RawTracepointOptions{Program: d.prog})
+		l, err = link.AttachRawTracepoint(link.RawTracepointOptions{Name: d.dispatcherType, Program: d.prog})
 	}
 
 	if err != nil {

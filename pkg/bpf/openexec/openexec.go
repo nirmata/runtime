@@ -17,8 +17,8 @@ const maxPathLen = 128
 const (
 	PROG_TYPE_LSM_OPEN   = "file_open"
 	PROG_TYPE_LSM_EXEC   = "bprm_check_security"
-	PROG_TYPE_TRACE_OPEN = "syscalls/sys_enter_execve"
-	PROG_TYPE_TRACE_EXEC = "syscalls/sys_enter_openat"
+	PROG_TYPE_TRACE_OPEN = "sys_enter_openat"
+	PROG_TYPE_TRACE_EXEC = "sys_enter_execve"
 )
 
 // ProgTypes is the ordered list of lsm hooks: a hook's index here is the
