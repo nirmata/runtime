@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"errors"
@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/nirmata/runtime/api/v1alpha1"
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/events"
 
@@ -70,7 +70,7 @@ func TestRpCreated_ProgTypeSelection(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			la, attached := h.l.lsmAttachments["rp1"]
+			la, attached := h.l.openExecAttachments["rp1"]
 			if attached != tt.wantAttached {
 				t.Fatalf("attachment stored = %v, want %v", attached, tt.wantAttached)
 			}
@@ -175,7 +175,7 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 				if got := openEnf.denySet(); !slices.Equal(got, tt.wantOpenDeny) {
 					t.Errorf("open deny set = %v, want %v", got, tt.wantOpenDeny)
 				}
-			} else if _, ok := h.l.lsmAttachments["rp1"].progs[open]; ok {
+			} else if _, ok := h.l.openExecAttachments["rp1"].progs[open]; ok {
 				t.Error("open enforcer created for a policy with no open behaviors")
 			}
 			assertInvariant(t, h.l)
@@ -201,7 +201,7 @@ func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	la, ok := h.l.lsmAttachments["rp1"]
+	la, ok := h.l.openExecAttachments["rp1"]
 	if !ok {
 		t.Fatal("observe-mode policy produced no attachment: monitor mode must observe, not disable the policy")
 	}
@@ -335,7 +335,7 @@ func TestRpUpdated_ObserveModeTargetChangeProgramsNothing(t *testing.T) {
 		t.Errorf("observe-mode update programmed maps: add=%v del=%v denyAll=%v", f.addTargets, f.delTargets, f.defaultDeny)
 	}
 	// the prog state still tracks what the policy asks for, userspace matching reads it
-	if got := h.l.lsmAttachments["rp1"].progs[open].files.Deny; !slices.Equal(got, []string{"/etc/passwd", "*"}) {
+	if got := h.l.openExecAttachments["rp1"].progs[open].files.Deny; !slices.Equal(got, []string{"/etc/passwd", "*"}) {
 		t.Errorf("tracked deny list = %v, want the updated one", got)
 	}
 	assertInvariant(t, h.l)
@@ -360,17 +360,17 @@ func TestRpCreated_AttachesPreExistingMatchingPods(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	la := h.l.lsmAttachments["rp1"]
+	la := h.l.openExecAttachments["rp1"]
 	if got := attachedPodUIDs(la); !slices.Equal(got, []string{"podA", "podB"}) {
 		t.Errorf("attached pods = %v, want [podA podB]", got)
 	}
 	for _, uid := range []string{"podA", "podB"} {
 		if got := attachedPolicyUIDs(h.l.pods[uid]); !slices.Equal(got, []string{"rp1"}) {
-			t.Errorf("%s attachedLsms = %v, want [rp1]", uid, got)
+			t.Errorf("%s attachedOpenExecs = %v, want [rp1]", uid, got)
 		}
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podC"]); len(got) != 0 {
-		t.Errorf("podC attachedLsms = %v, want empty", got)
+		t.Errorf("podC attachedOpenExecs = %v, want empty", got)
 	}
 
 	// both enforcers get exactly the cgids of the matching pods, in one aggregated call
@@ -405,7 +405,7 @@ func TestRpCreated_NoMatchingPodsSkipsCgidCalls(t *testing.T) {
 	if len(f.enableObs) != 0 {
 		t.Errorf("EnableObservation calls = %v, want none", f.enableObs)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rp1"]); len(got) != 0 {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rp1"]); len(got) != 0 {
 		t.Errorf("attached pods = %v, want none", got)
 	}
 	assertInvariant(t, h.l)
@@ -420,7 +420,7 @@ func TestRpCreated_ErrorPaths(t *testing.T) {
 		if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); !errors.Is(err, boom) {
 			t.Fatalf("err = %v, want %v", err, boom)
 		}
-		if _, ok := h.l.lsmAttachments["rp1"]; ok {
+		if _, ok := h.l.openExecAttachments["rp1"]; ok {
 			t.Error("attachment stored despite construction failure")
 		}
 	})
@@ -442,7 +442,7 @@ func TestRpCreated_ErrorPaths(t *testing.T) {
 			if created[0].closeCount != 1 {
 				t.Errorf("Close called %d times, want 1 (leaked bpf objects)", created[0].closeCount)
 			}
-			if _, ok := h.l.lsmAttachments["rp1"]; ok {
+			if _, ok := h.l.openExecAttachments["rp1"]; ok {
 				t.Errorf("attachment stored despite %s failure", method)
 			}
 		})
@@ -464,7 +464,7 @@ func TestRpCreated_ErrorPaths(t *testing.T) {
 		if created[0].closeCount != 1 {
 			t.Errorf("open enforcer Close called %d times, want 1 (leaked bpf objects)", created[0].closeCount)
 		}
-		if _, ok := h.l.lsmAttachments["rp1"]; ok {
+		if _, ok := h.l.openExecAttachments["rp1"]; ok {
 			t.Error("attachment stored despite exec construction failure")
 		}
 	})
@@ -474,7 +474,7 @@ func TestRpCreated_ErrorPaths(t *testing.T) {
 // V(0) log plus a policy condition, never a silent downgrade.
 func TestObservationFailureSurfacesPolicyCondition(t *testing.T) {
 	h := newHarness(t)
-	h.failMethod(open, "EnableObservation", lsm.ErrObservationUnavailable)
+	h.failMethod(open, "EnableObservation", openexec.ErrObservationUnavailable)
 	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, labels.Everything(),
 		pair(nil, []string{"/etc/shadow"}), nil), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
@@ -487,7 +487,7 @@ func TestObservationFailureSurfacesPolicyCondition(t *testing.T) {
 	}
 	// the attachment is still tracked: enforcement (when in enforce mode) must not
 	// be dropped because counting failed
-	if _, ok := h.l.lsmAttachments["rp1"]; !ok {
+	if _, ok := h.l.openExecAttachments["rp1"]; !ok {
 		t.Error("attachment dropped because observation was unavailable")
 	}
 	assertInvariant(t, h.l)
@@ -515,7 +515,7 @@ func TestRpUpdated_NoAttachment(t *testing.T) {
 			if h.createdCount() != tt.wantCreated {
 				t.Errorf("created %d enforcers, want %d", h.createdCount(), tt.wantCreated)
 			}
-			_, attached := h.l.lsmAttachments["rp1"]
+			_, attached := h.l.openExecAttachments["rp1"]
 			if attached != (tt.wantCreated > 0) {
 				t.Errorf("attachment stored = %v, want %v", attached, tt.wantCreated > 0)
 			}
@@ -541,7 +541,7 @@ func TestRpUpdated_UnknownModeTearsDown(t *testing.T) {
 	if err := h.l.RuntimePolicyEvent(audit, events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := h.l.lsmAttachments["rp1"]; ok {
+	if _, ok := h.l.openExecAttachments["rp1"]; ok {
 		t.Error("attachment still present after mode flip")
 	}
 	for name, f := range map[string]*fakeEnforcer{open: openEnf, exec: execEnf} {
@@ -550,7 +550,7 @@ func TestRpUpdated_UnknownModeTearsDown(t *testing.T) {
 		}
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podA"]); len(got) != 0 {
-		t.Errorf("podA attachedLsms = %v, want empty", got)
+		t.Errorf("podA attachedOpenExecs = %v, want empty", got)
 	}
 	assertInvariant(t, h.l)
 }
@@ -570,7 +570,7 @@ func TestRpUpdated_EmptyingAllProgsDeletesAttachment(t *testing.T) {
 	if err := h.l.RuntimePolicyEvent(empty, events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := h.l.lsmAttachments["rp1"]; ok {
+	if _, ok := h.l.openExecAttachments["rp1"]; ok {
 		t.Error("attachment still present after all prog types were emptied")
 	}
 	// each enforcer must be closed exactly once: syncProgType closes it and removes
@@ -579,7 +579,7 @@ func TestRpUpdated_EmptyingAllProgsDeletesAttachment(t *testing.T) {
 		t.Errorf("close counts = open:%d exec:%d, want 1 each", openEnf.closeCount, execEnf.closeCount)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podA"]); len(got) != 0 {
-		t.Errorf("podA attachedLsms = %v, want empty", got)
+		t.Errorf("podA attachedOpenExecs = %v, want empty", got)
 	}
 	assertInvariant(t, h.l)
 }
@@ -753,7 +753,7 @@ func TestSyncProgType_DropsProgTypeThatLostAllEntries(t *testing.T) {
 		pair(nil, nil), pair(nil, []string{"/bin/sh"})), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
-	la := h.l.lsmAttachments["rp1"]
+	la := h.l.openExecAttachments["rp1"]
 	if got := progTypes(la); !slices.Equal(got, []string{exec}) {
 		t.Fatalf("prog types = %v, want [%s]", got, exec)
 	}
@@ -799,7 +799,7 @@ func TestSyncProgType_CloseFailureStillDropsProgState(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want %v", err, boom)
 	}
-	la := h.l.lsmAttachments["rp1"]
+	la := h.l.openExecAttachments["rp1"]
 	if _, ok := la.progs[open]; ok {
 		t.Fatal("closed open enforcer is still registered in la.progs")
 	}
@@ -849,15 +849,15 @@ func TestSyncPodAttachment_SelectorChange(t *testing.T) {
 	if got := f.observedSet(); !slices.Equal(got, []uint64{21, 22}) {
 		t.Errorf("observed cgids = %v, want [21 22]", got)
 	}
-	la := h.l.lsmAttachments["rp1"]
+	la := h.l.openExecAttachments["rp1"]
 	if got := attachedPodUIDs(la); !slices.Equal(got, []string{"podDb"}) {
 		t.Errorf("attached pods = %v, want [podDb]", got)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podWeb"]); len(got) != 0 {
-		t.Errorf("podWeb attachedLsms = %v, want empty", got)
+		t.Errorf("podWeb attachedOpenExecs = %v, want empty", got)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podDb"]); !slices.Equal(got, []string{"rp1"}) {
-		t.Errorf("podDb attachedLsms = %v, want [rp1]", got)
+		t.Errorf("podDb attachedOpenExecs = %v, want [rp1]", got)
 	}
 	assertInvariant(t, h.l)
 
@@ -887,7 +887,7 @@ func TestRpDeleted(t *testing.T) {
 	if err := h.l.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "rp1"}, events.EventTypeDelete); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := h.l.lsmAttachments["rp1"]; ok {
+	if _, ok := h.l.openExecAttachments["rp1"]; ok {
 		t.Error("rp1 attachment not removed")
 	}
 	if rp1Enf.closeCount != 1 {
@@ -897,7 +897,7 @@ func TestRpDeleted(t *testing.T) {
 		t.Errorf("rp2 enforcer Close called %d times, want 0", rp2Enf.closeCount)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podA"]); !slices.Equal(got, []string{"rp2"}) {
-		t.Errorf("podA attachedLsms = %v, want [rp2]", got)
+		t.Errorf("podA attachedOpenExecs = %v, want [rp2]", got)
 	}
 	assertInvariant(t, h.l)
 
@@ -916,8 +916,8 @@ func TestRuntimePolicyEvent_UnknownEventTypeIsIgnored(t *testing.T) {
 	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, labels.Everything(), pair(nil, []string{"/etc/shadow"}), nil), "bogus"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if h.createdCount() != 0 || len(h.l.lsmAttachments) != 0 {
-		t.Errorf("unknown event type mutated state: created=%d attachments=%d", h.createdCount(), len(h.l.lsmAttachments))
+	if h.createdCount() != 0 || len(h.l.openExecAttachments) != 0 {
+		t.Errorf("unknown event type mutated state: created=%d attachments=%d", h.createdCount(), len(h.l.openExecAttachments))
 	}
 }
 

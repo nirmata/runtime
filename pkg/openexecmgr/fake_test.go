@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/containers"
 	"github.com/nirmata/runtime/pkg/runtimeevent"
@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	open = lsm.PROG_TYPE_LSM_OPEN
-	exec = lsm.PROG_TYPE_LSM_EXEC
+	open = openexec.PROG_TYPE_LSM_OPEN
+	exec = openexec.PROG_TYPE_LSM_EXEC
 )
 
 // the clock every harness runs on: no sleeping and no wall clock in a unit test.
@@ -57,7 +57,7 @@ type fakeEnforcer struct {
 	usedClosed []string // methods called after Close, must always be empty
 
 	// pending are the kernel-side counts ReadEvents will hand back (and reset).
-	pending map[uint64]map[lsm.PathEventKey]uint32
+	pending map[uint64]map[openexec.PathEventKey]uint32
 
 	// lost is the cumulative kernel drop total, as the real stats map holds it:
 	// ReadEventsLost hands back the increase since the previous call.
@@ -77,7 +77,7 @@ func newFakeEnforcer(target string, errs map[string]error) *fakeEnforcer {
 		deny:      map[string]struct{}{},
 		cgids:     map[uint64]struct{}{},
 		observing: map[uint64]struct{}{},
-		pending:   map[uint64]map[lsm.PathEventKey]uint32{},
+		pending:   map[uint64]map[openexec.PathEventKey]uint32{},
 		errs:      errs,
 	}
 }
@@ -119,7 +119,7 @@ func (f *fakeEnforcer) DeleteCgids(cgids []uint64) error {
 }
 
 // AddTargets and DeleteTargets model the real enforcer's effective map state by
-// deriving their keys the way it does, so a value lsm.PathKeys rejects never
+// deriving their keys the way it does, so a value openexec.PathKeys rejects never
 // appears in the fake's allow or deny set either.
 func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.mu.Lock()
@@ -150,8 +150,8 @@ func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.
 }
 
 func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejected []compiler.RejectedTarget) {
-	allowKeys, _, allowRejected := lsm.PathKeys(paths.Allow)
-	denyKeys, _, denyRejected := lsm.PathKeys(paths.Deny)
+	allowKeys, _, allowRejected := openexec.PathKeys(paths.Allow)
+	denyKeys, _, denyRejected := openexec.PathKeys(paths.Deny)
 	for _, k := range allowKeys {
 		allow = append(allow, keyPath(k))
 	}
@@ -161,7 +161,7 @@ func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejecte
 	return allow, deny, append(denyRejected, allowRejected...)
 }
 
-// keyPath is the inverse of the NUL padding lsm.PathKeys applies; paths hold
+// keyPath is the inverse of the NUL padding openexec.PathKeys applies; paths hold
 // no NUL byte, so the first one always ends the string.
 func keyPath(k [compiler.MaxPathValueLen + 1]byte) string {
 	if i := bytes.IndexByte(k[:], 0); i >= 0 {
@@ -201,11 +201,11 @@ func (f *fakeEnforcer) DisableObservation(cgids []uint64) error {
 
 // ReadEvents drains the seeded counts for the cgids it is asked about, mirroring
 // the real read-and-reset semantics.
-func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventKey]uint32, error) {
+func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[openexec.PathEventKey]uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.readCalls = append(f.readCalls, slices.Clone(cgids))
-	out := map[uint64]map[lsm.PathEventKey]uint32{}
+	out := map[uint64]map[openexec.PathEventKey]uint32{}
 	for _, c := range cgids {
 		counts, ok := f.pending[c]
 		if !ok || len(counts) == 0 {
@@ -239,17 +239,17 @@ func (f *fakeEnforcer) seedLost(n uint64) {
 // call. seedDecision is the general form.
 func (f *fakeEnforcer) seed(cgid uint64, counts map[string]uint32) {
 	for p, c := range counts {
-		f.seedDecision(cgid, lsm.PathEventKey{Path: p, Decision: runtimeevent.DecisionAllow}, c)
+		f.seedDecision(cgid, openexec.PathEventKey{Path: p, Decision: runtimeevent.DecisionAllow}, c)
 	}
 }
 
 // seedDecision puts one kernel-side (path, decision) count in place for the next
 // ReadEvents call.
-func (f *fakeEnforcer) seedDecision(cgid uint64, key lsm.PathEventKey, count uint32) {
+func (f *fakeEnforcer) seedDecision(cgid uint64, key openexec.PathEventKey, count uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.pending[cgid] == nil {
-		f.pending[cgid] = map[lsm.PathEventKey]uint32{}
+		f.pending[cgid] = map[openexec.PathEventKey]uint32{}
 	}
 	f.pending[cgid][key] = count
 }
@@ -367,11 +367,11 @@ func (s *fakeStatus) latest(policyUID, condType string) (metav1.Condition, bool)
 	return metav1.Condition{}, false
 }
 
-// harness wires an LsmManager to fake enforcers and keeps a record of every
+// harness wires an OpenExecManager to fake enforcers and keeps a record of every
 // enforcer that got created.
 type harness struct {
 	t      *testing.T
-	l      *LsmManager
+	l      *OpenExecManager
 	status *fakeStatus
 
 	mu        sync.Mutex
@@ -395,7 +395,7 @@ func newHarness(t *testing.T) *harness {
 		createErr: map[string]error{},
 		methodErr: map[string]map[string]error{},
 	}
-	factory := func(_ *logr.Logger, target string) (lsmEnforcer, error) {
+	factory := func(_ *logr.Logger, target string) (openExecEnforcer, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if err := h.createErr[target]; err != nil {
@@ -409,11 +409,11 @@ func newHarness(t *testing.T) *harness {
 		h.created = append(h.created, f)
 		return f, nil
 	}
-	h.l = newLsmManager(logr.Discard(), h.status, func(reason string, delta uint64) {
+	h.l = newOpenExecManager(logr.Discard(), h.status, func(reason string, delta uint64) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.losses = append(h.losses, loss{reason: reason, delta: delta})
-	}, factory)
+	}, factory, false)
 	h.l.clock = func() time.Time { return fixedTime }
 	return h
 }
@@ -462,7 +462,7 @@ func (h *harness) createdFor(target string) []*fakeEnforcer {
 // enf returns the enforcer currently attached for a policy/prog type.
 func (h *harness) enf(rpUID, progType string) *fakeEnforcer {
 	h.t.Helper()
-	la, ok := h.l.lsmAttachments[rpUID]
+	la, ok := h.l.openExecAttachments[rpUID]
 	if !ok {
 		h.t.Fatalf("no lsm attachment for policy %q", rpUID)
 	}
@@ -485,7 +485,7 @@ func (h *harness) resetAll() {
 	}
 }
 
-func progTypes(la *lsmAttachment) []string {
+func progTypes(la *openExecAttachment) []string {
 	out := make([]string, 0, len(la.progs))
 	for k := range la.progs {
 		out = append(out, k)
@@ -495,11 +495,11 @@ func progTypes(la *lsmAttachment) []string {
 }
 
 // assertInvariant checks the bidirectional bookkeeping between attachedPods and
-// attachedLsms: every reference in one direction must have its counterpart, and
+// attachedOpenExecs: every reference in one direction must have its counterpart, and
 // every referenced object must still be the live one held in the manager maps.
-func assertInvariant(t *testing.T, l *LsmManager) {
+func assertInvariant(t *testing.T, l *OpenExecManager) {
 	t.Helper()
-	for rpUID, la := range l.lsmAttachments {
+	for rpUID, la := range l.openExecAttachments {
 		for podUID, pod := range la.attachedPods {
 			live, ok := l.pods[podUID]
 			if !ok {
@@ -509,20 +509,20 @@ func assertInvariant(t *testing.T, l *LsmManager) {
 			if live != pod {
 				t.Errorf("stale pointer: policy %q holds a different podRepresentation for pod %q than l.pods", rpUID, podUID)
 			}
-			if pod.attachedLsms[rpUID] != la {
+			if pod.attachedOpenExecs[rpUID] != la {
 				t.Errorf("missing reverse pointer: pod %q does not point back at policy %q", podUID, rpUID)
 			}
 		}
 	}
 	for podUID, pod := range l.pods {
-		for rpUID, la := range pod.attachedLsms {
-			live, ok := l.lsmAttachments[rpUID]
+		for rpUID, la := range pod.attachedOpenExecs {
+			live, ok := l.openExecAttachments[rpUID]
 			if !ok {
-				t.Errorf("dangling reference: pod %q points at policy %q which is not in l.lsmAttachments", podUID, rpUID)
+				t.Errorf("dangling reference: pod %q points at policy %q which is not in l.openExecAttachments", podUID, rpUID)
 				continue
 			}
 			if live != la {
-				t.Errorf("stale pointer: pod %q holds a different lsmAttachment for policy %q", podUID, rpUID)
+				t.Errorf("stale pointer: pod %q holds a different openExecAttachment for policy %q", podUID, rpUID)
 			}
 			if la.attachedPods[podUID] != pod {
 				t.Errorf("missing forward pointer: policy %q does not point back at pod %q", rpUID, podUID)
@@ -612,7 +612,7 @@ func assertCgidCalls(t *testing.T, what string, got [][]uint64, want [][]uint64)
 	}
 }
 
-func attachedPodUIDs(la *lsmAttachment) []string {
+func attachedPodUIDs(la *openExecAttachment) []string {
 	out := make([]string, 0, len(la.attachedPods))
 	for k := range la.attachedPods {
 		out = append(out, k)
@@ -622,8 +622,8 @@ func attachedPodUIDs(la *lsmAttachment) []string {
 }
 
 func attachedPolicyUIDs(pr *podRepresentation) []string {
-	out := make([]string, 0, len(pr.attachedLsms))
-	for k := range pr.attachedLsms {
+	out := make([]string, 0, len(pr.attachedOpenExecs))
+	for k := range pr.attachedOpenExecs {
 		out = append(out, k)
 	}
 	sort.Strings(out)
@@ -671,7 +671,7 @@ func (s *fakeSink) set() []uint64 {
 }
 
 // newHarnessWithSink is newHarness plus a recording CgroupSink, which
-// NewLsmManager only accepts at construction.
+// NewOpenExecManager only accepts at construction.
 func newHarnessWithSink(t *testing.T) (*harness, *fakeSink) {
 	t.Helper()
 	sink := newFakeSink()

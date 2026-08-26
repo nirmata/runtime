@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/nirmata/runtime/api/v1alpha1"
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/containers"
 	"github.com/nirmata/runtime/pkg/events"
@@ -24,9 +24,9 @@ import (
 const maxReportedRejectedPaths = 10
 
 // enforcerFactory builds an enforcer for a bpf lsm attach target.
-type enforcerFactory func(logger *logr.Logger, target string) (lsmEnforcer, error)
+type enforcerFactory func(logger *logr.Logger, target string) (openExecEnforcer, error)
 
-type LsmManager struct {
+type OpenExecManager struct {
 	logger logr.Logger
 
 	// surfaces per-policy conditions so a policy that cannot be honored does not
@@ -50,23 +50,24 @@ type LsmManager struct {
 
 	// labels are stored in several places, costing memory, because the alternative is
 	// one more centralized dependency to consult on every read
-	pods           map[string]*podRepresentation
-	lsmAttachments map[string]*lsmAttachment
+	pods                map[string]*podRepresentation
+	openExecAttachments map[string]*openExecAttachment
+	lsm                 bool
 }
 
 type podRepresentation struct {
-	cgids        []uint64
-	labels       map[string]string
-	nsLabels     map[string]string
-	attachedLsms map[string]*lsmAttachment
+	cgids             []uint64
+	labels            map[string]string
+	nsLabels          map[string]string
+	attachedOpenExecs map[string]*openExecAttachment
 }
 
 type progState struct {
-	enf   lsmEnforcer
+	enf   openExecEnforcer
 	files *compiler.AllowDenyPair
 }
 
-type lsmAttachment struct {
+type openExecAttachment struct {
 	progs        map[string]*progState
 	target       compiler.PodTarget
 	attachedPods map[string]*podRepresentation
@@ -85,22 +86,22 @@ type lsmAttachment struct {
 	badProgs map[string]string
 }
 
-// NewLsmManager loads and attaches the dispatcher for each lsm hook the
+// NewOpenExecManager loads and attaches the dispatcher for each lsm hook the
 // manager enforces through. The dispatchers are the only programs linked to
 // the kernel; enforcers built later join their tail-call chains.
-func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, tracepoint bool, cgroupSinks ...CgroupSink) (*LsmManager, error) {
-	if err := lsm.ClearPins(); err != nil {
+func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, cgroupSinks ...CgroupSink) (*OpenExecManager, error) {
+	if err := openexec.ClearPins(); err != nil {
 		return nil, err
 	}
 
-	progArrayType := []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC}
-	if tracepoint {
-		progArrayType = []string{lsm.PROG_TYPE_TRACE_OPEN, lsm.PROG_TYPE_TRACE_EXEC}
+	progArrayType := []string{openexec.PROG_TYPE_TRACE_OPEN, openexec.PROG_TYPE_TRACE_EXEC}
+	if lsm {
+		progArrayType = []string{openexec.PROG_TYPE_LSM_OPEN, openexec.PROG_TYPE_LSM_EXEC}
 	}
 
-	dispatchers := make(map[string]*lsm.Dispatcher, 2)
+	dispatchers := make(map[string]*openexec.Dispatcher, 2)
 	for _, target := range progArrayType {
-		d, err := lsm.NewDispatcherForTarget(target)
+		d, err := openexec.NewDispatcherForTarget(target)
 		if err != nil {
 			return nil, fmt.Errorf("loading the %s dispatcher: %w", target, err)
 		}
@@ -110,32 +111,32 @@ func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder,
 		dispatchers[target] = d
 	}
 
-	newEnforcer := func(logger *logr.Logger, target string) (lsmEnforcer, error) {
+	newEnforcer := func(logger *logr.Logger, target string) (openExecEnforcer, error) {
 		d, ok := dispatchers[target]
 		if !ok {
 			return nil, fmt.Errorf("unknown lsm attach target %q", target)
 		}
-		return lsm.NewForAttachTarget(d, logger)
+		return openexec.NewForAttachTarget(d, logger)
 	}
-	return newLsmManager(logger, status, onLoss, newEnforcer, cgroupSinks...), nil
+
+	return newOpenExecManager(logger, status, onLoss, newEnforcer, lsm, cgroupSinks...), nil
 }
 
-// newLsmManager wires the manager around an enforcer factory without touching
-// the kernel, so tests can drive the state machine with fakes.
-func newLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, newEnforcer enforcerFactory, cgroupSinks ...CgroupSink) *LsmManager {
-	return &LsmManager{
-		logger:         logger,
-		status:         status,
-		onLoss:         onLoss,
-		cgroupSinks:    cgroupSinks,
-		newEnforcer:    newEnforcer,
-		clock:          time.Now,
-		pods:           make(map[string]*podRepresentation),
-		lsmAttachments: make(map[string]*lsmAttachment),
+func newOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, newEnforcer enforcerFactory, lsm bool, cgroupSinks ...CgroupSink) *OpenExecManager {
+	return &OpenExecManager{
+		logger:              logger,
+		status:              status,
+		onLoss:              onLoss,
+		cgroupSinks:         cgroupSinks,
+		newEnforcer:         newEnforcer,
+		clock:               time.Now,
+		lsm:                 lsm,
+		pods:                make(map[string]*podRepresentation),
+		openExecAttachments: make(map[string]*openExecAttachment),
 	}
 }
 
-func (l *LsmManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, eventType string) error {
+func (l *OpenExecManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, eventType string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch eventType {
@@ -149,7 +150,7 @@ func (l *LsmManager) RuntimePolicyEvent(compiledRb *compiler.EvaluationResult, e
 	return nil
 }
 
-func (l *LsmManager) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo, eventType string) error {
+func (l *OpenExecManager) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo, eventType string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch eventType {
@@ -164,7 +165,7 @@ func (l *LsmManager) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfo
 
 // PodDeleted removes the pod's cgroups from every attached program and drops
 // its bookkeeping.
-func (l *LsmManager) PodDeleted(uid string) error {
+func (l *OpenExecManager) PodDeleted(uid string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.podDeleted(uid)
@@ -174,7 +175,7 @@ func (l *LsmManager) PodDeleted(uid string) error {
 // addPodCgids adds cgids to one program's cgroup map and turns observation on
 // for them. Attached implies observed, in enforce mode as well: the counted
 // paths feed userspace deny delivery. Keep the two calls together.
-func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids []uint64, observe bool) {
+func (l *OpenExecManager) addPodCgids(rpUID, progType string, prog *progState, cgids []uint64, observe bool) {
 	if len(cgids) == 0 {
 		return
 	}
@@ -192,7 +193,7 @@ func (l *LsmManager) addPodCgids(rpUID, progType string, prog *progState, cgids 
 }
 
 // removePodCgids is addPodCgids' inverse, and pairs the same two calls.
-func (l *LsmManager) removePodCgids(rpUID, progType string, prog *progState, cgids []uint64) {
+func (l *OpenExecManager) removePodCgids(rpUID, progType string, prog *progState, cgids []uint64) {
 	if len(cgids) == 0 {
 		return
 	}
@@ -208,8 +209,8 @@ func (l *LsmManager) removePodCgids(rpUID, progType string, prog *progState, cgi
 // mirrorCgids forwards the exec target's cgroup set to the cgroup sinks. The
 // sinks hold one unqualified set, so only the exec target is mirrored, and a
 // removal reaches them only for cgroups no other exec attachment still holds.
-func (l *LsmManager) mirrorCgids(rpUID, progType string, cgids []uint64, add bool) {
-	if progType != lsm.PROG_TYPE_LSM_EXEC {
+func (l *OpenExecManager) mirrorCgids(rpUID, progType string, cgids []uint64, add bool) {
+	if progType != openexec.PROG_TYPE_LSM_EXEC {
 		return
 	}
 	if !add {
@@ -238,13 +239,13 @@ func (l *LsmManager) mirrorCgids(rpUID, progType string, cgids []uint64, add boo
 // selector sync both remove the pod from attachedPods after the cgid removal —
 // so excluding the caller's own policy is what makes this answer the question
 // "does anyone else still need this cgroup".
-func (l *LsmManager) cgidsUnwantedByOtherExecPolicies(excludeUID string, cgids []uint64) []uint64 {
+func (l *OpenExecManager) cgidsUnwantedByOtherExecPolicies(excludeUID string, cgids []uint64) []uint64 {
 	wanted := make(map[uint64]struct{})
-	for uid, la := range l.lsmAttachments {
+	for uid, la := range l.openExecAttachments {
 		if uid == excludeUID {
 			continue
 		}
-		if _, ok := la.progs[lsm.PROG_TYPE_LSM_EXEC]; !ok {
+		if _, ok := la.progs[openexec.PROG_TYPE_LSM_EXEC]; !ok {
 			continue
 		}
 		for _, pod := range la.attachedPods {
@@ -265,8 +266,8 @@ func (l *LsmManager) cgidsUnwantedByOtherExecPolicies(excludeUID string, cgids [
 
 // observationUnavailable records a policy condition for an observation failure:
 // the policy produces no findings at all, so it should not read as healthy.
-func (l *LsmManager) observationUnavailable(rpUID, progType, msg string, err error) {
-	if errors.Is(err, lsm.ErrObservationUnavailable) {
+func (l *OpenExecManager) observationUnavailable(rpUID, progType, msg string, err error) {
+	if errors.Is(err, openexec.ErrObservationUnavailable) {
 		l.logger.V(2).Info(msg, "uid", rpUID, "progType", progType, "reason", err.Error())
 	} else {
 		l.logger.Error(err, msg, "uid", rpUID, "progType", progType)
@@ -277,7 +278,7 @@ func (l *LsmManager) observationUnavailable(rpUID, progType, msg string, err err
 // enforcementUnavailable records a policy condition for a kernel map the
 // runtime could not program: the workload runs on, unenforced, so the failure
 // is invisible everywhere else.
-func (l *LsmManager) enforcementUnavailable(rpUID, progType, msg string, err error) {
+func (l *OpenExecManager) enforcementUnavailable(rpUID, progType, msg string, err error) {
 	l.logger.Error(err, msg, "uid", rpUID, "progType", progType)
 	l.markBad(rpUID, progType, false, msg+" for "+progType+": "+err.Error())
 }
@@ -286,7 +287,7 @@ func (l *LsmManager) enforcementUnavailable(rpUID, progType, msg string, err err
 // for one program type, so a node that can never honor a policy's open/exec
 // rules does not read the same as one that is honoring them. rpCreated and
 // syncProgType are the two places an attach is first attempted.
-func (l *LsmManager) reportAttachFailure(rpUID, progType string, observe bool, err error) {
+func (l *OpenExecManager) reportAttachFailure(rpUID, progType string, observe bool, err error) {
 	err = l.diagnoseAttachErr(err)
 	if observe {
 		l.observationUnavailable(rpUID, progType, "failed to attach lsm enforcer", err)
@@ -299,7 +300,7 @@ func (l *LsmManager) reportAttachFailure(rpUID, progType string, observe bool, e
 // undoing a previous reportAttachFailure once a retry of the same event
 // succeeds — this is on the requeue path, so a transient cause (unlike a
 // missing BPF-LSM) can clear between attempts.
-func (l *LsmManager) clearAttachFailure(rpUID, progType string, observe bool) {
+func (l *OpenExecManager) clearAttachFailure(rpUID, progType string, observe bool) {
 	l.markGood(rpUID, progType, observe)
 }
 
@@ -309,8 +310,8 @@ func (l *LsmManager) clearAttachFailure(rpUID, progType string, observe bool) {
 // tracked attachment yet — the very first attach attempt, before rpCreated
 // has stored one — has nothing to aggregate against, so the condition is
 // written directly instead.
-func (l *LsmManager) markBad(rpUID, progType string, observe bool, message string) {
-	if la, ok := l.lsmAttachments[rpUID]; ok {
+func (l *OpenExecManager) markBad(rpUID, progType string, observe bool, message string) {
+	if la, ok := l.openExecAttachments[rpUID]; ok {
 		if la.badProgs == nil {
 			la.badProgs = make(map[string]string)
 		}
@@ -325,8 +326,8 @@ func (l *LsmManager) markBad(rpUID, progType string, observe bool, message strin
 // attachment's bad set once it recovers, so a different program type that is
 // still bad keeps the aggregate condition False instead of being masked by
 // this one's recovery.
-func (l *LsmManager) markGood(rpUID, progType string, observe bool) {
-	if la, ok := l.lsmAttachments[rpUID]; ok {
+func (l *OpenExecManager) markGood(rpUID, progType string, observe bool) {
+	if la, ok := l.openExecAttachments[rpUID]; ok {
 		delete(la.badProgs, progType)
 		l.recordAttachAggregate(rpUID, la, observe)
 		return
@@ -337,7 +338,7 @@ func (l *LsmManager) markGood(rpUID, progType string, observe bool) {
 // recordAttachAggregate writes EnforcementAvailable/ObservationAvailable from
 // la's current bad set: True only when it is empty, False naming every
 // program type still in it otherwise.
-func (l *LsmManager) recordAttachAggregate(rpUID string, la *lsmAttachment, observe bool) {
+func (l *OpenExecManager) recordAttachAggregate(rpUID string, la *openExecAttachment, observe bool) {
 	if len(la.badProgs) == 0 {
 		l.recordAvailability(rpUID, observe, metav1.ConditionTrue, "every attached program type is programmed and functioning")
 		return
@@ -357,7 +358,7 @@ func (l *LsmManager) recordAttachAggregate(rpUID string, la *lsmAttachment, obse
 // recordAvailability writes EnforcementAvailable (enforce mode) or
 // ObservationAvailable (monitor mode), the one shared condition type every
 // program type of a policy reports through.
-func (l *LsmManager) recordAvailability(rpUID string, observe bool, status metav1.ConditionStatus, message string) {
+func (l *OpenExecManager) recordAvailability(rpUID string, observe bool, status metav1.ConditionStatus, message string) {
 	condType := v1alpha1.ConditionEnforcementAvailable
 	reason := v1alpha1.ReasonEnforcementUnavailable
 	if observe {
@@ -384,7 +385,7 @@ func (l *LsmManager) recordAvailability(rpUID string, observe bool, status metav
 // with lsm=bpf), as opposed to a raw kernel errno from link.AttachLSM. A
 // BpfLSMEnabled error means the check itself was inconclusive, so the
 // original error is left as is rather than asserted to be something else.
-func (l *LsmManager) diagnoseAttachErr(err error) error {
+func (l *OpenExecManager) diagnoseAttachErr(err error) error {
 	if enabled, lsmErr := utils.BpfLSMEnabled(); lsmErr == nil && !enabled {
 		return fmt.Errorf("BPF-LSM is not active on this node: %w", err)
 	}
@@ -395,7 +396,7 @@ func (l *LsmManager) diagnoseAttachErr(err error) error {
 // value of one behavior can be programmed. It parses the policy's own values
 // with the parser the enforcer uses, so the answer holds in observe mode too,
 // where nothing reaches a kernel map at all.
-func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *compiler.AllowDenyPair) {
+func (l *OpenExecManager) recordPathRulesCondition(rpUID, condType string, pair *compiler.AllowDenyPair) {
 	if !pair.HasEntries() {
 		l.recordCondition(rpUID, metav1.Condition{
 			Type:               condType,
@@ -407,8 +408,8 @@ func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *comp
 		return
 	}
 
-	_, _, rejected := lsm.PathKeys(pair.Deny)
-	_, _, allowRejected := lsm.PathKeys(pair.Allow)
+	_, _, rejected := openexec.PathKeys(pair.Deny)
+	_, _, allowRejected := openexec.PathKeys(pair.Allow)
 	rejected = append(rejected, allowRejected...)
 	if len(rejected) == 0 {
 		l.recordCondition(rpUID, metav1.Condition{
@@ -436,7 +437,7 @@ func (l *LsmManager) recordPathRulesCondition(rpUID, condType string, pair *comp
 // logRejected reports what one enforcer refused to key. recordPathRulesCondition
 // already carries the same values onto the policy status, so this stays at V(2)
 // and only adds the program type.
-func (l *LsmManager) logRejected(rpUID, progType string, rejected []compiler.RejectedTarget) {
+func (l *OpenExecManager) logRejected(rpUID, progType string, rejected []compiler.RejectedTarget) {
 	for _, r := range rejected {
 		l.logger.V(2).Info("path was not programmed", "uid", rpUID, "progType", progType,
 			"path", r.Value, "reason", r.Reason)
@@ -455,7 +456,7 @@ func rejectionMessage(rejected []compiler.RejectedTarget) string {
 	return fmt.Sprintf("%d path(s) are not enforced: %s", len(rejected), strings.Join(parts, "; "))
 }
 
-func (l *LsmManager) recordCondition(rpUID string, cond metav1.Condition) {
+func (l *OpenExecManager) recordCondition(rpUID string, cond metav1.Condition) {
 	if l.status == nil || rpUID == "" {
 		return
 	}

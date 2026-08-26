@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"github.com/nirmata/runtime/pkg/bpf/openexec"
@@ -12,9 +12,9 @@ type CgroupSink interface {
 	DeleteCgids(cgids []uint64) error
 }
 
-// the subset of *lsm.LsmEnforcer the manager uses, so its state machine can be
+// the subset of *openexec.LsmEnforcer the manager uses, so its state machine can be
 // exercised without loading bpf programs.
-type lsmEnforcer interface {
+type openExecEnforcer interface {
 	Close() error
 	AddCgids(cgids []uint64) error
 	DeleteCgids(cgids []uint64) error

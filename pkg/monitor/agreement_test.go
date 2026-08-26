@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 )
 
@@ -49,12 +49,12 @@ var observedCorpus = []string{
 
 // TestMonitorMatchesWhatTheKernelWouldMatch is the "monitor never lies" pin: for
 // every value the corpus can hold, the userspace matcher's verdict equals a
-// lookup against the keys lsm.AddTargets would program. A second tokenizer or a
+// lookup against the keys openexec.AddTargets would program. A second tokenizer or a
 // second length bound on either side breaks it.
 func TestMonitorMatchesWhatTheKernelWouldMatch(t *testing.T) {
 	m := newPathMatcher(valueCorpus)
 
-	keys, star, rejected := lsm.PathKeys(valueCorpus)
+	keys, star, rejected := openexec.PathKeys(valueCorpus)
 	if len(rejected) == 0 {
 		t.Fatal("the corpus no longer contains a value the kernel maps reject")
 	}
@@ -91,7 +91,7 @@ func TestRejectedValuesLeaveTheRestEnforceable(t *testing.T) {
 	values := []string{"/bin/sh", strings.Repeat("/deep", 200), "/usr/bin/curl"}
 
 	m := newPathMatcher(values)
-	keys, _, rejected := lsm.PathKeys(values)
+	keys, _, rejected := openexec.PathKeys(values)
 
 	if len(keys) != 2 || len(rejected) != 1 {
 		t.Fatalf("PathKeys kept %d keys and rejected %d values, want 2 and 1", len(keys), len(rejected))
@@ -106,7 +106,7 @@ func TestRejectedValuesLeaveTheRestEnforceable(t *testing.T) {
 	}
 }
 
-// trimKey is the inverse of the NUL padding lsm.PathKeys applies; a path holds
+// trimKey is the inverse of the NUL padding openexec.PathKeys applies; a path holds
 // no NUL byte, so the first one always ends the string.
 func trimKey(k [compiler.MaxPathValueLen + 1]byte) string {
 	if i := bytes.IndexByte(k[:], 0); i >= 0 {

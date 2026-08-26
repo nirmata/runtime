@@ -1,8 +1,8 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"github.com/nirmata/runtime/api/v1alpha1"
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 )
 
@@ -16,15 +16,21 @@ type progSpec struct {
 	condition string
 }
 
-func progSpecs(compiledRp *compiler.EvaluationResult) []progSpec {
-	return []progSpec{
-		{progType: lsm.PROG_TYPE_LSM_OPEN, files: compiledRp.Open, condition: v1alpha1.ConditionOpenRulesValid},
-		// exec behaviors are enforced through bprm_check_security
-		{progType: lsm.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec, condition: v1alpha1.ConditionExecRulesValid},
+func progSpecs(compiledRp *compiler.EvaluationResult, lsm bool) []progSpec {
+	progSpecs := []progSpec{
+		{progType: openexec.PROG_TYPE_LSM_OPEN, files: compiledRp.Open, condition: v1alpha1.ConditionOpenRulesValid},
+		{progType: openexec.PROG_TYPE_LSM_EXEC, files: compiledRp.Exec, condition: v1alpha1.ConditionExecRulesValid},
 	}
+
+	if !lsm {
+		progSpecs[0].progType = openexec.PROG_TYPE_TRACE_OPEN
+		progSpecs[1].progType = openexec.PROG_TYPE_TRACE_EXEC
+	}
+
+	return progSpecs
 }
 
-func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
+func (l *OpenExecManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID, "mode", compiledRp.Mode)
 	observe := compiler.IsObserveMode(compiledRp.Mode)
 	if compiledRp.Mode != compiler.ModeEnforce && !observe {
@@ -33,7 +39,7 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	progMap := make(map[string]*progState)
-	for _, spec := range progSpecs(compiledRp) {
+	for _, spec := range progSpecs(compiledRp, l.lsm) {
 		l.recordPathRulesCondition(compiledRp.UID, spec.condition, spec.files)
 		if !spec.files.HasEntries() {
 			continue
@@ -54,13 +60,13 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 		return nil
 	}
 
-	la := &lsmAttachment{
+	la := &openExecAttachment{
 		progs:        progMap,
 		attachedPods: make(map[string]*podRepresentation),
 		target:       compiledRp.AppliesTo,
 		observe:      observe,
 	}
-	l.lsmAttachments[compiledRp.UID] = la
+	l.openExecAttachments[compiledRp.UID] = la
 
 	targetCgids := []uint64{}
 	for podUid, pod := range l.pods {
@@ -82,14 +88,14 @@ func (l *LsmManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
+func (l *OpenExecManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	l.logger.V(2).Info("runtime policy updated", "uid", compiledRp.UID, "mode", compiledRp.Mode)
 	observe := compiler.IsObserveMode(compiledRp.Mode)
 	if compiledRp.Mode != compiler.ModeEnforce && !observe {
 		l.rpDeleted(compiledRp)
 		return nil
 	}
-	la, ok := l.lsmAttachments[compiledRp.UID]
+	la, ok := l.openExecAttachments[compiledRp.UID]
 	if !ok {
 		// an update that introduces targets for an unattached policy is the first
 		// time it needs enforcement, so run it through the creation path
@@ -112,7 +118,7 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	}
 
 	la.target = compiledRp.AppliesTo
-	for _, spec := range progSpecs(compiledRp) {
+	for _, spec := range progSpecs(compiledRp, l.lsm) {
 		l.recordPathRulesCondition(compiledRp.UID, spec.condition, spec.files)
 		if err := l.syncProgType(compiledRp.UID, la, spec.files, spec.progType); err != nil {
 			return err
@@ -129,17 +135,17 @@ func (l *LsmManager) rpUpdated(compiledRp *compiler.EvaluationResult) error {
 	return nil
 }
 
-func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
-	la, ok := l.lsmAttachments[compiledRp.UID]
+func (l *OpenExecManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
+	la, ok := l.openExecAttachments[compiledRp.UID]
 	if !ok {
 		return
 	}
 	// Closing the enforcers releases their own cgroup maps, but the sinks are
 	// manager-scoped and outlive this attachment: its pods have to leave them
 	// here, while the bookkeeping that identifies them still exists.
-	if _, mirrored := la.progs[lsm.PROG_TYPE_LSM_EXEC]; mirrored {
+	if _, mirrored := la.progs[openexec.PROG_TYPE_LSM_EXEC]; mirrored {
 		for _, pod := range la.attachedPods {
-			l.mirrorCgids(compiledRp.UID, lsm.PROG_TYPE_LSM_EXEC, pod.cgids, false)
+			l.mirrorCgids(compiledRp.UID, openexec.PROG_TYPE_LSM_EXEC, pod.cgids, false)
 		}
 	}
 	for _, prog := range la.progs {
@@ -147,14 +153,14 @@ func (l *LsmManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 			l.logger.Error(err, "failed to close bpf lsm enforcer")
 		}
 	}
-	delete(l.lsmAttachments, compiledRp.UID)
+	delete(l.openExecAttachments, compiledRp.UID)
 	for _, pod := range l.pods {
-		delete(pod.attachedLsms, compiledRp.UID)
+		delete(pod.attachedOpenExecs, compiledRp.UID)
 	}
 }
 
 // closeProgs releases a half built prog map that was never published.
-func (l *LsmManager) closeProgs(rpUID string, progs map[string]*progState) {
+func (l *OpenExecManager) closeProgs(rpUID string, progs map[string]*progState) {
 	for progType, prog := range progs {
 		if err := prog.enf.Close(); err != nil {
 			l.logger.Error(err, "failed to cleanup lsm enforcer on error", "uid", rpUID, "progType", progType)
@@ -166,7 +172,7 @@ func (l *LsmManager) closeProgs(rpUID string, progs map[string]*progState) {
 // the banned and allowed maps are left empty and default-deny is unset, so the
 // program cannot return -EPERM: matching happens in userspace over the counts
 // CollectObservations reads back.
-func (l *LsmManager) createForProgType(rpUID string, pair *compiler.AllowDenyPair, progType string, observe bool) (lsmEnforcer, error) {
+func (l *OpenExecManager) createForProgType(rpUID string, pair *compiler.AllowDenyPair, progType string, observe bool) (openExecEnforcer, error) {
 	cleanup := false
 	enf, err := l.newEnforcer(&l.logger, progType)
 	if err != nil {
@@ -198,7 +204,7 @@ func (l *LsmManager) createForProgType(rpUID string, pair *compiler.AllowDenyPai
 	return enf, nil
 }
 
-func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
+func (l *OpenExecManager) syncProgType(rpUID string, la *openExecAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
 	prog, ok := la.progs[progType]
 	if !ok {
 		// no enforcer loaded for this program type and no files to enforce
@@ -276,7 +282,7 @@ func (l *LsmManager) syncProgType(rpUID string, la *lsmAttachment, newFiles *com
 	return nil
 }
 
-func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
+func (l *OpenExecManager) syncPodAttachment(uid string, la *openExecAttachment) {
 	for podUid, pod := range l.pods {
 		// la.target has to already carry the target from the update, otherwise
 		// the match below runs against the stale one
@@ -307,22 +313,22 @@ func (l *LsmManager) syncPodAttachment(uid string, la *lsmAttachment) {
 }
 
 // denyHasStar reports whether a deny list carries the default-deny sentinel. It
-// reads the answer off lsm.PathKeys so the sentinel is recognized by the same
+// reads the answer off openexec.PathKeys so the sentinel is recognized by the same
 // schema that decides which values become keys.
 func denyHasStar(pair *compiler.AllowDenyPair) bool {
 	if pair == nil {
 		return false
 	}
-	_, star, _ := lsm.PathKeys(pair.Deny)
+	_, star, _ := openexec.PathKeys(pair.Deny)
 	return star
 }
 
-func attach(policyUid string, la *lsmAttachment, podUid string, pod *podRepresentation) {
+func attach(policyUid string, la *openExecAttachment, podUid string, pod *podRepresentation) {
 	la.attachedPods[podUid] = pod
-	pod.attachedLsms[policyUid] = la
+	pod.attachedOpenExecs[policyUid] = la
 }
 
-func detach(policyUid string, la *lsmAttachment, podUid string, pod *podRepresentation) {
+func detach(policyUid string, la *openExecAttachment, podUid string, pod *podRepresentation) {
 	delete(la.attachedPods, podUid)
-	delete(pod.attachedLsms, policyUid)
+	delete(pod.attachedOpenExecs, policyUid)
 }

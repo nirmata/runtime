@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/events"
 	"github.com/nirmata/runtime/pkg/runtimeevent"
@@ -72,8 +72,8 @@ func TestCollectObservations_SplitsEventsByKernelDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	enf := h.enf("rp1", open)
-	enf.seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionDeny}, 2)
-	enf.seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionAllow}, 5)
+	enf.seedDecision(11, openexec.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionDeny}, 2)
+	enf.seedDecision(11, openexec.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionAllow}, 5)
 
 	got, err := h.l.CollectObservations(context.Background())
 	if err != nil {
@@ -256,7 +256,7 @@ func TestCollectObservations_NothingToRead(t *testing.T) {
 func TestCollectObservations_ReadFailures(t *testing.T) {
 	t.Run("observation unavailable is reported, not returned", func(t *testing.T) {
 		h := newHarness(t)
-		h.failMethod(open, "ReadEvents", lsm.ErrObservationUnavailable)
+		h.failMethod(open, "ReadEvents", openexec.ErrObservationUnavailable)
 		if err := h.l.PodEvent(testPod("podA", nil), nil, cgs(11), events.EventTypeCreate); err != nil {
 			t.Fatal(err)
 		}
@@ -382,8 +382,8 @@ func TestCollectObservationsMergesCountsByMax(t *testing.T) {
 // and the kernel's actual decision is exactly what merging must not lose.
 func TestCollectObservationsKeepsDistinctDecisionsSeparate(t *testing.T) {
 	h := attachPolicies(t, "podA", []uint64{11}, "rp1", "rp2")
-	h.enf("rp1", open).seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionDeny}, 2)
-	h.enf("rp2", open).seedDecision(11, lsm.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionAllow}, 2)
+	h.enf("rp1", open).seedDecision(11, openexec.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionDeny}, 2)
+	h.enf("rp2", open).seedDecision(11, openexec.PathEventKey{Path: "/etc/shadow", Decision: runtimeevent.DecisionAllow}, 2)
 
 	got, err := h.l.CollectObservations(context.Background())
 	if err != nil {

@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"context"
@@ -80,10 +80,10 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 		t.Fatalf("open cgids after retarget = %v, want [21]", got)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podDb"]); !slices.Equal(got, []string{"rp1", "rp2"}) {
-		t.Fatalf("podDb attachedLsms = %v, want [rp1 rp2]", got)
+		t.Fatalf("podDb attachedOpenExecs = %v, want [rp1 rp2]", got)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podWeb"]); len(got) != 0 {
-		t.Fatalf("podWeb attachedLsms = %v, want empty", got)
+		t.Fatalf("podWeb attachedOpenExecs = %v, want empty", got)
 	}
 
 	// 6. podWeb is relabelled into rp1's new selector: it must be picked up
@@ -94,7 +94,7 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 		t.Fatalf("open cgids after relabel = %v, want [11 12 21]", got)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podWeb"]); !slices.Equal(got, []string{"rp1", "rp2"}) {
-		t.Fatalf("podWeb attachedLsms after relabel = %v, want [rp1 rp2]", got)
+		t.Fatalf("podWeb attachedOpenExecs after relabel = %v, want [rp1 rp2]", got)
 	}
 
 	// 7. rp1 drops exec enforcement and changes its open target set
@@ -105,7 +105,7 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 	if execEnf.closeCount != 1 {
 		t.Fatalf("exec enforcer Close called %d times, want 1", execEnf.closeCount)
 	}
-	if got := progTypes(h.l.lsmAttachments["rp1"]); !slices.Equal(got, []string{open}) {
+	if got := progTypes(h.l.openExecAttachments["rp1"]); !slices.Equal(got, []string{open}) {
 		t.Fatalf("rp1 prog types = %v, want [%s]", got, open)
 	}
 	if got := openEnf.denySet(); !slices.Equal(got, []string{"/etc/passwd"}) {
@@ -141,7 +141,7 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 		}
 	}
 	for _, uid := range []string{"rp1", "rp2"} {
-		if got := attachedPodUIDs(h.l.lsmAttachments[uid]); len(got) != 0 {
+		if got := attachedPodUIDs(h.l.openExecAttachments[uid]); len(got) != 0 {
 			t.Fatalf("%s attached pods = %v, want empty", uid, got)
 		}
 	}
@@ -153,8 +153,8 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 	step("delete rp2", func() error {
 		return h.l.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "rp2"}, events.EventTypeDelete)
 	})
-	if len(h.l.lsmAttachments) != 0 {
-		t.Fatalf("attachments = %v, want empty", h.l.lsmAttachments)
+	if len(h.l.openExecAttachments) != 0 {
+		t.Fatalf("attachments = %v, want empty", h.l.openExecAttachments)
 	}
 	if openEnf.closeCount != 1 || rp2Enf.closeCount != 1 {
 		t.Fatalf("close counts = rp1 open:%d rp2 open:%d, want 1 each", openEnf.closeCount, rp2Enf.closeCount)
@@ -316,8 +316,8 @@ func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
 	if len(h.l.pods) != numPods-numPods/2 {
 		t.Errorf("pods = %d, want %d", len(h.l.pods), numPods-numPods/2)
 	}
-	if len(h.l.lsmAttachments) != numPolicies-numPolicies/2 {
-		t.Errorf("attachments = %d, want %d", len(h.l.lsmAttachments), numPolicies-numPolicies/2)
+	if len(h.l.openExecAttachments) != numPolicies-numPolicies/2 {
+		t.Errorf("attachments = %d, want %d", len(h.l.openExecAttachments), numPolicies-numPolicies/2)
 	}
 }
 
@@ -345,8 +345,8 @@ func assertConcurrentState(
 	if len(h.l.pods) != numPods {
 		t.Fatalf("pods = %d, want %d", len(h.l.pods), numPods)
 	}
-	if len(h.l.lsmAttachments) != numPolicies {
-		t.Fatalf("attachments = %d, want %d", len(h.l.lsmAttachments), numPolicies)
+	if len(h.l.openExecAttachments) != numPolicies {
+		t.Fatalf("attachments = %d, want %d", len(h.l.openExecAttachments), numPolicies)
 	}
 	for i := range numPolicies {
 		var wantPods []string
@@ -359,7 +359,7 @@ func assertConcurrentState(
 		}
 		slices.Sort(wantPods)
 		slices.Sort(wantCgids)
-		la := h.l.lsmAttachments[rpUID(i)]
+		la := h.l.openExecAttachments[rpUID(i)]
 		if got := attachedPodUIDs(la); !slices.Equal(got, wantPods) {
 			t.Errorf("%s attached pods = %v, want %v", rpUID(i), got, wantPods)
 		}

@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"fmt"
@@ -11,15 +11,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func (l *LsmManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) {
+func (l *OpenExecManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) {
 	l.logger.V(2).Info("pod created", "podUid", pod.UID)
 	pr := &podRepresentation{
 		labels:       pod.Labels,
 		nsLabels:     nsLabels,
 		cgids:        containers.ExtractCgids(cgInfos),
-		attachedLsms: make(map[string]*lsmAttachment),
+		attachedOpenExecs: make(map[string]*openExecAttachment),
 	}
-	for rpUid, la := range l.lsmAttachments {
+	for rpUid, la := range l.openExecAttachments {
 		if la.target.Matches(nsLabels, pod.Labels) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
 			for progType, prog := range la.progs {
@@ -38,7 +38,7 @@ func (l *LsmManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgIn
 // restarting inside a live pod), and a change to either the pod's own labels or
 // its namespace's refreshes the cached sets and re-evaluates every attachment's
 // target.
-func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) error {
+func (l *OpenExecManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) error {
 	l.logger.V(2).Info("pod updated", "podUid", pod.UID)
 	pr, ok := l.pods[string(pod.UID)]
 	if !ok {
@@ -67,7 +67,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgIn
 
 	// the cgid diff runs before the selector re-evaluation, so a pod on either
 	// side of an attachment change is handled with its new cgid set
-	for rpUid, la := range l.lsmAttachments {
+	for rpUid, la := range l.openExecAttachments {
 		if _, ok := la.attachedPods[string(pod.UID)]; !ok {
 			continue
 		}
@@ -79,7 +79,7 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgIn
 
 	if labelsChanged {
 		l.logger.V(2).Info("pod or namespace labels changed, re-evaluating policy targets", "podUid", pod.UID)
-		for rpUid, la := range l.lsmAttachments {
+		for rpUid, la := range l.openExecAttachments {
 			l.syncPodAttachment(rpUid, la)
 			l.recordCondition(rpUid, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
 		}
@@ -87,10 +87,10 @@ func (l *LsmManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgIn
 	return nil
 }
 
-func (l *LsmManager) podDeleted(podUid string) {
+func (l *OpenExecManager) podDeleted(podUid string) {
 	l.logger.V(2).Info("pod deleted", "podUid", podUid)
 	delete(l.pods, podUid)
-	for rpUid, la := range l.lsmAttachments {
+	for rpUid, la := range l.openExecAttachments {
 		podAttachment, ok := la.attachedPods[podUid]
 		if !ok {
 			continue

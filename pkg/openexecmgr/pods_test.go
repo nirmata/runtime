@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"errors"
@@ -44,7 +44,7 @@ func TestPodCreated_MatchingAndNonMatchingPolicies(t *testing.T) {
 		t.Errorf("stored cgids = %v, want [11 12]", pr.cgids)
 	}
 	if got := attachedPolicyUIDs(pr); !slices.Equal(got, []string{"rpWeb"}) {
-		t.Errorf("attachedLsms = %v, want [rpWeb]", got)
+		t.Errorf("attachedOpenExecs = %v, want [rpWeb]", got)
 	}
 	assertInvariant(t, h.l)
 }
@@ -55,7 +55,7 @@ func TestPodCreated_NoPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr := h.l.pods["podA"]
-	if pr == nil || len(pr.attachedLsms) != 0 {
+	if pr == nil || len(pr.attachedOpenExecs) != 0 {
 		t.Fatalf("pod representation = %+v, want stored with no attachments", pr)
 	}
 	if h.createdCount() != 0 {
@@ -181,7 +181,7 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 		pair(nil, []string{"/etc/passwd"}), nil), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpDb"]); !slices.Equal(got, []string{"podA"}) {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpDb"]); !slices.Equal(got, []string{"podA"}) {
 		t.Fatalf("rpDb attached pods = %v, want [podA]", got)
 	}
 	h.resetAll()
@@ -204,7 +204,7 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 			t.Errorf("rpWeb %s cgid set = %v, want [11]", pt, got)
 		}
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
 		t.Errorf("rpWeb attached pods = %v, want [podA]", got)
 	}
 	// and the policy that stopped selecting it detaches, so enforcement does not
@@ -215,11 +215,11 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	if got := dbEnf.cgidSet(); len(got) != 0 {
 		t.Errorf("rpDb cgid set = %v, want empty", got)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpDb"]); len(got) != 0 {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpDb"]); len(got) != 0 {
 		t.Errorf("rpDb attached pods = %v, want none", got)
 	}
 	if got := attachedPolicyUIDs(h.l.pods["podA"]); !slices.Equal(got, []string{"rpWeb"}) {
-		t.Errorf("podA attachedLsms = %v, want [rpWeb]", got)
+		t.Errorf("podA attachedOpenExecs = %v, want [rpWeb]", got)
 	}
 	assertInvariant(t, h.l)
 }
@@ -311,7 +311,7 @@ func TestPodDeleted(t *testing.T) {
 	if _, ok := h.l.pods["podA"]; ok {
 		t.Error("deleted pod still present in l.pods")
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); !slices.Equal(got, []string{"podB"}) {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpWeb"]); !slices.Equal(got, []string{"podB"}) {
 		t.Errorf("attached pods = %v, want [podB]", got)
 	}
 	assertInvariant(t, h.l)
@@ -342,7 +342,7 @@ func TestPodEvents_CgidFailuresAreNonFatal(t *testing.T) {
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatalf("podCreated returned %v, want nil", err)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
 		t.Errorf("attached pods = %v, want [podA] despite the AddCgids failure", got)
 	}
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(12), events.EventTypeUpdate); err != nil {
@@ -369,14 +369,14 @@ func TestPolicyEvents_CgidFailuresAreNonFatal(t *testing.T) {
 	if err := h.l.RuntimePolicyEvent(result("rpWeb", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}), files, nil), events.EventTypeCreate); err != nil {
 		t.Fatalf("rpCreated returned %v, want nil", err)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
 		t.Errorf("attached pods = %v, want [podA]", got)
 	}
 	// selector moves away: the detach must still happen even though DeleteCgids failed
 	if err := h.l.RuntimePolicyEvent(result("rpWeb", compiler.ModeEnforce, selFor(map[string]string{"app": "db"}), files, nil), events.EventTypeUpdate); err != nil {
 		t.Fatalf("rpUpdated returned %v, want nil", err)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); len(got) != 0 {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpWeb"]); len(got) != 0 {
 		t.Errorf("attached pods = %v, want none", got)
 	}
 	assertInvariant(t, h.l)
@@ -435,7 +435,7 @@ func TestPodCreated_NoContainers(t *testing.T) {
 		t.Errorf("cgids = %v, want empty", got)
 	}
 	// the pod is still attached so later cgid updates reach the enforcer
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
 		t.Errorf("attached pods = %v, want [podA]", got)
 	}
 	h.resetAll()
@@ -473,7 +473,7 @@ func TestPodUpdated_NamespaceLabelChangeReEvaluatesTargets(t *testing.T) {
 		map[string]string{"tier": "dev"}, cgs(11), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpProd"]); len(got) != 0 {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpProd"]); len(got) != 0 {
 		t.Fatalf("attached pods = %v, want none: the namespace does not match", got)
 	}
 	h.resetAll()
@@ -483,7 +483,7 @@ func TestPodUpdated_NamespaceLabelChangeReEvaluatesTargets(t *testing.T) {
 		map[string]string{"tier": "prod"}, cgs(11), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpProd"]); !slices.Equal(got, []string{"podA"}) {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpProd"]); !slices.Equal(got, []string{"podA"}) {
 		t.Fatalf("attached pods = %v, want [podA] once the namespace matches", got)
 	}
 	if got := h.l.pods["podA"].nsLabels["tier"]; got != "prod" {
@@ -495,7 +495,7 @@ func TestPodUpdated_NamespaceLabelChangeReEvaluatesTargets(t *testing.T) {
 		map[string]string{"tier": "dev"}, cgs(11), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
-	if got := attachedPodUIDs(h.l.lsmAttachments["rpProd"]); len(got) != 0 {
+	if got := attachedPodUIDs(h.l.openExecAttachments["rpProd"]); len(got) != 0 {
 		t.Fatalf("attached pods = %v, want none once the namespace stops matching", got)
 	}
 }

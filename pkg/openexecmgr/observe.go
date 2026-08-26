@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"cmp"
@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
@@ -26,7 +26,7 @@ type observationKey struct {
 // enforcer, so every program type has to be read: stopping at the first one
 // discards what the others saw. The kernel maps are read-and-reset, so Count is
 // the number of occurrences since the previous call.
-func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Event, error) {
+func (l *OpenExecManager) CollectObservations(ctx context.Context) ([]runtimeevent.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -35,7 +35,7 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 	merged := map[observationKey]uint32{}
 	podHints := map[uint64]string{}
 
-	for rpUID, la := range l.lsmAttachments {
+	for rpUID, la := range l.openExecAttachments {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			return emitObservations(now, merged, podHints), errors.Join(errs...)
@@ -47,14 +47,14 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 		}
 		maps.Copy(podHints, cgidPods)
 
-		for _, progType := range lsm.ProgTypes {
+		for progType := range openexec.ProgTypes {
 			prog, ok := la.progs[progType]
 			if !ok {
 				continue
 			}
 			counts, err := prog.enf.ReadEvents(cgids)
 			if err != nil {
-				if errors.Is(err, lsm.ErrObservationUnavailable) {
+				if errors.Is(err, openexec.ErrObservationUnavailable) {
 					// the loaded program has no observation maps, so every later
 					// poll reports the same thing: report it on the policy rather
 					// than to the caller
@@ -92,10 +92,10 @@ func (l *LsmManager) CollectObservations(ctx context.Context) ([]runtimeevent.Ev
 // reportLost drains one enforcer's kernel drop counter. A program loaded
 // without observation maps reports it on the policy rather than to the caller,
 // the same way an unavailable ReadEvents does.
-func (l *LsmManager) reportLost(rpUID, progType string, enf lsmEnforcer) error {
+func (l *OpenExecManager) reportLost(rpUID, progType string, enf openExecEnforcer) error {
 	lost, err := enf.ReadEventsLost()
 	if err != nil {
-		if errors.Is(err, lsm.ErrObservationUnavailable) {
+		if errors.Is(err, openexec.ErrObservationUnavailable) {
 			l.observationUnavailable(rpUID, progType, "observation is unavailable", err)
 			return nil
 		}
@@ -114,7 +114,7 @@ func (l *LsmManager) reportLost(rpUID, progType string, enf lsmEnforcer) error {
 func emitObservations(now time.Time, merged map[observationKey]uint32, podHints map[uint64]string) []runtimeevent.Event {
 	out := make([]runtimeevent.Event, 0, len(merged))
 	for k, count := range merged {
-		key := lsm.PathEventKey{Path: k.path, Decision: k.decision}
+		key := openexec.PathEventKey{Path: k.path, Decision: k.decision}
 		out = append(out, newObservation(k.progType, now, k.cgid, podHints[k.cgid], key, count))
 	}
 	return sortEvents(out)
@@ -123,7 +123,7 @@ func emitObservations(now time.Time, merged map[observationKey]uint32, podHints 
 // newObservation builds the event for one observed (path, decision) count.
 // Attribution resolves the cgroup id; the pod uid is a hint the manager already
 // knows. Monitor attributes the kernel's decision to a policy in userspace.
-func newObservation(progType string, now time.Time, cgid uint64, podUID string, key lsm.PathEventKey, count uint32) runtimeevent.Event {
+func newObservation(progType string, now time.Time, cgid uint64, podUID string, key openexec.PathEventKey, count uint32) runtimeevent.Event {
 	ev := runtimeevent.Event{
 		Time:         now,
 		CgroupID:     cgid,
@@ -132,7 +132,7 @@ func newObservation(progType string, now time.Time, cgid uint64, podUID string, 
 		Pod:          runtimeevent.PodIdentity{UID: podUID},
 	}
 	switch progType {
-	case lsm.PROG_TYPE_LSM_EXEC:
+	case openexec.PROG_TYPE_LSM_EXEC:
 		ev.Kind = runtimeevent.KindExec
 		ev.Exec = &runtimeevent.ExecFacts{Filename: key.Path}
 	default:
@@ -144,7 +144,7 @@ func newObservation(progType string, now time.Time, cgid uint64, podUID string, 
 
 // attachedCgids returns the cgroup ids of every pod attached to la, plus the
 // cgid to pod uid mapping that pre-fills the event's pod hint.
-func attachedCgids(la *lsmAttachment) ([]uint64, map[uint64]string) {
+func attachedCgids(la *openExecAttachment) ([]uint64, map[uint64]string) {
 	cgids := make([]uint64, 0, len(la.attachedPods))
 	cgidPods := make(map[uint64]string, len(la.attachedPods))
 	for podUID, pod := range la.attachedPods {

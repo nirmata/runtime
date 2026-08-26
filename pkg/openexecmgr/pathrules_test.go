@@ -1,4 +1,4 @@
-package lsmmgr
+package openexecmgr
 
 import (
 	"slices"
