@@ -57,6 +57,10 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 		progIdx:          make(map[int]uint32),
 	}
 
+	if err := os.MkdirAll(pinDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating bpf pin directory: %w", err)
+	}
+
 	switch target {
 	case PROG_TYPE_LSM_EXEC, PROG_TYPE_LSM_OPEN:
 		if err := d.initializeForLsm(target); err != nil {
@@ -66,10 +70,6 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 		if err := d.initializeForTracepoint(target); err != nil {
 			return nil, err
 		}
-	}
-
-	if err := os.MkdirAll(pinDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating bpf pin directory: %w", err)
 	}
 
 	if err := d.reset(); err != nil {
