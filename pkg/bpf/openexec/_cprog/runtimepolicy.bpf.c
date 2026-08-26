@@ -82,7 +82,7 @@ SEC("runtime_policy")
 int runtime_policy_executor(void *ctx)
 {
     __u32 k = 0;
-    struct path_event_key ev_k;
+    struct path_event_key ev_k = {};
 
     struct lsm_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
