@@ -31,8 +31,7 @@ type Dispatcher struct {
 
 	link link.Link
 
-	dispatcherTarget string
-	dispatcherType   string
+	dispatcherType string
 }
 
 // ClearPins wipes the pin directory at startup. The pinned maps outlive the
@@ -52,9 +51,9 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 	}
 
 	d := &Dispatcher{
-		dispatcherTarget: target,
-		progCountKey:     key,
-		progIdx:          make(map[int]uint32),
+		dispatcherType: target,
+		progCountKey:   key,
+		progIdx:        make(map[int]uint32),
 	}
 
 	if err := os.MkdirAll(pinDir, 0o755); err != nil {
@@ -179,13 +178,21 @@ func (d *Dispatcher) reset() error {
 }
 
 func (d *Dispatcher) Attach() error {
-	link, err := link.AttachLSM(link.LSMOptions{
-		Program: d.prog,
-	})
+	var (
+		l   link.Link
+		err error
+	)
+
+	if d.dispatcherType == PROG_TYPE_LSM_OPEN || d.dispatcherType == PROG_TYPE_LSM_EXEC {
+		l, err = link.AttachLSM(link.LSMOptions{Program: d.prog})
+	} else {
+		l, err = link.AttachRawTracepoint(link.RawTracepointOptions{Program: d.prog})
+	}
+
 	if err != nil {
 		return err
 	}
-	d.link = link
+	d.link = l
 
 	return nil
 }
