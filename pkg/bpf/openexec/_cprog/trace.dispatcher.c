@@ -50,6 +50,7 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
         }
 
         bpf_probe_read_user_str(prog_ctx->path, sizeof(prog_ctx->path), filename);
+        bpf_printk("trace_dispatcher: open path=%s progs=%d", prog_ctx->path, *prog_cnt);
 
         target_map = &open_progs;
     #elif defined(TRACE_EXEC_CHECK)
@@ -64,6 +65,7 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
         }
 
         bpf_probe_read_user_str(prog_ctx->path, sizeof(prog_ctx->path), filename);
+        bpf_printk("trace_dispatcher: exec path=%s progs=%d", prog_ctx->path, *prog_cnt);
 
         target_map = &exec_progs;
     #endif
