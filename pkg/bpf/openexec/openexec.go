@@ -40,11 +40,11 @@ func progCountKey(target string) (uint32, error) {
 	return 0, fmt.Errorf("unknown lsm attach target %q", target)
 }
 
-//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmDispatcherFileOpen ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmDispatcherExecCheck ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -cflags "-DTRACE_FILE_OPEN" rawTpDispatcherFileOpen ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -cflags "-DTRACE_EXEC_CHECK" rawTpDispatcherExecCheck ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go runtimePolicy ./_cprog/runtimepolicy.bpf.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -target bpfel -cflags "-DLSM_FILE_OPEN" lsmDispatcherFileOpen ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -target bpfel -cflags "-DLSM_EXEC_CHECK" lsmDispatcherExecCheck ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -target bpfel -cflags "-DTRACE_FILE_OPEN" rawTpDispatcherFileOpen ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -target bpfel -cflags "-DTRACE_EXEC_CHECK" rawTpDispatcherExecCheck ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -target bpfel runtimePolicy ./_cprog/runtimepolicy.bpf.c -- -I../include -I./_cprog/include -I./_cprog
 
 type OpenExecEnforcer struct {
 	logger *logr.Logger

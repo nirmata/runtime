@@ -15,7 +15,7 @@ import (
 	"github.com/go-logr/logr"
 )
 
-//go:generate go tool bpf2go execTrace ./_cprog/exec.bpf.c -- -I../include -I./_cprog
+//go:generate go tool bpf2go -target bpfel execTrace ./_cprog/exec.bpf.c -- -I../include -I./_cprog
 
 // SourceName is the name this source reports to the collector, and the value of
 // the `source` label on its ingest and drop metrics.
