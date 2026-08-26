@@ -23,6 +23,8 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
 
     void *target_map;
 
+    bpf_printk("trace_dispatcher: enter");
+
     struct lsm_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
         return 0;
