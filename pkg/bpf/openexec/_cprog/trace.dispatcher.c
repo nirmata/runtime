@@ -11,18 +11,19 @@
 #error "must build trace.dispatcher.c with exactly one of -DTRACE_FILE_OPEN or -DTRACE_EXEC_CHECK defined"
 #endif
 
-struct trace_event_raw_sys_enter {
-    unsigned long long pad;
-    long id;
-    unsigned long args[6];
-};
+#if defined(TRACE_FILE_OPEN)
+#define HOOK_SEC "fmod_ret/security_file_open"
+#else
+#define HOOK_SEC "fmod_ret/security_bprm_check"
+#endif
 
-SEC("tracepoint/syscalls/generic_tracepoint")
-int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
+SEC(HOOK_SEC)
+int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
+{
     __u32 k = 0;
+    __u64 *args = (__u64*)ctx;
 
     void *target_map;
-
 
     struct lsm_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
@@ -33,15 +34,14 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
     prog_ctx->next_prog_idx = 0;
     prog_ctx->have_executed = 0;
     prog_ctx->reason = IMPLICIT_ALLOW;
-    prog_ctx->should_pkill = 1;
+    prog_ctx->should_pkill = 0;
     /* the slot still holds the previous event's path; the tail after the new
      * string must be zeros or it splits hash keys derived from it */
-    __builtin_memset(prog_ctx->path, 0, sizeof(prog_ctx->path));    
+    __builtin_memset(prog_ctx->path, 0, sizeof(prog_ctx->path));
 
     #if defined(TRACE_FILE_OPEN)
-        /* sys_enter_openat: (int dfd, const char __user *filename, int flags, umode_t mode) */
-        int dfd = (int)ctx->args[0];
-        const char *filename = (const char *)ctx->args[1];
+        char buf[MAX_PATH_LEN] = {};
+        struct file *f = (struct file *)args[0];
         prog_ctx->prog_type = PROG_TYPE_LSM_OPEN;
 
         /* we have no programs, don't proceed */
@@ -51,13 +51,15 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
             return 0;
         }
 
-        bpf_probe_read_user_str(prog_ctx->path, sizeof(prog_ctx->path), filename);
-        bpf_printk("trace_dispatcher: open path=%s progs=%d", prog_ctx->path, *prog_cnt);
+        bpf_d_path(&f->f_path, buf, sizeof(buf));
+        bpf_probe_read_kernel_str(prog_ctx->path, sizeof(prog_ctx->path), buf);
 
         target_map = &open_progs;
     #elif defined(TRACE_EXEC_CHECK)
-        /* sys_enter_execve: (const char __user *filename, const char __user *const __user *argv, const char __user *const __user *envp) */
-        const char *filename = (const char *)ctx->args[0];
+        /* bpf_d_path is not allowlisted for security_bprm_check; bprm->filename
+         * is the kernel's own copy of the exec path, so unlike a sys_enter read
+         * it cannot be rewritten by another thread after the check */
+        struct linux_binprm *bprm = (struct linux_binprm *)args[0];
         prog_ctx->prog_type = PROG_TYPE_LSM_EXEC;
 
         /* we have no programs, don't proceed */
@@ -67,8 +69,8 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
             return 0;
         }
 
-        bpf_probe_read_user_str(prog_ctx->path, sizeof(prog_ctx->path), filename);
-        bpf_printk("trace_dispatcher: exec path=%s progs=%d", prog_ctx->path, *prog_cnt);
+        const char *filename = BPF_CORE_READ(bprm, filename);
+        bpf_probe_read_kernel_str(prog_ctx->path, sizeof(prog_ctx->path), filename);
 
         target_map = &exec_progs;
     #endif
@@ -81,5 +83,4 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
     return 0;
 }
 
-/* bpf_probe_read_user_str is GPL-only. */
 char LICENSE[] SEC("license") = "GPL";

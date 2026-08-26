@@ -17,8 +17,8 @@ const maxPathLen = 128
 const (
 	PROG_TYPE_LSM_OPEN   = "file_open"
 	PROG_TYPE_LSM_EXEC   = "bprm_check_security"
-	PROG_TYPE_TRACE_OPEN = "sys_enter_openat"
-	PROG_TYPE_TRACE_EXEC = "sys_enter_execve"
+	PROG_TYPE_TRACE_OPEN = "security_file_open"
+	PROG_TYPE_TRACE_EXEC = "security_bprm_check"
 )
 
 // ProgTypes is the ordered list of lsm hooks: a hook's index here is the
@@ -96,7 +96,9 @@ func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*OpenExecEnforcer, 
 		spec.Programs["runtime_policy_executor"].AttachTo = d.dispatcherType
 		spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
 	case PROG_TYPE_TRACE_OPEN, PROG_TYPE_TRACE_EXEC:
-		spec.Programs["runtime_policy_executor"].Type = ebpf.TracePoint
+		spec.Programs["runtime_policy_executor"].Type = ebpf.Tracing
+		spec.Programs["runtime_policy_executor"].AttachTo = d.dispatcherType
+		spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachModifyReturn
 	}
 
 	innerSpec := prepareOpenEvents(spec)

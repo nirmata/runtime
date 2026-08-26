@@ -157,7 +157,9 @@ func TestGeneratedObjectsLoadTracepoint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			spec.Programs["runtime_policy_executor"].Type = ebpf.TracePoint
+			spec.Programs["runtime_policy_executor"].Type = ebpf.Tracing
+			spec.Programs["runtime_policy_executor"].AttachTo = e.target
+			spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachModifyReturn
 			prepareOpenEvents(spec)
 			objs := &runtimePolicyObjects{}
 			eopts := *opts

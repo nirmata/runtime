@@ -91,7 +91,6 @@ int runtime_policy_executor(void *ctx)
 
     __u64 cgid = bpf_get_current_cgroup_id();
     if (bpf_map_lookup_elem(&cgids, &cgid) != NULL) {
-        bpf_printk("runtime_policy: cgid=%llu matched path=%s", cgid, prog_ctx->path);
         path_decision(prog_ctx, &ev_k);
         if (prog_ctx->reason == EXPLICIT_DENY) {
             goto end;
@@ -122,10 +121,8 @@ end:
         /* the policy program was reached from a tracepoint dispatcher */
         if (prog_ctx->should_pkill) {
             long ret = bpf_send_signal(SIGKILL);
-            bpf_printk("runtime_policy: deny path=%s should_pkill=1 send_signal=%ld", prog_ctx->path, ret);
             return 0;
         }
-        bpf_printk("runtime_policy: deny path=%s should_pkill=0 returning -EPERM", prog_ctx->path);
         return -EPERM;
     }
 

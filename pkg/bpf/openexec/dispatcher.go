@@ -180,7 +180,7 @@ func (d *Dispatcher) Attach() error {
 	if d.dispatcherType == PROG_TYPE_LSM_OPEN || d.dispatcherType == PROG_TYPE_LSM_EXEC {
 		l, err = link.AttachLSM(link.LSMOptions{Program: d.prog})
 	} else {
-		l, err = link.Tracepoint("syscalls", d.dispatcherType, d.prog, nil)
+		l, err = link.AttachTracing(link.TracingOptions{Program: d.prog, AttachType: ebpf.AttachModifyReturn})
 	}
 
 	if err != nil {
