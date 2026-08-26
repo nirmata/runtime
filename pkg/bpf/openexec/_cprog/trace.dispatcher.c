@@ -11,8 +11,14 @@
 #error "must build trace.dispatcher.c with exactly one of -DTRACE_FILE_OPEN or -DTRACE_EXEC_CHECK defined"
 #endif
 
-SEC("raw_tp/generic_tracepoint")
-int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx) {
+struct trace_event_raw_sys_enter {
+    unsigned long long pad;
+    long id;
+    unsigned long args[6];
+};
+
+SEC("tracepoint/syscalls/generic_tracepoint")
+int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
     __u32 k = 0;
 
     void *target_map;

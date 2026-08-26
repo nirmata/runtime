@@ -86,11 +86,18 @@ func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*OpenExecEnforcer, 
 	if err != nil {
 		return nil, err
 	}
-	// the program is never linked to the hook itself, but loading an lsm
-	// program still requires the BTF id of a real hook, and tail calls only
-	// reach programs loaded for the same hook as the dispatcher
-	spec.Programs["runtime_policy_executor"].AttachTo = d.dispatcherType
-	spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
+	// the program's SEC carries no attachable prefix because it is never linked
+	// to a hook itself: tail calls only reach programs of the same type as the
+	// dispatcher that calls them, so the type has to follow the dispatcher's.
+	switch d.dispatcherType {
+	case PROG_TYPE_LSM_OPEN, PROG_TYPE_LSM_EXEC:
+		// loading an lsm program still requires the BTF id of a real hook
+		spec.Programs["runtime_policy_executor"].Type = ebpf.LSM
+		spec.Programs["runtime_policy_executor"].AttachTo = d.dispatcherType
+		spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
+	case PROG_TYPE_TRACE_OPEN, PROG_TYPE_TRACE_EXEC:
+		spec.Programs["runtime_policy_executor"].Type = ebpf.TracePoint
+	}
 
 	innerSpec := prepareOpenEvents(spec)
 

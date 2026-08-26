@@ -129,9 +129,6 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		if err != nil {
 			return err
 		}
-		spec.Programs["generic_tracepoint_handler"].AttachTo = target
-		spec.Programs["generic_tracepoint_handler"].AttachType = ebpf.AttachTraceRawTp
-
 		objs := &rawTpDispatcherFileOpenObjects{}
 		if err := spec.LoadAndAssign(objs, opts); err != nil {
 			return err
@@ -146,9 +143,6 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		if err != nil {
 			return err
 		}
-		spec.Programs["generic_tracepoint_handler"].AttachTo = target
-		spec.Programs["generic_tracepoint_handler"].AttachType = ebpf.AttachTraceRawTp
-
 		objs := &rawTpDispatcherExecCheckObjects{}
 		if err := spec.LoadAndAssign(objs, opts); err != nil {
 			return err
@@ -186,7 +180,7 @@ func (d *Dispatcher) Attach() error {
 	if d.dispatcherType == PROG_TYPE_LSM_OPEN || d.dispatcherType == PROG_TYPE_LSM_EXEC {
 		l, err = link.AttachLSM(link.LSMOptions{Program: d.prog})
 	} else {
-		l, err = link.AttachRawTracepoint(link.RawTracepointOptions{Name: d.dispatcherType, Program: d.prog})
+		l, err = link.Tracepoint("syscalls", d.dispatcherType, d.prog, nil)
 	}
 
 	if err != nil {
