@@ -120,9 +120,11 @@ end:
     if (prog_ctx->deny) {
         /* the policy program was reached from a tracepoint dispatcher */
         if (prog_ctx->should_pkill) {
-            bpf_send_signal(SIGKILL);   
+            long ret = bpf_send_signal(SIGKILL);
+            bpf_printk("runtime_policy: deny path=%s should_pkill=1 send_signal=%ld", prog_ctx->path, ret);
             return 0;
         }
+        bpf_printk("runtime_policy: deny path=%s should_pkill=0 returning -EPERM", prog_ctx->path);
         return -EPERM;
     }
 
