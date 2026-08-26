@@ -23,7 +23,6 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
 
     void *target_map;
 
-    bpf_printk("trace_dispatcher: enter");
 
     struct lsm_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
@@ -46,7 +45,8 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
         prog_ctx->prog_type = PROG_TYPE_LSM_OPEN;
 
         /* we have no programs, don't proceed */
-        __u8 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
+        __u32 pt = prog_ctx->prog_type;
+        __u8 *prog_cnt = bpf_map_lookup_elem(&prog_count, &pt);
         if (!prog_cnt || *prog_cnt == 0) {
             return 0;
         }
@@ -61,7 +61,8 @@ int generic_tracepoint_handler(struct trace_event_raw_sys_enter *ctx) {
         prog_ctx->prog_type = PROG_TYPE_LSM_EXEC;
 
         /* we have no programs, don't proceed */
-        __u8 *prog_cnt = bpf_map_lookup_elem(&prog_count, &prog_ctx->prog_type);
+        __u32 pt = prog_ctx->prog_type;
+        __u8 *prog_cnt = bpf_map_lookup_elem(&prog_count, &pt);
         if (!prog_cnt || *prog_cnt == 0) {
             return 0;
         }
