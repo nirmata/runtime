@@ -82,7 +82,7 @@ func TestGeneratedObjectsLoad(t *testing.T) {
 	}
 	for _, e := range enforcers {
 		t.Run("enforcer_"+e.target, func(t *testing.T) {
-			spec, err := loadLsmRuntimePolicy()
+			spec, err := loadRuntimePolicy()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -90,7 +90,7 @@ func TestGeneratedObjectsLoad(t *testing.T) {
 			spec.Programs["runtime_policy_executor"].AttachTo = e.target
 			spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
 			prepareOpenEvents(spec)
-			objs := &lsmRuntimePolicyObjects{}
+			objs := &runtimePolicyObjects{}
 			eopts := *opts
 			eopts.MapReplacements = map[string]*ebpf.Map{"chain_progs": e.array}
 			if err := spec.LoadAndAssign(objs, &eopts); err != nil {
@@ -153,13 +153,13 @@ func TestGeneratedObjectsLoadTracepoint(t *testing.T) {
 	}
 	for _, e := range enforcers {
 		t.Run("enforcer_"+e.target, func(t *testing.T) {
-			spec, err := loadLsmRuntimePolicy()
+			spec, err := loadRuntimePolicy()
 			if err != nil {
 				t.Fatal(err)
 			}
 			spec.Programs["runtime_policy_executor"].Type = ebpf.TracePoint
 			prepareOpenEvents(spec)
-			objs := &lsmRuntimePolicyObjects{}
+			objs := &runtimePolicyObjects{}
 			eopts := *opts
 			eopts.MapReplacements = map[string]*ebpf.Map{"chain_progs": e.array}
 			if err := spec.LoadAndAssign(objs, &eopts); err != nil {

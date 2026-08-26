@@ -82,7 +82,7 @@ func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*OpenExecEnforcer, 
 
 	l := &OpenExecEnforcer{logger: logger, dispatcher: d}
 
-	spec, err := loadLsmRuntimePolicy()
+	spec, err := loadRuntimePolicy()
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*OpenExecEnforcer, 
 
 	innerSpec := prepareOpenEvents(spec)
 
-	objs := &lsmRuntimePolicyObjects{}
+	objs := &runtimePolicyObjects{}
 	opts := &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{PinPath: pinDir},
 		// bind the placeholder chain_progs to this dispatcher's prog array; the
