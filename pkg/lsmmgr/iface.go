@@ -1,7 +1,7 @@
 package lsmmgr
 
 import (
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 )
 
@@ -23,6 +23,6 @@ type lsmEnforcer interface {
 	SetDefaultDeny(val bool) error
 	EnableObservation(cgids []uint64) error
 	DisableObservation(cgids []uint64) error
-	ReadEvents(cgids []uint64) (map[uint64]map[lsm.PathEventKey]uint32, error)
+	ReadEvents(cgids []uint64) (map[uint64]map[openexec.PathEventKey]uint32, error)
 	ReadEventsLost() (uint64, error)
 }

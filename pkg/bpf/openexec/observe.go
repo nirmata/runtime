@@ -1,4 +1,4 @@
-package lsm
+package openexec
 
 import (
 	"errors"
@@ -31,7 +31,7 @@ type pathEventKernelKey struct {
 
 // EnableObservation creates (or reuses) an inner hash map in open_events for
 // each cgid so the kernel program starts recording path counts for it.
-func (l *LsmEnforcer) EnableObservation(cgids []uint64) error {
+func (l *OpenExecEnforcer) EnableObservation(cgids []uint64) error {
 	if len(cgids) == 0 {
 		return nil
 	}
@@ -74,7 +74,7 @@ func (l *LsmEnforcer) EnableObservation(cgids []uint64) error {
 
 // DisableObservation removes the open_events entry for each cgid and releases
 // the inner map. A cgid that was never enabled is not an error.
-func (l *LsmEnforcer) DisableObservation(cgids []uint64) error {
+func (l *OpenExecEnforcer) DisableObservation(cgids []uint64) error {
 	if len(cgids) == 0 {
 		return nil
 	}
@@ -103,7 +103,7 @@ func (l *LsmEnforcer) DisableObservation(cgids []uint64) error {
 // ReadEvents reads and resets the per-cgid path counts. Every cgid is visited
 // even when one of them fails, so a single bad cgid cannot hide the counts of
 // the rest.
-func (l *LsmEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]uint32, error) {
+func (l *OpenExecEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]uint32, error) {
 	out := make(map[uint64]map[PathEventKey]uint32, len(cgids))
 	if len(cgids) == 0 {
 		return out, nil
@@ -144,7 +144,7 @@ const pathStatCountMapFull = uint32(0)
 // ReadEventsLost reports open/exec observations the kernel program could not
 // record because the cgid's count map was full. It shares ReadEvents' single
 // caller, so statLast needs no lock of its own.
-func (l *LsmEnforcer) ReadEventsLost() (uint64, error) {
+func (l *OpenExecEnforcer) ReadEventsLost() (uint64, error) {
 	if l.stats == nil {
 		return 0, ErrObservationUnavailable
 	}
@@ -166,7 +166,7 @@ func (l *LsmEnforcer) ReadEventsLost() (uint64, error) {
 // total below the previous one means the map behind it was replaced, so the
 // baseline moves with it rather than reporting a negative interval as a huge
 // positive one.
-func (l *LsmEnforcer) lostSince(sum uint64) uint64 {
+func (l *OpenExecEnforcer) lostSince(sum uint64) uint64 {
 	last := l.statLast
 	l.statLast = sum
 	if sum < last {
@@ -177,7 +177,7 @@ func (l *LsmEnforcer) lostSince(sum uint64) uint64 {
 
 // innerFor returns the inner map for cgid. owned is true when the handle is the
 // long-lived one this enforcer created, which callers must not close.
-func (l *LsmEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error) {
+func (l *OpenExecEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error) {
 	l.observeMu.RLock()
 	inner, ok := l.observed[cgid]
 	l.observeMu.RUnlock()
@@ -192,7 +192,7 @@ func (l *LsmEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error)
 	return inner, false, nil
 }
 
-func (l *LsmEnforcer) lookupInner(cgid uint64) (*ebpf.Map, error) {
+func (l *OpenExecEnforcer) lookupInner(cgid uint64) (*ebpf.Map, error) {
 	if l.openEvents == nil {
 		return nil, ErrObservationUnavailable
 	}

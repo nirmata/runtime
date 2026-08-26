@@ -1,4 +1,4 @@
-package lsm
+package openexec
 
 import (
 	"errors"
@@ -31,7 +31,8 @@ type Dispatcher struct {
 
 	link link.Link
 
-	dispatcherType string
+	dispatcherTarget string
+	dispatcherType   string
 }
 
 // ClearPins wipes the pin directory at startup. The pinned maps outlive the
@@ -51,28 +52,48 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 	}
 
 	d := &Dispatcher{
-		dispatcherType: target,
-		progCountKey:   key,
-		progIdx:        make(map[int]uint32),
+		dispatcherTarget: target,
+		progCountKey:     key,
+		progIdx:          make(map[int]uint32),
+	}
+
+	switch target {
+	case PROG_TYPE_LSM_EXEC, PROG_TYPE_LSM_OPEN:
+		if err := d.initializeForLsm(target); err != nil {
+			return nil, err
+		}
+	case PROG_TYPE_TRACE_EXEC, PROG_TYPE_TRACE_OPEN:
+		if err := d.initializeForTracepoint(target); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := os.MkdirAll(pinDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating bpf pin directory: %w", err)
 	}
+
+	if err := d.reset(); err != nil {
+		return nil, err
+	}
+
+	return d, nil
+}
+
+func (d *Dispatcher) initializeForLsm(target string) error {
 	opts := &ebpf.CollectionOptions{Maps: ebpf.MapOptions{PinPath: pinDir}}
 
 	switch target {
 	case PROG_TYPE_LSM_OPEN:
 		spec, err := loadLsmDispatcherFileOpen()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		spec.Programs["generic_lsm_handler"].AttachTo = target
 		spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
 		objs := &lsmDispatcherFileOpenObjects{}
 		if err := spec.LoadAndAssign(objs, opts); err != nil {
-			return nil, err
+			return err
 		}
 
 		d.prog = objs.GenericLsmHandler
@@ -82,14 +103,14 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 	case PROG_TYPE_LSM_EXEC:
 		spec, err := loadLsmDispatcherExecCheck()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		spec.Programs["generic_lsm_handler"].AttachTo = target
 		spec.Programs["generic_lsm_handler"].AttachType = ebpf.AttachLSMMac
 
 		objs := &lsmDispatcherExecCheckObjects{}
 		if err := spec.LoadAndAssign(objs, opts); err != nil {
-			return nil, err
+			return err
 		}
 
 		d.prog = objs.GenericLsmHandler
@@ -97,11 +118,49 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 		d.progArray = objs.ExecProgs
 	}
 
-	if err := d.reset(); err != nil {
-		return nil, err
+	return nil
+}
+
+func (d *Dispatcher) initializeForTracepoint(target string) error {
+	opts := &ebpf.CollectionOptions{Maps: ebpf.MapOptions{PinPath: pinDir}}
+
+	switch target {
+	case PROG_TYPE_TRACE_OPEN:
+		spec, err := loadRawTpDispatcherFileOpen()
+		if err != nil {
+			return err
+		}
+		spec.Programs["generic_tracepoint_handler"].AttachTo = target
+		spec.Programs["generic_tracepoint_handler"].AttachType = ebpf.AttachTraceRawTp
+
+		objs := &rawTpDispatcherFileOpenObjects{}
+		if err := spec.LoadAndAssign(objs, opts); err != nil {
+			return err
+		}
+
+		d.prog = objs.GenericTracepointHandler
+		d.progCount = objs.ProgCount
+		d.progArray = objs.OpenProgs
+
+	case PROG_TYPE_TRACE_EXEC:
+		spec, err := loadRawTpDispatcherExecCheck()
+		if err != nil {
+			return err
+		}
+		spec.Programs["generic_tracepoint_handler"].AttachTo = target
+		spec.Programs["generic_tracepoint_handler"].AttachType = ebpf.AttachTraceRawTp
+
+		objs := &rawTpDispatcherExecCheckObjects{}
+		if err := spec.LoadAndAssign(objs, opts); err != nil {
+			return err
+		}
+
+		d.prog = objs.GenericTracepointHandler
+		d.progCount = objs.ProgCount
+		d.progArray = objs.ExecProgs
 	}
 
-	return d, nil
+	return nil
 }
 
 // zero out the maps to prevent the dispatcher inheriting programs that previously existed

@@ -1,4 +1,4 @@
-package lsm
+package openexec
 
 import (
 	"errors"
@@ -15,29 +15,38 @@ import (
 const maxPathLen = 128
 
 const (
-	PROG_TYPE_LSM_OPEN = "file_open"
-	PROG_TYPE_LSM_EXEC = "bprm_check_security"
+	PROG_TYPE_LSM_OPEN   = "file_open"
+	PROG_TYPE_LSM_EXEC   = "bprm_check_security"
+	PROG_TYPE_TRACE_OPEN = "syscalls/sys_enter_execve"
+	PROG_TYPE_TRACE_EXEC = "syscalls/sys_enter_openat"
 )
 
 // ProgTypes is the ordered list of lsm hooks: a hook's index here is the
 // PROG_TYPE_* value the kernel programs write into lsm_ctx.prog_type and use
 // as the prog_count key, so this order is the one in _cprog/maps.h and cannot
 // be changed on one side alone.
-var ProgTypes = []string{PROG_TYPE_LSM_OPEN, PROG_TYPE_LSM_EXEC}
+var ProgTypes = map[string]int{
+	PROG_TYPE_LSM_OPEN:   0,
+	PROG_TYPE_TRACE_OPEN: 0,
+	PROG_TYPE_LSM_EXEC:   1,
+	PROG_TYPE_TRACE_EXEC: 1,
+}
 
 func progCountKey(target string) (uint32, error) {
-	for i, t := range ProgTypes {
-		if t == target {
-			return uint32(i), nil
-		}
+	if key, ok := ProgTypes[target]; ok {
+		return uint32(key), nil
 	}
+
 	return 0, fmt.Errorf("unknown lsm attach target %q", target)
 }
 
-//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmDispatcherFileOpen ./_cprog/dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmDispatcherExecCheck ./_cprog/dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go lsmRuntimePolicy ./_cprog/lsm.bpf.c -- -I../include -I./_cprog/include -I./_cprog
-type LsmEnforcer struct {
+//go:generate go tool bpf2go -cflags "-DLSM_FILE_OPEN" lsmDispatcherFileOpen ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DLSM_EXEC_CHECK" lsmDispatcherExecCheck ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DTRACE_FILE_OPEN" rawTpDispatcherFileOpen ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -cflags "-DTRACE_EXEC_CHECK" rawTpDispatcherExecCheck ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go runtimePolicy ./_cprog/runtimepolicy.bpf.c -- -I../include -I./_cprog/include -I./_cprog
+
+type OpenExecEnforcer struct {
 	logger *logr.Logger
 	closer io.Closer
 
@@ -66,12 +75,12 @@ type LsmEnforcer struct {
 	observed  map[uint64]*ebpf.Map
 }
 
-func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*LsmEnforcer, error) {
+func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*OpenExecEnforcer, error) {
 	if _, err := progCountKey(d.dispatcherType); err != nil {
 		return nil, err
 	}
 
-	l := &LsmEnforcer{logger: logger, dispatcher: d}
+	l := &OpenExecEnforcer{logger: logger, dispatcher: d}
 
 	spec, err := loadLsmRuntimePolicy()
 	if err != nil {
@@ -134,7 +143,7 @@ func prepareOpenEvents(spec *ebpf.CollectionSpec) *ebpf.MapSpec {
 	return inner.Copy()
 }
 
-func (l *LsmEnforcer) Close() error {
+func (l *OpenExecEnforcer) Close() error {
 	var retErr error
 	// leave the tail-call chain before anything is released: the prog array
 	// holds its own reference, so a closed-but-still-registered program would
@@ -164,7 +173,7 @@ func (l *LsmEnforcer) Close() error {
 	return retErr
 }
 
-func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
+func (l *OpenExecEnforcer) AddCgids(cgids []uint64) error {
 	var errs []error
 	for _, cgid := range cgids {
 		if err := l.cgids.Put(&cgid, uint8(0)); err != nil {
@@ -174,7 +183,7 @@ func (l *LsmEnforcer) AddCgids(cgids []uint64) error {
 	return errors.Join(errs...)
 }
 
-func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
+func (l *OpenExecEnforcer) DeleteCgids(cgids []uint64) error {
 	var errs []error
 	for _, cgid := range cgids {
 		if err := l.cgids.Delete(&cgid); err != nil {
@@ -186,7 +195,7 @@ func (l *LsmEnforcer) DeleteCgids(cgids []uint64) error {
 
 // AddTargets programs a policy's paths into the banned and allowed maps and
 // returns every value PathKeys could not key.
-func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
+func (l *OpenExecEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	deny, allow, rejected := parsePair(paths)
 
 	for _, key := range deny {
@@ -206,7 +215,7 @@ func (l *LsmEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.Reje
 // DeleteTargets removes what AddTargets programmed for the same pair. Both
 // derive their keys from PathKeys, so a value one of them can key is a value
 // the other can key too.
-func (l *LsmEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
+func (l *OpenExecEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	deny, allow, rejected := parsePair(paths)
 
 	for _, key := range deny {
@@ -232,7 +241,7 @@ func parsePair(paths *compiler.AllowDenyPair) (deny, allow [][maxPathLen]byte, r
 	return deny, allow, append(denyRejected, allowRejected...)
 }
 
-func (l *LsmEnforcer) SetDefaultDeny(val bool) error {
+func (l *OpenExecEnforcer) SetDefaultDeny(val bool) error {
 	k := uint32(0)
 	if val {
 		err := l.defaultDeny.Put(&k, uint8(0))

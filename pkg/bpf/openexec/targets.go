@@ -1,4 +1,4 @@
-package lsm
+package openexec
 
 import (
 	"github.com/nirmata/runtime/pkg/compiler"

@@ -1,4 +1,4 @@
-package lsm
+package openexec
 
 import (
 	"errors"
@@ -169,7 +169,7 @@ func TestTrimPathKey(t *testing.T) {
 // A zero-value enforcer has no maps: the observation API must report that as an
 // error and never dereference a nil map.
 func TestObservationWithoutMapsReportsUnavailable(t *testing.T) {
-	l := &LsmEnforcer{}
+	l := &OpenExecEnforcer{}
 
 	if err := l.EnableObservation([]uint64{1, 2}); !errors.Is(err, ErrObservationUnavailable) {
 		t.Errorf("EnableObservation err = %v, want ErrObservationUnavailable", err)
@@ -188,7 +188,7 @@ func TestObservationWithoutMapsReportsUnavailable(t *testing.T) {
 }
 
 func TestObservationWithNoCgidsIsANoOp(t *testing.T) {
-	l := &LsmEnforcer{}
+	l := &OpenExecEnforcer{}
 
 	if err := l.EnableObservation(nil); err != nil {
 		t.Errorf("EnableObservation(nil) err = %v, want nil", err)
@@ -206,7 +206,7 @@ func TestObservationWithNoCgidsIsANoOp(t *testing.T) {
 }
 
 func TestClose_ZeroValueEnforcerIsSafe(t *testing.T) {
-	l := &LsmEnforcer{}
+	l := &OpenExecEnforcer{}
 	if err := l.Close(); err != nil {
 		t.Errorf("Close() err = %v, want nil", err)
 	}
@@ -247,7 +247,7 @@ func TestMaxPathLenMatchesKernelDefine(t *testing.T) {
 }
 
 func TestReadEventsLostReportsDeltaNotTotal(t *testing.T) {
-	var l LsmEnforcer
+	var l OpenExecEnforcer
 
 	for _, tc := range []struct {
 		total uint64
@@ -267,7 +267,7 @@ func TestReadEventsLostReportsDeltaNotTotal(t *testing.T) {
 }
 
 func TestReadEventsLostReportsUnavailableWithoutStatsMap(t *testing.T) {
-	var l LsmEnforcer
+	var l OpenExecEnforcer
 	got, err := l.ReadEventsLost()
 	if !errors.Is(err, ErrObservationUnavailable) {
 		t.Errorf("err = %v, want ErrObservationUnavailable", err)

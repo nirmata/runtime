@@ -85,4 +85,7 @@ struct task_struct {
 	struct mm_struct *mm;
 } __attribute__((preserve_access_index));
 
+#define SIGKILL 9
+#define SIGTERM 15
+
 #endif /* __VMLINUX_H__ */

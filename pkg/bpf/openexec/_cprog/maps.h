@@ -43,6 +43,7 @@ struct lsm_ctx {
     __u8 have_executed;
     __u8 prog_type;
     __u8 reason;
+    __u8 should_pkill;
     char path[MAX_PATH_LEN];
 };
 

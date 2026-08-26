@@ -78,7 +78,7 @@ static __always_inline void record_path_event(__u64 *cgid, struct path_event_key
 }
 
 
-SEC("lsm/runtime_policy")
+SEC("runtime_policy")
 int runtime_policy_executor(void *ctx)
 {
     __u32 k = 0;
@@ -118,6 +118,11 @@ end:
      * the programs that did run decided. */
     record_path_event(&cgid, &ev_k);
     if (prog_ctx->deny) {
+        /* the policy program was reached from a tracepoint dispatcher */
+        if (prog_ctx->should_pkill) {
+            bpf_send_signal(SIGKILL);   
+            return 0;
+        }
         return -EPERM;
     }
 

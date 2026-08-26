@@ -88,12 +88,18 @@ type lsmAttachment struct {
 // NewLsmManager loads and attaches the dispatcher for each lsm hook the
 // manager enforces through. The dispatchers are the only programs linked to
 // the kernel; enforcers built later join their tail-call chains.
-func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, cgroupSinks ...CgroupSink) (*LsmManager, error) {
+func NewLsmManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, tracepoint bool, cgroupSinks ...CgroupSink) (*LsmManager, error) {
 	if err := lsm.ClearPins(); err != nil {
 		return nil, err
 	}
+
+	progArrayType := []string{lsm.PROG_TYPE_LSM_OPEN, lsm.PROG_TYPE_LSM_EXEC}
+	if tracepoint {
+		progArrayType = []string{lsm.PROG_TYPE_TRACE_OPEN, lsm.PROG_TYPE_TRACE_EXEC}
+	}
+
 	dispatchers := make(map[string]*lsm.Dispatcher, 2)
-	for _, target := range lsm.ProgTypes {
+	for _, target := range progArrayType {
 		d, err := lsm.NewDispatcherForTarget(target)
 		if err != nil {
 			return nil, fmt.Errorf("loading the %s dispatcher: %w", target, err)
