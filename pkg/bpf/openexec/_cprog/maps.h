@@ -8,21 +8,17 @@
 #define DECISION_DENY 1
 
 
-// programs are limited by tail call count. in the future we can check if we
-// can optimizing this by only tail calling to programs if they target a particular
-// cgid (pod) rather than every program we have
-#define MAX_PROG_COUNT 33
+#define MAX_PROG_COUNT 128
 
 /* these are prog_count keys; the order matches lsm.ProgTypes in the Go layer */
 #define	PROG_TYPE_LSM_OPEN 0
 #define	PROG_TYPE_LSM_EXEC 1
 
-
-/* Padding-free by construction: a hash key is compared as raw bytes, so any
- * uninitialized byte would split one logical key across separate entries. */
-struct path_event_key {
-    char path[MAX_PATH_LEN];
-    __u32 decision;
+enum data_type {
+    ALLOW_ENTRY,
+    DENY_ENTRY,
+    CGID,
+    FLAGS,
 };
 
 enum path_stat {
@@ -37,43 +33,39 @@ enum decision_reason {
     IMPLICIT_ALLOW,
 };
 
-struct policy_ctx {
-    __u8 deny;
-    __u8 next_prog_idx;
-    __u8 have_executed;
-    __u8 prog_type;
-    __u8 reason;
-    __u8 should_pkill;
-    char path[MAX_PATH_LEN];
+struct entry{
+    enum data_type data_type;
+    char data[MAX_PATH_LEN]; 
 };
 
-struct {
+struct policy_entry_map {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, __u64);
+    __uint(max_entries, 2048);
+    __type(key, struct entry);
     __type(value, __u8);
-} cgids SEC(".maps");
+};
+
+struct policy_entry_map inner_policy_map SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1);
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, 128); // 128 policies max
     __type(key, __u32);
-    __type(value, __u8);
-} default_deny SEC(".maps");
+    __array(values, struct policy_entry_map);
+} policies SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, char[MAX_PATH_LEN]);
-    __type(value, __u8);
-} banned SEC(".maps");
+/* Padding-free by construction: a hash key is compared as raw bytes, so any
+ * uninitialized byte would split one logical key across separate entries. */
+struct path_event_key {
+    char path[MAX_PATH_LEN];
+    __u32 decision;
+};
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, char[MAX_PATH_LEN]);
-    __type(value, __u8);
-} allowed SEC(".maps");
+struct policy_ctx {
+    __u8 prog_type;
+    __u8 reason;
+    char path[MAX_PATH_LEN];
+};
 
 /* 2048: the decision dimension can double the number of distinct keys. */
 struct open_events_inner_map {
@@ -110,7 +102,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, MAX_PROG_COUNT);
+    __uint(max_entries, 1);
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -119,7 +111,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, MAX_PROG_COUNT);
+    __uint(max_entries, 1);
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
     __uint(pinning, LIBBPF_PIN_BY_NAME);

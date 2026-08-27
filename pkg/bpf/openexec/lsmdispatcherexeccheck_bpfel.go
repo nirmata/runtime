@@ -13,6 +13,12 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type lsmDispatcherExecCheckEntry struct {
+	_        structs.HostLayout
+	DataType uint32
+	Data     [128]int8
+}
+
 type lsmDispatcherExecCheckPathEventKey struct {
 	_        structs.HostLayout
 	Path     [128]int8
@@ -20,29 +26,23 @@ type lsmDispatcherExecCheckPathEventKey struct {
 }
 
 type lsmDispatcherExecCheckPolicyCtx struct {
-	_            structs.HostLayout
-	Deny         uint8
-	NextProgIdx  uint8
-	HaveExecuted uint8
-	ProgType     uint8
-	Reason       uint8
-	ShouldPkill  uint8
-	Path         [128]int8
+	_        structs.HostLayout
+	ProgType uint8
+	Reason   uint8
+	Path     [128]int8
 }
 
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	lsmDispatcherExecCheckMapAllowed            = "allowed"
-	lsmDispatcherExecCheckMapBanned             = "banned"
-	lsmDispatcherExecCheckMapCgids              = "cgids"
 	lsmDispatcherExecCheckMapCtxMap             = "ctx_map"
-	lsmDispatcherExecCheckMapDefaultDeny        = "default_deny"
 	lsmDispatcherExecCheckMapExecProgs          = "exec_progs"
 	lsmDispatcherExecCheckMapInnerOpenEvents    = "inner_open_events"
+	lsmDispatcherExecCheckMapInnerPolicyMap     = "inner_policy_map"
 	lsmDispatcherExecCheckMapOpenEvents         = "open_events"
 	lsmDispatcherExecCheckMapOpenProgs          = "open_progs"
+	lsmDispatcherExecCheckMapPolicies           = "policies"
 	lsmDispatcherExecCheckMapProgCount          = "prog_count"
 	lsmDispatcherExecCheckMapStats              = "stats"
 	lsmDispatcherExecCheckProgGenericLsmHandler = "generic_lsm_handler"
@@ -97,15 +97,13 @@ type lsmDispatcherExecCheckProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type lsmDispatcherExecCheckMapSpecs struct {
-	Allowed         *ebpf.MapSpec `ebpf:"allowed"`
-	Banned          *ebpf.MapSpec `ebpf:"banned"`
-	Cgids           *ebpf.MapSpec `ebpf:"cgids"`
 	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	DefaultDeny     *ebpf.MapSpec `ebpf:"default_deny"`
 	ExecProgs       *ebpf.MapSpec `ebpf:"exec_progs"`
 	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
+	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
 	OpenProgs       *ebpf.MapSpec `ebpf:"open_progs"`
+	Policies        *ebpf.MapSpec `ebpf:"policies"`
 	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
 	Stats           *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -136,30 +134,26 @@ func (o *lsmDispatcherExecCheckObjects) Close() error {
 //
 // It can be passed to loadLsmDispatcherExecCheckObjects or ebpf.CollectionSpec.LoadAndAssign.
 type lsmDispatcherExecCheckMaps struct {
-	Allowed         *ebpf.Map `ebpf:"allowed"`
-	Banned          *ebpf.Map `ebpf:"banned"`
-	Cgids           *ebpf.Map `ebpf:"cgids"`
 	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	DefaultDeny     *ebpf.Map `ebpf:"default_deny"`
 	ExecProgs       *ebpf.Map `ebpf:"exec_progs"`
 	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
+	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.Map `ebpf:"open_events"`
 	OpenProgs       *ebpf.Map `ebpf:"open_progs"`
+	Policies        *ebpf.Map `ebpf:"policies"`
 	ProgCount       *ebpf.Map `ebpf:"prog_count"`
 	Stats           *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *lsmDispatcherExecCheckMaps) Close() error {
 	return _LsmDispatcherExecCheckClose(
-		m.Allowed,
-		m.Banned,
-		m.Cgids,
 		m.CtxMap,
-		m.DefaultDeny,
 		m.ExecProgs,
 		m.InnerOpenEvents,
+		m.InnerPolicyMap,
 		m.OpenEvents,
 		m.OpenProgs,
+		m.Policies,
 		m.ProgCount,
 		m.Stats,
 	)

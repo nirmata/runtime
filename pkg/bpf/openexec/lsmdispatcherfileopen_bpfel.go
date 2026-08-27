@@ -13,6 +13,12 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type lsmDispatcherFileOpenEntry struct {
+	_        structs.HostLayout
+	DataType uint32
+	Data     [128]int8
+}
+
 type lsmDispatcherFileOpenPathEventKey struct {
 	_        structs.HostLayout
 	Path     [128]int8
@@ -20,29 +26,23 @@ type lsmDispatcherFileOpenPathEventKey struct {
 }
 
 type lsmDispatcherFileOpenPolicyCtx struct {
-	_            structs.HostLayout
-	Deny         uint8
-	NextProgIdx  uint8
-	HaveExecuted uint8
-	ProgType     uint8
-	Reason       uint8
-	ShouldPkill  uint8
-	Path         [128]int8
+	_        structs.HostLayout
+	ProgType uint8
+	Reason   uint8
+	Path     [128]int8
 }
 
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	lsmDispatcherFileOpenMapAllowed            = "allowed"
-	lsmDispatcherFileOpenMapBanned             = "banned"
-	lsmDispatcherFileOpenMapCgids              = "cgids"
 	lsmDispatcherFileOpenMapCtxMap             = "ctx_map"
-	lsmDispatcherFileOpenMapDefaultDeny        = "default_deny"
 	lsmDispatcherFileOpenMapExecProgs          = "exec_progs"
 	lsmDispatcherFileOpenMapInnerOpenEvents    = "inner_open_events"
+	lsmDispatcherFileOpenMapInnerPolicyMap     = "inner_policy_map"
 	lsmDispatcherFileOpenMapOpenEvents         = "open_events"
 	lsmDispatcherFileOpenMapOpenProgs          = "open_progs"
+	lsmDispatcherFileOpenMapPolicies           = "policies"
 	lsmDispatcherFileOpenMapProgCount          = "prog_count"
 	lsmDispatcherFileOpenMapStats              = "stats"
 	lsmDispatcherFileOpenProgGenericLsmHandler = "generic_lsm_handler"
@@ -97,15 +97,13 @@ type lsmDispatcherFileOpenProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type lsmDispatcherFileOpenMapSpecs struct {
-	Allowed         *ebpf.MapSpec `ebpf:"allowed"`
-	Banned          *ebpf.MapSpec `ebpf:"banned"`
-	Cgids           *ebpf.MapSpec `ebpf:"cgids"`
 	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	DefaultDeny     *ebpf.MapSpec `ebpf:"default_deny"`
 	ExecProgs       *ebpf.MapSpec `ebpf:"exec_progs"`
 	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
+	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
 	OpenProgs       *ebpf.MapSpec `ebpf:"open_progs"`
+	Policies        *ebpf.MapSpec `ebpf:"policies"`
 	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
 	Stats           *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -136,30 +134,26 @@ func (o *lsmDispatcherFileOpenObjects) Close() error {
 //
 // It can be passed to loadLsmDispatcherFileOpenObjects or ebpf.CollectionSpec.LoadAndAssign.
 type lsmDispatcherFileOpenMaps struct {
-	Allowed         *ebpf.Map `ebpf:"allowed"`
-	Banned          *ebpf.Map `ebpf:"banned"`
-	Cgids           *ebpf.Map `ebpf:"cgids"`
 	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	DefaultDeny     *ebpf.Map `ebpf:"default_deny"`
 	ExecProgs       *ebpf.Map `ebpf:"exec_progs"`
 	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
+	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.Map `ebpf:"open_events"`
 	OpenProgs       *ebpf.Map `ebpf:"open_progs"`
+	Policies        *ebpf.Map `ebpf:"policies"`
 	ProgCount       *ebpf.Map `ebpf:"prog_count"`
 	Stats           *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *lsmDispatcherFileOpenMaps) Close() error {
 	return _LsmDispatcherFileOpenClose(
-		m.Allowed,
-		m.Banned,
-		m.Cgids,
 		m.CtxMap,
-		m.DefaultDeny,
 		m.ExecProgs,
 		m.InnerOpenEvents,
+		m.InnerPolicyMap,
 		m.OpenEvents,
 		m.OpenProgs,
+		m.Policies,
 		m.ProgCount,
 		m.Stats,
 	)
