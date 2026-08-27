@@ -33,10 +33,6 @@ func progSpecs(compiledRp *compiler.EvaluationResult, lsm bool) []progSpec {
 func (l *OpenExecManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID, "mode", compiledRp.Mode)
 	observe := compiler.IsObserveMode(compiledRp.Mode)
-	if compiledRp.Mode != compiler.ModeEnforce && !observe {
-		l.logger.V(2).Info("runtime policy mode needs no lsm attachment", "uid", compiledRp.UID, "mode", compiledRp.Mode)
-		return nil
-	}
 
 	progMap := make(map[string]*progState)
 	for _, spec := range progSpecs(compiledRp, l.lsm) {
@@ -173,7 +169,11 @@ func (l *OpenExecManager) closeProgs(rpUID string, progs map[string]*progState) 
 // program cannot return -EPERM: matching happens in userspace over the counts
 // CollectObservations reads back.
 func (l *OpenExecManager) createForProgType(rpUID string, pair *compiler.AllowDenyPair, progType string, observe bool) (openExecEnforcer, error) {
-	cleanup := false
+	// a flag that controls if we should close the enforcer on the kernel side
+	// due to an error
+	var cleanup bool
+
+	// should be create a map and populate it
 	enf, err := l.newEnforcer(&l.logger, progType)
 	if err != nil {
 		return nil, err

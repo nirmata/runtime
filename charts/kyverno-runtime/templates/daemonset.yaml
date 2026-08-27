@@ -95,6 +95,9 @@ spec:
         - name: bpffs
           mountPath: /sys/fs/bpf
           mountPropagation: HostToContainer
+        - name: securityfs
+          mountPath: /sys/kernel/security
+          readOnly: true
         {{- if .Values.daemon.push.target }}
         - name: push-tls
           mountPath: {{ $pushTLSDir }}
@@ -105,6 +108,12 @@ spec:
       - name: bpffs
         hostPath:
           path: /sys/fs/bpf
+          type: Directory
+      # the daemon reads the host's active LSM list to decide between BPF-LSM
+      # and fmod_ret attachment; securityfs is not visible in containers
+      - name: securityfs
+        hostPath:
+          path: /sys/kernel/security
           type: Directory
       {{- if .Values.daemon.push.target }}
       - name: push-tls

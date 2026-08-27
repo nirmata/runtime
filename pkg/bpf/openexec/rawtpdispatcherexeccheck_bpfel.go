@@ -13,7 +13,13 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type rawTpDispatcherExecCheckLsmCtx struct {
+type rawTpDispatcherExecCheckPathEventKey struct {
+	_        structs.HostLayout
+	Path     [128]int8
+	Decision uint32
+}
+
+type rawTpDispatcherExecCheckPolicyCtx struct {
 	_            structs.HostLayout
 	Deny         uint8
 	NextProgIdx  uint8
@@ -22,12 +28,6 @@ type rawTpDispatcherExecCheckLsmCtx struct {
 	Reason       uint8
 	ShouldPkill  uint8
 	Path         [128]int8
-}
-
-type rawTpDispatcherExecCheckPathEventKey struct {
-	_        structs.HostLayout
-	Path     [128]int8
-	Decision uint32
 }
 
 // Names of all BPF objects in the ELF.

@@ -96,6 +96,7 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 
 	progArrayType := []string{openexec.PROG_TYPE_TRACE_OPEN, openexec.PROG_TYPE_TRACE_EXEC}
 	if lsm {
+		logger.V(2).Info("BPF-LSM is not available, using fmod_ret based enforcement")
 		progArrayType = []string{openexec.PROG_TYPE_LSM_OPEN, openexec.PROG_TYPE_LSM_EXEC}
 	}
 

@@ -19,7 +19,7 @@ struct {
 // the whole event key. ctx is shared by every program in the tail-call chain,
 // so the reason/deny it carries in may already hold an earlier program's
 // verdict: an explicit allow set by another policy overrides implicit deny.
-static __always_inline void path_decision(struct lsm_ctx *ctx, struct path_event_key *key) {
+static __always_inline void path_decision(struct policy_ctx *ctx, struct path_event_key *key) {
     __u32 dd_key = 0;
     __u8 *dd = bpf_map_lookup_elem(&default_deny, &dd_key);
 
@@ -84,7 +84,7 @@ int runtime_policy_executor(void *ctx)
     __u32 k = 0;
     struct path_event_key ev_k = {};
 
-    struct lsm_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
+    struct policy_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
         return 0;
     }

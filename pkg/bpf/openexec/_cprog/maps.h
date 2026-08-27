@@ -37,7 +37,7 @@ enum decision_reason {
     IMPLICIT_ALLOW,
 };
 
-struct lsm_ctx {
+struct policy_ctx {
     __u8 deny;
     __u8 next_prog_idx;
     __u8 have_executed;
@@ -130,6 +130,6 @@ struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
-    __type(value, struct lsm_ctx);
+    __type(value, struct policy_ctx);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ctx_map SEC(".maps");

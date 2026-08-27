@@ -25,7 +25,7 @@ int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
 
     void *target_map;
 
-    struct lsm_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
+    struct policy_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
         return 0;
     }
