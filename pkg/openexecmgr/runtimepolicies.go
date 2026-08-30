@@ -33,6 +33,10 @@ func progSpecs(compiledRp *compiler.EvaluationResult, lsm bool) []progSpec {
 func (l *OpenExecManager) rpCreated(compiledRp *compiler.EvaluationResult) error {
 	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID, "mode", compiledRp.Mode)
 	observe := compiler.IsObserveMode(compiledRp.Mode)
+	if compiledRp.Mode != compiler.ModeEnforce && !observe {
+		l.logger.V(2).Info("runtime policy mode needs no lsm attachment", "uid", compiledRp.UID, "mode", compiledRp.Mode)
+		return nil
+	}
 
 	policies := make(map[string]*progState)
 	for _, spec := range progSpecs(compiledRp, l.lsm) {
@@ -79,12 +83,6 @@ func (l *OpenExecManager) rpCreated(compiledRp *compiler.EvaluationResult) error
 
 	for progType, prog := range la.policyMaps {
 		l.addPodCgids(compiledRp.UID, progType, prog, targetCgids, la.observe)
-	}
-
-	for _, enforcerProg := range l.programs {
-		if err := enforcerProg.EnableObservation(targetCgids); err != nil {
-			l.logger.V(4).Error(err, "failed to enable observation for cgids")
-		}
 	}
 
 	return nil
@@ -150,19 +148,12 @@ func (l *OpenExecManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 			l.mirrorCgids(compiledRp.UID, openexec.PROG_TYPE_LSM_EXEC, pod.cgids, false)
 		}
 	}
-	for progKey, prog := range la.policyMaps {
+	unwatched := soleWatcherCgids(la)
+	for progType, prog := range la.policyMaps {
 		if err := prog.enf.Close(); err != nil {
 			l.logger.Error(err, "failed to close bpf lsm enforcer")
 		}
-		enforcerProg, ok := l.programs[progKey]
-		if !ok {
-			continue
-		}
-
-		if err := l.stopMonitoringForDeletedRp(enforcerProg, la); err != nil {
-			// it's not that big of a deal. log it at a more hidden level
-			l.logger.V(4).Error(err, "failed to disable monitoring for cgids")
-		}
+		l.disableObservation(progType, unwatched)
 	}
 	delete(l.openExecAttachments, compiledRp.UID)
 	for _, pod := range l.pods {
@@ -170,18 +161,16 @@ func (l *OpenExecManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	}
 }
 
-// When a policy is deleted, if it was the only policy targeting a cgid, disable monitoring for that cgid
-func (l *OpenExecManager) stopMonitoringForDeletedRp(enforcerProg *openexec.Prog, la *openExecAttachment) error {
-	cgidsStopMonitoring := []uint64{}
+// soleWatcherCgids returns the cgids of every pod for which la is the last
+// attached policy: once la detaches, nothing needs those cgids observed.
+func soleWatcherCgids(la *openExecAttachment) []uint64 {
+	var cgids []uint64
 	for _, pod := range la.attachedPods {
 		if len(pod.attachedOpenExecs) == 1 {
-			cgidsStopMonitoring = append(cgidsStopMonitoring, pod.cgids...)
+			cgids = append(cgids, pod.cgids...)
 		}
 	}
-	if err := enforcerProg.DisableObservation(cgidsStopMonitoring); err != nil {
-		return err
-	}
-	return nil
+	return cgids
 }
 
 // closeProgs releases a half built prog map that was never published.
@@ -327,29 +316,17 @@ func (l *OpenExecManager) syncPodAttachment(uid string, la *openExecAttachment) 
 
 			attach(uid, la, podUid, pod)
 		} else {
-			// a pod coming from the manager (all pods) don't match the policy anymore. did it match previously ?
 			podAttachment, ok := la.attachedPods[podUid]
 			if ok {
 				// the cgids leave the enforcer before the attachment is dropped
 				l.logger.V(2).Info("pod stopped matching runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-				// yeah this should still remove the cgods
-				cgidsStopMonitoring := []uint64{}
+				var stopObserving []uint64
+				if len(pod.attachedOpenExecs) == 1 {
+					stopObserving = pod.cgids
+				}
 				for progType, prog := range la.policyMaps {
 					l.removePodCgids(uid, progType, prog, pod.cgids)
-					// if this is the only policy that tracked a pod, disable monitoring of that pod's cgids
-					if len(pod.attachedOpenExecs) == 1 {
-						cgidsStopMonitoring = append(cgidsStopMonitoring, pod.cgids...)
-					}
-
-					if len(cgidsStopMonitoring) > 0 {
-						enforcerProg, ok := l.programs[progType]
-						if !ok {
-							continue
-						}
-						if err := enforcerProg.DisableObservation(cgidsStopMonitoring); err != nil {
-							l.logger.V(4).Error(err, "failed to disable monitoring")
-						}
-					}
+					l.disableObservation(progType, stopObserving)
 				}
 
 				detach(uid, la, podUid, podAttachment)

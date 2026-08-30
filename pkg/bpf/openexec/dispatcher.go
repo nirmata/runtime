@@ -22,8 +22,12 @@ const pinDir = "/sys/fs/bpf/kyverno-runtime"
 type Dispatcher struct {
 	prog *ebpf.Program
 
-	progArray *ebpf.Map
-	progCount *ebpf.Map
+	// progArray is the policies array-of-maps (open_policies/exec_policies);
+	// enforcerArray is the one-slot prog array (open_prog/exec_prog) the
+	// dispatcher tail-calls, which NewProgram fills.
+	progArray     *ebpf.Map
+	enforcerArray *ebpf.Map
+	progCount     *ebpf.Map
 
 	// progCountKey is this hook's slot in the shared prog_count array.
 	progCountKey uint32
@@ -99,6 +103,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		d.prog = objs.GenericLsmHandler
 		d.progCount = objs.ProgCount
 		d.progArray = objs.OpenPolicies
+		d.enforcerArray = objs.OpenProg
 
 	case PROG_TYPE_LSM_EXEC:
 		spec, err := loadLsmDispatcherExecCheck()
@@ -116,6 +121,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		d.prog = objs.GenericLsmHandler
 		d.progCount = objs.ProgCount
 		d.progArray = objs.ExecPolicies
+		d.enforcerArray = objs.ExecProg
 	}
 
 	return nil
@@ -138,6 +144,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		d.prog = objs.GenericTracepointHandler
 		d.progCount = objs.ProgCount
 		d.progArray = objs.OpenPolicies
+		d.enforcerArray = objs.OpenProg
 
 	case PROG_TYPE_TRACE_EXEC:
 		spec, err := loadRawTpDispatcherExecCheck()
@@ -152,6 +159,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		d.prog = objs.GenericTracepointHandler
 		d.progCount = objs.ProgCount
 		d.progArray = objs.ExecPolicies
+		d.enforcerArray = objs.ExecProg
 	}
 
 	return nil

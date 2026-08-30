@@ -36,6 +36,12 @@ type progCheck struct {
 	// hook, so the loader chooses file_open or bprm_check_security and the lane
 	// has to choose the same way. Empty means the SEC name already resolves.
 	attachTo string
+	// loadType and loadAttach load a program whose SEC carries no attachable
+	// prefix at all (the tail-called policy executor), the way the production
+	// loader types it after the dispatcher it chains from. Zero means the SEC
+	// name already chose.
+	loadType   ebpf.ProgramType
+	loadAttach ebpf.AttachType
 	// insnBudget fails the check when the verifier walks more instructions than
 	// this. The count is logged either way: a regression should show up as a
 	// number that moved, not only as a threshold that tripped.
@@ -70,7 +76,7 @@ var bpfObjects = []bpfObjectSpec{
 		}},
 	},
 	{
-		object: "pkg/bpf/lsm/lsmdispatcherfileopen_bpfel.o",
+		object: "pkg/bpf/openexec/lsmdispatcherfileopen_bpfel.o",
 		pre:    needBPFLSM,
 		progs: []progCheck{{
 			name:       "generic_lsm_handler",
@@ -81,7 +87,7 @@ var bpfObjects = []bpfObjectSpec{
 		}},
 	},
 	{
-		object: "pkg/bpf/lsm/lsmdispatcherexeccheck_bpfel.o",
+		object: "pkg/bpf/openexec/lsmdispatcherexeccheck_bpfel.o",
 		pre:    needBPFLSM,
 		progs: []progCheck{{
 			name:       "generic_lsm_handler",
@@ -92,18 +98,38 @@ var bpfObjects = []bpfObjectSpec{
 		}},
 	},
 	{
-		// The enforcer is hook-agnostic; the lane loads it as file_open, which
-		// is also how it becomes the first user of its placeholder chain_progs
-		// array, so no dispatcher has to be loaded alongside it.
-		object: "pkg/bpf/lsm/lsmruntimepolicy_bpfel.o",
-		pre:    needBPFLSM,
+		object: "pkg/bpf/openexec/rawtpdispatcherfileopen_bpfel.o",
 		progs: []progCheck{{
-			name:     "runtime_policy_executor",
-			typ:      ebpf.LSM,
-			attach:   ebpf.AttachLSMMac,
-			attachTo: "file_open",
-			// The unrolled 128-slot tail-call walk dominates: ~3.3k processed.
-			insnBudget: 6000,
+			name:       "generic_tracepoint_handler",
+			typ:        ebpf.Tracing,
+			attach:     ebpf.AttachModifyReturn,
+			insnBudget: 2000,
+		}},
+	},
+	{
+		object: "pkg/bpf/openexec/rawtpdispatcherexeccheck_bpfel.o",
+		progs: []progCheck{{
+			name:       "generic_tracepoint_handler",
+			typ:        ebpf.Tracing,
+			attach:     ebpf.AttachModifyReturn,
+			insnBudget: 2000,
+		}},
+	},
+	{
+		// The executor is hook-agnostic; the lane loads it as fmod_ret on
+		// security_file_open, which needs no BPF-LSM boot parameter.
+		object: "pkg/bpf/openexec/runtimepolicy_bpfel.o",
+		progs: []progCheck{{
+			name:       "runtime_policy_executor",
+			typ:        ebpf.UnspecifiedProgram,
+			attach:     0,
+			attachTo:   "security_file_open",
+			loadType:   ebpf.Tracing,
+			loadAttach: ebpf.AttachModifyReturn,
+			// The verifier walks the 128-policy loop body once per iteration;
+			// the budget guards the 1M verifier cap until a kernel lane run
+			// records the real count.
+			insnBudget: 500000,
 		}},
 	},
 	{
@@ -231,6 +257,10 @@ func verifyObject(t *testing.T, path string, progs []progCheck) {
 		}
 		if p.attachTo != "" {
 			ps.AttachTo = p.attachTo
+		}
+		if p.loadType != ebpf.UnspecifiedProgram {
+			ps.Type = p.loadType
+			ps.AttachType = p.loadAttach
 		}
 	}
 	if t.Failed() {

@@ -1,7 +1,6 @@
 package openexecmgr
 
 import (
-	"bytes"
 	"fmt"
 	"slices"
 	"sort"
@@ -29,9 +28,16 @@ const (
 // the clock every harness runs on: no sleeping and no wall clock in a unit test.
 var fixedTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 
-// fakeEnforcer records every call the manager makes on it and also maintains the
-// effective state those calls would produce in the bpf maps (cgid set, allow/deny
-// path sets, default deny, observed cgids). tests assert on both: the exact
+// obsKey builds the kernel-layout observation key for a path and decision.
+func obsKey(path string, d runtimeevent.KernelDecision) openexec.PathEventKey {
+	k := openexec.PathEventKey{Decision: uint32(d)}
+	copy(k.Path[:], path)
+	return k
+}
+
+// fakeEnforcer records every call the manager makes on one policy map and also
+// maintains the effective state those calls would produce in the bpf map (cgid
+// set, allow/deny path sets, default deny). tests assert on both: the exact
 // arguments of the diff operations, and the resulting state.
 type fakeEnforcer struct {
 	mu     sync.Mutex
@@ -41,9 +47,6 @@ type fakeEnforcer struct {
 	delTargets  []compiler.AllowDenyPair
 	addCgids    [][]uint64
 	delCgids    [][]uint64
-	enableObs   [][]uint64
-	disableObs  [][]uint64
-	readCalls   [][]uint64
 	defaultDeny []bool
 	closeCount  int
 
@@ -51,18 +54,9 @@ type fakeEnforcer struct {
 	allow      map[string]struct{}
 	deny       map[string]struct{}
 	cgids      map[uint64]struct{}
-	observing  map[uint64]struct{}
 	denyAll    bool
 	closed     bool
 	usedClosed []string // methods called after Close, must always be empty
-
-	// pending are the kernel-side counts ReadEvents will hand back (and reset).
-	pending map[uint64]map[openexec.PathEventKey]uint32
-
-	// lost is the cumulative kernel drop total, as the real stats map holds it:
-	// ReadEventsLost hands back the increase since the previous call.
-	lost     uint64
-	lostLast uint64
 
 	errs map[string]error
 }
@@ -72,13 +66,11 @@ func newFakeEnforcer(target string, errs map[string]error) *fakeEnforcer {
 		errs = map[string]error{}
 	}
 	return &fakeEnforcer{
-		target:    target,
-		allow:     map[string]struct{}{},
-		deny:      map[string]struct{}{},
-		cgids:     map[uint64]struct{}{},
-		observing: map[uint64]struct{}{},
-		pending:   map[uint64]map[openexec.PathEventKey]uint32{},
-		errs:      errs,
+		target: target,
+		allow:  map[string]struct{}{},
+		deny:   map[string]struct{}{},
+		cgids:  map[uint64]struct{}{},
+		errs:   errs,
 	}
 }
 
@@ -118,9 +110,9 @@ func (f *fakeEnforcer) DeleteCgids(cgids []uint64) error {
 	return f.note("DeleteCgids")
 }
 
-// AddTargets and DeleteTargets model the real enforcer's effective map state by
-// deriving their keys the way it does, so a value openexec.PathKeys rejects never
-// appears in the fake's allow or deny set either.
+// AddTargets and DeleteTargets model the real policy map's effective state by
+// deriving their accepted values the way it does, so a value the schema rejects
+// never appears in the fake's allow or deny set either.
 func (f *fakeEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -150,24 +142,9 @@ func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.
 }
 
 func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejected []compiler.RejectedTarget) {
-	allowKeys, _, allowRejected := openexec.PathKeys(paths.Allow)
-	denyKeys, _, denyRejected := openexec.PathKeys(paths.Deny)
-	for _, k := range allowKeys {
-		allow = append(allow, keyPath(k))
-	}
-	for _, k := range denyKeys {
-		deny = append(deny, keyPath(k))
-	}
+	allow, _, allowRejected := compiler.ParsePathList(paths.Allow)
+	deny, _, denyRejected := compiler.ParsePathList(paths.Deny)
 	return allow, deny, append(denyRejected, allowRejected...)
-}
-
-// keyPath is the inverse of the NUL padding openexec.PathKeys applies; paths hold
-// no NUL byte, so the first one always ends the string.
-func keyPath(k [compiler.MaxPathValueLen + 1]byte) string {
-	if i := bytes.IndexByte(k[:], 0); i >= 0 {
-		return string(k[:i])
-	}
-	return string(k[:])
 }
 
 func (f *fakeEnforcer) SetDefaultDeny(val bool) error {
@@ -176,82 +153,6 @@ func (f *fakeEnforcer) SetDefaultDeny(val bool) error {
 	f.defaultDeny = append(f.defaultDeny, val)
 	f.denyAll = val
 	return f.note("SetDefaultDeny")
-}
-
-func (f *fakeEnforcer) EnableObservation(cgids []uint64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.enableObs = append(f.enableObs, slices.Clone(cgids))
-	for _, c := range cgids {
-		f.observing[c] = struct{}{}
-	}
-	return f.note("EnableObservation")
-}
-
-func (f *fakeEnforcer) DisableObservation(cgids []uint64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.disableObs = append(f.disableObs, slices.Clone(cgids))
-	for _, c := range cgids {
-		delete(f.observing, c)
-		delete(f.pending, c)
-	}
-	return f.note("DisableObservation")
-}
-
-// ReadEvents drains the seeded counts for the cgids it is asked about, mirroring
-// the real read-and-reset semantics.
-func (f *fakeEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[openexec.PathEventKey]uint32, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.readCalls = append(f.readCalls, slices.Clone(cgids))
-	out := map[uint64]map[openexec.PathEventKey]uint32{}
-	for _, c := range cgids {
-		counts, ok := f.pending[c]
-		if !ok || len(counts) == 0 {
-			continue
-		}
-		out[c] = counts
-		delete(f.pending, c)
-	}
-	return out, f.note("ReadEvents")
-}
-
-func (f *fakeEnforcer) ReadEventsLost() (uint64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.note("ReadEventsLost"); err != nil {
-		return 0, err
-	}
-	delta := f.lost - f.lostLast
-	f.lostLast = f.lost
-	return delta, nil
-}
-
-// seedLost raises the cumulative kernel drop total by n.
-func (f *fakeEnforcer) seedLost(n uint64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.lost += n
-}
-
-// seed puts kernel-side allow-decision counts in place for the next ReadEvents
-// call. seedDecision is the general form.
-func (f *fakeEnforcer) seed(cgid uint64, counts map[string]uint32) {
-	for p, c := range counts {
-		f.seedDecision(cgid, openexec.PathEventKey{Path: p, Decision: runtimeevent.DecisionAllow}, c)
-	}
-}
-
-// seedDecision puts one kernel-side (path, decision) count in place for the next
-// ReadEvents call.
-func (f *fakeEnforcer) seedDecision(cgid uint64, key openexec.PathEventKey, count uint32) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.pending[cgid] == nil {
-		f.pending[cgid] = map[openexec.PathEventKey]uint32{}
-	}
-	f.pending[cgid][key] = count
 }
 
 // reset clears the recorded call log but keeps the effective state, so a test can
@@ -263,9 +164,6 @@ func (f *fakeEnforcer) reset() {
 	f.delTargets = nil
 	f.addCgids = nil
 	f.delCgids = nil
-	f.enableObs = nil
-	f.disableObs = nil
-	f.readCalls = nil
 	f.defaultDeny = nil
 }
 
@@ -273,12 +171,6 @@ func (f *fakeEnforcer) cgidSet() []uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return sortedU64(f.cgids)
-}
-
-func (f *fakeEnforcer) observedSet() []uint64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return sortedU64(f.observing)
 }
 
 func (f *fakeEnforcer) denySet() []string {
@@ -291,6 +183,134 @@ func (f *fakeEnforcer) allowSet() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return sortedKeys(f.allow)
+}
+
+// fakeProgram records the observation calls the manager makes on one attach
+// target's policy executor and maintains the effective observed-cgid set plus
+// the kernel-side counts ReadEvents drains.
+type fakeProgram struct {
+	mu       sync.Mutex
+	progType string
+	// errs resolves the currently configured failure for a method, so failures
+	// registered after harness construction still reach this program.
+	errs func(method string) error
+
+	enableObs  [][]uint64
+	disableObs [][]uint64
+	readCalls  int
+
+	observing map[uint64]struct{}
+	// pending are the kernel-side counts ReadEvents will hand back (and reset).
+	pending map[uint64]map[openexec.PathEventKey]uint32
+
+	// lost is the cumulative kernel drop total, as the real stats map holds it:
+	// ReadEventsLost hands back the increase since the previous call.
+	lost     uint64
+	lostLast uint64
+}
+
+func newFakeProgram(progType string, errs func(string) error) *fakeProgram {
+	if errs == nil {
+		errs = func(string) error { return nil }
+	}
+	return &fakeProgram{
+		progType:  progType,
+		errs:      errs,
+		observing: map[uint64]struct{}{},
+		pending:   map[uint64]map[openexec.PathEventKey]uint32{},
+	}
+}
+
+func (f *fakeProgram) EnableObservation(cgids []uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enableObs = append(f.enableObs, slices.Clone(cgids))
+	for _, c := range cgids {
+		f.observing[c] = struct{}{}
+	}
+	return f.errs("EnableObservation")
+}
+
+func (f *fakeProgram) DisableObservation(cgids []uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.disableObs = append(f.disableObs, slices.Clone(cgids))
+	for _, c := range cgids {
+		delete(f.observing, c)
+		delete(f.pending, c)
+	}
+	return f.errs("DisableObservation")
+}
+
+// ReadEvents drains every seeded count, mirroring the real read-and-reset
+// semantics. A configured error is returned alongside whatever was drained,
+// the way the real reader keeps the counts it managed to read.
+func (f *fakeProgram) ReadEvents() (map[uint64]map[openexec.PathEventKey]uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readCalls++
+	out := map[uint64]map[openexec.PathEventKey]uint32{}
+	for c, counts := range f.pending {
+		if len(counts) == 0 {
+			continue
+		}
+		out[c] = counts
+	}
+	f.pending = map[uint64]map[openexec.PathEventKey]uint32{}
+	return out, f.errs("ReadEvents")
+}
+
+func (f *fakeProgram) ReadEventsLost() (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.errs("ReadEventsLost"); err != nil {
+		return 0, err
+	}
+	delta := f.lost - f.lostLast
+	f.lostLast = f.lost
+	return delta, nil
+}
+
+// seedLost raises the cumulative kernel drop total by n.
+func (f *fakeProgram) seedLost(n uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lost += n
+}
+
+// seed puts kernel-side allow-decision counts in place for the next ReadEvents
+// call. seedDecision is the general form.
+func (f *fakeProgram) seed(cgid uint64, counts map[string]uint32) {
+	for p, c := range counts {
+		f.seedDecision(cgid, obsKey(p, runtimeevent.DecisionAllow), c)
+	}
+}
+
+// seedDecision puts one kernel-side (path, decision) count in place for the next
+// ReadEvents call.
+func (f *fakeProgram) seedDecision(cgid uint64, key openexec.PathEventKey, count uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pending[cgid] == nil {
+		f.pending[cgid] = map[openexec.PathEventKey]uint32{}
+	}
+	f.pending[cgid][key] = count
+}
+
+func (f *fakeProgram) observedSet() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return sortedU64(f.observing)
+}
+
+// reset clears the recorded call log but keeps the observed set, so a test can
+// isolate the calls made by a single event.
+func (f *fakeProgram) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enableObs = nil
+	f.disableObs = nil
+	f.readCalls = 0
 }
 
 func sortedU64(m map[uint64]struct{}) []uint64 {
@@ -367,12 +387,13 @@ func (s *fakeStatus) latest(policyUID, condType string) (metav1.Condition, bool)
 	return metav1.Condition{}, false
 }
 
-// harness wires an OpenExecManager to fake enforcers and keeps a record of every
-// enforcer that got created.
+// harness wires an OpenExecManager to fake policy maps and fake per-target
+// programs, and keeps a record of every policy map that got created.
 type harness struct {
-	t      *testing.T
-	l      *OpenExecManager
-	status *fakeStatus
+	t        *testing.T
+	l        *OpenExecManager
+	status   *fakeStatus
+	programs map[string]*fakeProgram
 
 	mu        sync.Mutex
 	created   []*fakeEnforcer
@@ -395,7 +416,22 @@ func newHarness(t *testing.T) *harness {
 		createErr: map[string]error{},
 		methodErr: map[string]map[string]error{},
 	}
-	factory := func(_ *logr.Logger, target string) (openExecEnforcer, error) {
+	errsFor := func(target string) func(string) error {
+		return func(method string) error {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			return h.methodErr[target][method]
+		}
+	}
+	h.programs = map[string]*fakeProgram{
+		open: newFakeProgram(open, errsFor(open)),
+		exec: newFakeProgram(exec, errsFor(exec)),
+	}
+	programs := make(map[string]monitoringIface, len(h.programs))
+	for target, p := range h.programs {
+		programs[target] = p
+	}
+	factory := func(_ *logr.Logger, target string) (openExecMap, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if err := h.createErr[target]; err != nil {
@@ -413,7 +449,7 @@ func newHarness(t *testing.T) *harness {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.losses = append(h.losses, loss{reason: reason, delta: delta})
-	}, factory, false)
+	}, factory, programs, true)
 	h.l.clock = func() time.Time { return fixedTime }
 	return h
 }
@@ -424,14 +460,15 @@ func (h *harness) recordedLosses() []loss {
 	return slices.Clone(h.losses)
 }
 
-// failCreate makes enforcer construction fail for a target.
+// failCreate makes policy map construction fail for a target.
 func (h *harness) failCreate(target string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.createErr[target] = err
 }
 
-// failMethod makes a method fail on every enforcer created for a target afterwards.
+// failMethod makes a method fail: on the target's program immediately, and on
+// every policy map created for the target afterwards.
 func (h *harness) failMethod(target, method string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -459,14 +496,14 @@ func (h *harness) createdFor(target string) []*fakeEnforcer {
 	return out
 }
 
-// enf returns the enforcer currently attached for a policy/prog type.
+// enf returns the policy map currently attached for a policy/prog type.
 func (h *harness) enf(rpUID, progType string) *fakeEnforcer {
 	h.t.Helper()
 	la, ok := h.l.openExecAttachments[rpUID]
 	if !ok {
 		h.t.Fatalf("no lsm attachment for policy %q", rpUID)
 	}
-	prog, ok := la.progs[progType]
+	prog, ok := la.policyMaps[progType]
 	if !ok {
 		h.t.Fatalf("no prog state for policy %q progType %q (have %v)", rpUID, progType, progTypes(la))
 	}
@@ -477,17 +514,30 @@ func (h *harness) enf(rpUID, progType string) *fakeEnforcer {
 	return f
 }
 
+// prog returns the fake program for one attach target.
+func (h *harness) prog(progType string) *fakeProgram {
+	h.t.Helper()
+	p, ok := h.programs[progType]
+	if !ok {
+		h.t.Fatalf("no fake program for progType %q", progType)
+	}
+	return p
+}
+
 func (h *harness) resetAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, f := range h.created {
 		f.reset()
 	}
+	for _, p := range h.programs {
+		p.reset()
+	}
 }
 
 func progTypes(la *openExecAttachment) []string {
-	out := make([]string, 0, len(la.progs))
-	for k := range la.progs {
+	out := make([]string, 0, len(la.policyMaps))
+	for k := range la.policyMaps {
 		out = append(out, k)
 	}
 	sort.Strings(out)

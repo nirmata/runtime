@@ -12,8 +12,8 @@ type CgroupSink interface {
 	DeleteCgids(cgids []uint64) error
 }
 
-// the subset of *openexec.LsmEnforcer the manager uses, so its state machine can be
-// exercised without loading bpf programs.
+// the subset of *openexec.PolicyMap the manager uses, so its state machine can
+// be exercised without loading bpf programs.
 type openExecMap interface {
 	Close() error
 	AddCgids(cgids []uint64) error
@@ -23,9 +23,11 @@ type openExecMap interface {
 	SetDefaultDeny(val bool) error
 }
 
+// the subset of *openexec.Prog the manager uses for observation, for the same
+// reason.
 type monitoringIface interface {
 	EnableObservation(cgids []uint64) error
 	DisableObservation(cgids []uint64) error
-	ReadEvents(cgids []uint64) (map[uint64]map[openexec.PathEventKernelKey]uint32, error)
+	ReadEvents() (map[uint64]map[openexec.PathEventKey]uint32, error)
 	ReadEventsLost() (uint64, error)
 }

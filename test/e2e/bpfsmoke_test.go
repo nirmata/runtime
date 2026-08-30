@@ -378,9 +378,13 @@ func TestBPFLsmAttaches(t *testing.T) {
 				t.Fatalf("attaching %q: %+v", target, err)
 			}
 
-			enf, err := openexec.NewForAttachTarget(d, &logger)
+			if _, err := openexec.NewProgram(d); err != nil {
+				t.Fatalf("loading the policy executor for %q: %+v", target, err)
+			}
+
+			enf, err := openexec.NewPolicyMap(d, &logger)
 			if err != nil {
-				t.Fatalf("loading lsm objects for %q: %+v", target, err)
+				t.Fatalf("creating a policy map for %q: %+v", target, err)
 			}
 			defer func() {
 				if err := enf.Close(); err != nil {

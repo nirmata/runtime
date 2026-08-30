@@ -44,7 +44,7 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 	if got := openEnf.cgidSet(); !slices.Equal(got, []uint64{11, 12}) {
 		t.Fatalf("open cgids = %v, want [11 12]", got)
 	}
-	if got := openEnf.observedSet(); !slices.Equal(got, []uint64{11, 12}) {
+	if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{11, 12}) {
 		t.Fatalf("open observed cgids = %v, want [11 12]", got)
 	}
 
@@ -56,19 +56,19 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 	if rp2Enf.denyAll || len(rp2Enf.denySet()) != 0 {
 		t.Errorf("rp2 (monitor) programmed maps: denyAll=%v deny=%v", rp2Enf.denyAll, rp2Enf.denySet())
 	}
-	if got := rp2Enf.observedSet(); !slices.Equal(got, []uint64{21}) {
-		t.Errorf("rp2 observed cgids = %v, want [21]", got)
+	if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
+		t.Errorf("open observed cgids = %v, want [11 12 21]", got)
 	}
 
-	// 4. the observed paths of both policies are collected in one poll
-	rp2Enf.seed(21, map[string]uint32{"/etc/shadow": 2})
-	openEnf.seed(11, map[string]uint32{"/etc/hosts": 1})
+	// 4. the observed paths of both pods are collected in one poll
+	h.prog(open).seed(21, map[string]uint32{"/etc/shadow": 2})
+	h.prog(open).seed(11, map[string]uint32{"/etc/hosts": 1})
 	evs, err := h.l.CollectObservations(context.Background())
 	if err != nil {
 		t.Fatalf("CollectObservations: %v", err)
 	}
 	if len(evs) != 2 {
-		t.Fatalf("collected %d events, want 2 (one per policy): %+v", len(evs), evs)
+		t.Fatalf("collected %d events, want 2 (one per pod): %+v", len(evs), evs)
 	}
 
 	// 5. rp1's selector moves to the db pod: podWeb detaches, podDb attaches
@@ -136,8 +136,10 @@ func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
 		if got := f.cgidSet(); len(got) != 0 {
 			t.Fatalf("%s cgids after pod delete = %v, want empty", name, got)
 		}
-		if got := f.observedSet(); len(got) != 0 {
-			t.Fatalf("%s observed cgids after pod delete = %v, want empty", name, got)
+	}
+	for _, pt := range []string{open, exec} {
+		if got := h.prog(pt).observedSet(); len(got) != 0 {
+			t.Fatalf("%s observed cgids after pod delete = %v, want empty", pt, got)
 		}
 	}
 	for _, uid := range []string{"rp1", "rp2"} {
@@ -263,7 +265,7 @@ func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
 
 	// phase 3: observations are collected while pod events keep arriving
 	for i := range numPolicies {
-		h.enf(rpUID(i), open).seed(uint64(200+i), map[string]uint32{"/etc/shadow": 1})
+		h.prog(open).seed(uint64(200+i), map[string]uint32{"/etc/shadow": 1})
 	}
 	wg.Add(1)
 	go func() {
@@ -348,6 +350,7 @@ func assertConcurrentState(
 	if len(h.l.openExecAttachments) != numPolicies {
 		t.Fatalf("attachments = %d, want %d", len(h.l.openExecAttachments), numPolicies)
 	}
+	observedWant := map[uint64]struct{}{}
 	for i := range numPolicies {
 		var wantPods []string
 		var wantCgids []uint64
@@ -355,6 +358,7 @@ func assertConcurrentState(
 			if matches(j, i) {
 				wantPods = append(wantPods, podUID(j))
 				wantCgids = append(wantCgids, cgidFor(j))
+				observedWant[cgidFor(j)] = struct{}{}
 			}
 		}
 		slices.Sort(wantPods)
@@ -367,10 +371,10 @@ func assertConcurrentState(
 		if got := f.cgidSet(); !slices.Equal(got, wantCgids) {
 			t.Errorf("%s enforcer cgids = %v, want %v", rpUID(i), got, wantCgids)
 		}
-		// observation is on for every attached cgid, in both modes
-		if got := f.observedSet(); !slices.Equal(got, wantCgids) {
-			t.Errorf("%s observed cgids = %v, want %v", rpUID(i), got, wantCgids)
-		}
+	}
+	// observation is on for every cgid any policy attached, in both modes
+	if got := h.prog(open).observedSet(); !slices.Equal(got, sortedU64(observedWant)) {
+		t.Errorf("observed cgids = %v, want %v", got, sortedU64(observedWant))
 	}
 }
 

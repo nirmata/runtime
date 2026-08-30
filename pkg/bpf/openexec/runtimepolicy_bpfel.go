@@ -37,11 +37,11 @@ type runtimePolicyPolicyCtx struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	runtimePolicyMapCtxMap                 = "ctx_map"
+	runtimePolicyMapEventsMap              = "events_map"
 	runtimePolicyMapExecPolicies           = "exec_policies"
 	runtimePolicyMapExecProg               = "exec_prog"
-	runtimePolicyMapInnerOpenEvents        = "inner_open_events"
+	runtimePolicyMapInnerEvents            = "inner_events"
 	runtimePolicyMapInnerPolicyMap         = "inner_policy_map"
-	runtimePolicyMapOpenEvents             = "open_events"
 	runtimePolicyMapOpenPolicies           = "open_policies"
 	runtimePolicyMapOpenProg               = "open_prog"
 	runtimePolicyMapProgCount              = "prog_count"
@@ -98,16 +98,16 @@ type runtimePolicyProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type runtimePolicyMapSpecs struct {
-	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	ExecPolicies    *ebpf.MapSpec `ebpf:"exec_policies"`
-	ExecProg        *ebpf.MapSpec `ebpf:"exec_prog"`
-	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
-	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
-	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
-	OpenPolicies    *ebpf.MapSpec `ebpf:"open_policies"`
-	OpenProg        *ebpf.MapSpec `ebpf:"open_prog"`
-	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
-	Stats           *ebpf.MapSpec `ebpf:"stats"`
+	CtxMap         *ebpf.MapSpec `ebpf:"ctx_map"`
+	EventsMap      *ebpf.MapSpec `ebpf:"events_map"`
+	ExecPolicies   *ebpf.MapSpec `ebpf:"exec_policies"`
+	ExecProg       *ebpf.MapSpec `ebpf:"exec_prog"`
+	InnerEvents    *ebpf.MapSpec `ebpf:"inner_events"`
+	InnerPolicyMap *ebpf.MapSpec `ebpf:"inner_policy_map"`
+	OpenPolicies   *ebpf.MapSpec `ebpf:"open_policies"`
+	OpenProg       *ebpf.MapSpec `ebpf:"open_prog"`
+	ProgCount      *ebpf.MapSpec `ebpf:"prog_count"`
+	Stats          *ebpf.MapSpec `ebpf:"stats"`
 }
 
 // runtimePolicyVariableSpecs contains global variables before they are loaded into the kernel.
@@ -136,26 +136,26 @@ func (o *runtimePolicyObjects) Close() error {
 //
 // It can be passed to loadRuntimePolicyObjects or ebpf.CollectionSpec.LoadAndAssign.
 type runtimePolicyMaps struct {
-	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	ExecPolicies    *ebpf.Map `ebpf:"exec_policies"`
-	ExecProg        *ebpf.Map `ebpf:"exec_prog"`
-	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
-	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
-	OpenEvents      *ebpf.Map `ebpf:"open_events"`
-	OpenPolicies    *ebpf.Map `ebpf:"open_policies"`
-	OpenProg        *ebpf.Map `ebpf:"open_prog"`
-	ProgCount       *ebpf.Map `ebpf:"prog_count"`
-	Stats           *ebpf.Map `ebpf:"stats"`
+	CtxMap         *ebpf.Map `ebpf:"ctx_map"`
+	EventsMap      *ebpf.Map `ebpf:"events_map"`
+	ExecPolicies   *ebpf.Map `ebpf:"exec_policies"`
+	ExecProg       *ebpf.Map `ebpf:"exec_prog"`
+	InnerEvents    *ebpf.Map `ebpf:"inner_events"`
+	InnerPolicyMap *ebpf.Map `ebpf:"inner_policy_map"`
+	OpenPolicies   *ebpf.Map `ebpf:"open_policies"`
+	OpenProg       *ebpf.Map `ebpf:"open_prog"`
+	ProgCount      *ebpf.Map `ebpf:"prog_count"`
+	Stats          *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *runtimePolicyMaps) Close() error {
 	return _RuntimePolicyClose(
 		m.CtxMap,
+		m.EventsMap,
 		m.ExecPolicies,
 		m.ExecProg,
-		m.InnerOpenEvents,
+		m.InnerEvents,
 		m.InnerPolicyMap,
-		m.OpenEvents,
 		m.OpenPolicies,
 		m.OpenProg,
 		m.ProgCount,

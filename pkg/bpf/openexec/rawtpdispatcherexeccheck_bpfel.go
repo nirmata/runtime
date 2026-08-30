@@ -37,11 +37,11 @@ type rawTpDispatcherExecCheckPolicyCtx struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	rawTpDispatcherExecCheckMapCtxMap                    = "ctx_map"
+	rawTpDispatcherExecCheckMapEventsMap                 = "events_map"
 	rawTpDispatcherExecCheckMapExecPolicies              = "exec_policies"
 	rawTpDispatcherExecCheckMapExecProg                  = "exec_prog"
-	rawTpDispatcherExecCheckMapInnerOpenEvents           = "inner_open_events"
+	rawTpDispatcherExecCheckMapInnerEvents               = "inner_events"
 	rawTpDispatcherExecCheckMapInnerPolicyMap            = "inner_policy_map"
-	rawTpDispatcherExecCheckMapOpenEvents                = "open_events"
 	rawTpDispatcherExecCheckMapOpenPolicies              = "open_policies"
 	rawTpDispatcherExecCheckMapOpenProg                  = "open_prog"
 	rawTpDispatcherExecCheckMapProgCount                 = "prog_count"
@@ -98,16 +98,16 @@ type rawTpDispatcherExecCheckProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type rawTpDispatcherExecCheckMapSpecs struct {
-	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	ExecPolicies    *ebpf.MapSpec `ebpf:"exec_policies"`
-	ExecProg        *ebpf.MapSpec `ebpf:"exec_prog"`
-	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
-	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
-	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
-	OpenPolicies    *ebpf.MapSpec `ebpf:"open_policies"`
-	OpenProg        *ebpf.MapSpec `ebpf:"open_prog"`
-	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
-	Stats           *ebpf.MapSpec `ebpf:"stats"`
+	CtxMap         *ebpf.MapSpec `ebpf:"ctx_map"`
+	EventsMap      *ebpf.MapSpec `ebpf:"events_map"`
+	ExecPolicies   *ebpf.MapSpec `ebpf:"exec_policies"`
+	ExecProg       *ebpf.MapSpec `ebpf:"exec_prog"`
+	InnerEvents    *ebpf.MapSpec `ebpf:"inner_events"`
+	InnerPolicyMap *ebpf.MapSpec `ebpf:"inner_policy_map"`
+	OpenPolicies   *ebpf.MapSpec `ebpf:"open_policies"`
+	OpenProg       *ebpf.MapSpec `ebpf:"open_prog"`
+	ProgCount      *ebpf.MapSpec `ebpf:"prog_count"`
+	Stats          *ebpf.MapSpec `ebpf:"stats"`
 }
 
 // rawTpDispatcherExecCheckVariableSpecs contains global variables before they are loaded into the kernel.
@@ -136,26 +136,26 @@ func (o *rawTpDispatcherExecCheckObjects) Close() error {
 //
 // It can be passed to loadRawTpDispatcherExecCheckObjects or ebpf.CollectionSpec.LoadAndAssign.
 type rawTpDispatcherExecCheckMaps struct {
-	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	ExecPolicies    *ebpf.Map `ebpf:"exec_policies"`
-	ExecProg        *ebpf.Map `ebpf:"exec_prog"`
-	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
-	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
-	OpenEvents      *ebpf.Map `ebpf:"open_events"`
-	OpenPolicies    *ebpf.Map `ebpf:"open_policies"`
-	OpenProg        *ebpf.Map `ebpf:"open_prog"`
-	ProgCount       *ebpf.Map `ebpf:"prog_count"`
-	Stats           *ebpf.Map `ebpf:"stats"`
+	CtxMap         *ebpf.Map `ebpf:"ctx_map"`
+	EventsMap      *ebpf.Map `ebpf:"events_map"`
+	ExecPolicies   *ebpf.Map `ebpf:"exec_policies"`
+	ExecProg       *ebpf.Map `ebpf:"exec_prog"`
+	InnerEvents    *ebpf.Map `ebpf:"inner_events"`
+	InnerPolicyMap *ebpf.Map `ebpf:"inner_policy_map"`
+	OpenPolicies   *ebpf.Map `ebpf:"open_policies"`
+	OpenProg       *ebpf.Map `ebpf:"open_prog"`
+	ProgCount      *ebpf.Map `ebpf:"prog_count"`
+	Stats          *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *rawTpDispatcherExecCheckMaps) Close() error {
 	return _RawTpDispatcherExecCheckClose(
 		m.CtxMap,
+		m.EventsMap,
 		m.ExecPolicies,
 		m.ExecProg,
-		m.InnerOpenEvents,
+		m.InnerEvents,
 		m.InnerPolicyMap,
-		m.OpenEvents,
 		m.OpenPolicies,
 		m.OpenProg,
 		m.ProgCount,

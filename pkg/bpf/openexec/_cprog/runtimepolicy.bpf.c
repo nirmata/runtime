@@ -30,7 +30,7 @@ static __always_inline void path_decision(struct policy_entry_map *pm, struct po
         return;
     }
 
-    if (dd && ctx->reason != EXPLICIT_ALLOW) {
+    if (dd) {
         ctx->reason = IMPLICIT_DENY;
     }
 }
@@ -107,11 +107,15 @@ int runtime_policy_executor(void *ctx)
             continue;
         }
 
+        /* every policy is evaluated on its own: an allow in one policy must not
+         * survive into the next one's default-deny, so a deny from any single
+         * policy is final */
+        prog_ctx->reason = IMPLICIT_ALLOW;
         path_decision(pm, prog_ctx, k);
-        if (prog_ctx->reason == EXPLICIT_DENY) {
+        if (prog_ctx->reason == EXPLICIT_DENY || prog_ctx->reason == IMPLICIT_DENY) {
             goto end;
         }
-    };   
+    };
 
 end:
     record_path_event(&cgid, prog_ctx->path, prog_ctx->reason);

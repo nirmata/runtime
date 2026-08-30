@@ -6,33 +6,40 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/events"
 
 	"github.com/go-logr/logr"
 )
 
-// benchSeed is one enforcer's kernel-side counts for one cgroup. ReadEvents is
+// benchSeed is one program's kernel-side counts for one cgroup. ReadEvents is
 // read-and-reset, so the whole set is put back before every timed collect.
 type benchSeed struct {
-	enf   *fakeEnforcer
+	prog  *fakeProgram
 	cgid  uint64
 	paths map[string]uint32
 }
 
 func reseed(seeds []benchSeed) {
 	for _, s := range seeds {
-		s.enf.seed(s.cgid, s.paths)
+		s.prog.seed(s.cgid, s.paths)
 	}
 }
 
-func benchManager() *OpenExecManager {
-	l := newOpenExecManager(logr.Discard(), newFakeStatus(), nil, func(_ *logr.Logger, target string) (openExecEnforcer, error) {
+func benchManager() (*OpenExecManager, map[string]*fakeProgram) {
+	progs := map[string]*fakeProgram{
+		open: newFakeProgram(open, nil),
+		exec: newFakeProgram(exec, nil),
+	}
+	programs := make(map[string]monitoringIface, len(progs))
+	for target, p := range progs {
+		programs[target] = p
+	}
+	l := newOpenExecManager(logr.Discard(), newFakeStatus(), nil, func(_ *logr.Logger, target string) (openExecMap, error) {
 		return newFakeEnforcer(target, nil), nil
-	}, false)
+	}, programs, true)
 	l.clock = func() time.Time { return fixedTime }
-	return l
+	return l, progs
 }
 
 func benchPaths(n int) map[string]uint32 {
@@ -43,13 +50,13 @@ func benchPaths(n int) map[string]uint32 {
 	return out
 }
 
-// benchObservationFixture builds attachments monitor-mode policies with both
-// program types. sharedCgid decides whether they cover one cgroup each or all
-// cover the same one, which is the difference between the merge doing nothing
-// and the merge collapsing every attachment onto one key set.
+// benchObservationFixture builds monitor-mode policies with both program
+// types attached. sharedCgid decides whether they cover one cgroup each or all
+// cover the same one, which is the difference between the counters spreading
+// over many cgids and collapsing onto one key set.
 func benchObservationFixture(b *testing.B, attachments, pathsPerCgid int, sharedCgid bool) (*OpenExecManager, []benchSeed) {
 	b.Helper()
-	l := benchManager()
+	l, progs := benchManager()
 
 	label := func(i int) map[string]string {
 		if sharedCgid {
@@ -77,7 +84,6 @@ func benchObservationFixture(b *testing.B, attachments, pathsPerCgid int, shared
 	}
 
 	paths := benchPaths(pathsPerCgid)
-	seeds := make([]benchSeed, 0, attachments*len(openexec.ProgTypes))
 	for i := range attachments {
 		uid := fmt.Sprintf("rp%d", i)
 		rp := result(uid, compiler.ModeMonitor, selFor(label(i)),
@@ -85,20 +91,18 @@ func benchObservationFixture(b *testing.B, attachments, pathsPerCgid int, shared
 		if err := l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
 			b.Fatalf("RuntimePolicyEvent: %v", err)
 		}
-		la, ok := l.openExecAttachments[uid]
-		if !ok {
-			b.Fatalf("no lsm attachment for policy %q", uid)
+	}
+
+	// one counter set per (program, cgid): the kernel counts an operation once,
+	// however many policies cover the pod
+	seeds := make([]benchSeed, 0, 2*attachments)
+	for _, p := range progs {
+		if sharedCgid {
+			seeds = append(seeds, benchSeed{prog: p, cgid: 1, paths: paths})
+			continue
 		}
-		for progType := range openexec.ProgTypes {
-			prog, ok := la.progs[progType]
-			if !ok {
-				b.Fatalf("no prog state for policy %q progType %q", uid, progType)
-			}
-			enf, ok := prog.enf.(*fakeEnforcer)
-			if !ok {
-				b.Fatalf("enforcer for %q/%q is not a fake", uid, progType)
-			}
-			seeds = append(seeds, benchSeed{enf: enf, cgid: cgidFor(i), paths: paths})
+		for i := range attachments {
+			seeds = append(seeds, benchSeed{prog: p, cgid: cgidFor(i), paths: paths})
 		}
 	}
 	return l, seeds
@@ -144,13 +148,13 @@ func BenchmarkCollectObservations(b *testing.B) {
 		for _, paths := range []int{16, 256} {
 			b.Run(fmt.Sprintf("attachments=%d/paths=%d", attachments, paths), func(b *testing.B) {
 				l, seeds := benchObservationFixture(b, attachments, paths, false)
-				runCollectBenchmark(b, l, seeds, attachments*len(openexec.ProgTypes)*paths)
+				runCollectBenchmark(b, l, seeds, attachments*2*paths)
 			})
 		}
 	}
 }
 
-// Every attachment over one cgroup counted the same kernel operations, so the
+// every policy over one cgroup counts the same kernel operations once, so the
 // emitted event count must stay flat as attachments are added instead of
 // growing one duplicate set per attachment.
 func BenchmarkCollectObservationsSharedCgid(b *testing.B) {
@@ -158,7 +162,7 @@ func BenchmarkCollectObservationsSharedCgid(b *testing.B) {
 	for _, attachments := range []int{1, 8, 64} {
 		b.Run(fmt.Sprintf("attachments=%d", attachments), func(b *testing.B) {
 			l, seeds := benchObservationFixture(b, attachments, paths, true)
-			runCollectBenchmark(b, l, seeds, len(openexec.ProgTypes)*paths)
+			runCollectBenchmark(b, l, seeds, 2*paths)
 		})
 	}
 }

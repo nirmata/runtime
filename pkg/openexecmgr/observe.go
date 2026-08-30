@@ -40,21 +40,26 @@ func (l *OpenExecManager) CollectObservations(ctx context.Context) ([]runtimeeve
 
 		counts, err := prog.ReadEvents()
 		if err != nil {
-			errs = append(errs, err)
+			if errors.Is(err, openexec.ErrObservationUnavailable) {
+				// the loaded program has no observation maps, so every later poll
+				// reports the same thing
+				l.logger.V(2).Info("observation is unavailable", "progType", progType)
+			} else {
+				errs = append(errs, err)
+			}
+			// counts may still hold what was read before the failure
 		}
 
 		for cgid, paths := range counts {
 			for key, count := range paths {
-				if string(key.Path[:]) == "" || count == 0 {
+				path := key.PathString()
+				if path == "" || count == 0 {
 					continue
 				}
-
-				// `counts` here will contain how many times for a given cgid and path did we allow or deny
-				// across the board. since we only capture events after all policies have executed their decision.
-				// the extra bit of information we wanna add is what type of program is this reading for. hence
-				// the need for the `observationKey` type containing progType.
-				k := observationKey{cgid: cgid, progType: progType,
-					path:     string(key.Path[:]),
+				// the kernel merges every policy's decision before recording, so a
+				// count is already cgid-and-path-wide; the program type is the one
+				// dimension only this loop knows
+				k := observationKey{cgid: cgid, progType: progType, path: path,
 					decision: runtimeevent.KernelDecision(key.Decision)}
 				merged[k] = count
 			}
@@ -77,14 +82,14 @@ func (l *OpenExecManager) CollectObservations(ctx context.Context) ([]runtimeeve
 	return emitObservations(now, merged, podHints), errors.Join(errs...)
 }
 
-// reportLost drains one enforcer's kernel drop counter. A program loaded
-// without observation maps reports it on the policy rather than to the caller,
-// the same way an unavailable ReadEvents does.
-func (l *OpenExecManager) reportLost(progType string, prog *openexec.Prog) error {
+// reportLost drains one program's kernel drop counter. A program loaded
+// without observation maps is logged rather than reported to the caller, the
+// same way an unavailable ReadEvents is.
+func (l *OpenExecManager) reportLost(progType string, prog monitoringIface) error {
 	lost, err := prog.ReadEventsLost()
 	if err != nil {
 		if errors.Is(err, openexec.ErrObservationUnavailable) {
-			l.observationUnavailable(rpUID, progType, "observation is unavailable", err)
+			l.logger.V(2).Info("observation is unavailable", "progType", progType)
 			return nil
 		}
 		return err
@@ -102,8 +107,7 @@ func (l *OpenExecManager) reportLost(progType string, prog *openexec.Prog) error
 func emitObservations(now time.Time, merged map[observationKey]uint32, podHints map[uint64]string) []runtimeevent.Event {
 	out := make([]runtimeevent.Event, 0, len(merged))
 	for k, count := range merged {
-		key, _ := openexec.NewKernelKeyFromGoTypes(k.path, k.decision)
-		out = append(out, newObservation(k.progType, now, k.cgid, podHints[k.cgid], key, count))
+		out = append(out, newObservation(now, k, podHints[k.cgid], count))
 	}
 	return sortEvents(out)
 }
@@ -111,21 +115,21 @@ func emitObservations(now time.Time, merged map[observationKey]uint32, podHints 
 // newObservation builds the event for one observed (path, decision) count.
 // Attribution resolves the cgroup id; the pod uid is a hint the manager already
 // knows. Monitor attributes the kernel's decision to a policy in userspace.
-func newObservation(progType string, now time.Time, cgid uint64, podUID string, key openexec.PathEventKernelKey, count uint32) runtimeevent.Event {
+func newObservation(now time.Time, k observationKey, podUID string, count uint32) runtimeevent.Event {
 	ev := runtimeevent.Event{
 		Time:         now,
-		CgroupID:     cgid,
+		CgroupID:     k.cgid,
 		Count:        count,
-		KernelDenied: key.Decision == uint32(runtimeevent.DecisionDeny),
+		KernelDenied: k.decision == runtimeevent.DecisionDeny,
 		Pod:          runtimeevent.PodIdentity{UID: podUID},
 	}
-	switch progType {
+	switch k.progType {
 	case openexec.PROG_TYPE_LSM_EXEC:
 		ev.Kind = runtimeevent.KindExec
-		ev.Exec = &runtimeevent.ExecFacts{Filename: string(key.Path[:])}
+		ev.Exec = &runtimeevent.ExecFacts{Filename: k.path}
 	default:
 		ev.Kind = runtimeevent.KindOpen
-		ev.Open = &runtimeevent.OpenFacts{Path: string(key.Path[:])}
+		ev.Open = &runtimeevent.OpenFacts{Path: k.path}
 	}
 	return ev
 }

@@ -27,9 +27,8 @@ func TestPodCreated_MatchingAndNonMatchingPolicies(t *testing.T) {
 
 	// both prog types of the matching policy get the pod's cgids and observe them
 	for _, pt := range []string{open, exec} {
-		f := h.enf("rpWeb", pt)
-		assertCgidCalls(t, "rpWeb "+pt+" AddCgids", f.addCgids, [][]uint64{{11, 12}})
-		assertCgidCalls(t, "rpWeb "+pt+" EnableObservation", f.enableObs, [][]uint64{{11, 12}})
+		assertCgidCalls(t, "rpWeb "+pt+" AddCgids", h.enf("rpWeb", pt).addCgids, [][]uint64{{11, 12}})
+		assertCgidCalls(t, pt+" EnableObservation", h.prog(pt).enableObs, [][]uint64{{11, 12}})
 	}
 	// the non matching policy is untouched
 	if got := h.enf("rpDb", open).addCgids; len(got) != 0 {
@@ -135,12 +134,12 @@ func TestPodUpdated_CgidDiff(t *testing.T) {
 			assertCgidCalls(t, "AddCgids", attached.addCgids, tt.wantAdd)
 			assertCgidCalls(t, "DeleteCgids", attached.delCgids, tt.wantDel)
 			// observation follows the cgid set exactly
-			assertCgidCalls(t, "EnableObservation", attached.enableObs, tt.wantAdd)
-			assertCgidCalls(t, "DisableObservation", attached.disableObs, tt.wantDel)
+			assertCgidCalls(t, "EnableObservation", h.prog(open).enableObs, tt.wantAdd)
+			assertCgidCalls(t, "DisableObservation", h.prog(open).disableObs, tt.wantDel)
 			if got := attached.cgidSet(); !slices.Equal(got, tt.wantCgids) {
 				t.Errorf("enforcer cgid set = %v, want %v", got, tt.wantCgids)
 			}
-			if got := attached.observedSet(); !slices.Equal(got, tt.wantCgids) {
+			if got := h.prog(open).observedSet(); !slices.Equal(got, tt.wantCgids) {
 				t.Errorf("observed cgids = %v, want %v", got, tt.wantCgids)
 			}
 			if len(unattached.addCgids) != 0 || len(unattached.delCgids) != 0 {
@@ -199,9 +198,14 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	for _, pt := range []string{open, exec} {
 		f := h.enf("rpWeb", pt)
 		assertCgidCalls(t, "rpWeb "+pt+" AddCgids", f.addCgids, [][]uint64{{11}})
-		assertCgidCalls(t, "rpWeb "+pt+" EnableObservation", f.enableObs, [][]uint64{{11}})
 		if got := f.cgidSet(); !slices.Equal(got, []uint64{11}) {
 			t.Errorf("rpWeb %s cgid set = %v, want [11]", pt, got)
+		}
+		// whether rpDb's detach transiently disabled observation depends on the
+		// sync order, but the cgid must end up observed for the still-attached
+		// policy either way
+		if got := h.prog(pt).observedSet(); !slices.Equal(got, []uint64{11}) {
+			t.Errorf("%s observed cgids = %v, want [11]", pt, got)
 		}
 	}
 	if got := attachedPodUIDs(h.l.openExecAttachments["rpWeb"]); !slices.Equal(got, []string{"podA"}) {
@@ -211,7 +215,6 @@ func TestPodUpdated_LabelChangeReEvaluatesSelectors(t *testing.T) {
 	// outlive its selector
 	dbEnf := h.enf("rpDb", open)
 	assertCgidCalls(t, "rpDb DeleteCgids", dbEnf.delCgids, [][]uint64{{11}})
-	assertCgidCalls(t, "rpDb DisableObservation", dbEnf.disableObs, [][]uint64{{11}})
 	if got := dbEnf.cgidSet(); len(got) != 0 {
 		t.Errorf("rpDb cgid set = %v, want empty", got)
 	}
@@ -239,10 +242,10 @@ func TestPodUpdated_IrrelevantLabelChangeIsQuiet(t *testing.T) {
 	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web", "pod-template-hash": "abc"}), nil, cgs(11), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}
-	f := h.enf("rpWeb", open)
-	if len(f.addCgids) != 0 || len(f.delCgids) != 0 || len(f.enableObs) != 0 || len(f.disableObs) != 0 {
+	f, p := h.enf("rpWeb", open), h.prog(open)
+	if len(f.addCgids) != 0 || len(f.delCgids) != 0 || len(p.enableObs) != 0 || len(p.disableObs) != 0 {
 		t.Errorf("irrelevant label change churned the enforcer: add=%v del=%v enable=%v disable=%v",
-			f.addCgids, f.delCgids, f.enableObs, f.disableObs)
+			f.addCgids, f.delCgids, p.enableObs, p.disableObs)
 	}
 	if got := h.l.pods["podA"].labels["pod-template-hash"]; got != "abc" {
 		t.Errorf("new label not cached: %q", got)
@@ -300,11 +303,11 @@ func TestPodDeleted(t *testing.T) {
 	for _, pt := range []string{open, exec} {
 		f := h.enf("rpWeb", pt)
 		assertCgidCalls(t, pt+" DeleteCgids", f.delCgids, [][]uint64{{11, 12}})
-		assertCgidCalls(t, pt+" DisableObservation", f.disableObs, [][]uint64{{11, 12}})
+		assertCgidCalls(t, pt+" DisableObservation", h.prog(pt).disableObs, [][]uint64{{11, 12}})
 		if got := f.cgidSet(); !slices.Equal(got, []uint64{21}) {
 			t.Errorf("%s cgid set = %v, want [21] (only the surviving pod)", pt, got)
 		}
-		if got := f.observedSet(); !slices.Equal(got, []uint64{21}) {
+		if got := h.prog(pt).observedSet(); !slices.Equal(got, []uint64{21}) {
 			t.Errorf("%s observed cgids = %v, want [21]", pt, got)
 		}
 	}

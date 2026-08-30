@@ -175,7 +175,7 @@ func TestExecBehaviorReachesExecEnforcer(t *testing.T) {
 				if got := openEnf.denySet(); !slices.Equal(got, tt.wantOpenDeny) {
 					t.Errorf("open deny set = %v, want %v", got, tt.wantOpenDeny)
 				}
-			} else if _, ok := h.l.openExecAttachments["rp1"].progs[open]; ok {
+			} else if _, ok := h.l.openExecAttachments["rp1"].policyMaps[open]; ok {
 				t.Error("open enforcer created for a policy with no open behaviors")
 			}
 			assertInvariant(t, h.l)
@@ -229,7 +229,7 @@ func TestRpCreated_ObserveModeProgramsNoDenyMaps(t *testing.T) {
 		if got := f.cgidSet(); !slices.Equal(got, []uint64{11, 12}) {
 			t.Errorf("%s: cgid set = %v, want [11 12]", pt, got)
 		}
-		if got := f.observedSet(); !slices.Equal(got, []uint64{11, 12}) {
+		if got := h.prog(pt).observedSet(); !slices.Equal(got, []uint64{11, 12}) {
 			t.Errorf("%s: observed cgids = %v, want [11 12]", pt, got)
 		}
 	}
@@ -252,12 +252,11 @@ func TestRpCreated_EnforceModeAlsoEnablesObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pt := range []string{open, exec} {
-		f := h.enf("rp1", pt)
-		assertCgidCalls(t, pt+" EnableObservation", f.enableObs, [][]uint64{{11}})
-		if got := f.observedSet(); !slices.Equal(got, []uint64{11}) {
+		assertCgidCalls(t, pt+" EnableObservation", h.prog(pt).enableObs, [][]uint64{{11}})
+		if got := h.prog(pt).observedSet(); !slices.Equal(got, []uint64{11}) {
 			t.Errorf("%s observed cgids = %v, want [11]", pt, got)
 		}
-		if got := f.denySet(); len(got) == 0 {
+		if got := h.enf("rp1", pt).denySet(); len(got) == 0 {
 			t.Errorf("%s: enforce mode programmed no deny entries", pt)
 		}
 	}
@@ -309,7 +308,7 @@ func TestRpUpdated_ObserveEnforceFlipRebuildsAttachment(t *testing.T) {
 			if got := second.cgidSet(); !slices.Equal(got, []uint64{11}) {
 				t.Errorf("cgid set after the flip = %v, want [11]", got)
 			}
-			if got := second.observedSet(); !slices.Equal(got, []uint64{11}) {
+			if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{11}) {
 				t.Errorf("observed cgids after the flip = %v, want [11]", got)
 			}
 			assertInvariant(t, h.l)
@@ -335,7 +334,7 @@ func TestRpUpdated_ObserveModeTargetChangeProgramsNothing(t *testing.T) {
 		t.Errorf("observe-mode update programmed maps: add=%v del=%v denyAll=%v", f.addTargets, f.delTargets, f.defaultDeny)
 	}
 	// the prog state still tracks what the policy asks for, userspace matching reads it
-	if got := h.l.openExecAttachments["rp1"].progs[open].files.Deny; !slices.Equal(got, []string{"/etc/passwd", "*"}) {
+	if got := h.l.openExecAttachments["rp1"].policyMaps[open].files.Deny; !slices.Equal(got, []string{"/etc/passwd", "*"}) {
 		t.Errorf("tracked deny list = %v, want the updated one", got)
 	}
 	assertInvariant(t, h.l)
@@ -382,7 +381,7 @@ func TestRpCreated_AttachesPreExistingMatchingPods(t *testing.T) {
 		if got := f.cgidSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
 			t.Errorf("%s: cgid set = %v, want [11 12 21]", pt, got)
 		}
-		if got := f.observedSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
+		if got := h.prog(pt).observedSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
 			t.Errorf("%s: observed cgids = %v, want [11 12 21]", pt, got)
 		}
 	}
@@ -402,8 +401,8 @@ func TestRpCreated_NoMatchingPodsSkipsCgidCalls(t *testing.T) {
 	if len(f.addCgids) != 0 {
 		t.Errorf("AddCgids calls = %v, want none", f.addCgids)
 	}
-	if len(f.enableObs) != 0 {
-		t.Errorf("EnableObservation calls = %v, want none", f.enableObs)
+	if got := h.prog(open).enableObs; len(got) != 0 {
+		t.Errorf("EnableObservation calls = %v, want none", got)
 	}
 	if got := attachedPodUIDs(h.l.openExecAttachments["rp1"]); len(got) != 0 {
 		t.Errorf("attached pods = %v, want none", got)
@@ -722,7 +721,7 @@ func TestSyncProgType_LateEnforcerSeededWithAttachedPodCgids(t *testing.T) {
 	}
 	execEnf := h.enf("rp1", exec)
 	assertCgidCalls(t, "exec AddCgids", execEnf.addCgids, [][]uint64{{11, 12}, {21}})
-	assertCgidCalls(t, "exec EnableObservation", execEnf.enableObs, [][]uint64{{11, 12}, {21}})
+	assertCgidCalls(t, "exec EnableObservation", h.prog(exec).enableObs, [][]uint64{{11, 12}, {21}})
 	if got := execEnf.cgidSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
 		t.Errorf("exec cgid set = %v, want [11 12 21]", got)
 	}
@@ -800,8 +799,8 @@ func TestSyncProgType_CloseFailureStillDropsProgState(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, boom)
 	}
 	la := h.l.openExecAttachments["rp1"]
-	if _, ok := la.progs[open]; ok {
-		t.Fatal("closed open enforcer is still registered in la.progs")
+	if _, ok := la.policyMaps[open]; ok {
+		t.Fatal("closed open enforcer is still registered in la.policyMaps")
 	}
 	if openEnf.closeCount != 1 {
 		t.Errorf("Close called %d times, want 1", openEnf.closeCount)
@@ -832,7 +831,7 @@ func TestSyncPodAttachment_SelectorChange(t *testing.T) {
 	if got := f.cgidSet(); !slices.Equal(got, []uint64{11}) {
 		t.Fatalf("cgid set after create = %v, want [11]", got)
 	}
-	f.reset()
+	h.resetAll()
 
 	// the selector now points at the db pod instead: the web pod must be detached
 	// and the db pod attached, with exact cgid arguments
@@ -841,12 +840,12 @@ func TestSyncPodAttachment_SelectorChange(t *testing.T) {
 	}
 	assertCgidCalls(t, "AddCgids", f.addCgids, [][]uint64{{21, 22}})
 	assertCgidCalls(t, "DeleteCgids", f.delCgids, [][]uint64{{11}})
-	assertCgidCalls(t, "EnableObservation", f.enableObs, [][]uint64{{21, 22}})
-	assertCgidCalls(t, "DisableObservation", f.disableObs, [][]uint64{{11}})
+	assertCgidCalls(t, "EnableObservation", h.prog(open).enableObs, [][]uint64{{21, 22}})
+	assertCgidCalls(t, "DisableObservation", h.prog(open).disableObs, [][]uint64{{11}})
 	if got := f.cgidSet(); !slices.Equal(got, []uint64{21, 22}) {
 		t.Errorf("cgid set = %v, want [21 22]", got)
 	}
-	if got := f.observedSet(); !slices.Equal(got, []uint64{21, 22}) {
+	if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{21, 22}) {
 		t.Errorf("observed cgids = %v, want [21 22]", got)
 	}
 	la := h.l.openExecAttachments["rp1"]
@@ -862,7 +861,7 @@ func TestSyncPodAttachment_SelectorChange(t *testing.T) {
 	assertInvariant(t, h.l)
 
 	// an update that keeps the same selector must not re-add the cgids
-	f.reset()
+	h.resetAll()
 	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, selFor(map[string]string{"app": "db"}), files, nil), events.EventTypeUpdate); err != nil {
 		t.Fatal(err)
 	}

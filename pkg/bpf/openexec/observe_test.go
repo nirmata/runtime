@@ -17,84 +17,80 @@ import (
 
 // pk builds an allow-decision key; pkDeny a deny-decision one. Counts for the
 // same path under different decisions must never merge.
-func pk(t *testing.T, path string) PathEventKernelKey {
-	t.Helper()
-	k, err := NewKernelKeyFromGoTypes(path, uint32(runtimeevent.DecisionAllow))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k
+func pk(path string) PathEventKey {
+	return pkDecision(path, runtimeevent.DecisionAllow)
 }
 
-func pkDeny(t *testing.T, path string) PathEventKernelKey {
-	t.Helper()
-	k, err := NewKernelKeyFromGoTypes(path, uint32(runtimeevent.DecisionDeny))
-	if err != nil {
-		t.Fatal(err)
-	}
+func pkDeny(path string) PathEventKey {
+	return pkDecision(path, runtimeevent.DecisionDeny)
+}
+
+func pkDecision(path string, d runtimeevent.KernelDecision) PathEventKey {
+	k := PathEventKey{Decision: uint32(d)}
+	copy(k.Path[:], path)
 	return k
 }
 
 func TestMergeCounts(t *testing.T) {
 	tests := []struct {
 		name string
-		dst  map[PathEventKernelKey]uint32
-		src  map[PathEventKernelKey]uint32
-		want map[PathEventKernelKey]uint32
+		dst  map[PathEventKey]uint32
+		src  map[PathEventKey]uint32
+		want map[PathEventKey]uint32
 	}{
 		{
 			name: "empty destination takes everything",
-			dst:  map[PathEventKernelKey]uint32{},
-			src:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3},
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3},
+			dst:  map[PathEventKey]uint32{},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 		},
 		{
 			name: "disjoint keys are unioned",
-			dst:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3},
-			src:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/wget"): 1},
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3, pk(t, "/usr/bin/wget"): 1},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/wget"): 1},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3, pk("/usr/bin/wget"): 1},
 		},
 		{
 			name: "shared keys are summed",
-			dst:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3, pk(t, "/etc/passwd"): 2},
-			src:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 4},
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 7, pk(t, "/etc/passwd"): 2},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3, pk("/etc/passwd"): 2},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 4},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 7, pk("/etc/passwd"): 2},
 		},
 		{
 			name: "same path under different decisions stays distinct",
-			dst:  map[PathEventKernelKey]uint32{pk(t, "/etc/shadow"): 3},
-			src:  map[PathEventKernelKey]uint32{pkDeny(t, "/etc/shadow"): 4},
-			want: map[PathEventKernelKey]uint32{pk(t, "/etc/shadow"): 3, pkDeny(t, "/etc/shadow"): 4},
+			dst:  map[PathEventKey]uint32{pk("/etc/shadow"): 3},
+			src:  map[PathEventKey]uint32{pkDeny("/etc/shadow"): 4},
+			want: map[PathEventKey]uint32{pk("/etc/shadow"): 3, pkDeny("/etc/shadow"): 4},
 		},
 		{
 			name: "nil source leaves the destination untouched",
-			dst:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 			src:  nil,
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 		},
 		{
 			name: "empty source leaves the destination untouched",
-			dst:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3},
-			src:  map[PathEventKernelKey]uint32{},
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 3},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
+			src:  map[PathEventKey]uint32{},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 3},
 		},
 		{
 			name: "zero counts are still recorded as keys",
-			dst:  map[PathEventKernelKey]uint32{},
-			src:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 0},
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 0},
+			dst:  map[PathEventKey]uint32{},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 0},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): 0},
 		},
 		{
 			name: "addition saturates instead of wrapping",
-			dst:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): math.MaxUint32 - 1},
-			src:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 5},
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): math.MaxUint32},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32 - 1},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 5},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32},
 		},
 		{
 			name: "saturated destination stays saturated",
-			dst:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): math.MaxUint32},
-			src:  map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 1},
-			want: map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): math.MaxUint32},
+			dst:  map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32},
+			src:  map[PathEventKey]uint32{pk("/usr/bin/curl"): 1},
+			want: map[PathEventKey]uint32{pk("/usr/bin/curl"): math.MaxUint32},
 		},
 	}
 
@@ -109,44 +105,25 @@ func TestMergeCounts(t *testing.T) {
 }
 
 func TestMergeCounts_NilDestinationDoesNotPanic(t *testing.T) {
-	mergeCounts(nil, map[PathEventKernelKey]uint32{pk(t, "/usr/bin/curl"): 1})
+	mergeCounts(nil, map[PathEventKey]uint32{pk("/usr/bin/curl"): 1})
 }
 
-func TestNewKernelKeyRejectsOverlongPath(t *testing.T) {
-	if _, err := NewKernelKeyFromGoTypes(strings.Repeat("a", maxPathLen+1), 0); err == nil {
-		t.Error("NewKernelKeyFromGoTypes over maxPathLen returned nil error")
-	}
-}
-
-func TestTrimPathKey(t *testing.T) {
-	pad := func(s string) [maxPathLen]byte {
-		var k [maxPathLen]byte
-		copy(k[:], s)
-		return k
-	}
-	full := func() [maxPathLen]byte {
-		var k [maxPathLen]byte
-		for i := range k {
-			k[i] = 'a'
-		}
-		return k
-	}
-
+func TestPathString(t *testing.T) {
+	full := strings.Repeat("a", maxPathLen)
 	tests := []struct {
 		name string
-		key  [maxPathLen]byte
-		want string
+		path string
 	}{
-		{name: "NUL terminated path", key: pad("/usr/bin/curl"), want: "/usr/bin/curl"},
-		{name: "all zero key is empty", key: pad(""), want: ""},
-		{name: "single byte path", key: pad("/"), want: "/"},
-		{name: "unterminated full width key", key: full(), want: strings.Repeat("a", maxPathLen)},
+		{name: "NUL terminated path", path: "/usr/bin/curl"},
+		{name: "all zero key is empty", path: ""},
+		{name: "single byte path", path: "/"},
+		{name: "unterminated full width key", path: full},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := trimPathKey(tc.key); got != tc.want {
-				t.Errorf("trimPathKey() = %q, want %q", got, tc.want)
+			if got := pk(tc.path).PathString(); got != tc.path {
+				t.Errorf("PathString() = %q, want %q", got, tc.path)
 			}
 		})
 	}
@@ -168,7 +145,7 @@ func TestObservationWithoutMapsReportsUnavailable(t *testing.T) {
 	if !errors.Is(err, ErrObservationUnavailable) {
 		t.Errorf("ReadEvents err = %v, want ErrObservationUnavailable", err)
 	}
-	if diff := cmp.Diff(map[uint64]map[PathEventKernelKey]uint32{}, got); diff != "" {
+	if diff := cmp.Diff(map[uint64]map[PathEventKey]uint32{}, got); diff != "" {
 		t.Errorf("ReadEvents result mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -191,20 +168,20 @@ func TestClose_ZeroValuePolicyMapIsSafe(t *testing.T) {
 	}
 }
 
-// TestPathEventKernelKeyLayout pins the hand-written iterator key against the
-// bpf2go-generated struct for the C's `struct path_event_key` and against the
-// documented 132-byte no-padding layout. A drift here is exactly the kind of
-// BTF key-size mismatch cilium/ebpf rejects at runtime on Linux; this makes it
-// fail in the unit suite on any host.
-func TestPathEventKernelKeyLayout(t *testing.T) {
+// TestPathEventKeyLayout pins the iteration key against the bpf2go-generated
+// struct for the C's `struct path_event_key` and against the documented
+// 132-byte no-padding layout. A drift here is exactly the kind of BTF key-size
+// mismatch cilium/ebpf rejects at runtime on Linux; this makes it fail in the
+// unit suite on any host.
+func TestPathEventKeyLayout(t *testing.T) {
 	const want = maxPathLen + 4 // char[128] + __u32, no padding
-	if got := int(unsafe.Sizeof(PathEventKernelKey{})); got != want {
-		t.Errorf("sizeof(PathEventKernelKey) = %d, want %d", got, want)
+	if got := int(unsafe.Sizeof(PathEventKey{})); got != want {
+		t.Errorf("sizeof(PathEventKey) = %d, want %d", got, want)
 	}
 	if got := int(unsafe.Sizeof(runtimePolicyPathEventKey{})); got != want {
 		t.Errorf("sizeof(runtimePolicyPathEventKey) = %d, want %d (generated from the C)", got, want)
 	}
-	if got, want := unsafe.Offsetof(PathEventKernelKey{}.Decision), unsafe.Offsetof(runtimePolicyPathEventKey{}.Decision); got != want {
+	if got, want := unsafe.Offsetof(PathEventKey{}.Decision), unsafe.Offsetof(runtimePolicyPathEventKey{}.Decision); got != want {
 		t.Errorf("offsetof(Decision) = %d, want %d (generated from the C)", got, want)
 	}
 }

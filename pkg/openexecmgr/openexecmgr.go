@@ -52,7 +52,7 @@ type OpenExecManager struct {
 	// one more centralized dependency to consult on every read
 	pods                map[string]*podRepresentation
 	openExecAttachments map[string]*openExecAttachment
-	programs            map[string]*openexec.Prog
+	programs            map[string]monitoringIface
 
 	lsm bool
 }
@@ -103,7 +103,7 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 	}
 
 	dispatchers := make(map[string]*openexec.Dispatcher, 2)
-	programs := make(map[string]*openexec.Prog)
+	programs := make(map[string]monitoringIface, 2)
 
 	for _, target := range progArrayType {
 		d, err := openexec.NewDispatcherForTarget(target)
@@ -135,7 +135,7 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 }
 
 func newOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc,
-	newEnforcer enforcerFactory, programs map[string]*openexec.Prog, lsm bool, cgroupSinks ...CgroupSink) *OpenExecManager {
+	newEnforcer enforcerFactory, programs map[string]monitoringIface, lsm bool, cgroupSinks ...CgroupSink) *OpenExecManager {
 	return &OpenExecManager{
 		logger:              logger,
 		status:              status,
@@ -200,11 +200,33 @@ func (l *OpenExecManager) addPodCgids(rpUID, progType string, prog *progState, c
 			l.enforcementUnavailable(rpUID, progType, "failed to add cgids to enforcer", err)
 		}
 	}
-
+	if p, ok := l.programs[progType]; ok {
+		if err := p.EnableObservation(cgids); err != nil {
+			l.observationUnavailable(rpUID, progType, "failed to enable observation", err)
+		}
+	}
 	l.mirrorCgids(rpUID, progType, cgids, true)
 }
 
-// removePodCgids is addPodCgids' inverse, and pairs the same two calls.
+// disableObservation stops the per-cgid path counting on one program type.
+// Observation is shared across every policy watching a cgid, so callers only
+// pass cgids no attached policy needs anymore.
+func (l *OpenExecManager) disableObservation(progType string, cgids []uint64) {
+	if len(cgids) == 0 {
+		return
+	}
+	p, ok := l.programs[progType]
+	if !ok {
+		return
+	}
+	if err := p.DisableObservation(cgids); err != nil {
+		l.logger.Error(err, "failed to disable observation", "progType", progType)
+	}
+}
+
+// removePodCgids takes cgids out of one policy's map. Observation is not
+// paired here: it is shared across policies, so callers turn it off through
+// disableObservation only for cgids no attached policy needs anymore.
 func (l *OpenExecManager) removePodCgids(rpUID, progType string, prog *progState, cgids []uint64) {
 	if len(cgids) == 0 {
 		return

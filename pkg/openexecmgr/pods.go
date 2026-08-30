@@ -76,6 +76,11 @@ func (l *OpenExecManager) podUpdated(pod corev1.Pod, nsLabels map[string]string,
 			l.removePodCgids(rpUid, progType, prog, toRemove)
 		}
 	}
+	// the removed cgroups are gone from the pod entirely, so no policy can
+	// still need them observed
+	for progType := range l.programs {
+		l.disableObservation(progType, toRemove)
+	}
 
 	if labelsChanged {
 		l.logger.V(2).Info("pod or namespace labels changed, re-evaluating policy targets", "podUid", pod.UID)
@@ -89,6 +94,7 @@ func (l *OpenExecManager) podUpdated(pod corev1.Pod, nsLabels map[string]string,
 
 func (l *OpenExecManager) podDeleted(podUid string) {
 	l.logger.V(2).Info("pod deleted", "podUid", podUid)
+	pr, tracked := l.pods[podUid]
 	delete(l.pods, podUid)
 	for rpUid, la := range l.openExecAttachments {
 		podAttachment, ok := la.attachedPods[podUid]
@@ -100,5 +106,12 @@ func (l *OpenExecManager) podDeleted(podUid string) {
 		}
 		delete(la.attachedPods, podUid)
 		l.recordCondition(rpUid, v1alpha1.PodsMatchedCondition(len(la.attachedPods), l.clock()))
+	}
+	// the pod's cgroups no longer exist, so their observation maps would
+	// otherwise sit in events_map forever
+	if tracked {
+		for progType := range l.programs {
+			l.disableObservation(progType, pr.cgids)
+		}
 	}
 }
