@@ -9,11 +9,18 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func key(path string) [maxPathLen]byte {
-	k := [maxPathLen]byte{}
-	copy(k[:], path)
-	return k
+func allowEntry(path string) *runtimePolicyEntry { return entryFor(path, 0) }
+func denyEntry(path string) *runtimePolicyEntry  { return entryFor(path, 1) }
+
+func entryFor(path string, dataType uint32) *runtimePolicyEntry {
+	e := &runtimePolicyEntry{DataType: dataType}
+	for i := 0; i < len(path) && i < len(e.Data); i++ {
+		e.Data[i] = int8(path[i])
+	}
+	return e
 }
+
+var cmpEntries = cmp.AllowUnexported(runtimePolicyEntry{})
 
 // TestPathKeyHoldsEveryValueTheSchemaAccepts pins the parser's length bound to
 // the kernel key: bpf_probe_read_kernel_str always leaves a NUL terminator, so
@@ -30,40 +37,53 @@ func TestPathKeys(t *testing.T) {
 	tests := []struct {
 		name         string
 		values       []string
-		wantKeys     [][maxPathLen]byte
+		allow        bool
+		wantKeys     []*runtimePolicyEntry
 		wantStar     bool
 		wantRejected []compiler.RejectedTarget
 	}{
 		{
-			name:     "literal paths become keys in order",
+			name:     "literal allow paths become allow entries in order",
 			values:   []string{"/bin/sh", "/usr/bin/curl"},
-			wantKeys: [][maxPathLen]byte{key("/bin/sh"), key("/usr/bin/curl")},
+			allow:    true,
+			wantKeys: []*runtimePolicyEntry{allowEntry("/bin/sh"), allowEntry("/usr/bin/curl")},
+		},
+		{
+			name:     "literal deny paths become deny entries",
+			values:   []string{"/bin/sh"},
+			allow:    false,
+			wantKeys: []*runtimePolicyEntry{denyEntry("/bin/sh")},
 		},
 		{
 			name:     "star is the default deny sentinel, not a key",
 			values:   []string{"*", "/bin/sh"},
-			wantKeys: [][maxPathLen]byte{key("/bin/sh")},
+			allow:    true,
+			wantKeys: []*runtimePolicyEntry{allowEntry("/bin/sh")},
 			wantStar: true,
 		},
 		{
 			name:     "surrounding whitespace is trimmed before keying",
 			values:   []string{" /bin/sh\n"},
-			wantKeys: [][maxPathLen]byte{key("/bin/sh")},
+			allow:    true,
+			wantKeys: []*runtimePolicyEntry{allowEntry("/bin/sh")},
 		},
 		{
 			name:     "duplicates collapse to one key",
 			values:   []string{"/bin/sh", "/bin/sh ", "/bin/sh"},
-			wantKeys: [][maxPathLen]byte{key("/bin/sh")},
+			allow:    true,
+			wantKeys: []*runtimePolicyEntry{allowEntry("/bin/sh")},
 		},
 		{
 			name:         "over-length value is rejected, not truncated",
 			values:       []string{"/bin/sh", tooLong},
-			wantKeys:     [][maxPathLen]byte{key("/bin/sh")},
+			allow:        true,
+			wantKeys:     []*runtimePolicyEntry{allowEntry("/bin/sh")},
 			wantRejected: []compiler.RejectedTarget{{Value: tooLong, Reason: compiler.ErrPathValueTooLong.Error()}},
 		},
 		{
 			name:   "empty value is rejected",
 			values: []string{" ", ""},
+			allow:  true,
 			wantRejected: []compiler.RejectedTarget{
 				{Value: " ", Reason: compiler.ErrEmptyPathValue.Error()},
 				{Value: "", Reason: compiler.ErrEmptyPathValue.Error()},
@@ -72,18 +92,20 @@ func TestPathKeys(t *testing.T) {
 		{
 			name:         "NUL-bearing value is rejected",
 			values:       []string{"/bin/sh\x00/etc"},
+			allow:        true,
 			wantRejected: []compiler.RejectedTarget{{Value: "/bin/sh\x00/etc", Reason: compiler.ErrNULInPathValue.Error()}},
 		},
 		{
 			name:   "no values",
 			values: nil,
+			allow:  true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			keys, star, rejected := PathKeys(tt.values)
-			if diff := cmp.Diff(tt.wantKeys, keys); diff != "" {
+			keys, star, rejected := PathKeys(tt.values, tt.allow)
+			if diff := cmp.Diff(tt.wantKeys, keys, cmpEntries); diff != "" {
 				t.Errorf("keys mismatch (-want +got):\n%s", diff)
 			}
 			if star != tt.wantStar {
@@ -109,22 +131,22 @@ func TestAddAndDeleteTargetsKeyTheSameValues(t *testing.T) {
 	addDeny, addAllow, addRejected := parsePair(pair)
 	delDeny, delAllow, delRejected := parsePair(pair)
 
-	if diff := cmp.Diff(addDeny, delDeny); diff != "" {
+	if diff := cmp.Diff(addDeny, delDeny, cmpEntries); diff != "" {
 		t.Errorf("deny keys differ between add and delete (-add +delete):\n%s", diff)
 	}
-	if diff := cmp.Diff(addAllow, delAllow); diff != "" {
+	if diff := cmp.Diff(addAllow, delAllow, cmpEntries); diff != "" {
 		t.Errorf("allow keys differ between add and delete (-add +delete):\n%s", diff)
 	}
 	if diff := cmp.Diff(addRejected, delRejected); diff != "" {
 		t.Errorf("rejections differ between add and delete (-add +delete):\n%s", diff)
 	}
 
-	wantDeny := [][maxPathLen]byte{key("/bin/sh"), key("/usr/bin/curl")}
-	if diff := cmp.Diff(wantDeny, addDeny); diff != "" {
+	wantDeny := []*runtimePolicyEntry{denyEntry("/bin/sh"), denyEntry("/usr/bin/curl")}
+	if diff := cmp.Diff(wantDeny, addDeny, cmpEntries); diff != "" {
 		t.Errorf("deny keys mismatch (-want +got):\n%s", diff)
 	}
-	wantAllow := [][maxPathLen]byte{key("/usr/bin/python3")}
-	if diff := cmp.Diff(wantAllow, addAllow); diff != "" {
+	wantAllow := []*runtimePolicyEntry{allowEntry("/usr/bin/python3")}
+	if diff := cmp.Diff(wantAllow, addAllow, cmpEntries); diff != "" {
 		t.Errorf("allow keys mismatch (-want +got):\n%s", diff)
 	}
 	if len(addRejected) != 3 {

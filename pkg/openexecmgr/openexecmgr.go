@@ -24,7 +24,7 @@ import (
 const maxReportedRejectedPaths = 10
 
 // enforcerFactory builds an enforcer for a bpf lsm attach target.
-type enforcerFactory func(logger *logr.Logger, target string) (openExecEnforcer, error)
+type enforcerFactory func(logger *logr.Logger, target string) (openExecMap, error)
 
 type OpenExecManager struct {
 	logger logr.Logger
@@ -52,7 +52,9 @@ type OpenExecManager struct {
 	// one more centralized dependency to consult on every read
 	pods                map[string]*podRepresentation
 	openExecAttachments map[string]*openExecAttachment
-	lsm                 bool
+	programs            map[string]*openexec.Prog
+
+	lsm bool
 }
 
 type podRepresentation struct {
@@ -63,12 +65,12 @@ type podRepresentation struct {
 }
 
 type progState struct {
-	enf   openExecEnforcer
+	enf   openExecMap
 	files *compiler.AllowDenyPair
 }
 
 type openExecAttachment struct {
-	progs        map[string]*progState
+	policyMaps   map[string]*progState
 	target       compiler.PodTarget
 	attachedPods map[string]*podRepresentation
 
@@ -101,6 +103,8 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 	}
 
 	dispatchers := make(map[string]*openexec.Dispatcher, 2)
+	programs := make(map[string]*openexec.Prog)
+
 	for _, target := range progArrayType {
 		d, err := openexec.NewDispatcherForTarget(target)
 		if err != nil {
@@ -110,26 +114,35 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 			return nil, fmt.Errorf("attaching the %s dispatcher: %w", target, err)
 		}
 		dispatchers[target] = d
+
+		p, err := openexec.NewProgram(d)
+		if err != nil {
+			return nil, fmt.Errorf("creating the %s enforcer program: %w", target, err)
+		}
+
+		programs[target] = p
 	}
 
-	newEnforcer := func(logger *logr.Logger, target string) (openExecEnforcer, error) {
+	newEnforcer := func(logger *logr.Logger, target string) (openExecMap, error) {
 		d, ok := dispatchers[target]
 		if !ok {
 			return nil, fmt.Errorf("unknown lsm attach target %q", target)
 		}
-		return openexec.NewForAttachTarget(d, logger)
+		return openexec.NewPolicyMap(d, logger)
 	}
 
-	return newOpenExecManager(logger, status, onLoss, newEnforcer, lsm, cgroupSinks...), nil
+	return newOpenExecManager(logger, status, onLoss, newEnforcer, programs, lsm, cgroupSinks...), nil
 }
 
-func newOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, newEnforcer enforcerFactory, lsm bool, cgroupSinks ...CgroupSink) *OpenExecManager {
+func newOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc,
+	newEnforcer enforcerFactory, programs map[string]*openexec.Prog, lsm bool, cgroupSinks ...CgroupSink) *OpenExecManager {
 	return &OpenExecManager{
 		logger:              logger,
 		status:              status,
 		onLoss:              onLoss,
 		cgroupSinks:         cgroupSinks,
 		newEnforcer:         newEnforcer,
+		programs:            programs,
 		clock:               time.Now,
 		lsm:                 lsm,
 		pods:                make(map[string]*podRepresentation),
@@ -187,9 +200,7 @@ func (l *OpenExecManager) addPodCgids(rpUID, progType string, prog *progState, c
 			l.enforcementUnavailable(rpUID, progType, "failed to add cgids to enforcer", err)
 		}
 	}
-	if err := prog.enf.EnableObservation(cgids); err != nil {
-		l.observationUnavailable(rpUID, progType, "failed to enable observation", err)
-	}
+
 	l.mirrorCgids(rpUID, progType, cgids, true)
 }
 
@@ -200,9 +211,6 @@ func (l *OpenExecManager) removePodCgids(rpUID, progType string, prog *progState
 	}
 	if err := prog.enf.DeleteCgids(cgids); err != nil {
 		l.logger.Error(err, "failed to remove cgids from enforcer", "uid", rpUID, "progType", progType)
-	}
-	if err := prog.enf.DisableObservation(cgids); err != nil {
-		l.observationUnavailable(rpUID, progType, "failed to disable observation", err)
 	}
 	l.mirrorCgids(rpUID, progType, cgids, false)
 }
@@ -246,7 +254,7 @@ func (l *OpenExecManager) cgidsUnwantedByOtherExecPolicies(excludeUID string, cg
 		if uid == excludeUID {
 			continue
 		}
-		if _, ok := la.progs[openexec.PROG_TYPE_LSM_EXEC]; !ok {
+		if _, ok := la.policyMaps[openexec.PROG_TYPE_LSM_EXEC]; !ok {
 			continue
 		}
 		for _, pod := range la.attachedPods {
@@ -409,8 +417,8 @@ func (l *OpenExecManager) recordPathRulesCondition(rpUID, condType string, pair 
 		return
 	}
 
-	_, _, rejected := openexec.PathKeys(pair.Deny)
-	_, _, allowRejected := openexec.PathKeys(pair.Allow)
+	_, _, rejected := compiler.ParsePathList(pair.Deny)
+	_, _, allowRejected := compiler.ParsePathList(pair.Allow)
 	rejected = append(rejected, allowRejected...)
 	if len(rejected) == 0 {
 		l.recordCondition(rpUID, metav1.Condition{

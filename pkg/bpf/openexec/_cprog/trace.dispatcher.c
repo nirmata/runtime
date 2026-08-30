@@ -41,7 +41,8 @@ int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
         bpf_d_path(&f->f_path, buf, sizeof(buf));
         bpf_probe_read_kernel_str(prog_ctx->path, sizeof(prog_ctx->path), buf);
 
-        target_map = &open_progs;
+        target_map = &open_prog;
+        prog_ctx->prog_type = PROG_TYPE_OPEN;
     #elif defined(TRACE_EXEC_CHECK)
         /* bpf_d_path is not allowlisted for security_bprm_check; bprm->filename
          * is the kernel's own copy of the exec path, so unlike a sys_enter read
@@ -50,7 +51,8 @@ int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
         const char *filename = BPF_CORE_READ(bprm, filename);
         bpf_probe_read_kernel_str(prog_ctx->path, sizeof(prog_ctx->path), filename);
 
-        target_map = &exec_progs;
+        target_map = &exec_prog;
+        prog_ctx->prog_type = PROG_TYPE_EXEC;
     #endif
 
     /* jump to the policy enforcer */

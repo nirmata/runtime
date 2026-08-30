@@ -90,11 +90,11 @@ func slotOccupied(t *testing.T, d *Dispatcher, idx uint32) bool {
 	return false
 }
 
-func TestAddProgramPublishesSlotAndCount(t *testing.T) {
+func TestAddPolicyPublishesSlotAndCount(t *testing.T) {
 	d := newTestDispatcher(t)
 	fd := newTestProgram(t)
 
-	if err := d.AddProgram(fd); err != nil {
+	if err := d.AddPolicy(fd); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,13 +110,13 @@ func TestAddProgramPublishesSlotAndCount(t *testing.T) {
 	}
 }
 
-func TestAddProgramAssignsDistinctSlots(t *testing.T) {
+func TestAddPolicyAssignsDistinctSlots(t *testing.T) {
 	d := newTestDispatcher(t)
 
 	seen := make(map[uint32]int)
 	for i := 0; i < testSlots; i++ {
 		fd := newTestProgram(t)
-		if err := d.AddProgram(fd); err != nil {
+		if err := d.AddPolicy(fd); err != nil {
 			t.Fatal(err)
 		}
 		idx := d.progIdx[fd]
@@ -131,17 +131,17 @@ func TestAddProgramAssignsDistinctSlots(t *testing.T) {
 	}
 }
 
-func TestAddProgramRejectsFullArray(t *testing.T) {
+func TestAddPolicyRejectsFullArray(t *testing.T) {
 	d := newTestDispatcher(t)
 	for i := 0; i < testSlots; i++ {
-		if err := d.AddProgram(newTestProgram(t)); err != nil {
+		if err := d.AddPolicy(newTestProgram(t)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	extra := newTestProgram(t)
-	if err := d.AddProgram(extra); err == nil {
-		t.Fatal("AddProgram past capacity returned nil")
+	if err := d.AddPolicy(extra); err == nil {
+		t.Fatal("AddPolicy past capacity returned nil")
 	}
 	if _, ok := d.progIdx[extra]; ok {
 		t.Error("rejected fd was recorded in progIdx")
@@ -152,8 +152,8 @@ func TestAddProgramRejectsFullArray(t *testing.T) {
 }
 
 // A count that cannot be bumped leaves a program published in the array that
-// the chain would never reach; AddProgram has to take the slot back.
-func TestAddProgramRollsBackSlotWhenCountFails(t *testing.T) {
+// the chain would never reach; AddPolicy has to take the slot back.
+func TestAddPolicyRollsBackSlotWhenCountFails(t *testing.T) {
 	d := newTestDispatcher(t)
 	saturated := uint8(testSlots)
 	if err := d.progCount.Update(&d.progCountKey, &saturated, ebpf.UpdateAny); err != nil {
@@ -161,8 +161,8 @@ func TestAddProgramRollsBackSlotWhenCountFails(t *testing.T) {
 	}
 
 	fd := newTestProgram(t)
-	if err := d.AddProgram(fd); err == nil {
-		t.Fatal("AddProgram with a saturated count returned nil")
+	if err := d.AddPolicy(fd); err == nil {
+		t.Fatal("AddPolicy with a saturated count returned nil")
 	}
 	if _, ok := d.progIdx[fd]; ok {
 		t.Error("failed fd was recorded in progIdx")
@@ -175,7 +175,7 @@ func TestAddProgramRollsBackSlotWhenCountFails(t *testing.T) {
 func TestDeleteProgramClearsSlotAndCount(t *testing.T) {
 	d := newTestDispatcher(t)
 	fd := newTestProgram(t)
-	if err := d.AddProgram(fd); err != nil {
+	if err := d.AddPolicy(fd); err != nil {
 		t.Fatal(err)
 	}
 	idx := d.progIdx[fd]
@@ -197,7 +197,7 @@ func TestDeleteProgramClearsSlotAndCount(t *testing.T) {
 func TestDeleteProgramUnknownFd(t *testing.T) {
 	d := newTestDispatcher(t)
 	fd := newTestProgram(t)
-	if err := d.AddProgram(fd); err != nil {
+	if err := d.AddPolicy(fd); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,7 +212,7 @@ func TestDeleteProgramUnknownFd(t *testing.T) {
 func TestDeleteProgramToleratesEmptySlot(t *testing.T) {
 	d := newTestDispatcher(t)
 	fd := newTestProgram(t)
-	if err := d.AddProgram(fd); err != nil {
+	if err := d.AddPolicy(fd); err != nil {
 		t.Fatal(err)
 	}
 	idx := d.progIdx[fd]
@@ -232,10 +232,10 @@ func TestFreeSlotReusesReleasedSlot(t *testing.T) {
 	d := newTestDispatcher(t)
 	first := newTestProgram(t)
 	second := newTestProgram(t)
-	if err := d.AddProgram(first); err != nil {
+	if err := d.AddPolicy(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.AddProgram(second); err != nil {
+	if err := d.AddPolicy(second); err != nil {
 		t.Fatal(err)
 	}
 	released := d.progIdx[first]
@@ -255,7 +255,7 @@ func TestFreeSlotReusesReleasedSlot(t *testing.T) {
 func TestFreeSlotRejectsFullArray(t *testing.T) {
 	d := newTestDispatcher(t)
 	for i := 0; i < testSlots; i++ {
-		if err := d.AddProgram(newTestProgram(t)); err != nil {
+		if err := d.AddPolicy(newTestProgram(t)); err != nil {
 			t.Fatal(err)
 		}
 	}

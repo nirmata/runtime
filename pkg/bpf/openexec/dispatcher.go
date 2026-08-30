@@ -20,7 +20,8 @@ const pinDir = "/sys/fs/bpf/kyverno-runtime"
 // lifetime. Callers serialize access (the lsm manager holds its lock across
 // every AddProgram/DeleteProgram).
 type Dispatcher struct {
-	prog      *ebpf.Program
+	prog *ebpf.Program
+
 	progArray *ebpf.Map
 	progCount *ebpf.Map
 
@@ -97,7 +98,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 
 		d.prog = objs.GenericLsmHandler
 		d.progCount = objs.ProgCount
-		d.progArray = objs.OpenProgs
+		d.progArray = objs.OpenPolicies
 
 	case PROG_TYPE_LSM_EXEC:
 		spec, err := loadLsmDispatcherExecCheck()
@@ -114,7 +115,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 
 		d.prog = objs.GenericLsmHandler
 		d.progCount = objs.ProgCount
-		d.progArray = objs.ExecProgs
+		d.progArray = objs.ExecPolicies
 	}
 
 	return nil
@@ -136,7 +137,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 
 		d.prog = objs.GenericTracepointHandler
 		d.progCount = objs.ProgCount
-		d.progArray = objs.OpenProgs
+		d.progArray = objs.OpenPolicies
 
 	case PROG_TYPE_TRACE_EXEC:
 		spec, err := loadRawTpDispatcherExecCheck()
@@ -150,7 +151,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 
 		d.prog = objs.GenericTracepointHandler
 		d.progCount = objs.ProgCount
-		d.progArray = objs.ExecProgs
+		d.progArray = objs.ExecPolicies
 	}
 
 	return nil
@@ -186,15 +187,15 @@ func (d *Dispatcher) Attach() error {
 	if err != nil {
 		return err
 	}
-	d.link = l
 
+	d.link = l
 	return nil
 }
 
 // AddProgram publishes an enforcer in the prog array before bumping the count
 // the kernel chain terminates on, so the chain never waits for a program that
 // is not yet callable.
-func (d *Dispatcher) AddProgram(progFd int) error {
+func (d *Dispatcher) AddPolicy(progFd int) error {
 	idx, err := d.freeSlot()
 	if err != nil {
 		return err

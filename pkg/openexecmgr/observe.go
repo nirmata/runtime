@@ -21,11 +21,8 @@ type observationKey struct {
 	decision runtimeevent.KernelDecision
 }
 
-// CollectObservations drains the per-cgroup path counters of every enforcer of
-// every attachment and turns them into events. The counters live in a map per
-// enforcer, so every program type has to be read: stopping at the first one
-// discards what the others saw. The kernel maps are read-and-reset, so Count is
-// the number of occurrences since the previous call.
+// CollectObservations drains the per-cgroup path counters of every enforcer from open/exec.
+// Reading drains events, and hence reported counts represent events since the last drain.
 func (l *OpenExecManager) CollectObservations(ctx context.Context) ([]runtimeevent.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -35,55 +32,46 @@ func (l *OpenExecManager) CollectObservations(ctx context.Context) ([]runtimeeve
 	merged := map[observationKey]uint32{}
 	podHints := map[uint64]string{}
 
-	for rpUID, la := range l.openExecAttachments {
+	for progType, prog := range l.programs {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			return emitObservations(now, merged, podHints), errors.Join(errs...)
 		}
 
+		counts, err := prog.ReadEvents()
+		if err != nil {
+			errs = append(errs, err)
+		}
+
+		for cgid, paths := range counts {
+			for key, count := range paths {
+				if string(key.Path[:]) == "" || count == 0 {
+					continue
+				}
+
+				// `counts` here will contain how many times for a given cgid and path did we allow or deny
+				// across the board. since we only capture events after all policies have executed their decision.
+				// the extra bit of information we wanna add is what type of program is this reading for. hence
+				// the need for the `observationKey` type containing progType.
+				k := observationKey{cgid: cgid, progType: progType,
+					path:     string(key.Path[:]),
+					decision: runtimeevent.KernelDecision(key.Decision)}
+				merged[k] = count
+			}
+		}
+
+		if err := l.reportLost(progType, prog); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	// build the hints map so that every cgid in the observations can be mapped back to a pod
+	for _, la := range l.openExecAttachments {
 		cgids, cgidPods := attachedCgids(la)
 		if len(cgids) == 0 {
 			continue
 		}
 		maps.Copy(podHints, cgidPods)
-
-		for progType := range openexec.ProgTypes {
-			prog, ok := la.progs[progType]
-			if !ok {
-				continue
-			}
-			counts, err := prog.enf.ReadEvents(cgids)
-			if err != nil {
-				if errors.Is(err, openexec.ErrObservationUnavailable) {
-					// the loaded program has no observation maps, so every later
-					// poll reports the same thing: report it on the policy rather
-					// than to the caller
-					l.observationUnavailable(rpUID, progType, "observation is unavailable", err)
-				} else {
-					errs = append(errs, err)
-				}
-				// counts may still hold what was read before the failure
-			}
-			if err := l.reportLost(rpUID, progType, prog.enf); err != nil {
-				errs = append(errs, err)
-			}
-			for cgid, paths := range counts {
-				for key, count := range paths {
-					if key.Path == "" || count == 0 {
-						continue
-					}
-					k := observationKey{cgid: cgid, progType: progType, path: key.Path, decision: key.Decision}
-					// every program attached for this cgid saw the same kernel
-					// operations, so their counts are P views of one number, not P
-					// numbers to add up. max, rather than any single one of them,
-					// because a program that attached part-way through the window
-					// legitimately saw fewer.
-					if count > merged[k] {
-						merged[k] = count
-					}
-				}
-			}
-		}
 	}
 
 	return emitObservations(now, merged, podHints), errors.Join(errs...)
@@ -92,8 +80,8 @@ func (l *OpenExecManager) CollectObservations(ctx context.Context) ([]runtimeeve
 // reportLost drains one enforcer's kernel drop counter. A program loaded
 // without observation maps reports it on the policy rather than to the caller,
 // the same way an unavailable ReadEvents does.
-func (l *OpenExecManager) reportLost(rpUID, progType string, enf openExecEnforcer) error {
-	lost, err := enf.ReadEventsLost()
+func (l *OpenExecManager) reportLost(progType string, prog *openexec.Prog) error {
+	lost, err := prog.ReadEventsLost()
 	if err != nil {
 		if errors.Is(err, openexec.ErrObservationUnavailable) {
 			l.observationUnavailable(rpUID, progType, "observation is unavailable", err)
@@ -104,7 +92,7 @@ func (l *OpenExecManager) reportLost(rpUID, progType string, enf openExecEnforce
 	if lost == 0 {
 		return nil
 	}
-	l.logger.Info("kernel dropped observations", "uid", rpUID, "progType", progType, "count", lost)
+	l.logger.Info("kernel dropped observations", "progType", progType, "count", lost)
 	if l.onLoss != nil {
 		l.onLoss(runtimeevent.ReasonCountMapFull, lost)
 	}
@@ -114,7 +102,7 @@ func (l *OpenExecManager) reportLost(rpUID, progType string, enf openExecEnforce
 func emitObservations(now time.Time, merged map[observationKey]uint32, podHints map[uint64]string) []runtimeevent.Event {
 	out := make([]runtimeevent.Event, 0, len(merged))
 	for k, count := range merged {
-		key := openexec.PathEventKey{Path: k.path, Decision: k.decision}
+		key, _ := openexec.NewKernelKeyFromGoTypes(k.path, k.decision)
 		out = append(out, newObservation(k.progType, now, k.cgid, podHints[k.cgid], key, count))
 	}
 	return sortEvents(out)
@@ -123,21 +111,21 @@ func emitObservations(now time.Time, merged map[observationKey]uint32, podHints 
 // newObservation builds the event for one observed (path, decision) count.
 // Attribution resolves the cgroup id; the pod uid is a hint the manager already
 // knows. Monitor attributes the kernel's decision to a policy in userspace.
-func newObservation(progType string, now time.Time, cgid uint64, podUID string, key openexec.PathEventKey, count uint32) runtimeevent.Event {
+func newObservation(progType string, now time.Time, cgid uint64, podUID string, key openexec.PathEventKernelKey, count uint32) runtimeevent.Event {
 	ev := runtimeevent.Event{
 		Time:         now,
 		CgroupID:     cgid,
 		Count:        count,
-		KernelDenied: key.Decision == runtimeevent.DecisionDeny,
+		KernelDenied: key.Decision == uint32(runtimeevent.DecisionDeny),
 		Pod:          runtimeevent.PodIdentity{UID: podUID},
 	}
 	switch progType {
 	case openexec.PROG_TYPE_LSM_EXEC:
 		ev.Kind = runtimeevent.KindExec
-		ev.Exec = &runtimeevent.ExecFacts{Filename: key.Path}
+		ev.Exec = &runtimeevent.ExecFacts{Filename: string(key.Path[:])}
 	default:
 		ev.Kind = runtimeevent.KindOpen
-		ev.Open = &runtimeevent.OpenFacts{Path: key.Path}
+		ev.Open = &runtimeevent.OpenFacts{Path: string(key.Path[:])}
 	}
 	return ev
 }

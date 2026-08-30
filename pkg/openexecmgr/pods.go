@@ -14,15 +14,15 @@ import (
 func (l *OpenExecManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) {
 	l.logger.V(2).Info("pod created", "podUid", pod.UID)
 	pr := &podRepresentation{
-		labels:       pod.Labels,
-		nsLabels:     nsLabels,
-		cgids:        containers.ExtractCgids(cgInfos),
+		labels:            pod.Labels,
+		nsLabels:          nsLabels,
+		cgids:             containers.ExtractCgids(cgInfos),
 		attachedOpenExecs: make(map[string]*openExecAttachment),
 	}
 	for rpUid, la := range l.openExecAttachments {
 		if la.target.Matches(nsLabels, pod.Labels) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
-			for progType, prog := range la.progs {
+			for progType, prog := range la.policyMaps {
 				l.addPodCgids(rpUid, progType, prog, pr.cgids, la.observe)
 			}
 
@@ -71,7 +71,7 @@ func (l *OpenExecManager) podUpdated(pod corev1.Pod, nsLabels map[string]string,
 		if _, ok := la.attachedPods[string(pod.UID)]; !ok {
 			continue
 		}
-		for progType, prog := range la.progs {
+		for progType, prog := range la.policyMaps {
 			l.addPodCgids(rpUid, progType, prog, toAdd, la.observe)
 			l.removePodCgids(rpUid, progType, prog, toRemove)
 		}
@@ -95,7 +95,7 @@ func (l *OpenExecManager) podDeleted(podUid string) {
 		if !ok {
 			continue
 		}
-		for progType, prog := range la.progs {
+		for progType, prog := range la.policyMaps {
 			l.removePodCgids(rpUid, progType, prog, podAttachment.cgids)
 		}
 		delete(la.attachedPods, podUid)

@@ -77,8 +77,8 @@ func TestGeneratedObjectsLoad(t *testing.T) {
 		target string
 		array  *ebpf.Map
 	}{
-		{PROG_TYPE_LSM_OPEN, dispObjs.OpenProgs},
-		{PROG_TYPE_LSM_EXEC, execObjs.ExecProgs},
+		{PROG_TYPE_LSM_OPEN, dispObjs.OpenProg},
+		{PROG_TYPE_LSM_EXEC, execObjs.ExecProg},
 	}
 	for _, e := range enforcers {
 		t.Run("enforcer_"+e.target, func(t *testing.T) {
@@ -91,12 +91,15 @@ func TestGeneratedObjectsLoad(t *testing.T) {
 			spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
 			prepareOpenEvents(spec)
 			objs := &runtimePolicyObjects{}
-			eopts := *opts
-			eopts.MapReplacements = map[string]*ebpf.Map{"chain_progs": e.array}
-			if err := spec.LoadAndAssign(objs, &eopts); err != nil {
+			if err := spec.LoadAndAssign(objs, opts); err != nil {
 				fatal(t, err)
 			}
-			objs.Close()
+			defer objs.Close()
+			zero := uint32(0)
+			fd := uint32(objs.RuntimePolicyExecutor.FD())
+			if err := e.array.Update(&zero, &fd, ebpf.UpdateAny); err != nil {
+				fatal(t, err)
+			}
 		})
 	}
 }
@@ -148,8 +151,8 @@ func TestGeneratedObjectsLoadTracepoint(t *testing.T) {
 		target string
 		array  *ebpf.Map
 	}{
-		{PROG_TYPE_TRACE_OPEN, dispObjs.OpenProgs},
-		{PROG_TYPE_TRACE_EXEC, execObjs.ExecProgs},
+		{PROG_TYPE_TRACE_OPEN, dispObjs.OpenProg},
+		{PROG_TYPE_TRACE_EXEC, execObjs.ExecProg},
 	}
 	for _, e := range enforcers {
 		t.Run("enforcer_"+e.target, func(t *testing.T) {
@@ -162,12 +165,15 @@ func TestGeneratedObjectsLoadTracepoint(t *testing.T) {
 			spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachModifyReturn
 			prepareOpenEvents(spec)
 			objs := &runtimePolicyObjects{}
-			eopts := *opts
-			eopts.MapReplacements = map[string]*ebpf.Map{"chain_progs": e.array}
-			if err := spec.LoadAndAssign(objs, &eopts); err != nil {
+			if err := spec.LoadAndAssign(objs, opts); err != nil {
 				fatal(t, err)
 			}
-			objs.Close()
+			defer objs.Close()
+			zero := uint32(0)
+			fd := uint32(objs.RuntimePolicyExecutor.FD())
+			if err := e.array.Update(&zero, &fd, ebpf.UpdateAny); err != nil {
+				fatal(t, err)
+			}
 		})
 	}
 }

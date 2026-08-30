@@ -37,12 +37,13 @@ type lsmDispatcherFileOpenPolicyCtx struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	lsmDispatcherFileOpenMapCtxMap             = "ctx_map"
-	lsmDispatcherFileOpenMapExecProgs          = "exec_progs"
+	lsmDispatcherFileOpenMapExecPolicies       = "exec_policies"
+	lsmDispatcherFileOpenMapExecProg           = "exec_prog"
 	lsmDispatcherFileOpenMapInnerOpenEvents    = "inner_open_events"
 	lsmDispatcherFileOpenMapInnerPolicyMap     = "inner_policy_map"
 	lsmDispatcherFileOpenMapOpenEvents         = "open_events"
-	lsmDispatcherFileOpenMapOpenProgs          = "open_progs"
-	lsmDispatcherFileOpenMapPolicies           = "policies"
+	lsmDispatcherFileOpenMapOpenPolicies       = "open_policies"
+	lsmDispatcherFileOpenMapOpenProg           = "open_prog"
 	lsmDispatcherFileOpenMapProgCount          = "prog_count"
 	lsmDispatcherFileOpenMapStats              = "stats"
 	lsmDispatcherFileOpenProgGenericLsmHandler = "generic_lsm_handler"
@@ -98,12 +99,13 @@ type lsmDispatcherFileOpenProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type lsmDispatcherFileOpenMapSpecs struct {
 	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	ExecProgs       *ebpf.MapSpec `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.MapSpec `ebpf:"exec_policies"`
+	ExecProg        *ebpf.MapSpec `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
 	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
-	OpenProgs       *ebpf.MapSpec `ebpf:"open_progs"`
-	Policies        *ebpf.MapSpec `ebpf:"policies"`
+	OpenPolicies    *ebpf.MapSpec `ebpf:"open_policies"`
+	OpenProg        *ebpf.MapSpec `ebpf:"open_prog"`
 	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
 	Stats           *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -135,12 +137,13 @@ func (o *lsmDispatcherFileOpenObjects) Close() error {
 // It can be passed to loadLsmDispatcherFileOpenObjects or ebpf.CollectionSpec.LoadAndAssign.
 type lsmDispatcherFileOpenMaps struct {
 	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	ExecProgs       *ebpf.Map `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.Map `ebpf:"exec_policies"`
+	ExecProg        *ebpf.Map `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
 	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.Map `ebpf:"open_events"`
-	OpenProgs       *ebpf.Map `ebpf:"open_progs"`
-	Policies        *ebpf.Map `ebpf:"policies"`
+	OpenPolicies    *ebpf.Map `ebpf:"open_policies"`
+	OpenProg        *ebpf.Map `ebpf:"open_prog"`
 	ProgCount       *ebpf.Map `ebpf:"prog_count"`
 	Stats           *ebpf.Map `ebpf:"stats"`
 }
@@ -148,12 +151,13 @@ type lsmDispatcherFileOpenMaps struct {
 func (m *lsmDispatcherFileOpenMaps) Close() error {
 	return _LsmDispatcherFileOpenClose(
 		m.CtxMap,
-		m.ExecProgs,
+		m.ExecPolicies,
+		m.ExecProg,
 		m.InnerOpenEvents,
 		m.InnerPolicyMap,
 		m.OpenEvents,
-		m.OpenProgs,
-		m.Policies,
+		m.OpenPolicies,
+		m.OpenProg,
 		m.ProgCount,
 		m.Stats,
 	)

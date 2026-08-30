@@ -5,9 +5,9 @@
 #include <bpf/bpf_helpers.h>
 #include "maps.h"
 
-static __always_inline void path_decision(struct policy_entry_inner_map *pm, struct policy_ctx *ctx, struct entry *key) {
+static __always_inline void path_decision(struct policy_entry_map *pm, struct policy_ctx *ctx, struct entry *key) {
     key->data_type = FLAGS;
-    memset(key->data, 0, sizeof(key->data));
+    __builtin_memset(key->data, 0, sizeof(key->data));
 
     __u8 *dd = bpf_map_lookup_elem(pm, key);
 
@@ -36,25 +36,25 @@ static __always_inline void path_decision(struct policy_entry_inner_map *pm, str
 }
 
 static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN], enum decision_reason des) {
-    struct bpf_map *count_map = bpf_map_lookup_elem(&open_events, cgid);
+    struct bpf_map *count_map = bpf_map_lookup_elem(&events_map, cgid);
     if (!count_map) {
         return;
     }
 
-    struct path_event_key *k;
-    bpf_probe_read_kernel(k->path, sizeof(k->path), buf);
-    k->decision = (des == EXPLICIT_DENY || des == IMPLICIT_DENY) ? DECISION_DENY : DECISION_ALLOW;
+    struct path_event_key k;
+    bpf_probe_read_kernel(k.path, sizeof(k.path), buf);
+    k.decision = (des == EXPLICIT_DENY || des == IMPLICIT_DENY) ? DECISION_DENY : DECISION_ALLOW;
 
-    __u32 *count = bpf_map_lookup_elem(count_map, k);
+    __u32 *count = bpf_map_lookup_elem(count_map, &k);
     if (count) {
         __sync_fetch_and_add(count, 1);
         return;
     }
 
     __u32 init_count = 1;
-    if (bpf_map_update_elem(count_map, k, &init_count, BPF_NOEXIST) != 0) {
+    if (bpf_map_update_elem(count_map, &k, &init_count, BPF_NOEXIST) != 0) {
         // lost the create race with another CPU: the entry exists now, add to it
-        count = bpf_map_lookup_elem(count_map, k);
+        count = bpf_map_lookup_elem(count_map, &k);
         if (count) {
             __sync_fetch_and_add(count, 1);
             return;
@@ -67,6 +67,12 @@ static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN
     }
 }
 
+static __always_inline struct policy_entry_map *policy_map_for(__u8 prog_type, int i) {
+    if (prog_type == PROG_TYPE_OPEN) {
+        return bpf_map_lookup_elem(&open_policies, &i);
+    }
+    return bpf_map_lookup_elem(&exec_policies, &i);
+}
 
 SEC("runtime_policy")
 int runtime_policy_executor(void *ctx)
@@ -77,9 +83,16 @@ int runtime_policy_executor(void *ctx)
         return 0;
     }
 
+    /* no policies, do nothing */
+    __u32 prog_key = prog_ctx->prog_type;
+    __u8 *pc = bpf_map_lookup_elem(&prog_count, &prog_key);
+    if (!pc || *pc == 0) {
+        return 0;
+    } 
+
     __u64 cgid = bpf_get_current_cgroup_id();
     for (int i = 0; i < MAX_PROG_COUNT; i++) {
-        struct policy_entry_inner_map *pm = bpf_map_lookup_elem(&policies, &i);
+        struct policy_entry_map *pm = policy_map_for(prog_ctx->prog_type, i);
         if (!pm) {
             continue;
         };
@@ -88,13 +101,12 @@ int runtime_policy_executor(void *ctx)
             .data_type = CGID,   
         };
 
-        memcpy(k->data, &cgid, sizeof(cgid));
+        __builtin_memcpy(k->data, &cgid, sizeof(cgid));
         __u8 *exists = bpf_map_lookup_elem(pm, k);
         if (!exists) {
             continue;
         }
 
-        struct entry *k;
         path_decision(pm, prog_ctx, k);
         if (prog_ctx->reason == EXPLICIT_DENY) {
             goto end;

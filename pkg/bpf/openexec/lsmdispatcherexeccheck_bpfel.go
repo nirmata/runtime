@@ -37,12 +37,13 @@ type lsmDispatcherExecCheckPolicyCtx struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	lsmDispatcherExecCheckMapCtxMap             = "ctx_map"
-	lsmDispatcherExecCheckMapExecProgs          = "exec_progs"
+	lsmDispatcherExecCheckMapExecPolicies       = "exec_policies"
+	lsmDispatcherExecCheckMapExecProg           = "exec_prog"
 	lsmDispatcherExecCheckMapInnerOpenEvents    = "inner_open_events"
 	lsmDispatcherExecCheckMapInnerPolicyMap     = "inner_policy_map"
 	lsmDispatcherExecCheckMapOpenEvents         = "open_events"
-	lsmDispatcherExecCheckMapOpenProgs          = "open_progs"
-	lsmDispatcherExecCheckMapPolicies           = "policies"
+	lsmDispatcherExecCheckMapOpenPolicies       = "open_policies"
+	lsmDispatcherExecCheckMapOpenProg           = "open_prog"
 	lsmDispatcherExecCheckMapProgCount          = "prog_count"
 	lsmDispatcherExecCheckMapStats              = "stats"
 	lsmDispatcherExecCheckProgGenericLsmHandler = "generic_lsm_handler"
@@ -98,12 +99,13 @@ type lsmDispatcherExecCheckProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type lsmDispatcherExecCheckMapSpecs struct {
 	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	ExecProgs       *ebpf.MapSpec `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.MapSpec `ebpf:"exec_policies"`
+	ExecProg        *ebpf.MapSpec `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
 	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
-	OpenProgs       *ebpf.MapSpec `ebpf:"open_progs"`
-	Policies        *ebpf.MapSpec `ebpf:"policies"`
+	OpenPolicies    *ebpf.MapSpec `ebpf:"open_policies"`
+	OpenProg        *ebpf.MapSpec `ebpf:"open_prog"`
 	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
 	Stats           *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -135,12 +137,13 @@ func (o *lsmDispatcherExecCheckObjects) Close() error {
 // It can be passed to loadLsmDispatcherExecCheckObjects or ebpf.CollectionSpec.LoadAndAssign.
 type lsmDispatcherExecCheckMaps struct {
 	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	ExecProgs       *ebpf.Map `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.Map `ebpf:"exec_policies"`
+	ExecProg        *ebpf.Map `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
 	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.Map `ebpf:"open_events"`
-	OpenProgs       *ebpf.Map `ebpf:"open_progs"`
-	Policies        *ebpf.Map `ebpf:"policies"`
+	OpenPolicies    *ebpf.Map `ebpf:"open_policies"`
+	OpenProg        *ebpf.Map `ebpf:"open_prog"`
 	ProgCount       *ebpf.Map `ebpf:"prog_count"`
 	Stats           *ebpf.Map `ebpf:"stats"`
 }
@@ -148,12 +151,13 @@ type lsmDispatcherExecCheckMaps struct {
 func (m *lsmDispatcherExecCheckMaps) Close() error {
 	return _LsmDispatcherExecCheckClose(
 		m.CtxMap,
-		m.ExecProgs,
+		m.ExecPolicies,
+		m.ExecProg,
 		m.InnerOpenEvents,
 		m.InnerPolicyMap,
 		m.OpenEvents,
-		m.OpenProgs,
-		m.Policies,
+		m.OpenPolicies,
+		m.OpenProg,
 		m.ProgCount,
 		m.Stats,
 	)

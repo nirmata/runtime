@@ -1,10 +1,12 @@
 package openexec
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
+	"unsafe"
 
 	"github.com/nirmata/runtime/pkg/compiler"
 
@@ -46,7 +48,7 @@ func progCountKey(target string) (uint32, error) {
 //go:generate go tool bpf2go -target bpfel -cflags "-DTRACE_EXEC_CHECK" rawTpDispatcherExecCheck ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
 //go:generate go tool bpf2go -target bpfel runtimePolicy ./_cprog/runtimepolicy.bpf.c -- -I../include -I./_cprog/include -I./_cprog
 
-type OpenExecEnforcer struct {
+type PolicyMap struct {
 	logger *logr.Logger
 	closer io.Closer
 
@@ -54,85 +56,92 @@ type OpenExecEnforcer struct {
 	// enforcer registers itself there on creation and leaves on Close.
 	dispatcher *Dispatcher
 
-	prog        *ebpf.Program
-	cgids       *ebpf.Map
-	banned      *ebpf.Map
-	allowed     *ebpf.Map
-	defaultDeny *ebpf.Map
+	entries *ebpf.Map
+
+	// observed is a map of uint64(cgid) to an event map
+	observeMu sync.RWMutex
+	observed  map[uint64]*ebpf.Map
+}
+
+type Prog struct {
+	prog *ebpf.Program
 
 	// openEvents is a hash-of-maps keyed by cgroup id; each value is an inner
 	// path->count hash the kernel program bumps on every open/exec. innerSpec is
 	// the template for those inner maps.
-	openEvents *ebpf.Map
-	innerSpec  *ebpf.MapSpec
+	eventsMap *ebpf.Map
+	innerSpec *ebpf.MapSpec
 
 	stats *ebpf.Map
 	// statLast is the cumulative kernel total at the previous ReadEventsLost.
 	statLast uint64
 
-	// observeMu guards observed, the inner maps this enforcer created.
+	// observed is a map of uint64(cgid) to an event map
 	observeMu sync.RWMutex
 	observed  map[uint64]*ebpf.Map
 }
 
-func NewForAttachTarget(d *Dispatcher, logger *logr.Logger) (*OpenExecEnforcer, error) {
+func NewPolicyMap(d *Dispatcher, logger *logr.Logger) (*PolicyMap, error) {
+	// we need this function to just insert a map
 	if _, err := progCountKey(d.dispatcherType); err != nil {
 		return nil, err
 	}
 
-	l := &OpenExecEnforcer{logger: logger, dispatcher: d}
+	o := &PolicyMap{logger: logger, dispatcher: d}
 
 	spec, err := loadRuntimePolicy()
 	if err != nil {
 		return nil, err
 	}
-	// the program's SEC carries no attachable prefix because it is never linked
-	// to a hook itself: tail calls only reach programs of the same type as the
-	// dispatcher that calls them, so the type has to follow the dispatcher's.
-	switch d.dispatcherType {
-	case PROG_TYPE_LSM_OPEN, PROG_TYPE_LSM_EXEC:
-		// loading an lsm program still requires the BTF id of a real hook
-		spec.Programs["runtime_policy_executor"].Type = ebpf.LSM
-		spec.Programs["runtime_policy_executor"].AttachTo = d.dispatcherType
-		spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachLSMMac
-	case PROG_TYPE_TRACE_OPEN, PROG_TYPE_TRACE_EXEC:
-		spec.Programs["runtime_policy_executor"].Type = ebpf.Tracing
-		spec.Programs["runtime_policy_executor"].AttachTo = d.dispatcherType
-		spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachModifyReturn
+
+	var mapSpec *ebpf.MapSpec
+	entriesMap, ok := spec.Maps["open_policies"]
+	if !ok {
+		mapSpec = &ebpf.MapSpec{
+			KeySize:    uint32(unsafe.Sizeof(runtimePolicyEntry{})),
+			ValueSize:  uint32(1),
+			MaxEntries: 2048,
+		}
+	} else {
+		mapSpec = entriesMap.InnerMap
+	}
+
+	m, err := ebpf.NewMap(mapSpec)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := d.AddPolicy(m.FD()); err != nil {
+		_ = m.Close()
+		return nil, err
+	}
+
+	return o, nil
+}
+
+func NewProgram(d *Dispatcher) (*Prog, error) {
+	p := &Prog{}
+
+	spec, err := loadRuntimePolicy()
+	if err != nil {
+		return nil, err
+	}
+
+	objs := &runtimePolicyObjects{}
+	if err := spec.LoadAndAssign(objs, &ebpf.CollectionOptions{}); err != nil {
+		return nil, err
+	}
+
+	var zero uint32 = 0
+	if err := d.progArray.Update(&zero, objs.RuntimePolicyExecutor.FD(), ebpf.UpdateAny); err != nil {
+		return nil, err
 	}
 
 	innerSpec := prepareOpenEvents(spec)
+	p.innerSpec = innerSpec
 
-	objs := &runtimePolicyObjects{}
-	opts := &ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{PinPath: pinDir},
-		// bind the placeholder chain_progs to this dispatcher's prog array; the
-		// program can then only reference one array, whose owner hook matches
-		// its own AttachTo, which is what the kernel's tail-call ownership
-		// check demands
-		MapReplacements: map[string]*ebpf.Map{"chain_progs": d.progArray},
-	}
-	if err := spec.LoadAndAssign(objs, opts); err != nil {
-		return nil, err
-	}
-	l.innerSpec = innerSpec
-	// hoist the collection's objects into generic fields so the rest of the
-	// code never has to ask which variant is loaded
-	l.closer = objs
-	l.prog = objs.RuntimePolicyExecutor
-	l.cgids = objs.Cgids
-	l.banned = objs.Banned
-	l.allowed = objs.Allowed
-	l.defaultDeny = objs.DefaultDeny
-	l.openEvents = objs.OpenEvents
-	l.stats = objs.Stats
-
-	if err := d.AddProgram(l.prog.FD()); err != nil {
-		_ = objs.Close()
-		return nil, err
-	}
-
-	return l, nil
+	p.prog = objs.RuntimePolicyExecutor
+	return p, nil
 }
 
 // prepareOpenEvents returns a copy of the open_events inner-map template.
@@ -152,50 +161,49 @@ func prepareOpenEvents(spec *ebpf.CollectionSpec) *ebpf.MapSpec {
 	return inner.Copy()
 }
 
-func (l *OpenExecEnforcer) Close() error {
+func (m *PolicyMap) Close() error {
 	var retErr error
-	// leave the tail-call chain before anything is released: the prog array
-	// holds its own reference, so a closed-but-still-registered program would
-	// keep running with its policy maps gone from userspace.
-	if l.dispatcher != nil {
-		if err := l.dispatcher.DeleteProgram(l.prog.FD()); err != nil {
+	if m.dispatcher != nil {
+		if err := m.dispatcher.DeleteProgram(m.entries.FD()); err != nil {
 			retErr = err
 		}
 	}
-	// release the observation inner maps next; the kernel keeps its own
-	// reference through open_events until the outer map goes away.
-	l.observeMu.Lock()
-	for cgid, inner := range l.observed {
-		if err := inner.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("closing observation map for cgid %d: %w", cgid, err)
-		}
-		delete(l.observed, cgid)
-	}
-	l.observeMu.Unlock()
 
-	if l.closer != nil {
-		if err := l.closer.Close(); err != nil && retErr == nil {
-			retErr = err
-		}
+	if err := m.entries.Close(); err != nil {
+		return err
 	}
 
 	return retErr
 }
 
-func (l *OpenExecEnforcer) AddCgids(cgids []uint64) error {
+func (l *PolicyMap) AddCgids(cgids []uint64) error {
 	var errs []error
 	for _, cgid := range cgids {
-		if err := l.cgids.Put(&cgid, uint8(0)); err != nil {
+		data := [128]int8{}
+		binary.LittleEndian.PutUint32((*[4]byte)(unsafe.Pointer(&data))[:], uint32(cgid))
+		cgidEntry := &runtimePolicyEntry{
+			DataType: 2,
+			Data:     data,
+		}
+
+		if err := l.entries.Put(cgidEntry, uint8(0)); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (l *OpenExecEnforcer) DeleteCgids(cgids []uint64) error {
+func (l *PolicyMap) DeleteCgids(cgids []uint64) error {
 	var errs []error
 	for _, cgid := range cgids {
-		if err := l.cgids.Delete(&cgid); err != nil {
+		data := [128]int8{}
+		binary.LittleEndian.PutUint32((*[4]byte)(unsafe.Pointer(&data))[:], uint32(cgid))
+		cgidEntry := &runtimePolicyEntry{
+			DataType: 2,
+			Data:     data,
+		}
+
+		if err := l.entries.Delete(cgidEntry); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -204,17 +212,17 @@ func (l *OpenExecEnforcer) DeleteCgids(cgids []uint64) error {
 
 // AddTargets programs a policy's paths into the banned and allowed maps and
 // returns every value PathKeys could not key.
-func (l *OpenExecEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
+func (l *PolicyMap) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	deny, allow, rejected := parsePair(paths)
 
 	for _, key := range deny {
-		if err := l.banned.Put(&key, uint8(0)); err != nil {
+		if err := l.entries.Put(&key, uint8(0)); err != nil {
 			return rejected, err
 		}
 	}
 
 	for _, key := range allow {
-		if err := l.allowed.Put(&key, uint8(0)); err != nil {
+		if err := l.entries.Put(&key, uint8(0)); err != nil {
 			return rejected, err
 		}
 	}
@@ -224,42 +232,46 @@ func (l *OpenExecEnforcer) AddTargets(paths *compiler.AllowDenyPair) ([]compiler
 // DeleteTargets removes what AddTargets programmed for the same pair. Both
 // derive their keys from PathKeys, so a value one of them can key is a value
 // the other can key too.
-func (l *OpenExecEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
+func (l *PolicyMap) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error) {
 	deny, allow, rejected := parsePair(paths)
 
 	for _, key := range deny {
-		if err := l.banned.Delete(&key); err != nil {
+		if err := l.entries.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from banned map")
 		}
 	}
 
 	for _, key := range allow {
-		if err := l.allowed.Delete(&key); err != nil {
+		if err := l.entries.Delete(&key); err != nil {
 			l.logger.Error(err, "failed to remove path from allowed map")
 		}
 	}
 	return rejected, nil
 }
 
-func parsePair(paths *compiler.AllowDenyPair) (deny, allow [][maxPathLen]byte, rejected []compiler.RejectedTarget) {
+func parsePair(paths *compiler.AllowDenyPair) (deny, allow []*runtimePolicyEntry, rejected []compiler.RejectedTarget) {
 	if paths == nil {
 		return nil, nil, nil
 	}
-	deny, _, denyRejected := PathKeys(paths.Deny)
-	allow, _, allowRejected := PathKeys(paths.Allow)
+	deny, _, denyRejected := PathKeys(paths.Deny, false)
+	allow, _, allowRejected := PathKeys(paths.Allow, true)
 	return deny, allow, append(denyRejected, allowRejected...)
 }
 
-func (l *OpenExecEnforcer) SetDefaultDeny(val bool) error {
-	k := uint32(0)
+func (l *PolicyMap) SetDefaultDeny(val bool) error {
+	k := runtimePolicyEntry{
+		DataType: 3,
+		Data:     [128]int8{},
+	}
+
 	if val {
-		err := l.defaultDeny.Put(&k, uint8(0))
+		err := l.entries.Put(&k, uint8(0))
 		if err != nil {
 			return err
 		}
 		return nil
 	}
 
-	_ = l.defaultDeny.Delete(&k)
+	_ = l.entries.Delete(&k)
 	return nil
 }

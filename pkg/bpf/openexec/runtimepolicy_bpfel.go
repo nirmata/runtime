@@ -13,6 +13,12 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type runtimePolicyEntry struct {
+	_        structs.HostLayout
+	DataType uint32
+	Data     [128]int8
+}
+
 type runtimePolicyPathEventKey struct {
 	_        structs.HostLayout
 	Path     [128]int8
@@ -20,30 +26,24 @@ type runtimePolicyPathEventKey struct {
 }
 
 type runtimePolicyPolicyCtx struct {
-	_            structs.HostLayout
-	Deny         uint8
-	NextProgIdx  uint8
-	HaveExecuted uint8
-	ProgType     uint8
-	Reason       uint8
-	ShouldPkill  uint8
-	Path         [128]int8
+	_        structs.HostLayout
+	ProgType uint8
+	Reason   uint8
+	Path     [128]int8
 }
 
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	runtimePolicyMapAllowed                = "allowed"
-	runtimePolicyMapBanned                 = "banned"
-	runtimePolicyMapCgids                  = "cgids"
-	runtimePolicyMapChainProgs             = "chain_progs"
 	runtimePolicyMapCtxMap                 = "ctx_map"
-	runtimePolicyMapDefaultDeny            = "default_deny"
-	runtimePolicyMapExecProgs              = "exec_progs"
+	runtimePolicyMapExecPolicies           = "exec_policies"
+	runtimePolicyMapExecProg               = "exec_prog"
 	runtimePolicyMapInnerOpenEvents        = "inner_open_events"
+	runtimePolicyMapInnerPolicyMap         = "inner_policy_map"
 	runtimePolicyMapOpenEvents             = "open_events"
-	runtimePolicyMapOpenProgs              = "open_progs"
+	runtimePolicyMapOpenPolicies           = "open_policies"
+	runtimePolicyMapOpenProg               = "open_prog"
 	runtimePolicyMapProgCount              = "prog_count"
 	runtimePolicyMapStats                  = "stats"
 	runtimePolicyProgRuntimePolicyExecutor = "runtime_policy_executor"
@@ -98,16 +98,14 @@ type runtimePolicyProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type runtimePolicyMapSpecs struct {
-	Allowed         *ebpf.MapSpec `ebpf:"allowed"`
-	Banned          *ebpf.MapSpec `ebpf:"banned"`
-	Cgids           *ebpf.MapSpec `ebpf:"cgids"`
-	ChainProgs      *ebpf.MapSpec `ebpf:"chain_progs"`
 	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	DefaultDeny     *ebpf.MapSpec `ebpf:"default_deny"`
-	ExecProgs       *ebpf.MapSpec `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.MapSpec `ebpf:"exec_policies"`
+	ExecProg        *ebpf.MapSpec `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
+	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
-	OpenProgs       *ebpf.MapSpec `ebpf:"open_progs"`
+	OpenPolicies    *ebpf.MapSpec `ebpf:"open_policies"`
+	OpenProg        *ebpf.MapSpec `ebpf:"open_prog"`
 	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
 	Stats           *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -138,32 +136,28 @@ func (o *runtimePolicyObjects) Close() error {
 //
 // It can be passed to loadRuntimePolicyObjects or ebpf.CollectionSpec.LoadAndAssign.
 type runtimePolicyMaps struct {
-	Allowed         *ebpf.Map `ebpf:"allowed"`
-	Banned          *ebpf.Map `ebpf:"banned"`
-	Cgids           *ebpf.Map `ebpf:"cgids"`
-	ChainProgs      *ebpf.Map `ebpf:"chain_progs"`
 	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	DefaultDeny     *ebpf.Map `ebpf:"default_deny"`
-	ExecProgs       *ebpf.Map `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.Map `ebpf:"exec_policies"`
+	ExecProg        *ebpf.Map `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
+	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.Map `ebpf:"open_events"`
-	OpenProgs       *ebpf.Map `ebpf:"open_progs"`
+	OpenPolicies    *ebpf.Map `ebpf:"open_policies"`
+	OpenProg        *ebpf.Map `ebpf:"open_prog"`
 	ProgCount       *ebpf.Map `ebpf:"prog_count"`
 	Stats           *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *runtimePolicyMaps) Close() error {
 	return _RuntimePolicyClose(
-		m.Allowed,
-		m.Banned,
-		m.Cgids,
-		m.ChainProgs,
 		m.CtxMap,
-		m.DefaultDeny,
-		m.ExecProgs,
+		m.ExecPolicies,
+		m.ExecProg,
 		m.InnerOpenEvents,
+		m.InnerPolicyMap,
 		m.OpenEvents,
-		m.OpenProgs,
+		m.OpenPolicies,
+		m.OpenProg,
 		m.ProgCount,
 		m.Stats,
 	)

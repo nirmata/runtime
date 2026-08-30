@@ -37,12 +37,13 @@ type rawTpDispatcherExecCheckPolicyCtx struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	rawTpDispatcherExecCheckMapCtxMap                    = "ctx_map"
-	rawTpDispatcherExecCheckMapExecProgs                 = "exec_progs"
+	rawTpDispatcherExecCheckMapExecPolicies              = "exec_policies"
+	rawTpDispatcherExecCheckMapExecProg                  = "exec_prog"
 	rawTpDispatcherExecCheckMapInnerOpenEvents           = "inner_open_events"
 	rawTpDispatcherExecCheckMapInnerPolicyMap            = "inner_policy_map"
 	rawTpDispatcherExecCheckMapOpenEvents                = "open_events"
-	rawTpDispatcherExecCheckMapOpenProgs                 = "open_progs"
-	rawTpDispatcherExecCheckMapPolicies                  = "policies"
+	rawTpDispatcherExecCheckMapOpenPolicies              = "open_policies"
+	rawTpDispatcherExecCheckMapOpenProg                  = "open_prog"
 	rawTpDispatcherExecCheckMapProgCount                 = "prog_count"
 	rawTpDispatcherExecCheckMapStats                     = "stats"
 	rawTpDispatcherExecCheckProgGenericTracepointHandler = "generic_tracepoint_handler"
@@ -98,12 +99,13 @@ type rawTpDispatcherExecCheckProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type rawTpDispatcherExecCheckMapSpecs struct {
 	CtxMap          *ebpf.MapSpec `ebpf:"ctx_map"`
-	ExecProgs       *ebpf.MapSpec `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.MapSpec `ebpf:"exec_policies"`
+	ExecProg        *ebpf.MapSpec `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.MapSpec `ebpf:"inner_open_events"`
 	InnerPolicyMap  *ebpf.MapSpec `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.MapSpec `ebpf:"open_events"`
-	OpenProgs       *ebpf.MapSpec `ebpf:"open_progs"`
-	Policies        *ebpf.MapSpec `ebpf:"policies"`
+	OpenPolicies    *ebpf.MapSpec `ebpf:"open_policies"`
+	OpenProg        *ebpf.MapSpec `ebpf:"open_prog"`
 	ProgCount       *ebpf.MapSpec `ebpf:"prog_count"`
 	Stats           *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -135,12 +137,13 @@ func (o *rawTpDispatcherExecCheckObjects) Close() error {
 // It can be passed to loadRawTpDispatcherExecCheckObjects or ebpf.CollectionSpec.LoadAndAssign.
 type rawTpDispatcherExecCheckMaps struct {
 	CtxMap          *ebpf.Map `ebpf:"ctx_map"`
-	ExecProgs       *ebpf.Map `ebpf:"exec_progs"`
+	ExecPolicies    *ebpf.Map `ebpf:"exec_policies"`
+	ExecProg        *ebpf.Map `ebpf:"exec_prog"`
 	InnerOpenEvents *ebpf.Map `ebpf:"inner_open_events"`
 	InnerPolicyMap  *ebpf.Map `ebpf:"inner_policy_map"`
 	OpenEvents      *ebpf.Map `ebpf:"open_events"`
-	OpenProgs       *ebpf.Map `ebpf:"open_progs"`
-	Policies        *ebpf.Map `ebpf:"policies"`
+	OpenPolicies    *ebpf.Map `ebpf:"open_policies"`
+	OpenProg        *ebpf.Map `ebpf:"open_prog"`
 	ProgCount       *ebpf.Map `ebpf:"prog_count"`
 	Stats           *ebpf.Map `ebpf:"stats"`
 }
@@ -148,12 +151,13 @@ type rawTpDispatcherExecCheckMaps struct {
 func (m *rawTpDispatcherExecCheckMaps) Close() error {
 	return _RawTpDispatcherExecCheckClose(
 		m.CtxMap,
-		m.ExecProgs,
+		m.ExecPolicies,
+		m.ExecProg,
 		m.InnerOpenEvents,
 		m.InnerPolicyMap,
 		m.OpenEvents,
-		m.OpenProgs,
-		m.Policies,
+		m.OpenPolicies,
+		m.OpenProg,
 		m.ProgCount,
 		m.Stats,
 	)

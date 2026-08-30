@@ -34,7 +34,7 @@ func (l *OpenExecManager) rpCreated(compiledRp *compiler.EvaluationResult) error
 	l.logger.V(2).Info("runtime policy created", "uid", compiledRp.UID, "mode", compiledRp.Mode)
 	observe := compiler.IsObserveMode(compiledRp.Mode)
 
-	progMap := make(map[string]*progState)
+	policies := make(map[string]*progState)
 	for _, spec := range progSpecs(compiledRp, l.lsm) {
 		l.recordPathRulesCondition(compiledRp.UID, spec.condition, spec.files)
 		if !spec.files.HasEntries() {
@@ -44,20 +44,20 @@ func (l *OpenExecManager) rpCreated(compiledRp *compiler.EvaluationResult) error
 		if err != nil {
 			l.reportAttachFailure(compiledRp.UID, spec.progType, observe, err)
 			// nothing else references the enforcers built so far
-			l.closeProgs(compiledRp.UID, progMap)
+			l.closeProgs(compiledRp.UID, policies)
 			return err
 		}
 		l.clearAttachFailure(compiledRp.UID, spec.progType, observe)
-		progMap[spec.progType] = &progState{files: spec.files, enf: enf}
+		policies[spec.progType] = &progState{files: spec.files, enf: enf}
 	}
 
-	if len(progMap) == 0 {
+	if len(policies) == 0 {
 		l.logger.V(2).Info("runtime policy created but has no open or exec entries", "uid", compiledRp.UID)
 		return nil
 	}
 
 	la := &openExecAttachment{
-		progs:        progMap,
+		policyMaps:   policies,
 		attachedPods: make(map[string]*podRepresentation),
 		target:       compiledRp.AppliesTo,
 		observe:      observe,
@@ -77,8 +77,14 @@ func (l *OpenExecManager) rpCreated(compiledRp *compiler.EvaluationResult) error
 		return nil
 	}
 
-	for progType, prog := range la.progs {
+	for progType, prog := range la.policyMaps {
 		l.addPodCgids(compiledRp.UID, progType, prog, targetCgids, la.observe)
+	}
+
+	for _, enforcerProg := range l.programs {
+		if err := enforcerProg.EnableObservation(targetCgids); err != nil {
+			l.logger.V(4).Error(err, "failed to enable observation for cgids")
+		}
 	}
 
 	return nil
@@ -121,7 +127,7 @@ func (l *OpenExecManager) rpUpdated(compiledRp *compiler.EvaluationResult) error
 		}
 	}
 
-	if len(la.progs) == 0 {
+	if len(la.policyMaps) == 0 {
 		l.rpDeleted(compiledRp)
 		return nil
 	}
@@ -139,20 +145,43 @@ func (l *OpenExecManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	// Closing the enforcers releases their own cgroup maps, but the sinks are
 	// manager-scoped and outlive this attachment: its pods have to leave them
 	// here, while the bookkeeping that identifies them still exists.
-	if _, mirrored := la.progs[openexec.PROG_TYPE_LSM_EXEC]; mirrored {
+	if _, mirrored := la.policyMaps[openexec.PROG_TYPE_LSM_EXEC]; mirrored {
 		for _, pod := range la.attachedPods {
 			l.mirrorCgids(compiledRp.UID, openexec.PROG_TYPE_LSM_EXEC, pod.cgids, false)
 		}
 	}
-	for _, prog := range la.progs {
+	for progKey, prog := range la.policyMaps {
 		if err := prog.enf.Close(); err != nil {
 			l.logger.Error(err, "failed to close bpf lsm enforcer")
+		}
+		enforcerProg, ok := l.programs[progKey]
+		if !ok {
+			continue
+		}
+
+		if err := l.stopMonitoringForDeletedRp(enforcerProg, la); err != nil {
+			// it's not that big of a deal. log it at a more hidden level
+			l.logger.V(4).Error(err, "failed to disable monitoring for cgids")
 		}
 	}
 	delete(l.openExecAttachments, compiledRp.UID)
 	for _, pod := range l.pods {
 		delete(pod.attachedOpenExecs, compiledRp.UID)
 	}
+}
+
+// When a policy is deleted, if it was the only policy targeting a cgid, disable monitoring for that cgid
+func (l *OpenExecManager) stopMonitoringForDeletedRp(enforcerProg *openexec.Prog, la *openExecAttachment) error {
+	cgidsStopMonitoring := []uint64{}
+	for _, pod := range la.attachedPods {
+		if len(pod.attachedOpenExecs) == 1 {
+			cgidsStopMonitoring = append(cgidsStopMonitoring, pod.cgids...)
+		}
+	}
+	if err := enforcerProg.DisableObservation(cgidsStopMonitoring); err != nil {
+		return err
+	}
+	return nil
 }
 
 // closeProgs releases a half built prog map that was never published.
@@ -168,7 +197,7 @@ func (l *OpenExecManager) closeProgs(rpUID string, progs map[string]*progState) 
 // the banned and allowed maps are left empty and default-deny is unset, so the
 // program cannot return -EPERM: matching happens in userspace over the counts
 // CollectObservations reads back.
-func (l *OpenExecManager) createForProgType(rpUID string, pair *compiler.AllowDenyPair, progType string, observe bool) (openExecEnforcer, error) {
+func (l *OpenExecManager) createForProgType(rpUID string, pair *compiler.AllowDenyPair, progType string, observe bool) (openExecMap, error) {
 	// a flag that controls if we should close the enforcer on the kernel side
 	// due to an error
 	var cleanup bool
@@ -205,7 +234,7 @@ func (l *OpenExecManager) createForProgType(rpUID string, pair *compiler.AllowDe
 }
 
 func (l *OpenExecManager) syncProgType(rpUID string, la *openExecAttachment, newFiles *compiler.AllowDenyPair, progType string) error {
-	prog, ok := la.progs[progType]
+	prog, ok := la.policyMaps[progType]
 	if !ok {
 		// no enforcer loaded for this program type and no files to enforce
 		if !newFiles.HasEntries() {
@@ -226,7 +255,7 @@ func (l *OpenExecManager) syncProgType(rpUID string, la *openExecAttachment, new
 			l.addPodCgids(rpUID, progType, ps, pod.cgids, la.observe)
 		}
 
-		la.progs[progType] = ps
+		la.policyMaps[progType] = ps
 		prog = ps
 	}
 
@@ -235,7 +264,7 @@ func (l *OpenExecManager) syncProgType(rpUID string, la *openExecAttachment, new
 		closeErr := prog.enf.Close()
 		// drop the prog state even if the close failed: keeping a closed enforcer
 		// would make every later sync operate on dead bpf maps
-		delete(la.progs, progType)
+		delete(la.policyMaps, progType)
 		// a program type that no longer exists must not keep the shared
 		// availability condition False on its account
 		l.markGood(rpUID, progType, la.observe)
@@ -292,18 +321,35 @@ func (l *OpenExecManager) syncPodAttachment(uid string, la *openExecAttachment) 
 				continue
 			}
 			l.logger.V(2).Info("newly matched pod for runtime policy, adding cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-			for progType, prog := range la.progs {
+			for progType, prog := range la.policyMaps {
 				l.addPodCgids(uid, progType, prog, pod.cgids, la.observe)
 			}
 
 			attach(uid, la, podUid, pod)
 		} else {
+			// a pod coming from the manager (all pods) don't match the policy anymore. did it match previously ?
 			podAttachment, ok := la.attachedPods[podUid]
 			if ok {
 				// the cgids leave the enforcer before the attachment is dropped
 				l.logger.V(2).Info("pod stopped matching runtime policy, removing cgids", "uid", uid, "podUid", podUid, "cgids", pod.cgids)
-				for progType, prog := range la.progs {
+				// yeah this should still remove the cgods
+				cgidsStopMonitoring := []uint64{}
+				for progType, prog := range la.policyMaps {
 					l.removePodCgids(uid, progType, prog, pod.cgids)
+					// if this is the only policy that tracked a pod, disable monitoring of that pod's cgids
+					if len(pod.attachedOpenExecs) == 1 {
+						cgidsStopMonitoring = append(cgidsStopMonitoring, pod.cgids...)
+					}
+
+					if len(cgidsStopMonitoring) > 0 {
+						enforcerProg, ok := l.programs[progType]
+						if !ok {
+							continue
+						}
+						if err := enforcerProg.DisableObservation(cgidsStopMonitoring); err != nil {
+							l.logger.V(4).Error(err, "failed to disable monitoring")
+						}
+					}
 				}
 
 				detach(uid, la, podUid, podAttachment)
@@ -319,7 +365,7 @@ func denyHasStar(pair *compiler.AllowDenyPair) bool {
 	if pair == nil {
 		return false
 	}
-	_, star, _ := openexec.PathKeys(pair.Deny)
+	_, star, _ := compiler.ParsePathList(pair.Deny)
 	return star
 }
 

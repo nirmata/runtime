@@ -10,9 +10,8 @@
 
 #define MAX_PROG_COUNT 128
 
-/* these are prog_count keys; the order matches lsm.ProgTypes in the Go layer */
-#define	PROG_TYPE_LSM_OPEN 0
-#define	PROG_TYPE_LSM_EXEC 1
+#define	PROG_TYPE_OPEN 0
+#define	PROG_TYPE_EXEC 1
 
 enum data_type {
     ALLOW_ENTRY,
@@ -47,12 +46,20 @@ struct policy_entry_map {
 
 struct policy_entry_map inner_policy_map SEC(".maps");
 
+/* the structs holding the actual policy information (allow, deny, cgids.. etc) */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
     __uint(max_entries, 128); // 128 policies max
     __type(key, __u32);
     __array(values, struct policy_entry_map);
-} policies SEC(".maps");
+} open_policies SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, 128); // 128 policies max
+    __type(key, __u32);
+    __array(values, struct policy_entry_map);
+} exec_policies SEC(".maps");
 
 /* Padding-free by construction: a hash key is compared as raw bytes, so any
  * uninitialized byte would split one logical key across separate entries. */
@@ -68,22 +75,22 @@ struct policy_ctx {
 };
 
 /* 2048: the decision dimension can double the number of distinct keys. */
-struct open_events_inner_map {
+struct events_inner_map {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 2048);
     __type(key, struct path_event_key);
     __type(value, __u32);
 };
 
-struct open_events_inner_map inner_open_events SEC(".maps");
+struct events_inner_map inner_events SEC(".maps"); // (ammar) why the need to declare a variable with the template though ?
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
     __uint(max_entries, 1024);
     __type(key, __u64);
     __type(value, __u32);
-    __array(values, struct open_events_inner_map);
-} open_events SEC(".maps");
+    __array(values, struct events_inner_map);
+} events_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -100,13 +107,15 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } prog_count SEC(".maps");
 
+
+/* the single policy enforcer for every type from exec and open */
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
     __uint(max_entries, 1);
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
     __uint(pinning, LIBBPF_PIN_BY_NAME);
-} open_progs SEC(".maps");
+} open_prog SEC(".maps");
 
 
 struct {
@@ -115,7 +124,7 @@ struct {
     __uint(key_size, sizeof(__u32));
     __uint(value_size, sizeof(__u32));
     __uint(pinning, LIBBPF_PIN_BY_NAME);
-} exec_progs SEC(".maps");
+} exec_prog SEC(".maps");
 
 
 struct {

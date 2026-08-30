@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/nirmata/runtime/pkg/runtimeevent"
-
 	"github.com/cilium/ebpf"
 )
 
@@ -14,28 +12,35 @@ import (
 // open_events hash-of-maps, so per-cgid path counting cannot be turned on.
 var ErrObservationUnavailable = errors.New("lsm: observation maps unavailable")
 
-// PathEventKey identifies one observation counter: a path (or exec filename)
-// plus the enforcement decision the kernel program applied to the operation.
-type PathEventKey struct {
-	Path     string
-	Decision runtimeevent.KernelDecision
-}
-
 // pathEventKernelKey mirrors `struct path_event_key` in _cprog/maps.h.
 // cilium/ebpf rejects a key whose Go layout does not match the loaded map's BTF
 // key.
-type pathEventKernelKey struct {
+type PathEventKernelKey struct {
 	Path     [maxPathLen]byte
 	Decision uint32
 }
 
+func NewKernelKeyFromGoTypes(path string, d uint32) (PathEventKernelKey, error) {
+	if len(path) > maxPathLen {
+		return PathEventKernelKey{}, fmt.Errorf("invalid length. got %d but the maximum allowed is %d", len(path), maxPathLen)
+	}
+
+	pathArr := [maxPathLen]byte{}
+	copy(pathArr[:], path)
+
+	return PathEventKernelKey{
+		Path:     pathArr,
+		Decision: d,
+	}, nil
+}
+
 // EnableObservation creates (or reuses) an inner hash map in open_events for
 // each cgid so the kernel program starts recording path counts for it.
-func (l *OpenExecEnforcer) EnableObservation(cgids []uint64) error {
+func (l *Prog) EnableObservation(cgids []uint64) error {
 	if len(cgids) == 0 {
 		return nil
 	}
-	if l.openEvents == nil || l.innerSpec == nil {
+	if l.eventsMap == nil || l.innerSpec == nil {
 		return ErrObservationUnavailable
 	}
 
@@ -62,7 +67,7 @@ func (l *OpenExecEnforcer) EnableObservation(cgids []uint64) error {
 			errs = append(errs, fmt.Errorf("creating observation map for cgid %d: %w", cgid, err))
 			continue
 		}
-		if err := l.openEvents.Update(&cgid, inner, ebpf.UpdateAny); err != nil {
+		if err := l.eventsMap.Update(&cgid, inner, ebpf.UpdateAny); err != nil {
 			_ = inner.Close()
 			errs = append(errs, fmt.Errorf("registering observation map for cgid %d: %w", cgid, err))
 			continue
@@ -72,13 +77,13 @@ func (l *OpenExecEnforcer) EnableObservation(cgids []uint64) error {
 	return errors.Join(errs...)
 }
 
-// DisableObservation removes the open_events entry for each cgid and releases
+// DisableObservation removes the events_map entry for each cgid and releases
 // the inner map. A cgid that was never enabled is not an error.
-func (l *OpenExecEnforcer) DisableObservation(cgids []uint64) error {
+func (l *Prog) DisableObservation(cgids []uint64) error {
 	if len(cgids) == 0 {
 		return nil
 	}
-	if l.openEvents == nil {
+	if l.eventsMap == nil {
 		return ErrObservationUnavailable
 	}
 
@@ -87,7 +92,7 @@ func (l *OpenExecEnforcer) DisableObservation(cgids []uint64) error {
 
 	var errs []error
 	for _, cgid := range cgids {
-		if err := l.openEvents.Delete(&cgid); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		if err := l.eventsMap.Delete(&cgid); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			errs = append(errs, fmt.Errorf("removing observation map for cgid %d: %w", cgid, err))
 		}
 		if inner, ok := l.observed[cgid]; ok {
@@ -103,38 +108,34 @@ func (l *OpenExecEnforcer) DisableObservation(cgids []uint64) error {
 // ReadEvents reads and resets the per-cgid path counts. Every cgid is visited
 // even when one of them fails, so a single bad cgid cannot hide the counts of
 // the rest.
-func (l *OpenExecEnforcer) ReadEvents(cgids []uint64) (map[uint64]map[PathEventKey]uint32, error) {
-	out := make(map[uint64]map[PathEventKey]uint32, len(cgids))
-	if len(cgids) == 0 {
-		return out, nil
-	}
-	if l.openEvents == nil {
+func (l *Prog) ReadEvents() (map[uint64]map[PathEventKernelKey]uint32, error) {
+	out := make(map[uint64]map[PathEventKernelKey]uint32)
+	if l.eventsMap == nil {
 		return out, ErrObservationUnavailable
 	}
 
-	var errs []error
-	for _, cgid := range cgids {
-		inner, owned, err := l.innerFor(cgid)
+	var (
+		k       uint64
+		innerFd uint32
+
+		errs []error
+	)
+
+	iter := l.eventsMap.Iterate()
+	for iter.Next(&k, &innerFd) {
+		innerMap, err := ebpf.NewMapFromFD(int(innerFd))
 		if err != nil {
-			// no inner map for this cgid: nothing was observed
-			continue
+			return nil, err
 		}
 
-		counts, err := readAndResetCounts(inner)
-		if !owned {
-			_ = inner.Close()
-		}
+		counts, err := readAndResetCounts(innerMap)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("reading observations for cgid %d: %w", cgid, err))
-		}
-		if len(counts) == 0 {
+			errs = append(errs, err)
 			continue
 		}
-		if out[cgid] == nil {
-			out[cgid] = make(map[PathEventKey]uint32, len(counts))
-		}
-		mergeCounts(out[cgid], counts)
+		out[k] = counts
 	}
+
 	return out, errors.Join(errs...)
 }
 
@@ -144,7 +145,7 @@ const pathStatCountMapFull = uint32(0)
 // ReadEventsLost reports open/exec observations the kernel program could not
 // record because the cgid's count map was full. It shares ReadEvents' single
 // caller, so statLast needs no lock of its own.
-func (l *OpenExecEnforcer) ReadEventsLost() (uint64, error) {
+func (l *Prog) ReadEventsLost() (uint64, error) {
 	if l.stats == nil {
 		return 0, ErrObservationUnavailable
 	}
@@ -166,7 +167,7 @@ func (l *OpenExecEnforcer) ReadEventsLost() (uint64, error) {
 // total below the previous one means the map behind it was replaced, so the
 // baseline moves with it rather than reporting a negative interval as a huge
 // positive one.
-func (l *OpenExecEnforcer) lostSince(sum uint64) uint64 {
+func (l *Prog) lostSince(sum uint64) uint64 {
 	last := l.statLast
 	l.statLast = sum
 	if sum < last {
@@ -177,7 +178,7 @@ func (l *OpenExecEnforcer) lostSince(sum uint64) uint64 {
 
 // innerFor returns the inner map for cgid. owned is true when the handle is the
 // long-lived one this enforcer created, which callers must not close.
-func (l *OpenExecEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error) {
+func (l *Prog) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err error) {
 	l.observeMu.RLock()
 	inner, ok := l.observed[cgid]
 	l.observeMu.RUnlock()
@@ -192,12 +193,12 @@ func (l *OpenExecEnforcer) innerFor(cgid uint64) (m *ebpf.Map, owned bool, err e
 	return inner, false, nil
 }
 
-func (l *OpenExecEnforcer) lookupInner(cgid uint64) (*ebpf.Map, error) {
-	if l.openEvents == nil {
+func (l *Prog) lookupInner(cgid uint64) (*ebpf.Map, error) {
+	if l.eventsMap == nil {
 		return nil, ErrObservationUnavailable
 	}
 	var inner *ebpf.Map
-	if err := l.openEvents.Lookup(&cgid, &inner); err != nil {
+	if err := l.eventsMap.Lookup(&cgid, &inner); err != nil {
 		return nil, err
 	}
 	if inner == nil {
@@ -209,14 +210,15 @@ func (l *OpenExecEnforcer) lookupInner(cgid uint64) (*ebpf.Map, error) {
 // readAndResetCounts drains one inner path->count map. Keys are collected
 // before deletion because deleting during iteration can make the kernel restart
 // the walk.
-func readAndResetCounts(m *ebpf.Map) (map[PathEventKey]uint32, error) {
-	counts := make(map[PathEventKey]uint32)
-	keys := make([]pathEventKernelKey, 0, 16)
+func readAndResetCounts(m *ebpf.Map) (map[PathEventKernelKey]uint32, error) {
+	counts := make(map[PathEventKernelKey]uint32)
+	keys := make([]PathEventKernelKey, 0, 16) // store keys so we later delete them from the inner map after reading
 
 	var (
-		key   pathEventKernelKey
+		key   PathEventKernelKey
 		count uint32
 	)
+
 	it := m.Iterate()
 	for it.Next(&key, &count) {
 		keys = append(keys, key)
@@ -227,8 +229,8 @@ func readAndResetCounts(m *ebpf.Map) (map[PathEventKey]uint32, error) {
 		if path == "" {
 			continue
 		}
-		ek := PathEventKey{Path: path, Decision: runtimeevent.KernelDecision(key.Decision)}
-		mergeCounts(counts, map[PathEventKey]uint32{ek: count})
+
+		mergeCounts(counts, map[PathEventKernelKey]uint32{key: count})
 	}
 
 	var errs []error
@@ -255,7 +257,7 @@ func trimPathKey(key [maxPathLen]byte) string {
 
 // mergeCounts folds src into dst. The addition saturates rather than wrapping,
 // so a busy path can never be reported as quiet.
-func mergeCounts(dst, src map[PathEventKey]uint32) {
+func mergeCounts(dst, src map[PathEventKernelKey]uint32) {
 	if dst == nil {
 		return
 	}
