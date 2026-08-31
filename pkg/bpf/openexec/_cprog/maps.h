@@ -8,7 +8,7 @@
 #define DECISION_DENY 1
 
 
-#define MAX_PROG_COUNT 128
+#define MAX_PROG_COUNT 32
 
 #define	PROG_TYPE_OPEN 0
 #define	PROG_TYPE_EXEC 1
