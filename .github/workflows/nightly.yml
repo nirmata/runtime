@@ -11,14 +11,13 @@
 # workflow keeps that risk out of ci.yml entirely, at the cost of two step
 # lists to keep in sync when either side changes.
 #
-# lsm-behavior needs a runner actually booted with the `lsm=...,bpf` kernel
-# parameter, which no GitHub-hosted runner is. Point it at one by setting the
-# repository variable LSM_RUNNER_LABEL to the label of a self-hosted runner (or
-# a hosted runner driving a nested VM booted that way) registered with that
-# label. Until that variable is set, the job is skipped rather than queuing
-# against a runner that will never claim it — release.yml's nightly-gate reads
-# this workflow's overall conclusion, and a job stuck in "queued" forever would
-# keep that conclusion from ever landing.
+# lsm-behavior runs on a hosted runner and asserts open/exec enforcement
+# through whichever hooks the kernel offers: BPF-LSM where the host was booted
+# with `lsm=...,bpf`, and the fmod_ret dispatchers on `security_*` otherwise,
+# which need no boot parameter. Nothing here requires a dedicated runner, so
+# the lane always executes rather than skipping on an unset runner label —
+# release.yml's nightly-gate reads this workflow's overall conclusion, and a
+# lane that never ran told that gate nothing.
 name: Nightly
 
 on:
@@ -40,15 +39,11 @@ env:
 jobs:
   # ------------------------------------------------- ASSERTION (kernel-bound)
   lsm-behavior:
-    name: "Assert: BPF-LSM open/exec enforcement (needs a runner booted with lsm=...,bpf)"
-    if: ${{ vars.LSM_RUNNER_LABEL != '' }}
-    runs-on: ${{ vars.LSM_RUNNER_LABEL }}
+    name: "Assert: open/exec enforcement behavior"
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       DOCKER_CONFIG: /tmp/.docker
-      # Turns the LSM smoke test's skip into a hard failure, so a runner that
-      # does not qualify says so instead of reporting green.
-      NIRMATA_RUNTIME_REQUIRE_BPF_LSM: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,34 +67,25 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
-      # The two failures have different fixes, so they get different messages:
-      # an unreadable list means securityfs is not mounted here, which is not
-      # evidence about the kernel.
-      - name: Require BPF-LSM (fails loudly on a non-qualifying runner)
+      # Hard requirements only. The active LSM list decides which hooks the
+      # daemon picks, not whether this lane can run, so it is reported and not
+      # asserted -- and an unreadable list means securityfs is not mounted
+      # here, which is no evidence about the kernel either way.
+      - name: Kernel preconditions
         run: |
           set -euo pipefail
-          if ! lsm=$(cat /sys/kernel/security/lsm); then
-            echo "ERROR: /sys/kernel/security/lsm could not be read, so the active"
-            echo "       LSM list is unknown. This is NOT proof that BPF-LSM is off."
-            echo "       Mount securityfs where this job can see it."
-            exit 1
-          fi
-          echo "active LSMs: ${lsm}"
-          case ",${lsm}," in
-            *,bpf,*) echo "BPF-LSM active" ;;
-            *)
-              echo "ERROR: this runner was not booted with BPF-LSM."
-              echo "       Set the LSM_RUNNER_LABEL repository variable to a runner"
-              echo "       registered with lsm=...,bpf."
-              exit 1
-              ;;
-          esac
+          uname -a
+          test -r /sys/kernel/btf/vmlinux || { echo "no BTF: the daemon cannot load its programs"; exit 1; }
+          fs=$(stat -fc %T /sys/fs/cgroup)
+          echo "cgroup fs: $fs"
+          [ "$fs" = "cgroup2fs" ] || { echo "cgroup v2 unified hierarchy required"; exit 1; }
+          echo "active LSMs: $(cat /sys/kernel/security/lsm 2>/dev/null || echo 'unreadable')"
 
-      - name: Load every committed BPF program, LSM included (verifier log on rejection)
-        run: sudo -E env "PATH=$PATH" NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 make test-bpf-verify
+      - name: Load every committed BPF program (verifier log on rejection)
+        run: sudo -E env "PATH=$PATH" make test-bpf-verify
 
-      - name: LSM program map writes + attach smoke
-        run: sudo -E env "PATH=$PATH" NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1 make test-bpf-smoke
+      - name: Program map writes + attach smoke
+        run: sudo -E env "PATH=$PATH" make test-bpf-smoke
 
       - name: Set up kind
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
@@ -131,7 +117,7 @@ jobs:
       - name: Build image and install the chart into kind (gate)
         run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
 
-      - name: LSM enforcement behavior (open deny/allow, exec deny/allow)
+      - name: Enforcement behavior (open deny/allow, exec deny/allow)
         run: make test-e2e-lsm
 
       - name: Dump cluster state on failure
