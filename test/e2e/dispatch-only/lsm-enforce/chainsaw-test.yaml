@@ -63,8 +63,6 @@ spec:
           done
           if [ "$blocked" -ne 1 ]; then
             echo "FAIL: /etc/shadow was readable -- file_open enforcement not applied"
-            kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
-              --all-containers --tail=200 || true
             exit 1
           fi
           echo "OK: /etc/shadow blocked"
@@ -79,18 +77,3 @@ spec:
           # Allowed exec still works.
           kubectl -n $NAMESPACE exec lsm-client -- /bin/ls / >/dev/null
           echo "OK: /bin/ls exec allowed"
-    finally:
-    # Runs before chainsaw's cleanup, so the pod and the policy still exist
-    # here. The workflow's own dump step runs after cleanup and cannot see them.
-    - script:
-        content: |
-          set +e
-          echo "===== runtimepolicies ====="
-          kubectl get runtimepolicies -A -o yaml
-
-          echo "===== test pod ====="
-          kubectl -n $NAMESPACE get pod lsm-client -o wide
-          kubectl -n $NAMESPACE describe pod lsm-client
-          echo "--- uid / containerID (what the cgroup path is derived from) ---"
-          kubectl -n $NAMESPACE get pod lsm-client \
-            -o jsonpath='{.metadata.uid}{"\n"}{range .status.containerStatuses[*]}{.containerID}{"\n"}{end}' 

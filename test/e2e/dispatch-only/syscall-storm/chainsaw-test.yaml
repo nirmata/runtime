@@ -203,15 +203,3 @@ spec:
             exit 1
           }
           echo "OK: daemon restartCount 0"
-    finally:
-    - script:
-        content: |
-          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
-            --all-containers --tail=200 || true
-          kubectl -n "$NAMESPACE" get reports.openreports.io -o yaml || true
-    - script:
-        content: |
-          kubectl delete runtimepolicy \
-            e2e-syscall-storm-1 e2e-syscall-storm-2 e2e-syscall-storm-3 e2e-syscall-storm-4 \
-            e2e-syscall-storm-5 e2e-syscall-storm-6 e2e-syscall-storm-7 e2e-syscall-storm-8 \
-            --ignore-not-found
