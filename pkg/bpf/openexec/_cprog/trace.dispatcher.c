@@ -15,7 +15,8 @@ int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
     char buf[MAX_PATH_LEN] = {};
     void *target_map;
 
-    struct policy_ctx *prog_ctx = task_ctx();
+    __u32 k = 0;
+    struct policy_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
     if (!prog_ctx) {
         return 0;
     }
