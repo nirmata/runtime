@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: claude-code-demo
+  labels:
+    app: claude-code-demo
+spec:
+  containers:
+  - name: claude-code
+    image: nirmata-claude-code-demo:local
+    imagePullPolicy: Never
+    command: ["sleep", "infinity"]
+    envFrom:
+    - secretRef:
+        name: claude-code-demo-auth
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - name: workspace
+      mountPath: /workspace
+  volumes:
+  - name: workspace
+    emptyDir: {}
