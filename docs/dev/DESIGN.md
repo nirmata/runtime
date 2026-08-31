@@ -935,7 +935,7 @@ future `PLAN.md`.
   hook per behavior, so an exec hits `file_open` for the binary's open and `bprm_check_security`
   for the exec: both chains run. The fallback hooks one point, `security_file_open`, and picks the
   chain from the `__FMODE_EXEC` bit — either/or, so an exec never reaches the `open` chain. A path
-  in `spec.open.deny` still blocks opens on both (tracepoint and LSM); only on BPF-LSM does it also 
+  in `spec.open.deny` still blocks opens on both (tracepoint and LSM); only on BPF-LSM does it also
   block executing it.
 - **Monitor-mode observation has two transports, and both are lossy at their own edges.** The
   `network`/`open`/`exec` observations ride the counters the enforcing objects already keep;

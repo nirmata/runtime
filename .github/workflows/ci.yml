@@ -485,6 +485,13 @@ jobs:
       - name: Program map writes + attach smoke
         run: sudo -E env "PATH=$PATH" make test-bpf-smoke
 
+      # The two steps above run go as root with -E, which keeps
+      # HOME=/home/runner, so the module cache picks up root-owned entries.
+      # install-ko below runs `go install` unprivileged and cannot create
+      # files underneath them.
+      - name: Return the Go caches to the runner user
+        run: sudo chown -R "$(id -u):$(id -g)" "$(go env GOMODCACHE)" "$(go env GOCACHE)"
+
       - name: Set up kind
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
