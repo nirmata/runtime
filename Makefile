@@ -3,6 +3,10 @@ MODULE := github.com/nirmata/runtime
 KIND_CLUSTER_NAME ?= kyverno-runtime
 IMAGE_REPOSITORY ?= ghcr.io/nirmata/kyverno-runtime
 IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Extra `helm upgrade` flags for kind-install-manifests, e.g.
+# HELM_EXTRA_ARGS='--set daemon.logLevel=4' to make the daemon's V(2)/V(4)
+# lines visible in an e2e run.
+HELM_EXTRA_ARGS ?=
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 HOST_PLATFORM ?= linux/$(shell go env GOARCH)
 
@@ -286,6 +290,7 @@ kind-install-manifests:
 		--set image.pullPolicy=IfNotPresent \
 		--set defaultPolicies.enabled=true \
 		--set defaultPolicies.policies.credentialAccess=true \
+		$(HELM_EXTRA_ARGS) \
 		--wait
 	@if [ -f ./charts/kyverno-runtime/templates/default-policies.yaml ]; then \
 		helm template kyverno-runtime ./charts/kyverno-runtime \

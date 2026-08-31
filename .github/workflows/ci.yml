@@ -454,6 +454,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Same cache key as e2e-egress: both jobs compile the same
+      # ./cmd/kyverno-runtime, so whichever runs first warms the other. A
+      # duplicate save is a warning, not a failure.
+      - name: Restore the ko build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/go-build
+          key: ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            ko-build-${{ runner.os }}-
+
       - name: Set up ko
         uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
         with:
@@ -492,6 +504,20 @@ jobs:
       - name: Return the Go caches to the runner user
         run: sudo chown -R "$(id -u):$(id -g)" "$(go env GOPATH)" "$(go env GOCACHE)"
 
+      # One tag for both the build below and the load further down; IMAGE_TAG
+      # is `?=` in the Makefile, so the environment wins.
+      - name: Resolve the image tag
+        run: echo "IMAGE_TAG=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+
+      # Backgrounded so the compile overlaps kind provisioning instead of
+      # following it. Must start after the chown above, or root's leftovers and
+      # the restored cache fight over the same tree.
+      - name: Start the image build
+        run: |
+          rm -f /tmp/ko-build.status
+          nohup bash -c 'make ko-build; echo $? > /tmp/ko-build.status' \
+            > /tmp/ko-build.log 2>&1 &
+
       - name: Set up kind
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
@@ -503,15 +529,51 @@ jobs:
         with:
           version: ${{ env.CHAINSAW_VERSION }}
 
-      - name: Build image and install the chart into kind (gate)
-        run: make kind-install IMAGE_TAG="$(git describe --tags --always --dirty)"
+      - name: Wait for the image build
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 600); do
+            [ -f /tmp/ko-build.status ] && break
+            sleep 1
+          done
+          cat /tmp/ko-build.log
+          rc=$(cat /tmp/ko-build.status 2>/dev/null || echo "timeout")
+          [ "$rc" = "0" ] || { echo "ko build failed: $rc"; exit 1; }
+
+      - name: Save the ko build cache
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/go-build
+          key: ko-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+
+      # logLevel=4 so the daemon's V(2)/V(4) lines -- pod matches, cgid
+      # programming, policy sync -- reach the dump below. At the default level
+      # it emits one line for the whole run.
+      - name: Install the chart into kind (gate)
+        run: make kind-install-prebuilt HELM_EXTRA_ARGS='--set daemon.logLevel=4'
 
       - name: Enforcement behavior (open deny/allow, exec deny/allow)
         run: make test-e2e-lsm
 
+      # Chainsaw's cleanup has already deleted the test pod and policy by the
+      # time this runs -- the per-test `finally:` block is what captures those.
+      # What survives here is the daemon.
       - name: Dump cluster state on failure
         if: failure()
         run: |
-          kubectl get pods -A -o wide || true
-          kubectl get runtimepolicies -o yaml || true
-          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime --all-containers --tail=400 || true
+          set +e
+          echo "::group::pods"
+          kubectl get pods -A -o wide
+          echo "::endgroup::"
+          echo "::group::runtimepolicies still present"
+          kubectl get runtimepolicies -A -o yaml
+          echo "::endgroup::"
+          echo "::group::daemon"
+          kubectl -n kyverno-runtime get all
+          for pod in $(kubectl -n kyverno-runtime get pods -o name); do
+            echo "----- $pod -----"
+            kubectl -n kyverno-runtime logs "$pod" --all-containers --tail=-1
+            echo "----- $pod (previous container, if it restarted) -----"
+            kubectl -n kyverno-runtime logs "$pod" --all-containers --previous --tail=-1
+          done
+          echo "::endgroup::"
