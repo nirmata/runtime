@@ -33,6 +33,8 @@ static __always_inline void path_decision(struct policy_entry_map *pm, struct po
     if (dd) {
         ctx->reason = IMPLICIT_DENY;
     }
+
+    bpf_printk("verdict reason=%d path=%s", ctx->reason, ctx->path);
 }
 
 static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN], enum decision_reason des) {
