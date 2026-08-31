@@ -34,9 +34,9 @@ spec:
   timeouts:
     apply: 60s
     assert: 180s
-    delete: 200s
-    cleanup: 200s
-    exec: 300s
+    delete: 90s
+    cleanup: 90s
+    exec: 120s
   failFast: false
   # Every fixture in these suites is a sleep loop or a one-shot server with
   # nothing to drain, so the default 30s grace period is wall clock and nothing

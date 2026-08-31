@@ -20,22 +20,19 @@ static __always_inline void path_decision(struct policy_entry_map *pm, struct po
 
     if (bpf_map_lookup_elem(pm, key) != NULL) {
         ctx->reason = EXPLICIT_DENY;
-        goto print;
+        return;
     }
 
     key->data_type = ALLOW_ENTRY;
 
     if (bpf_map_lookup_elem(pm, key) != NULL) {
         ctx->reason = EXPLICIT_ALLOW;
-        goto print;
+        return;
     }
 
     if (dd) {
         ctx->reason = IMPLICIT_DENY;
     }
-
-print:
-    bpf_printk("verdict reason=%d path=%s", ctx->reason, ctx->path);
 }
 
 static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN], enum decision_reason des) {

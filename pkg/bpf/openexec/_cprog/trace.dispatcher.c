@@ -37,8 +37,6 @@ int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
         prog_ctx->prog_type = PROG_TYPE_OPEN;
     };
 
-    bpf_printk("path=%s", prog_ctx->path);
-
     /* jump to the policy enforcer */
     bpf_tail_call(ctx, target_map, 0);
 

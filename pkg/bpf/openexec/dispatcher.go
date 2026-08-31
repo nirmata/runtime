@@ -259,6 +259,7 @@ func (d *Dispatcher) DeleteProgram(progFd int) error {
 // that index, which for fds starting at 3 is never true of 0.
 func (d *Dispatcher) freeSlot() (uint32, error) {
 	taken := make(map[uint32]struct{}, len(d.progIdx))
+	// for prog idx, add all the taken "values", indices
 	for _, idx := range d.progIdx {
 		taken[idx] = struct{}{}
 	}
