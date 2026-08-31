@@ -9,7 +9,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 )
 
-//go:generate go tool bpf2go dnsQuery ./_cprog/query.bpf.c -- -I../include -I./_cprog
+//go:generate go tool bpf2go -target bpfel dnsQuery ./_cprog/query.bpf.c -- -I../include -I./_cprog
 
 // Stat indices in the BPF `stats` per-CPU array, mirroring enum dns_query_stat
 // in _cprog/maps.h.

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/nirmata/runtime/pkg/bpf/egressfilter"
-	"github.com/nirmata/runtime/pkg/bpf/lsm"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/bpf/protofilter"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/runtimeevent"
@@ -365,10 +365,10 @@ func TestBPFLsmAttaches(t *testing.T) {
 			"the kernel must be booted with lsm=...,bpf -- hosted GitHub runners cannot satisfy this")
 	}
 
-	for _, target := range lsm.ProgTypes {
+	for target := range openexec.ProgTypes {
 		t.Run(target, func(t *testing.T) {
 			logger := logr.Discard()
-			d, err := lsm.NewDispatcherForTarget(target)
+			d, err := openexec.NewDispatcherForTarget(target)
 			if err != nil {
 				t.Fatalf("loading dispatcher for %q: %+v", target, err)
 			}
@@ -378,9 +378,13 @@ func TestBPFLsmAttaches(t *testing.T) {
 				t.Fatalf("attaching %q: %+v", target, err)
 			}
 
-			enf, err := lsm.NewForAttachTarget(d, &logger)
+			if _, err := openexec.NewProgram(d); err != nil {
+				t.Fatalf("loading the policy executor for %q: %+v", target, err)
+			}
+
+			enf, err := openexec.NewPolicyMap(d, &logger)
 			if err != nil {
-				t.Fatalf("loading lsm objects for %q: %+v", target, err)
+				t.Fatalf("creating a policy map for %q: %+v", target, err)
 			}
 			defer func() {
 				if err := enf.Close(); err != nil {

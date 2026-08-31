@@ -3,6 +3,10 @@ MODULE := github.com/nirmata/runtime
 KIND_CLUSTER_NAME ?= kyverno-runtime
 IMAGE_REPOSITORY ?= ghcr.io/nirmata/kyverno-runtime
 IMAGE_TAG ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Extra `helm upgrade` flags for kind-install-manifests, e.g.
+# HELM_EXTRA_ARGS='--set daemon.logLevel=4' to make the daemon's V(2)/V(4)
+# lines visible in an e2e run.
+HELM_EXTRA_ARGS ?=
 IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 HOST_PLATFORM ?= linux/$(shell go env GOARCH)
 
@@ -286,6 +290,7 @@ kind-install-manifests:
 		--set image.pullPolicy=IfNotPresent \
 		--set defaultPolicies.enabled=true \
 		--set defaultPolicies.policies.credentialAccess=true \
+		$(HELM_EXTRA_ARGS) \
 		--wait
 	@if [ -f ./charts/kyverno-runtime/templates/default-policies.yaml ]; then \
 		helm template kyverno-runtime ./charts/kyverno-runtime \
@@ -441,17 +446,13 @@ kind-push-collector: kind kind-push-collector-verify
 	@echo "  make kind-push-collector-stop"
 
 # Run the whole Chainsaw e2e suite against a kind cluster with kyverno-runtime
-# installed, LSM tests included. Those need a host booted with lsm=...,bpf and
-# fail loudly on one that is not -- which is the point, and is why no CI job
-# calls this target: hosted runners do not qualify and run the narrower
-# test-e2e-gate / test-e2e-egress / test-e2e-protocol instead. Docker Desktop's
-# LinuxKit VM does qualify, so this is the target to run on a developer machine.
+# installed, the open/exec enforcement tests included.
 test-e2e:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/
 
-# Every suite a hosted runner can satisfy: all of test/e2e except dispatch-only,
-# which needs BPF-LSM. The list is globbed rather than written out, so a new
-# suite joins this lane by existing.
+# The suites the parallel correctness lane runs: all of test/e2e except
+# dispatch-only, which CI runs in its own job. The list is globbed rather than
+# written out, so a new suite joins this lane by existing.
 #
 # chainsaw --include-test-regex / --exclude-test-regex cannot express this:
 # neither matches the test name, so passing one silently runs the wrong set.
@@ -506,9 +507,9 @@ test-e2e-overlap:
 test-e2e-egress-load:
 	METRICS_PORT=9090 ./test/e2e/egress-load/run.sh
 
-# BPF-LSM open/exec enforcement behavior on its own. REQUIRES a host booted with
-# BPF-LSM ('bpf' in /sys/kernel/security/lsm); test-e2e runs it alongside the
-# rest of the suite.
+# Open/exec enforcement behavior on its own; test-e2e runs it alongside the
+# rest of the suite. Whether the daemon carries it on BPF-LSM hooks or the
+# tracepoint fallback is a property of the host, not of this target.
 test-e2e-lsm:
 	chainsaw test --config test/e2e/.chainsaw.yaml --test-dir test/e2e/dispatch-only/
 
