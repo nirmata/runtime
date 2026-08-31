@@ -92,7 +92,7 @@ jobs:
       # install-ko below runs `go install` unprivileged and cannot create
       # files underneath them.
       - name: Return the Go caches to the runner user
-        run: sudo chown -R "$(id -u):$(id -g)" "$(go env GOMODCACHE)" "$(go env GOCACHE)"
+        run: sudo chown -R "$(id -u):$(id -g)" "$(go env GOPATH)" "$(go env GOCACHE)"
 
       - name: Set up kind
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
