@@ -253,12 +253,18 @@ func (d *Dispatcher) DeleteProgram(progFd int) error {
 	return nil
 }
 
-// return the first vacant number from the progIdx map. a number between 0
-// and progArray.MaxEntries not being in d.progIdx means that there is no
-// bpf program in the array at that index
+// freeSlot returns the first array index no live entry occupies. progIdx is
+// keyed by fd and holds the slot as its value, so the occupied set is its
+// values: probing it by index instead answers whether some fd happens to equal
+// that index, which for fds starting at 3 is never true of 0.
 func (d *Dispatcher) freeSlot() (uint32, error) {
+	taken := make(map[uint32]struct{}, len(d.progIdx))
+	for _, idx := range d.progIdx {
+		taken[idx] = struct{}{}
+	}
+
 	for i := uint32(0); i < d.progArray.MaxEntries(); i++ {
-		if _, ok := d.progIdx[int(i)]; !ok {
+		if _, ok := taken[i]; !ok {
 			return i, nil
 		}
 	}
