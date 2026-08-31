@@ -40,6 +40,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_ARRAY_OF_MAPS = 12,
 	BPF_MAP_TYPE_HASH_OF_MAPS = 13,
 	BPF_MAP_TYPE_RINGBUF = 27,
+	BPF_MAP_TYPE_TASK_STORAGE = 29,
 };
 
 /* bpf_map_update_elem flags (kernel anonymous enum). */
@@ -47,6 +48,16 @@ enum {
 	BPF_ANY = 0,
 	BPF_NOEXIST = 1,
 	BPF_EXIST = 2,
+};
+
+/* bpf_attr map_flags. Task storage rejects a preallocated map. */
+enum {
+	BPF_F_NO_PREALLOC = (1U << 0),
+};
+
+/* bpf_task_storage_get flags. */
+enum {
+	BPF_LOCAL_STORAGE_GET_F_CREATE = (1ULL << 0),
 };
 
 /* Opaque handle returned by map-in-map lookups; never dereferenced. */

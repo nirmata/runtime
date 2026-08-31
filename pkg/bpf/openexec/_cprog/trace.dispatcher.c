@@ -10,13 +10,12 @@
 SEC("fmod_ret/security_file_open")
 int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
 {
-    __u32 k = 0;
     __u64 *args = (__u64*)ctx;
 
     char buf[MAX_PATH_LEN] = {};
     void *target_map;
 
-    struct policy_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &k);
+    struct policy_ctx *prog_ctx = task_ctx();
     if (!prog_ctx) {
         return 0;
     }

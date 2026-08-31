@@ -127,10 +127,25 @@ struct {
 } exec_prog SEC(".maps");
 
 
+/* Keyed by task, not by CPU. A dispatcher writes the resolved path here and the
+ * executor reads it back after a tail call, and BPF programs on these hooks run
+ * preemptible: a per-CPU slot is overwritten by whatever the preempting task
+ * opened, so the executor would compare the wrong path and allow a denied one.
+ * The entry is created on first touch and freed when the task exits. */
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
+    __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, int);
     __type(value, struct policy_ctx);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ctx_map SEC(".maps");
+
+/* task_ctx returns this task's slot, creating it if the task has not opened
+ * anything yet. NULL is possible: the allocation is GFP_ATOMIC and the kernel's
+ * reentrancy guard fails the call rather than deadlocking, so every caller has
+ * to treat it as "no decision" rather than assuming it succeeded. */
+static __always_inline struct policy_ctx *task_ctx(void)
+{
+    return bpf_task_storage_get(&ctx_map, bpf_get_current_task_btf(), NULL,
+                                BPF_LOCAL_STORAGE_GET_F_CREATE);
+}

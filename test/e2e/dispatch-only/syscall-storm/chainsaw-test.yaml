@@ -23,7 +23,6 @@ kind: Test
 metadata:
   name: syscall-storm
 spec:
-  skip: true
   # The suite-wide exec timeout is sized for probe-and-poll scripts. The storm
   # itself runs for about a minute before anything can be asserted, so this test
   # sets its own rather than being killed mid-storm.

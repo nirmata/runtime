@@ -77,8 +77,8 @@ static __always_inline struct policy_entry_map *policy_map_for(__u8 prog_type, i
 SEC("runtime_policy")
 int runtime_policy_executor(void *ctx)
 {
-    __u32 ctx_key = 0;
-    struct policy_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &ctx_key);
+    /* the same task the dispatcher ran in, so this is the slot it just wrote */
+    struct policy_ctx *prog_ctx = task_ctx();
     if (!prog_ctx) {
         return 0;
     }
