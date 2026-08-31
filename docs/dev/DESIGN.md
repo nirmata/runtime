@@ -931,6 +931,12 @@ namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,re
 These are verified, current limitations — not planned features to build toward, which belong in a
 future `PLAN.md`.
 
+- **An exec evaluates both chains on BPF-LSM and only one on the tracepoint fallback.** LSM has a
+  hook per behavior, so an exec hits `file_open` for the binary's open and `bprm_check_security`
+  for the exec: both chains run. The fallback hooks one point, `security_file_open`, and picks the
+  chain from the `__FMODE_EXEC` bit — either/or, so an exec never reaches the `open` chain. A path
+  in `spec.open.deny` still blocks opens on both (tracepoint and LSM); only on BPF-LSM does it also 
+  block executing it.
 - **Monitor-mode observation has two transports, and both are lossy at their own edges.** The
   `network`/`open`/`exec` observations ride the counters the enforcing objects already keep;
   `pkg/bpf/exectrace` additionally streams per-occurrence exec events with argv, and the DNS
