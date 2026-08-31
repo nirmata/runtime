@@ -11,7 +11,7 @@ spec:
   - open:
       deny:
         values:
-        - /etc/shadow
+        - /etc/passwd
   - exec:
       deny:
         values:

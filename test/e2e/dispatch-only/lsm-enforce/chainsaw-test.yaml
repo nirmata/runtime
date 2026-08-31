@@ -57,22 +57,22 @@ spec:
             echo "FAIL: /bin/nc executed -- bprm_check_security enforcement not applied"
             exit 1
           fi
-          echo "OK: /bin/nc exec blocked
+          echo "OK: /bin/nc exec blocked"
 
           # Denied path: must be refused (EPERM from the file_open LSM hook).
           blocked=0
           for _ in $(seq 1 30); do
-            if kubectl -n $NAMESPACE exec lsm-client -- cat /etc/shadow >/dev/null 2>&1; then
+            if kubectl -n $NAMESPACE exec lsm-client -- cat /etc/passwd >/dev/null 2>&1; then
               sleep 2
             else
               blocked=1; break
             fi
           done
           if [ "$blocked" -ne 1 ]; then
-            echo "FAIL: /etc/shadow was readable -- file_open enforcement not applied"
+            echo "FAIL: /etc/passwd was readable -- file_open enforcement not applied"
             exit 1
           fi
-          echo "OK: /etc/shadow blocked"
+          echo "OK: /etc/passwd blocked"
 
           # Allowed exec still works.
           kubectl -n $NAMESPACE exec lsm-client -- /bin/ls / >/dev/null
