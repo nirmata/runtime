@@ -93,18 +93,4 @@ spec:
           kubectl -n $NAMESPACE describe pod lsm-client
           echo "--- uid / containerID (what the cgroup path is derived from) ---"
           kubectl -n $NAMESPACE get pod lsm-client \
-            -o jsonpath='{.metadata.uid}{"\n"}{range .status.containerStatuses[*]}{.containerID}{"\n"}{end}'
-
-          echo "===== daemon ====="
-          kubectl -n kyverno-runtime get pods -o wide
-          for pod in $(kubectl -n kyverno-runtime get pods -o name); do
-            echo "----- $pod -----"
-            kubectl -n kyverno-runtime logs "$pod" --all-containers --tail=-1
-            echo "----- $pod (previous container, if it restarted) -----"
-            kubectl -n kyverno-runtime logs "$pod" --all-containers --previous --tail=-1
-          done
-    - delete:
-        ref:
-          apiVersion: runtime.nirmata.io/v1alpha1
-          kind: RuntimePolicy
-          name: e2e-lsm-enforce
+            -o jsonpath='{.metadata.uid}{"\n"}{range .status.containerStatuses[*]}{.containerID}{"\n"}{end}' 
