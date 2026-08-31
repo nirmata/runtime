@@ -69,6 +69,7 @@ struct path {
 
 struct file {
 	struct path f_path; /* &f->f_path passed to bpf_d_path (CO-RE) */
+	unsigned int f_flags; /* carries __FMODE_EXEC on the open of a binary (CO-RE) */
 } __attribute__((preserve_access_index));
 
 struct linux_binprm {

@@ -107,15 +107,6 @@ var bpfObjects = []bpfObjectSpec{
 		}},
 	},
 	{
-		object: "pkg/bpf/openexec/rawtpdispatcherexeccheck_bpfel.o",
-		progs: []progCheck{{
-			name:       "generic_tracepoint_handler",
-			typ:        ebpf.Tracing,
-			attach:     ebpf.AttachModifyReturn,
-			insnBudget: 2000,
-		}},
-	},
-	{
 		// The executor is hook-agnostic; the lane loads it as fmod_ret on
 		// security_file_open, which needs no BPF-LSM boot parameter.
 		object: "pkg/bpf/openexec/runtimepolicy_bpfel.o",

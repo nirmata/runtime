@@ -22,9 +22,8 @@ const pinDir = "/sys/fs/bpf/kyverno-runtime"
 type Dispatcher struct {
 	prog *ebpf.Program
 
-	// progArray is the policies array-of-maps (open_policies/exec_policies);
-	// enforcerArray is the one-slot prog array (open_prog/exec_prog) the
-	// dispatcher tail-calls, which NewProgram fills.
+	// progArray holds this hook's policy maps; enforcerArray holds the single
+	// executor it tail-calls to walk them.
 	progArray     *ebpf.Map
 	enforcerArray *ebpf.Map
 	progCount     *ebpf.Map
@@ -147,19 +146,23 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		d.enforcerArray = objs.OpenProg
 
 	case PROG_TYPE_TRACE_EXEC:
-		spec, err := loadRawTpDispatcherExecCheck()
+		// security_bprm_check is not in the fmod_ret d_path allowlist, so exec
+		// is enforced from the file_open dispatcher, which routes an exec open
+		// by its __FMODE_EXEC flag. This target owns the exec policy state that
+		// dispatcher routes into and loads no program of its own.
+		spec, err := loadRawTpDispatcherFileOpen()
 		if err != nil {
 			return err
 		}
-		objs := &rawTpDispatcherExecCheckObjects{}
-		if err := spec.LoadAndAssign(objs, opts); err != nil {
+
+		maps := &rawTpDispatcherFileOpenMaps{}
+		if err := spec.LoadAndAssign(maps, opts); err != nil {
 			return err
 		}
 
-		d.prog = objs.GenericTracepointHandler
-		d.progCount = objs.ProgCount
-		d.progArray = objs.ExecPolicies
-		d.enforcerArray = objs.ExecProg
+		d.progCount = maps.ProgCount
+		d.progArray = maps.ExecPolicies
+		d.enforcerArray = maps.ExecProg
 	}
 
 	return nil
@@ -180,7 +183,14 @@ func (d *Dispatcher) reset() error {
 	return nil
 }
 
+// Attach links the dispatcher's program to its hook. The tracepoint exec
+// target carries no program: the file_open dispatcher is the one attached
+// there, so linking again would run the handler twice per open.
 func (d *Dispatcher) Attach() error {
+	if d.prog == nil {
+		return nil
+	}
+
 	var (
 		l   link.Link
 		err error

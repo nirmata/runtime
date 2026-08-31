@@ -58,8 +58,7 @@ func policiesMapName(target string) string {
 
 //go:generate go tool bpf2go -target bpfel -cflags "-DLSM_FILE_OPEN" lsmDispatcherFileOpen ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
 //go:generate go tool bpf2go -target bpfel -cflags "-DLSM_EXEC_CHECK" lsmDispatcherExecCheck ./_cprog/lsm.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -target bpfel -cflags "-DTRACE_FILE_OPEN" rawTpDispatcherFileOpen ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
-//go:generate go tool bpf2go -target bpfel -cflags "-DTRACE_EXEC_CHECK" rawTpDispatcherExecCheck ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
+//go:generate go tool bpf2go -target bpfel rawTpDispatcherFileOpen ./_cprog/trace.dispatcher.c -- -I../include -I./_cprog/include -I./_cprog
 //go:generate go tool bpf2go -target bpfel runtimePolicy ./_cprog/runtimepolicy.bpf.c -- -I../include -I./_cprog/include -I./_cprog
 
 // A PolicyMap holds one policy's kernel-side state — allow/deny paths, cgids
@@ -142,7 +141,8 @@ func NewProgram(d *Dispatcher) (*Prog, error) {
 		executor.AttachType = ebpf.AttachLSMMac
 	case PROG_TYPE_TRACE_OPEN, PROG_TYPE_TRACE_EXEC:
 		executor.Type = ebpf.Tracing
-		executor.AttachTo = d.dispatcherType
+		// exec is detected by checking the __FMODE_EXEC flag presence
+		executor.AttachTo = PROG_TYPE_TRACE_OPEN
 		executor.AttachType = ebpf.AttachModifyReturn
 	default:
 		return nil, fmt.Errorf("unknown lsm attach target %q", d.dispatcherType)

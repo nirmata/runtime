@@ -105,8 +105,9 @@ func TestGeneratedObjectsLoad(t *testing.T) {
 }
 
 // TestGeneratedObjectsLoadTracepoint mirrors TestGeneratedObjectsLoad for the
-// raw_tp-free tracepoint fallback path: both dispatchers, then an enforcer per
-// target, sharing one pin directory.
+// tracepoint fallback path. One dispatcher serves both dimensions there, so it
+// is loaded once and an executor is published into each of the prog arrays it
+// routes into.
 func TestGeneratedObjectsLoadTracepoint(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to load BPF programs")
@@ -137,31 +138,21 @@ func TestGeneratedObjectsLoadTracepoint(t *testing.T) {
 	}
 	defer dispObjs.Close()
 
-	execSpec, err := loadRawTpDispatcherExecCheck()
-	if err != nil {
-		t.Fatal(err)
-	}
-	execObjs := &rawTpDispatcherExecCheckObjects{}
-	if err := execSpec.LoadAndAssign(execObjs, opts); err != nil {
-		fatal(t, err)
-	}
-	defer execObjs.Close()
-
 	enforcers := []struct {
-		target string
-		array  *ebpf.Map
+		name  string
+		array *ebpf.Map
 	}{
-		{PROG_TYPE_TRACE_OPEN, dispObjs.OpenProg},
-		{PROG_TYPE_TRACE_EXEC, execObjs.ExecProg},
+		{"open", dispObjs.OpenProg},
+		{"exec", dispObjs.ExecProg},
 	}
 	for _, e := range enforcers {
-		t.Run("enforcer_"+e.target, func(t *testing.T) {
+		t.Run("enforcer_"+e.name, func(t *testing.T) {
 			spec, err := loadRuntimePolicy()
 			if err != nil {
 				t.Fatal(err)
 			}
 			spec.Programs["runtime_policy_executor"].Type = ebpf.Tracing
-			spec.Programs["runtime_policy_executor"].AttachTo = e.target
+			spec.Programs["runtime_policy_executor"].AttachTo = PROG_TYPE_TRACE_OPEN
 			spec.Programs["runtime_policy_executor"].AttachType = ebpf.AttachModifyReturn
 			prepareOpenEvents(spec)
 			objs := &runtimePolicyObjects{}
