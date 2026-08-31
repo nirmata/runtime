@@ -52,6 +52,13 @@ spec:
           [ "$ok" -eq 1 ] || { echo "FAIL: allowed open of /etc/hosts failed"; exit 1; }
           echo "OK: /etc/hosts readable"
 
+          # Denied exec: must be refused (EPERM from bprm_check_security).
+          if kubectl -n $NAMESPACE exec lsm-client -- /bin/nc -h >/dev/null 2>&1; then
+            echo "FAIL: /bin/nc executed -- bprm_check_security enforcement not applied"
+            exit 1
+          fi
+          echo "OK: /bin/nc exec blocked
+
           # Denied path: must be refused (EPERM from the file_open LSM hook).
           blocked=0
           for _ in $(seq 1 30); do
@@ -66,13 +73,6 @@ spec:
             exit 1
           fi
           echo "OK: /etc/shadow blocked"
-
-          # Denied exec: must be refused (EPERM from bprm_check_security).
-          if kubectl -n $NAMESPACE exec lsm-client -- /bin/nc -h >/dev/null 2>&1; then
-            echo "FAIL: /bin/nc executed -- bprm_check_security enforcement not applied"
-            exit 1
-          fi
-          echo "OK: /bin/nc exec blocked"
 
           # Allowed exec still works.
           kubectl -n $NAMESPACE exec lsm-client -- /bin/ls / >/dev/null
