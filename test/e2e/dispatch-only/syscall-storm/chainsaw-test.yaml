@@ -1,10 +1,10 @@
-# E2E load assertion -- LSM observation under a syscall storm with many policies
-# over one pod.
+# E2E load assertion -- open observation under a syscall storm with many
+# policies over one pod.
 #
-# BPF-LSM required, which is why this lives under dispatch-only/: the hosted lane
-# selects suites by globbing test/e2e/*/chainsaw-test.yaml and then filtering
-# test/e2e/dispatch-only/% back out, so a directory here joins `make test-e2e-lsm`
-# and never joins `make test-e2e-hosted`. See E2E_HOSTED_DIRS in the Makefile.
+# The hosted lane selects suites by globbing test/e2e/*/chainsaw-test.yaml and
+# then filtering test/e2e/dispatch-only/% back out, so a directory here joins
+# `make test-e2e-lsm` and never joins `make test-e2e-hosted`. See
+# E2E_HOSTED_DIRS in the Makefile.
 #
 # The invariant under test is the one a correctness suite cannot reach: eight
 # policies select one pod, so the manager attaches eight enforcers to each of the
@@ -29,50 +29,6 @@ spec:
   timeouts:
     exec: 300s
   steps:
-  - name: precondition-kernel-has-bpf-lsm
-    # Fail loudly rather than skip. If this step is red, the environment is wrong
-    # for this test -- not the code.
-    try:
-    - script:
-        content: |
-          set -eu
-
-          # The agent image is distroless, so the LSM list cannot be read by
-          # exec'ing into it -- there is no shell and no cat. Probe from a
-          # throwaway pod that host-mounts securityfs instead. Overrides are
-          # passed as JSON so the manifest is immune to this block's indentation.
-          kubectl -n "${NAMESPACE}" run lsm-probe --restart=Never --image=busybox:1.36 \
-            --overrides='{"spec":{"containers":[{"name":"probe","image":"busybox:1.36","command":["sh","-c","[ -r /securityfs/lsm ] && cat /securityfs/lsm || exit 2"],"volumeMounts":[{"name":"securityfs","mountPath":"/securityfs","readOnly":true}]}],"volumes":[{"name":"securityfs","hostPath":{"path":"/sys/kernel/security"}}]}}' \
-            >/dev/null
-          kubectl -n "${NAMESPACE}" wait --for=jsonpath='{.status.phase}'=Succeeded \
-            pod/lsm-probe --timeout=90s >/dev/null 2>&1 || true
-
-          # Exit 2 distinguishes "securityfs is not visible" from "read the list
-          # and bpf is absent". Conflating them reports a mount problem as a
-          # kernel that lacks BPF-LSM, which sends the reader to the wrong fix.
-          rc=$(kubectl -n "${NAMESPACE}" get pod lsm-probe \
-            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
-          lsm=$(kubectl -n "${NAMESPACE}" logs pod/lsm-probe 2>/dev/null || true)
-
-          if [ "${rc}" != "0" ]; then
-            echo "ERROR: securityfs is not readable from the node; the active LSM"
-            echo "       list could not be determined (probe exit '${rc:-no-exit-code}')."
-            echo "       This is NOT proof that BPF-LSM is off."
-            echo "       On kind, mount it into the node -- see the extraMounts in"
-            echo "       test/e2e/kind-config.yaml."
-            exit 1
-          fi
-
-          echo "active LSMs: ${lsm}"
-          case ",${lsm}," in
-            *,bpf,*) echo "BPF-LSM active" ;;
-            *)
-              echo "ERROR: kernel was not booted with BPF-LSM (no 'bpf' in the LSM list)."
-              echo "       Run it on a host booted with lsm=...,bpf."
-              exit 1
-              ;;
-          esac
-
   - name: record-the-daemon-baseline
     try:
     - script:
@@ -208,12 +164,12 @@ spec:
           done
           [ "${scraped}" -eq 1 ] || { echo "FAIL: could not scrape /metrics from ${pod}"; cat /tmp/syscall-storm-pf.log; exit 1; }
 
-          echo "--- events_dropped_total, lsm-observe ---"
+          echo "--- events_dropped_total, openexec-observe ---"
           grep '^nirmata_runtime_events_dropped_total{' /tmp/syscall-storm-metrics.txt \
-            | grep 'source="lsm-observe"' || echo "(no lsm-observe drop series: nothing was dropped)"
+            | grep 'source="openexec-observe"' || echo "(no openexec-observe drop series: nothing was dropped)"
 
           dropped=$(grep '^nirmata_runtime_events_dropped_total{' /tmp/syscall-storm-metrics.txt \
-            | grep 'source="lsm-observe"' | grep 'reason="count_map_full"' \
+            | grep 'source="openexec-observe"' | grep 'reason="count_map_full"' \
             | awk '{s += $NF} END {print s + 0}')
           echo "count_map_full drops: ${dropped}"
 
