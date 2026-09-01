@@ -251,9 +251,18 @@ func (l *OpenExecManager) syncProgType(rpUID string, la *openExecAttachment, new
 	// no entries left to enforce, so the enforcer for this program type goes away
 	if !newFiles.HasEntries() {
 		closeErr := prog.enf.Close()
+
+		// policy no longer targets any cgids, but may previously have. disable monitoring
+		// of those cgids if no other policy is watching them
+		unwatched := soleWatcherCgids(la)
+		if len(unwatched) > 0 {
+			l.disableObservation(progType, unwatched)
+		}
+
 		// drop the prog state even if the close failed: keeping a closed enforcer
 		// would make every later sync operate on dead bpf maps
 		delete(la.policyMaps, progType)
+
 		// a program type that no longer exists must not keep the shared
 		// availability condition False on its account
 		l.markGood(rpUID, progType, la.observe)

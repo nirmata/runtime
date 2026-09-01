@@ -241,7 +241,7 @@ func (l *OpenExecManager) removePodCgids(rpUID, progType string, prog *progState
 // sinks hold one unqualified set, so only the exec target is mirrored, and a
 // removal reaches them only for cgroups no other exec attachment still holds.
 func (l *OpenExecManager) mirrorCgids(rpUID, progType string, cgids []uint64, add bool) {
-	if progType != openexec.PROG_TYPE_LSM_EXEC {
+	if progType != openexec.PROG_TYPE_LSM_EXEC && progType != openexec.PROG_TYPE_TRACE_EXEC {
 		return
 	}
 	if !add {
@@ -276,9 +276,12 @@ func (l *OpenExecManager) cgidsUnwantedByOtherExecPolicies(excludeUID string, cg
 		if uid == excludeUID {
 			continue
 		}
-		if _, ok := la.policyMaps[openexec.PROG_TYPE_LSM_EXEC]; !ok {
+		_, hasLsmEnforce := la.policyMaps[openexec.PROG_TYPE_LSM_EXEC]
+		_, hasTracepointEnforce := la.policyMaps[openexec.PROG_TYPE_TRACE_EXEC]
+		if !hasLsmEnforce && !hasTracepointEnforce {
 			continue
 		}
+
 		for _, pod := range la.attachedPods {
 			for _, cgid := range pod.cgids {
 				wanted[cgid] = struct{}{}

@@ -124,7 +124,7 @@ func newObservation(now time.Time, k observationKey, podUID string, count uint32
 		Pod:          runtimeevent.PodIdentity{UID: podUID},
 	}
 	switch k.progType {
-	case openexec.PROG_TYPE_LSM_EXEC:
+	case openexec.PROG_TYPE_LSM_EXEC, openexec.PROG_TYPE_TRACE_EXEC:
 		ev.Kind = runtimeevent.KindExec
 		ev.Exec = &runtimeevent.ExecFacts{Filename: k.path}
 	default:

@@ -38,7 +38,7 @@ struct entry{
 
 struct policy_entry_map {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 2048);
+    __uint(max_entries, 4096);
     __type(key, struct entry);
     __type(value, __u8);
 };
