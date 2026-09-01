@@ -11,7 +11,7 @@ import (
 	"github.com/go-logr/logr"
 )
 
-//go:generate go tool bpf2go protoClassifier ./_cprog/probe.c -- -I ./_cprog
+//go:generate go tool bpf2go -target bpfel protoClassifier ./_cprog/probe.c -- -I ./_cprog
 
 // Flag bit indices in the BPF `flags` array map, mirroring the defines in
 // _cprog/maps.h; the C program tests `*f & (1 << IDX)`.

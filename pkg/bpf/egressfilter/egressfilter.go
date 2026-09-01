@@ -12,7 +12,7 @@ import (
 	"github.com/go-logr/logr"
 )
 
-//go:generate go tool bpf2go egressBlock ./_cprog/probe.c -- -I../include -I./_cprog
+//go:generate go tool bpf2go -target bpfel egressBlock ./_cprog/probe.c -- -I../include -I./_cprog
 
 // Flag bit indices in the BPF `flags` array map, mirroring the defines in
 // _cprog/maps.h; the C program tests `*f & (1 << IDX)`.

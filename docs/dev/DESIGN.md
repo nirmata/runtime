@@ -68,7 +68,7 @@ On startup it wires together:
 - `pkg/controller.NewPodWatcher`: watches `Pod` objects filtered to `spec.nodeName=<NODE_NAME>`
   and `status.phase=Running`, resolving each pod's container cgroup info
   (`pkg/containers.ResolveCgInfos`).
-- `pkg/lsmmgr.LsmManager` and `pkg/egressmgr.EgressManager`: both an `events.PodEventHandler` and
+- `pkg/openexecmgr.OpenExecManager` and `pkg/egressmgr.EgressManager`: both an `events.PodEventHandler` and
   an `events.RuntimePolicyEventHandler`; they drive the actual eBPF attachments (see
   [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
 - `pkg/dnsmgr.Manager`: the same pair of interfaces for the DNS question observer, deciding which
@@ -91,12 +91,13 @@ attribution.NewIndex(WithMetrics)
 reporter.New(controller-runtime client)     -> Run in errgroup
 controller.NewStatusWriter(nodeName, 30s)   -> Run in errgroup
 egressmgr.NewEgressManager(log, statusWriter, onLoss -> EventsDropped)
-lsmmgr.NewLsmManager(log, statusWriter, onLoss -> EventsDropped)
 monitor.New(log, reporter, metrics)
-podHandlers    = [em, lsmm, attrIdx]        (+ dm when dnsquery loaded)
-policyHandlers = [em, lsmm, statusWriter, monitor]  (+ dm when dnsquery loaded)
+podHandlers    = [em, attrIdx]              (+ execMgr, dm when each loads)
+policyHandlers = [em, statusWriter, monitor]        (+ execMgr, dm when each loads)
+openexecmgr.NewOpenExecManager(log, statusWriter, onLoss, BpfLSMEnabled())
+    -- on error: logged, and open/exec enforcement is simply not wired
 dnsquery.New() -> dnsmgr.New(dm) + dnsquery.NewSource(WithLossFunc -> EventsDropped)
-collector: PollSource(egress-observe, 10s) + PollSource(lsm-observe, 10s)
+collector: PollSource(egress-observe, 10s) + PollSource(openexec-observe, 10s)
            + Source(dnsquery, ring buffer)
            -> Stage(attrIdx) -> Sink(monitor)                -> Run in errgroup
 RuntimePolicy informer -> wait for cache sync -> pod watcher  -> both in errgroup
@@ -165,11 +166,12 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
   effective allow (or deny) list is the union of every matching policy's entries. The two enforcing
   managers implement it differently. `pkg/egressmgr` unions in userspace: one filter per pod, every
   matching policy's IPs merged into it, with the set of policy UIDs asserting default-deny tracked
-  in `podAttachment.defaultDeny` so the eBPF flag is cleared only once none remain. `pkg/lsmmgr`
-  unions in the kernel: each policy keeps its own enforcer and map set, but the enforcers for a
-  hook run as one tail-call chain sharing a verdict in `ctx_map`, so one policy's explicit allow
-  lifts another policy's default-deny (see
-  [File open and exec](#file-open-and-exec-pkglsmmgr-pkgbpflsm)).
+  in `podAttachment.defaultDeny` so the eBPF flag is cleared only once none remain. `pkg/openexecmgr`
+  unions in the kernel: each policy keeps its own map, and one executor per semantic dimension
+  walks the occupied policy-map slots, accumulating explicit allow and default-deny state in
+  `ctx_map` and short-circuiting on an explicit deny, so one policy's explicit allow lifts another
+  policy's default-deny (see
+  [File open and exec](#file-open-and-exec-pkgopenexecmgr-pkgbpfopenexec)).
 - A `monitorFilter` is refused on an `enforce` policy by a spec-level `XValidation` rule and again
   by the compiler. The asymmetry between the two kinds of finding is the reason: a monitor finding
   is a counterfactual, and under `deny: ["*"]` that is every open and every exec, while an enforce
@@ -214,7 +216,7 @@ the daemon.
 `pkg/controller.RuntimePolicyMgr` (`runtimepolicy_informer.go`) drives this: on `RuntimePolicy`
 create/update/delete informer events it compiles/evaluates the policy and fans the resulting
 `EvaluationResult` out to every registered `events.RuntimePolicyEventHandler` — `EgressManager`,
-`LsmManager`, `StatusWriter`, `Monitor` — via `RuntimePolicyEvent`, each call wrapped in
+`OpenExecManager`, `StatusWriter`, `Monitor` — via `RuntimePolicyEvent`, each call wrapped in
 `utils.Guard` so one handler's panic cannot take the informer down. If `evaluationInterval` is set, a background goroutine
 re-evaluates and re-dispatches on that interval until the policy is deleted or the interval
 changes.
@@ -227,7 +229,7 @@ are dropped after five requeues.
 `pkg/controller.podWatcher` similarly watches `Pod` objects on the local node and fans
 `PodEvent(pod, nsLabels, cgInfos, eventType)` out to the same handlers, so pod lifecycle and
 policy lifecycle are two independent event streams that both mutate the same manager state
-(`LsmManager`/`EgressManager` each hold a mutex-guarded map of policies and pods, matching
+(`OpenExecManager`/`EgressManager` each hold a mutex-guarded map of policies and pods, matching
 targets against pod and namespace labels on both sides).
 
 ### Namespace targeting
@@ -244,7 +246,7 @@ namespace is not yet cached is requeued rather than delivered with empty labels.
 
 Namespace labels reach handlers two ways, because the handlers differ in what they hold:
 
-- **Pod-state handlers** (`LsmManager`, `EgressManager`, `dnsmgr.Manager`) cache `nsLabels`
+- **Pod-state handlers** (`OpenExecManager`, `EgressManager`, `dnsmgr.Manager`) cache `nsLabels`
   beside the pod labels they already cache, delivered on `PodEvent`. A namespace relabel
   replays that namespace's pods as ordinary updates, reusing the path each manager already
   has for re-evaluating a target.
@@ -281,79 +283,99 @@ up changes.
 
 ## Enforcement: eBPF LSM hooks and egress filtering
 
-### File open and exec (`pkg/lsmmgr`, `pkg/bpf/lsm`)
+### File open and exec (`pkg/openexecmgr`, `pkg/bpf/openexec`)
 
-`LsmManager` (`pkg/lsmmgr/lsmmgr.go`) is the pod and policy handler responsible for both the `open` and
-the `exec` behavior. On `RuntimePolicyEvent` create, `rpCreated` (`pkg/lsmmgr/runtimepolicies.go`)
-returns early unless the policy's mode is `enforce` or an observe mode
-(`compiler.IsObserveMode`), then instantiates **one LSM enforcer per behavior type that has
-entries** via `createForProgType`:
+`OpenExecManager` (`pkg/openexecmgr/openexecmgr.go`) is the pod and policy handler responsible for
+both the `open` and the `exec` behavior. On `RuntimePolicyEvent` create, `rpCreated`
+(`pkg/openexecmgr/runtimepolicies.go`) returns early unless the policy's mode is `enforce` or an
+observe mode (`compiler.IsObserveMode`), then instantiates **one policy map per behavior type that
+has entries** via `createForProgType`.
 
-| Behavior | `lsm.NewForAttachTarget` target | LSM hook |
+Which kernel hooks carry enforcement is decided once, at `NewOpenExecManager`, from
+`utils.BpfLSMEnabled()`:
+
+| Behavior | BPF-LSM active | BPF-LSM absent |
 | --- | --- | --- |
-| `open` | `lsm.PROG_TYPE_LSM_OPEN` | `file_open` |
-| `exec` | `lsm.PROG_TYPE_LSM_EXEC` | `bprm_check_security` |
+| `open` | `BPF_PROG_TYPE_LSM` on `file_open` | `fmod_ret` on `security_file_open` |
+| `exec` | `BPF_PROG_TYPE_LSM` on `bprm_check_security` | the same `security_file_open` program |
+
+The fallback needs no boot parameter, because `fmod_ret` may attach to any function whose name
+begins with `security_`. It cannot use the exec hook at all: `bpf_d_path` is gated per program
+type, and a `fmod_ret` program calling it on `security_bprm_check` is refused at load, so the
+executed file could not be resolved there. Instead the one `security_file_open` program
+distinguishes an exec by the `__FMODE_EXEC` bit the kernel leaves in `file->f_flags` for the open
+`do_open_execat` performs on a binary. The two hook sets therefore do not enforce identically — see
+[Known Gaps](#known-gaps--future-work).
 
 Per hook there is exactly one program attached to the kernel: a **dispatcher**
-(`pkg/bpf/lsm/_cprog/dispatcher.c`, `lsm.Dispatcher`), loaded and attached once by `NewLsmManager`
-via `link.AttachLSM` (`ebpf.AttachLSMMac`). The dispatcher is compiled per hook via `bpf2go` with
+(`_cprog/lsm.dispatcher.c` or `_cprog/trace.dispatcher.c`, `openexec.Dispatcher`), loaded and
+attached once by `NewOpenExecManager`. The LSM dispatcher is compiled per hook via `bpf2go` with
 mutually exclusive `-DLSM_FILE_OPEN` / `-DLSM_EXEC_CHECK` flags (the source `#error`s if neither or
-both are set) because it is the one program that reads the hook's argument to resolve the opened or
-executed path with `bpf_d_path`. Enforcers — one per policy per behavior type — are never attached:
-the dispatcher `bpf_tail_call`s through a bpffs-pinned prog array (`open_progs`/`exec_progs`), and
-each enforcer in the chain tail-calls the next slot, with `prog_count` terminating the walk. The
-per-CPU pinned `ctx_map` carries the resolved path and the running verdict (`deny`, `reason`,
-`next_prog_idx`, `have_executed`) across the chain. `NewLsmManager` wipes the pin directory
-(`lsm.ClearPins`) before loading, since a pin surviving from a previous process is only a stale map
-spec — the links die with the process, so nothing keeps enforcing across a restart.
+both are set) because it is the one program that reads the hook's argument to resolve the path with
+`bpf_d_path`. On the fallback path a single object serves both dimensions, so the
+`PROG_TYPE_TRACE_EXEC` target loads that object's **maps only** and no program of its own; `Attach`
+returns early for it, since linking a second program to `security_file_open` would run the handler
+twice per open.
 
-The enforcer (`pkg/bpf/lsm/_cprog/lsm.bpf.c`) is compiled once and never reads the hook argument,
-but the kernel still forces a hook identity on it: an LSM program must be loaded with the
-`attach_btf_id` of a real hook, and a program may only tail-call through prog arrays whose first
-user had the same identity. A single object referencing both prog arrays is therefore unloadable
-once both dispatchers exist. The enforcer instead references one placeholder array
-(`chain_progs`), and `lsm.NewForAttachTarget` binds it to the chaining dispatcher's real array at
-load time via `ebpf.CollectionOptions.MapReplacements`, keeping the C hook-agnostic.
+The dispatcher resolves the path into the per-CPU pinned `ctx_map` (`struct policy_ctx`: the
+resolved path, the running `reason`, and which dimension this event belongs to), then
+`bpf_tail_call`s through a bpffs-pinned one-slot prog array — `open_prog` or `exec_prog` — into the
+**executor** (`_cprog/runtimepolicy.bpf.c`). There is one executor per dimension, and it is never
+attached to a hook itself. `NewOpenExecManager` wipes the pin directory (`openexec.ClearPins`)
+before loading, since a pin surviving from a previous process is a stale map spec.
 
-Per enforcer, `createForProgType` populates the `banned`/`allowed` path maps from that behavior's
-`AllowDenyPair` — **unless the mode is an observe mode, in which case both maps are left empty and
-`default_deny` is never set** — sets the `default_deny` map entry if the deny list contains `"*"`,
-and registers the program in the dispatcher's prog array (`Dispatcher.AddProgram`); on any failure
-the partially-built enforcer is closed. Matched pods' cgroup IDs (resolved by `pkg/containers`) go
-into that enforcer's `cgids` map, and an enforcer passes straight to the next chain slot for any
-cgroup not in it. The decision composes across the chain through `ctx_map`: a path in a program's
-`banned` map is an explicit deny and returns `-EPERM` immediately; a path in a program's `allowed`
-map is an explicit allow; `default_deny` imposes an implicit deny only while no program in the
-chain has explicitly allowed the path. The chain's tail returns `-EPERM` if the accumulated verdict
-is deny.
+Policies are map entries, not programs. Each dimension owns an `ARRAY_OF_MAPS`
+(`open_policies` / `exec_policies`, `MAX_PROG_COUNT` slots), and each occupied slot holds one
+policy's inner hash. That inner map is a single keyspace discriminated by `struct entry.data_type`:
 
-State per policy lives in `lsmAttachment{progs map[string]*progState, selector, attachedPods}`,
-where `progState` pairs an enforcer with the `AllowDenyPair` it was last programmed with, and
-`observe` records which side of the observe/enforce line the attachment was built for. `rpUpdated`
-treats a mode that is neither `enforce` nor an observe mode as a delete, rebuilds the whole
-attachment if the mode crossed the observe/enforce line, otherwise runs `syncProgType` for each behavior type — creating an
-enforcer that didn't exist, closing one whose behavior no longer has entries, or applying the
-`DiffPair` of added/removed paths and re-setting default-deny — and then `syncPodAttachment`
-reconciles cgids against the (possibly changed) selector. `rpDeleted` closes every enforcer for the
-policy and drops it from each pod's `attachedLsms`. `PodEvent` adds/removes cgids across all of a
-matching policy's enforcers.
+| `data_type` | key payload | written by |
+| --- | --- | --- |
+| `CGID` | the cgroup id, 8 bytes little-endian | `AddCgids` / `DeleteCgids` |
+| `DENY_ENTRY` | a NUL-padded path | `AddTargets` |
+| `ALLOW_ENTRY` | a NUL-padded path | `AddTargets` |
+| `FLAGS` | all zeroes; presence is the default-deny flag | `SetDefaultDeny` |
 
-The chain is what makes separate policies union rather than intersect: N enforce-mode policies
-matching a pod put N enforcers in one hook's chain, and because the verdict accumulates in
-`ctx_map`, one policy's explicit allow lifts another policy's `default_deny` for that path. An
-explicit deny still short-circuits the chain, so `deny` entries beat `allow` entries across
-policies.
+`openexec.NewPolicyMap` creates the inner map and registers it in the dispatcher's array via
+`Dispatcher.AddPolicy`, which takes the first slot no live entry occupies and bumps the shared
+`prog_count` for that dimension. The executor returns immediately when `prog_count` for the event's
+dimension is zero, so a node with no policies of that kind pays one array lookup per operation.
 
-The two exec-related kernel programs have complementary, non-overlapping capabilities:
-`bprm_check_security` can return `-EPERM` but reads only `bprm->file->f_path`, so it cannot see
-arguments; `sched_process_exec` (`pkg/bpf/exectrace`) sees argv but has no return contract. The
-`exec` matcher is therefore path-only. There is no `args:` matcher, and adding one would ship a
-matcher that enforcement silently ignores.
+The executor walks the slots for its dimension, skips any policy whose inner map does not hold the
+current cgroup id, and evaluates the rest against the resolved path. The verdict accumulates across
+policies in the precedence **explicit deny > explicit allow > default deny > default allow**: only
+an explicit deny short-circuits the walk, and a policy's default deny is skipped once anything has
+explicitly allowed the path. That is order-independent, and it is what makes separate policies union
+rather than intersect — one policy's `allow` lifts another policy's `deny: ["*"]` for that path,
+while an explicit `deny` anywhere beats every allow.
+
+Per policy map, `createForProgType` populates the deny/allow entries from that behavior's
+`AllowDenyPair` — **unless the mode is an observe mode, in which case no path entries are written
+and default-deny is never set**, so the program cannot return `-EPERM` — and sets the default-deny
+entry if the deny list contains `"*"`; on any failure the partially-built map is closed. Matched
+pods' cgroup IDs (resolved by `pkg/containers`) go into that policy's map, and a policy whose map
+lacks a cgroup is skipped for it.
+
+State per policy lives in `openExecAttachment{policyMaps map[string]*progState, target,
+attachedPods, observe, badProgs}`, where `progState` pairs a policy map with the `AllowDenyPair` it
+was last programmed with, and `observe` records which side of the observe/enforce line the
+attachment was built for. `rpUpdated` treats a mode that is neither `enforce` nor an observe mode as
+a delete, rebuilds the whole attachment if the mode crossed the observe/enforce line, otherwise runs
+`syncProgType` for each behavior type — creating a policy map that didn't exist, closing one whose
+behavior no longer has entries, or applying the `DiffPair` of added/removed paths and re-setting
+default-deny — and then `syncPodAttachment` reconciles cgids against the (possibly changed) target.
+`rpDeleted` closes every policy map for the policy and drops it from each pod's
+`attachedOpenExecs`. `PodEvent` adds and removes cgids across all of a matching policy's maps.
+
+The two exec-related kernel programs have complementary, non-overlapping capabilities: the exec
+enforcement hook can return `-EPERM` but sees only the file, so it cannot see arguments;
+`sched_process_exec` (`pkg/bpf/exectrace`) sees argv but has no return contract. The `exec` matcher
+is therefore path-only. There is no `args:` matcher, and adding one would ship a matcher that
+enforcement silently ignores.
 
 ### Network egress (`pkg/egressmgr`, `pkg/bpf/egressfilter`)
 
 `EgressManager` (`pkg/egressmgr/egressmgr.go`) is the pod and policy handler for the `network`
-behavior. Where `LsmManager` keys its BPF state by policy, `EgressManager` keys it by pod: each
+behavior. Where `OpenExecManager` keys its BPF state by policy, `EgressManager` keys it by pod: each
 matched pod gets one `egressfilter.EgressFilter` (`pkg/bpf/egressfilter/egressfilter.go`), a
 `cgroup/skb egress` BPF program (`pkg/bpf/egressfilter/_cprog/probe.c`) attached per-container
 cgroup path via `link.AttachCgroup(..., Attach: ebpf.AttachCGroupInetEgress)`. `AddIps`/`DeleteIps`
@@ -362,7 +384,7 @@ expands `/24`-or-narrower CIDRs and returns IPv6/wider-CIDR/hostname values as t
 `RejectedTarget`s), and `SetFlagIdx(egressfilter.DEFAULT_DENY, ...)` toggles default-deny
 for that pod's filter. `rpCreated`/`rpUpdated`/`rpDeleted` (`pkg/egressmgr/runtimepolicies.go`)
 implement the default-deny-union-across-policies bookkeeping described above, per pod
-(`podAttachment.defaultDeny`), and gate on `enforce`-or-observe exactly as `LsmManager` does; an
+(`podAttachment.defaultDeny`), and gate on `enforce`-or-observe exactly as `OpenExecManager` does; an
 observe-mode policy programs no IPs and only sets the refcounted `OBSERVE` flag on its matched
 pods' filters. Both managers also refresh a pod's labels on `PodEvent` update and re-match
 selectors, so relabeling a pod attaches or detaches it (#58) with the default-deny refcount kept
@@ -459,18 +481,21 @@ Both managers grew a `CollectObservations(ctx) ([]runtimeevent.Event, error)` me
   `proto_events` counters via `protofilter.ReadProtoEvents`. Reads are
   destructive, so `Count` is the delta since the previous poll. The pod UID and labels are
   pre-filled, since the poll source knows the pod but not the cgroup.
-- `pkg/lsmmgr/observe.go` walks **every** program type of **every** attachment and drains each
-  enforcer's `open_events` hash-of-maps via `lsm.ReadEvents`. Reading only the first enforcer was
-  the #52 bug class — it made exec counts invisible for any pod that also had an open enforcer —
-  so the traversal is exhaustive by construction and covered by
-  `TestCollectObservationsReadsAllEnforcers`.
+- `pkg/openexecmgr/observe.go` drains the counters once per **attach target**, not once per
+  policy. The observation maps belong to the executor (`openexec.Prog`), which owns the
+  `events_map` hash-of-maps and the `stats` drop counter for its dimension, so the manager holds
+  one program per target and calls `ReadEvents` on each. The kernel has already merged every
+  policy's decision before it records, so a count is cgid-and-path-wide and needs no
+  cross-attachment reconciliation; the program type is the one dimension only this loop knows, and
+  it goes into the `observationKey`. Both targets are drained even when one fails, covered by
+  `TestCollectObservationsReadsAllPrograms`.
 
-Both sweeps are all-or-something rather than all-or-nothing: a per-pod or per-enforcer read
+Both sweeps are all-or-something rather than all-or-nothing: a per-pod or per-target read
 failure is joined into the returned error but never aborts the sweep, because a partial map read
-still carries real observations. An `lsm.ErrObservationUnavailable` is special-cased: it is not
-returned as a poll error (every subsequent poll would repeat it) but raised as an
-`ObservationAvailable=False` condition on the policy, because a policy whose observation could
-not be turned on produces no findings and must not look healthy.
+still carries real observations. An `openexec.ErrObservationUnavailable` is special-cased: it is
+logged rather than returned, because it describes the loaded program rather than this poll and
+every subsequent poll would repeat it. It is not attributed to a policy — observation is owned per
+attach target, so by drain time there is no policy to hang the condition on.
 
 In observe mode `createForProgType` leaves the `banned`/`allowed` maps **empty** and never sets
 `default_deny`, and `egressmgr` programs no IPs at all — the only thing an observe-mode policy
@@ -484,7 +509,7 @@ one never starts from an observer's empty maps.
 `exectrace.Source` is the first streaming source: a `raw_tp/sched_process_exec` program that
 reports one ring buffer record per exec — pid, comm, filename, and up to 8 argv slots of 128
 bytes — decoded by `DecodeExecEvent` into an `Event` with `ExecFacts.Argv`. Production is gated
-in the kernel by a `cgids` map that `LsmManager` mirrors from its exec attachments (the
+in the kernel by a `cgids` map that `OpenExecManager` mirrors from its exec attachments (the
 `CgroupSink` seam), so a pod no exec policy selects produces no ring buffer traffic at all.
 Kernel-side losses (ring buffer full, argv truncated or unreadable) are counted in a per-CPU
 `stats` map and logged by the source's poller, because a record that was never written is
@@ -822,7 +847,7 @@ then lifts the newest `lastEvaluatedTime` across all shards to the top level. Up
 instead of clobbering each other.
 
 Conditions are merged by type: `TargetsValid` comes from `egressmgr`; `EnforcementAvailable`,
-`ObservationAvailable`, `ExecRulesValid` and `OpenRulesValid` come from `lsmmgr`;
+`ObservationAvailable`, `ExecRulesValid` and `OpenRulesValid` come from `openexecmgr`;
 `EnforcementAvailable` and `PodsMatched` are written by both, since either manager can fail to
 attach or match pods for its own behaviors. `TargetsValid`, `ExecRulesValid` and `OpenRulesValid`
 are answers about the spec, identical on every node, so they are merged into `status.conditions`
@@ -931,6 +956,12 @@ namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,re
 These are verified, current limitations — not planned features to build toward, which belong in a
 future `PLAN.md`.
 
+- **An exec evaluates both chains on BPF-LSM and only one on the tracepoint fallback.** LSM has a
+  hook per behavior, so an exec hits `file_open` for the binary's open and `bprm_check_security`
+  for the exec: both chains run. The fallback hooks one point, `security_file_open`, and picks the
+  chain from the `__FMODE_EXEC` bit — either/or, so an exec never reaches the `open` chain. A path
+  in `spec.open.deny` still blocks opens on both (tracepoint and LSM); only on BPF-LSM does it also
+  block executing it.
 - **Monitor-mode observation has two transports, and both are lossy at their own edges.** The
   `network`/`open`/`exec` observations ride the counters the enforcing objects already keep;
   `pkg/bpf/exectrace` additionally streams per-occurrence exec events with argv, and the DNS
@@ -938,7 +969,7 @@ future `PLAN.md`.
   (see [Choosing a transport](#choosing-a-transport-counter-map-or-ring-buffer)):
   - Counters are drained every 10 seconds, so those findings lag behavior by up to that interval
     and only counts survive — not per-occurrence ordering or timing.
-  - The per-cgroup `open_events` inner map holds 2048 `(path, decision)` keys; a workload touching
+  - The per-cgroup `events_map` inner map holds 2048 `(path, decision)` keys; a workload touching
     more than that within one interval loses the excess (read-and-reset mitigates, does not
     eliminate).
   - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
@@ -950,12 +981,12 @@ future `PLAN.md`.
     produce no observation, no answer or query type is recorded, and a cached or shared answer
     means no question was asked at all. A resolution is also not a connection.
 - **The kernel-side counters are always on, even for enforce-only nodes.** What used to be
-  learning-mode residue is now the substrate of monitor mode: every LSM enforcer increments per-path
-  counters in the `open_events` hash-of-maps on every hook invocation regardless of mode, and
-  `probe.c` counts destination addresses whenever the `OBSERVE`/`LEARNING_MODE` flag bit is set.
-  Userspace only enables the egress flag for pods with an observe-mode policy, but the LSM path
+  learning-mode residue is now the substrate of monitor mode: the open/exec executor increments
+  per-path counters in the `events_map` hash-of-maps on every hook invocation regardless of mode,
+  and `probe.c` counts destination addresses whenever the `OBSERVE`/`LEARNING_MODE` flag bit is set.
+  Userspace only enables the egress flag for pods with an observe-mode policy, but the open/exec
   counting is unconditional in the C, so an enforce-only deployment still pays for it (and the outer
-  map is only populated for cgroups an observing enforcer knows about, so most lookups miss).
+  map is only populated for cgroups the manager enabled observation for, so most lookups miss).
   Removing the cost requires a `#ifdef`-gated build or a mode flag in the C. Recompiling is not
   the obstacle: `make generate-bpf` builds every object in `hack/bpf-builder` and `make verify-bpf`
   gates drift in CI, so this is unbuilt work rather than an unavailable toolchain. The DNS

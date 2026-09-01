@@ -11,22 +11,22 @@ Work through these in order.
    kubectl get rpol <name> -o jsonpath='{.spec.mode}'
    ```
 
-2. **For `open`/`exec` policies: is the node's kernel booted with BPF-LSM?** File
-   `open` and process `exec` enforcement require a kernel booted with BPF-LSM active:
-   `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot
-   parameter). Stock distributions and hosted CI runners are typically not booted with
-   it. This is the single most likely reason a new user sees no `open`/`exec`
-   enforcement, and it names itself directly: `status.conditions` type
-   `EnforcementAvailable` (enforce mode) or `ObservationAvailable` (monitor mode) goes
-   `False` with a message naming BPF-LSM specifically, and `Applied` follows it to
-   `False` — a policy attached to a node that can never honor it does not read as
-   healthy.
+2. **For `open`/`exec` policies: did the programs attach?** These enforce on any modern
+   node — through the BPF-LSM hooks where the kernel was booted with `bpf` in
+   `/sys/kernel/security/lsm`, and through a `fmod_ret` program on `security_file_open`
+   otherwise — so a missing boot parameter is not by itself the answer. An attach or
+   map-programming failure names itself: `status.conditions` type `EnforcementAvailable`
+   (enforce mode) or `ObservationAvailable` (monitor mode) goes `False` with the reason,
+   and `Applied` follows it to `False`.
 
    ```bash
    kubectl get rpol <name> -o jsonpath='{.status.conditions[?(@.type=="EnforcementAvailable")]}'
    ```
 
-   To confirm directly instead of trusting the condition:
+   If the conditions are `True` and an **exec** still is not blocked by an `open.deny`
+   rule, that is expected on a node without BPF-LSM: only the LSM hooks match an exec
+   against `open` rules as well. Name the path in `exec.deny` too. Which hook set a node
+   uses is not in the conditions — read it from the node:
 
    ```bash
    kubectl debug node/<node> -it --image=busybox:1.36 -- cat /host/sys/kernel/security/lsm

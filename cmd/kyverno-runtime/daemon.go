@@ -16,13 +16,14 @@ import (
 	"github.com/nirmata/runtime/pkg/dnsmgr"
 	"github.com/nirmata/runtime/pkg/egressmgr"
 	"github.com/nirmata/runtime/pkg/events"
-	"github.com/nirmata/runtime/pkg/lsmmgr"
 	"github.com/nirmata/runtime/pkg/metrics"
 	"github.com/nirmata/runtime/pkg/monitor"
+	"github.com/nirmata/runtime/pkg/openexecmgr"
 	"github.com/nirmata/runtime/pkg/pushsink"
 	"github.com/nirmata/runtime/pkg/reporter"
 	"github.com/nirmata/runtime/pkg/reportevents"
 	"github.com/nirmata/runtime/pkg/services"
+	"github.com/nirmata/runtime/pkg/utils"
 
 	openreportsv1alpha1 "github.com/openreports/reports-api/apis/openreports.io/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
@@ -58,7 +59,7 @@ const healthMaxHeartbeatAge = 30 * time.Second
 // label of every metric attributed to them.
 const (
 	egressObserveSource = "egress-observe"
-	lsmObserveSource    = "lsm-observe"
+	openExecSource      = "openexec-observe"
 )
 
 var (
@@ -249,7 +250,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// The exec tracer is optional: a kernel without the ring buffer or the
 	// sched_process_exec raw tracepoint still runs everything else. A nil
 	// source is skipped by AddSource and mirrors no cgroups.
-	var execSinks []lsmmgr.CgroupSink
+	var execSinks []openexecmgr.CgroupSink
 	execSrc, err := exectrace.New(logger.WithName("exectrace"), observeInterval)
 	if err != nil {
 		logger.Error(err, "exec tracing unavailable; argv will not be observed")
@@ -298,17 +299,21 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
 	col.AddSource(collector.NewPollSource(egressObserveSource, observeInterval, em.CollectObservations))
 
-	// LSM manager init may fail, and in that case only the other enforcers will work.
-	// Try to initialize it and add it to the event sources
-	lsmm, err := lsmmgr.NewLsmManager(logger, sw, func(reason string, delta uint64) {
-		m.EventsDropped.WithLabelValues(lsmObserveSource, reason).Add(float64(delta))
-	}, execSinks...)
+	lsmEnabled, err := utils.BpfLSMEnabled()
 	if err != nil {
-		logger.Error(err, "failed to create lsm manager, exec and open enforcement won't work")
+		logger.Error(err, "could not determine BPF-LSM availability; falling back to raw tracepoints")
+		lsmEnabled = false
+	}
+
+	execMgr, err := openexecmgr.NewOpenExecManager(logger, sw, func(reason string, delta uint64) {
+		m.EventsDropped.WithLabelValues(openExecSource, reason).Add(float64(delta))
+	}, lsmEnabled, execSinks...)
+	if err != nil {
+		logger.Error(err, "failed to create openexec manager, exec and open enforcement won't work")
 	} else {
-		podHandlers = append(podHandlers, lsmm)
-		policyHandlers = append(policyHandlers, lsmm)
-		col.AddSource(collector.NewPollSource(lsmObserveSource, observeInterval, lsmm.CollectObservations))
+		podHandlers = append(podHandlers, execMgr)
+		policyHandlers = append(policyHandlers, execMgr)
+		col.AddSource(collector.NewPollSource(openExecSource, observeInterval, execMgr.CollectObservations))
 	}
 
 	// A typed nil in the Source interface is not nil, so the check is here

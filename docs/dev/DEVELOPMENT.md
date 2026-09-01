@@ -38,9 +38,9 @@ macOS; the kernel-bound tests skip themselves there.
 | `make test-e2e-gate` | Install gate only: image builds, chart installs, DaemonSet Ready, policies accepted |
 | `make test-e2e-egress` | Egress allow/deny enforcement behavior |
 | `make test-e2e-protocol` | Application-protocol allow/deny enforcement behavior |
-| `make test-e2e-lsm` | BPF-LSM `open`/`exec` enforcement behavior |
+| `make test-e2e-lsm` | `open`/`exec` enforcement behavior, through BPF-LSM where the kernel offers it and the `fmod_ret` fallback otherwise |
 | `make test-bpf-verify` | Loads every committed BPF object and prints the verifier log on rejection; needs Linux and root |
-| `make test-bpf-smoke` | Map round trips and LSM attach against a live kernel; needs Linux and root |
+| `make test-bpf-smoke` | Map round trips and program attach against a live kernel; needs Linux and root |
 | `make smoke-quickstart` | Alias for `test-e2e-gate` |
 | `make premerge-smoke` | `build` + `kind-install` + `smoke-quickstart` |
 | `make run` | `go run ./cmd/kyverno-runtime` |
@@ -156,17 +156,18 @@ cluster shape it expects is `test/e2e/kind-config.yaml`.
 | --- | --- | --- |
 | `install-gate/` | Image builds, chart installs, DaemonSet Ready, policies accepted. Asserts nothing about eBPF. | yes |
 | `egress-enforce/` | Default-deny with a single allow-listed pod IP: the allowed target stays reachable **and** the denied one does not. | yes |
-| `dispatch-only/lsm-enforce/` | `open` and `exec` deny/allow through the BPF-LSM hooks. | yes, and it fails loudly on a host without BPF-LSM |
+| `dispatch-only/lsm-enforce/` | `open` and `exec` deny/allow, through whichever hook set the host offers. | yes |
 | `bpfverify_test.go` | Go test that loads every committed BPF object into the kernel. Skips off-Linux and without root. | no, run it with `make test-bpf-verify` |
-| `bpfsmoke_test.go` | Go test that programs the maps and attaches the LSM programs. Skips off-Linux and without root. | no, run it with `make test-bpf-smoke` |
+| `bpfsmoke_test.go` | Go test that programs the maps and attaches the programs. Skips off-Linux and without root. | no, run it with `make test-bpf-smoke` |
 
-File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf`
-must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock
-distributions are typically not booted with it, and GitHub-hosted `ubuntu-latest` reports
-`lockdown,capability,landlock,yama,apparmor,ima,evm` — no `bpf`. That is why no CI job runs
-`make test-e2e`: hosted lanes run the narrower `make test-e2e-gate`, `make test-e2e-egress` and
-`make test-e2e-protocol` instead. Docker Desktop's LinuxKit VM does boot with BPF-LSM, so
-`make test-e2e` runs the whole suite on a developer machine.
+`open` and `exec` enforce on any host that can load the programs: through the BPF-LSM hooks
+where `bpf` appears in `/sys/kernel/security/lsm`, and through `fmod_ret` on
+`security_file_open` otherwise. GitHub-hosted `ubuntu-latest` reports
+`lockdown,capability,landlock,yama,apparmor,ima,evm` — no `bpf` — so hosted lanes exercise the
+fallback. The two do not enforce identically: an exec is matched against both rule sets on
+BPF-LSM and against `exec` alone on the fallback, so the BPF-LSM hooks stay uncovered on a
+hosted runner. Docker Desktop's LinuxKit VM does boot with BPF-LSM, so a developer machine
+covers them.
 
 Network egress enforcement and observation require only a cgroup v2 host and BPF support; a
 stock kind cluster on a Linux host qualifies.
@@ -262,7 +263,7 @@ Runs on pushes to `main`, pull requests targeting `main`, and manual dispatch.
 | CRD conformance | assertion | `make test-chainsaw` on a bare kind cluster |
 | BPF verifier smoke | assertion | Kernel preconditions, then `make test-bpf-verify` and `make test-bpf-smoke` as root |
 | Egress and protocol enforcement | assertion | `make kind-install`, `make test-e2e-gate`, `make test-e2e-egress`, `make test-e2e-protocol` |
-| LSM enforcement | assertion | `workflow_dispatch` only, with `lsm_runner` set to a runner booted with `lsm=...,bpf`: `make test-bpf-verify`, `make test-bpf-smoke`, `make test-e2e-lsm` |
+| Open/exec enforcement | assertion | `make test-bpf-verify`, `make test-bpf-smoke`, `make kind-install-prebuilt`, `make test-e2e-lsm`. Runs on every PR against `ubuntu-latest`, which exercises the `fmod_ret` fallback; pass `lsm_runner` on `workflow_dispatch` to point it at a runner booted with `lsm=...,bpf` and cover the BPF-LSM hooks instead |
 
 `Build & Unit Test` is the required status check in the repository ruleset for `main`, matched by
 job name. Renaming it leaves pull requests permanently unmergeable with no failure anywhere to
@@ -270,8 +271,8 @@ explain why; if it is renamed, the ruleset changes in the same commit.
 
 ### `nightly.yml`
 
-Runs on a nightly schedule and manual dispatch. `lsm-behavior` duplicates the
-`workflow_dispatch`-gated job of the same name in `ci.yml`, kept there for on-demand runs.
+Runs on a nightly schedule and manual dispatch. `lsm-behavior` duplicates the job of the same
+name in `ci.yml`, which since it no longer needs a dedicated runner also runs on every PR.
 `egress-load` has no job-level counterpart in `ci.yml`: it mirrors `test-e2e-egress-load`, a
 `workflow_dispatch`-gated step inside `ci.yml`'s always-on `e2e-egress` job. Both are duplicated
 here rather than shared because `ci.yml`'s triggers are not factored for reuse and this workflow's
@@ -279,21 +280,23 @@ schedule must not put every hosted PR job on a nightly cadence it does not need.
 
 | Job | Kind | What it runs | Runner |
 | --- | --- | --- | --- |
-| `lsm-behavior` | assertion | `make test-bpf-verify`, `make test-bpf-smoke`, `make kind-install`, `make test-e2e-lsm` | `vars.LSM_RUNNER_LABEL`, default `self-hosted-lsm-bpf` |
+| `lsm-behavior` | assertion | `make test-bpf-verify`, `make test-bpf-smoke`, `make kind-install-prebuilt`, `make test-e2e-lsm` | `ubuntu-latest` |
 | `egress-load` | assertion | `make kind-install`, `make test-e2e-egress-load` (k6) | `ubuntu-latest` |
 
-**Required manual step: registering an LSM-capable runner.** `lsm-behavior` needs a kernel booted
-with the `lsm=...,bpf` boot parameter, which no GitHub-hosted runner has (see the BPF-LSM section
-above). Until an operator does the following, the job stays queued indefinitely rather than
-reporting a false green:
+**Optional: covering the BPF-LSM hooks.** On a hosted runner these lanes exercise the `fmod_ret`
+fallback, because no GitHub-hosted kernel is booted with `bpf` in `/sys/kernel/security/lsm` (see
+the BPF-LSM section above). The `BPF_PROG_TYPE_LSM` hooks stay uncovered, and the two hook sets do
+not enforce identically — an exec is matched against both rule sets on BPF-LSM and against `exec`
+alone on the fallback, so a `spec.open.deny` path is only unexecutable on a BPF-LSM node. To cover
+them:
 
 1. Provision a Linux host (or VM) booted with `bpf` present in `/sys/kernel/security/lsm` — set
    via the `lsm=` kernel boot parameter, for example `lsm=lockdown,capability,landlock,yama,apparmor,bpf`.
 2. Register it as a GitHub Actions self-hosted runner
-   ([docs](https://docs.github.com/en/actions/hosting-your-own-runners)) with a custom label, e.g.
-   `self-hosted-lsm-bpf`.
-3. Set the repository variable `LSM_RUNNER_LABEL` to that label (Settings → Secrets and variables
-   → Actions → Variables), or leave it unset to use the `self-hosted-lsm-bpf` default.
+   ([docs](https://docs.github.com/en/actions/hosting-your-own-runners)) with a custom label.
+3. Run `ci.yml` via `workflow_dispatch` with `lsm_runner` set to that label. Setting
+   `NIRMATA_RUNTIME_REQUIRE_BPF_LSM=1` turns the LSM-only skips in `make test-bpf-verify` into
+   failures, so a runner that does not qualify says so instead of reporting green.
 
 `egress-load` needs no special runner: it is dispatch-gated in `ci.yml` only because a k6 load run
 is slower than the correctness suite it would otherwise join, not because hosted runners lack

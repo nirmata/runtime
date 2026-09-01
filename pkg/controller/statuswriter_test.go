@@ -431,7 +431,7 @@ func TestStatusWriterAppliedReasonPerMode(t *testing.T) {
 }
 
 // TestStatusWriterAppliedDerivedFromAttachmentOutcome pins the fix for Applied
-// being written from spec.mode alone: a manager (lsmmgr, egressmgr) reporting
+// being written from spec.mode alone: a manager (openexecmgr, egressmgr) reporting
 // that attachment for the policy's mode actually failed on this node must
 // downgrade Applied instead of leaving it at whatever the mode alone implies,
 // and a later recovery must be reflected too.
