@@ -30,8 +30,8 @@ var statNames = [...]string{"argvOverflow", "ringbufFull", "argvUnreadable"}
 const statCount = len(statNames)
 
 // Source streams one event per execve in a selected cgroup, with argv — the
-// observation-only counterpart to pkg/bpf/lsm's enforcing bprm_check_security
-// program, whose hook does not carry arguments. Argv is what identifies a
+// observation-only counterpart to pkg/bpf/openexec's enforcing
+// bprm_check_security program, whose hook does not carry arguments. Argv is what identifies a
 // stdio MCP server (`npx @modelcontextprotocol/...`, `uvx ...`).
 //
 // The kernel side takes sched_process_exec as a raw tracepoint rather than

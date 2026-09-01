@@ -88,9 +88,9 @@ type openExecAttachment struct {
 	badProgs map[string]string
 }
 
-// NewOpenExecManager loads and attaches the dispatcher for each lsm hook the
-// manager enforces through. The dispatchers are the only programs linked to
-// the kernel; enforcers built later join their tail-call chains.
+// NewOpenExecManager loads and attaches the dispatcher for each hook the
+// manager enforces through, along with the executor each one tail-calls. Policies
+// are later represented as maps that those executors scan during events.
 func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, cgroupSinks ...CgroupSink) (*OpenExecManager, error) {
 	if err := openexec.ClearPins(); err != nil {
 		return nil, err

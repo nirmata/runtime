@@ -1,9 +1,9 @@
 # Platform support
 
 What each behavior needs from the kernel, and which managed Kubernetes node images give
-you that today. Read this before writing an `open` or `exec` policy: those enforce on any
-modern node, but a node booted without BPF-LSM reaches them through a different kernel
-hook, and one rule interaction differs there.
+you that today. Read this before writing an `open` or `exec` policy: a node booted without BPF-LSM reaches
+them through a different kernel hook with its own prerequisites, and one rule interaction
+differs there.
 
 ## Behavior vs. kernel requirement
 
@@ -12,8 +12,8 @@ hook, and one rule interaction differs there.
 | `network` | cgroup v2, BPF (`cgroup_skb` programs) | Universal on modern kernels; any cgroup v2 host qualifies. |
 | `protocol` | cgroup v2, BPF (`cgroup_skb` programs) | Same as `network`; enforced by a second program on the same cgroup. |
 | `dns` | cgroup v2, BPF (`cgroup_skb` programs) | Same as `network`; observation only, never enforced. |
-| `open` | cgroup v2, BPF, BTF | Universal on modern kernels. BPF-LSM changes which hook is used. |
-| `exec` | cgroup v2, BPF, BTF | Universal on modern kernels. BPF-LSM changes which hook is used, and one rule interaction — see below. |
+| `open` | cgroup v2, BPF, BTF (`/sys/kernel/btf/vmlinux`), and either `bpf` in the active LSM list or `CONFIG_BPF_JIT` + BPF trampolines for `fmod_ret` (5.7+, x86-64 or arm64) | Which hook is used depends on BPF-LSM; check the node, see below. |
+| `exec` | Same as `open` | Same as `open`, and one rule interaction differs — see below. |
 
 `network`, `protocol`, and `dns` are all `cgroup_skb/egress` programs attached to the
 pod's own cgroup, so they need nothing beyond a cgroup v2 host and a kernel that can load
@@ -23,8 +23,19 @@ BPF — the bar a stock kind cluster on Linux already clears.
 BPF-LSM is active it uses the `file_open` and `bprm_check_security` LSM hooks. Where it is
 not, it falls back to a `fmod_ret` program on `security_file_open`, which needs no boot
 parameter — a modify-return program may attach to any kernel function whose name begins
-with `security_` — only BTF and BPF trampoline support, i.e. kernel 5.7 or later. Both
-paths enforce, and the daemon logs which one it chose.
+with `security_`. The fallback is not unconditional: it needs kernel 5.7 or later with
+BTF exposed at `/sys/kernel/btf/vmlinux`, the BPF JIT enabled (`CONFIG_BPF_JIT`, which BPF
+trampolines require), and an architecture with trampoline support — x86-64 and arm64.
+Where those hold, both paths enforce, and the daemon logs which one it chose. Where
+neither path is available the daemon reports it and `open`/`exec` policies do not enforce.
+
+Verify a node before relying on either:
+
+```bash
+test -r /sys/kernel/btf/vmlinux && echo "BTF ok"
+cat /sys/kernel/security/lsm          # 'bpf' present -> LSM path
+sysctl net.core.bpf_jit_enable        # non-zero -> trampolines available
+```
 
 Whether BPF-LSM is active is a boot-time decision, not a runtime capability check — a
 kernel compiled with `CONFIG_BPF_LSM=y` still refuses the LSM attach if `bpf` is not also

@@ -438,7 +438,7 @@ jobs:
   # between the two.
   lsm-behavior:
     name: "Assert: open/exec enforcement behavior"
-    runs-on: ${{ inputs.lsm_runner || 'ubuntu-22.04' }}
+    runs-on: ${{ inputs.lsm_runner || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       DOCKER_CONFIG: /tmp/.docker

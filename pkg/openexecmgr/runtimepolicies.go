@@ -143,30 +143,52 @@ func (l *OpenExecManager) rpDeleted(compiledRp *compiler.EvaluationResult) {
 	// Closing the enforcers releases their own cgroup maps, but the sinks are
 	// manager-scoped and outlive this attachment: its pods have to leave them
 	// here, while the bookkeeping that identifies them still exists.
-	if _, mirrored := la.policyMaps[openexec.PROG_TYPE_LSM_EXEC]; mirrored {
-		for _, pod := range la.attachedPods {
-			l.mirrorCgids(compiledRp.UID, openexec.PROG_TYPE_LSM_EXEC, pod.cgids, false)
+	for _, execProgType := range []string{openexec.PROG_TYPE_LSM_EXEC, openexec.PROG_TYPE_TRACE_EXEC} {
+		if _, mirrored := la.policyMaps[execProgType]; mirrored {
+			for _, pod := range la.attachedPods {
+				l.mirrorCgids(compiledRp.UID, execProgType, pod.cgids, false)
+			}
 		}
 	}
-	unwatched := soleWatcherCgids(la)
+
 	for progType, prog := range la.policyMaps {
+		unwatched := soleWatcherCgidsForProgType(la, progType)
 		if err := prog.enf.Close(); err != nil {
 			l.logger.Error(err, "failed to close bpf lsm enforcer")
 		}
 		l.disableObservation(progType, unwatched)
 	}
+
 	delete(l.openExecAttachments, compiledRp.UID)
 	for _, pod := range l.pods {
 		delete(pod.attachedOpenExecs, compiledRp.UID)
 	}
 }
 
-// soleWatcherCgids returns the cgids of every pod for which la is the last
-// attached policy: once la detaches, nothing needs those cgids observed.
-func soleWatcherCgids(la *openExecAttachment) []uint64 {
+// soleWatcherCgidsForProgType returns the cgids of every pod that no
+// attachment other than la observes on progType: once la lets go of that
+// program, nothing counts those cgids there. Observation is per program type,
+// so a pod another policy still watches for open must stop being watched for
+// exec when the only exec policy detaches.
+func soleWatcherCgidsForProgType(la *openExecAttachment, progType string) []uint64 {
+	if _, ok := la.policyMaps[progType]; !ok {
+		return nil
+	}
 	var cgids []uint64
 	for _, pod := range la.attachedPods {
-		if len(pod.attachedOpenExecs) == 1 {
+		watchedByAnother := false
+		// la is still in the pod's set: callers run before the bookkeeping is
+		// torn down, so it has to be skipped by identity
+		for _, attached := range pod.attachedOpenExecs {
+			if attached == la {
+				continue
+			}
+			if _, ok := attached.policyMaps[progType]; ok {
+				watchedByAnother = true
+				break
+			}
+		}
+		if !watchedByAnother {
 			cgids = append(cgids, pod.cgids...)
 		}
 	}
@@ -254,9 +276,15 @@ func (l *OpenExecManager) syncProgType(rpUID string, la *openExecAttachment, new
 
 		// policy no longer targets any cgids, but may previously have. disable monitoring
 		// of those cgids if no other policy is watching them
-		unwatched := soleWatcherCgids(la)
+		unwatched := soleWatcherCgidsForProgType(la, progType)
 		if len(unwatched) > 0 {
 			l.disableObservation(progType, unwatched)
+		}
+
+		// the sinks outlive this program the same way they outlive the whole
+		// attachment in rpDeleted, so its pods have to leave them here too
+		for _, pod := range la.attachedPods {
+			l.mirrorCgids(rpUID, progType, pod.cgids, false)
 		}
 
 		// drop the prog state even if the close failed: keeping a closed enforcer

@@ -167,9 +167,10 @@ Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference wi
   managers implement it differently. `pkg/egressmgr` unions in userspace: one filter per pod, every
   matching policy's IPs merged into it, with the set of policy UIDs asserting default-deny tracked
   in `podAttachment.defaultDeny` so the eBPF flag is cleared only once none remain. `pkg/openexecmgr`
-  unions in the kernel: each policy keeps its own enforcer and map set, but the enforcers for a
-  hook run as one tail-call chain sharing a verdict in `ctx_map`, so one policy's explicit allow
-  lifts another policy's default-deny (see
+  unions in the kernel: each policy keeps its own map, and one executor per semantic dimension
+  walks the occupied policy-map slots, accumulating explicit allow and default-deny state in
+  `ctx_map` and short-circuiting on an explicit deny, so one policy's explicit allow lifts another
+  policy's default-deny (see
   [File open and exec](#file-open-and-exec-pkgopenexecmgr-pkgbpfopenexec)).
 - A `monitorFilter` is refused on an `enforce` policy by a spec-level `XValidation` rule and again
   by the compiler. The asymmetry between the two kinds of finding is the reason: a monitor finding

@@ -14,11 +14,11 @@ import (
 // dispatchers and every enforcer loaded later resolve to the same kernel maps.
 const pinDir = "/sys/fs/bpf/kyverno-runtime"
 
-// A Dispatcher owns one lsm hook: it is the only program attached to the
-// kernel, and it tail-calls every enforcer registered in its prog array.
-// Enforcers come and go with policies; the dispatcher stays for the process
-// lifetime. Callers serialize access (the lsm manager holds its lock across
-// every AddProgram/DeleteProgram).
+// A Dispatcher owns one hook: it is the only program attached to the kernel,
+// and it tail-calls the executor that walks the policy maps registered in its
+// prog array. Policy maps come and go with policies; the dispatcher stays for
+// the process lifetime. Callers serialize access (OpenExecManager holds its
+// lock across every AddPolicy/DeleteProgram).
 type Dispatcher struct {
 	prog *ebpf.Program
 
