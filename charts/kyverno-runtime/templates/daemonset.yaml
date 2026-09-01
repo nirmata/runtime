@@ -97,7 +97,6 @@ spec:
           mountPropagation: HostToContainer
         - name: securityfs
           mountPath: /sys/kernel/security
-          readOnly: true
         {{- if .Values.daemon.push.target }}
         - name: push-tls
           mountPath: {{ $pushTLSDir }}
