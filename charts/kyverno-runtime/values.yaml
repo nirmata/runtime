@@ -33,8 +33,7 @@ daemon:
   # securityContext: the daemon container's securityContext. Defaults to what
   # attaching LSM and cgroup eBPF programs on the node currently requires.
   securityContext:
-    runAsNonRoot: true
-    runAsUser: 65532
+    privileged: true
     capabilities:
       add:
       - BPF
