@@ -42,6 +42,7 @@ daemon:
       - NET_ADMIN
       - DAC_OVERRIDE
       - SYS_PTRACE
+      - SYS_ADMIN
   # updateStrategy: passed through to the DaemonSet's spec.updateStrategy.
   # Empty uses the Kubernetes default (RollingUpdate).
   updateStrategy: {}
