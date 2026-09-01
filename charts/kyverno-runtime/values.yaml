@@ -33,7 +33,6 @@ daemon:
   # securityContext: the daemon container's securityContext. Defaults to what
   # attaching LSM and cgroup eBPF programs on the node currently requires.
   securityContext:
-    privileged: true
     capabilities:
       add:
       - BPF
@@ -41,7 +40,6 @@ daemon:
       - NET_ADMIN
       - DAC_OVERRIDE
       - SYS_PTRACE
-      - SYS_ADMIN
   # updateStrategy: passed through to the DaemonSet's spec.updateStrategy.
   # Empty uses the Kubernetes default (RollingUpdate).
   updateStrategy: {}
