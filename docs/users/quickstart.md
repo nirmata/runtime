@@ -14,8 +14,8 @@ This is the path that runs on any Linux host, which is why it is the quickstart.
 - Network egress enforcement and observation require only a cgroup v2 host and BPF
   support; a stock kind cluster on a Linux host qualifies.
 
-Nothing here needs BPF-LSM. File `open` and process `exec` enforcement do — see
-[concepts](concepts.md) and [troubleshooting](troubleshooting.md) — but egress does not.
+Nothing here needs BPF-LSM. File `open` and process `exec` do not require it either, but
+they behave slightly differently without it — see [platform support](platforms.md).
 
 ## 1. Create a cluster and install
 

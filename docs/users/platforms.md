@@ -1,8 +1,9 @@
 # Platform support
 
 What each behavior needs from the kernel, and which managed Kubernetes node images give
-you that today. Read this before writing an `open` or `exec` policy: on the wrong node
-image the policy loads, `Applied` shows `True`, and nothing is ever blocked.
+you that today. Read this before writing an `open` or `exec` policy: those enforce on any
+modern node, but a node booted without BPF-LSM reaches them through a different kernel
+hook, and one rule interaction differs there.
 
 ## Behavior vs. kernel requirement
 
@@ -11,19 +12,23 @@ image the policy loads, `Applied` shows `True`, and nothing is ever blocked.
 | `network` | cgroup v2, BPF (`cgroup_skb` programs) | Universal on modern kernels; any cgroup v2 host qualifies. |
 | `protocol` | cgroup v2, BPF (`cgroup_skb` programs) | Same as `network`; enforced by a second program on the same cgroup. |
 | `dns` | cgroup v2, BPF (`cgroup_skb` programs) | Same as `network`; observation only, never enforced. |
-| `open` | Kernel booted with BPF-LSM active | Not universal — see the platform table below. |
-| `exec` | Kernel booted with BPF-LSM active | Not universal — see the platform table below. |
+| `open` | cgroup v2, BPF, BTF | Universal on modern kernels. BPF-LSM changes which hook is used. |
+| `exec` | cgroup v2, BPF, BTF | Universal on modern kernels. BPF-LSM changes which hook is used, and one rule interaction — see below. |
 
 `network`, `protocol`, and `dns` are all `cgroup_skb/egress` programs attached to the
 pod's own cgroup, so they need nothing beyond a cgroup v2 host and a kernel that can load
 BPF — the bar a stock kind cluster on Linux already clears.
 
-`open` and `exec` are different in kind, not just degree: they attach to the
-`file_open` and `bprm_check_security` LSM hooks, and the kernel only calls into a BPF-LSM
-program if BPF-LSM is one of the active LSMs for that boot. That is a boot-time decision,
-not a runtime capability check — a kernel that was compiled with `CONFIG_BPF_LSM=y` still
-refuses the attach if `bpf` is not also in the active LSM list. Check the active list
-directly:
+`open` and `exec` attach one of two ways, decided once when the daemon starts. Where
+BPF-LSM is active it uses the `file_open` and `bprm_check_security` LSM hooks. Where it is
+not, it falls back to a `fmod_ret` program on `security_file_open`, which needs no boot
+parameter — a modify-return program may attach to any kernel function whose name begins
+with `security_` — only BTF and BPF trampoline support, i.e. kernel 5.7 or later. Both
+paths enforce, and the daemon logs which one it chose.
+
+Whether BPF-LSM is active is a boot-time decision, not a runtime capability check — a
+kernel compiled with `CONFIG_BPF_LSM=y` still refuses the LSM attach if `bpf` is not also
+in the active LSM list. Check the active list directly:
 
 ```bash
 cat /sys/kernel/security/lsm
@@ -32,6 +37,19 @@ cat /sys/kernel/security/lsm
 `bpf` has to appear in that comma-separated list. It is set by the `lsm=` kernel boot
 parameter (or the distribution kernel's compiled-in default for that parameter), and
 nothing short of a reboot changes it.
+
+### What differs without BPF-LSM
+
+Executing a file opens it. On a BPF-LSM node both hooks see that single event: `file_open`
+matches the binary against your `open` rules and `bprm_check_security` matches the same
+file against your `exec` rules, so an exec is subject to both rule sets. On the fallback
+one program on `security_file_open` sees the event once and routes it by the kernel's exec
+flag, so an exec is matched against `exec` rules only.
+
+What to design around: a path in `open.deny` still blocks ordinary opens on either kind of
+node, but only prevents the file being **executed** on a BPF-LSM node. If you are relying
+on an `open` deny to stop execution, name the path in `exec.deny` too and the policy holds
+on both.
 
 ## Node image vs. BPF-LSM availability
 
@@ -54,13 +72,17 @@ feature. That decision, still open as of the bug above, is why AKS's default nod
 and GKE's Ubuntu node image both ship without it, and why a stock Ubuntu box behaves the
 same regardless of cloud.
 
-Net effect for a managed cluster: **EKS and GKE on Container-Optimized OS enforce `open`
-and `exec` out of the box; AKS's default node pool and GKE's Ubuntu node pools do not.**
+Net effect for a managed cluster: **every pool in the table enforces `open` and `exec`.**
+EKS, GKE on Container-Optimized OS, RHEL 8.5+ and Oracle UEK R7U3+ do it through the LSM
+hooks; AKS's default node pool, GKE's Ubuntu node pools and stock Ubuntu do it through the
+fallback, with the exec/open interaction described above.
 
 ### Enabling it yourself
 
-On a self-managed node (or an AKS/GKE-Ubuntu pool you control), add `bpf` to the existing
-`lsm=` list rather than replacing it, then reboot:
+You do not need BPF-LSM for `open` and `exec` to be enforced — you need it for an exec to
+be matched against your `open` rules as well. On a self-managed node (or an AKS/GKE-Ubuntu
+pool you control), add `bpf` to the existing `lsm=` list rather than replacing it, then
+reboot:
 
 ```bash
 # /etc/default/grub
@@ -77,7 +99,8 @@ The exact existing list varies by distribution — append `bpf`, don't overwrite
 disable whatever LSMs (AppArmor, SELinux, Landlock) were already active. Managed node
 pools that don't expose GRUB or a boot-parameter setting (most default AKS and GKE pools)
 require switching to a node image that ships BPF-LSM already active, per the table above;
-there is no per-pod or per-cluster override.
+there is no per-pod or per-cluster override. Such a pool still enforces both behaviors
+through the fallback.
 
 ## Checking any node directly
 
@@ -96,26 +119,29 @@ looking, which is not evidence BPF-LSM is off.
 
 Only partially today. `status.conditions` on a `RuntimePolicy` reports `Applied=True`
 once a node's daemon has compiled and loaded the policy, in whichever mode it requested —
-that is what "loaded" means. It does not currently confirm that the kernel accepted the
-LSM attach for `open`/`exec` on that node, so a node without BPF-LSM active can show the
-same `Applied=True` as a node correctly enforcing every rule. This is a known gap, not a
-documented guarantee: do not read `Applied=True` as proof that `open`/`exec` rules can
-fire on a given node.
+that is what "loaded" means. It does not confirm that the daemon's programs attached on
+that node, so a node whose kernel refused them can show the same `Applied=True` as a node
+enforcing every rule. `EnforcementAvailable=False` is the condition that reports an attach
+or map-programming failure; read that rather than `Applied` before concluding a rule can
+fire.
 
-`ObservationAvailable=False` is a narrower, more reliable signal for monitor mode: it
-means a loaded LSM program has no observation maps, so a monitor-mode policy on that node
-would silently produce no findings. It doesn't help in `enforce` mode, and it doesn't
-tell you BPF-LSM is inactive versus some other attach failure.
+Neither condition tells you which hook set a node is using, so neither tells you whether
+an `open` deny also stops execution there. That is a property of the node's boot, and the
+kernel file above is the only direct answer.
 
-Given that gap, the practical check is still the kernel file above, done once per node
-image before you rely on `open`/`exec` enforcement, plus the symptoms in
+`ObservationAvailable=False` is a narrower signal for monitor mode: it means the loaded
+program has no observation maps, so a monitor-mode policy on that node would silently
+produce no findings. It doesn't help in `enforce` mode.
+
+Given that, the practical check is still the kernel file above, done once per node image
+if you depend on the BPF-LSM interaction, plus the symptoms in
 [Troubleshooting](troubleshooting.md#the-policy-is-applied-but-nothing-is-blocked). IPv6
 and dual-stack clusters carry a separate, `network`-specific enforcement gap — see
 [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
 
 ## BTF and CO-RE
 
-All behaviors additionally need BTF at `/sys/kernel/btf/vmlinux` for CO-RE relocation when
-the daemon loads its eBPF programs. Every platform in the table above ships it; it is
-called out here only because [Installation](installation.md) checks for it alongside
-cgroup v2 and BPF-LSM.
+All behaviors need BTF at `/sys/kernel/btf/vmlinux` for CO-RE relocation when the daemon
+loads its eBPF programs, and the `open`/`exec` fallback additionally needs it to resolve
+its attach target. Every platform in the table above ships it; it is called out here only
+because [Installation](installation.md) checks for it alongside cgroup v2.

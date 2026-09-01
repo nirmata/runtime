@@ -1057,9 +1057,10 @@ validated in CI.
 Network egress enforcement and observation require only a cgroup v2 host and BPF support; a
 stock kind cluster on a Linux host qualifies.
 
-File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf`
-must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock
-distributions and hosted CI runners are typically not booted with it.
+File `open` and process `exec` enforcement need the same and work on any modern node: the
+BPF-LSM hooks where `bpf` appears in `/sys/kernel/security/lsm`, and `security_file_open`
+otherwise. Only on the former is an exec also matched against `open` rules — see
+[platform support](platforms.md).
 
 | Example | Pattern it demonstrates | Mode | Requires |
 | --- | --- | --- | --- |

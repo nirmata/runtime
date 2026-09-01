@@ -5,10 +5,11 @@
 Network egress enforcement and observation require only a cgroup v2 host and BPF
 support; a stock kind cluster on a Linux host qualifies.
 
-File `open` and process `exec` enforcement require a kernel booted with BPF-LSM
-active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel
-boot parameter). Stock distributions and hosted CI runners are typically not booted
-with it.
+File `open` and process `exec` enforcement need the same: they use the BPF-LSM hooks on a
+kernel booted with `bpf` in `/sys/kernel/security/lsm`, and a `fmod_ret` program on
+`security_file_open` otherwise, which needs no boot parameter. Both enforce. The one
+behavioural difference is that an exec is matched against your `open` rules as well only
+on a BPF-LSM node — see [Platform support](platforms.md) if you depend on that.
 
 Also required: Linux nodes, and BTF at `/sys/kernel/btf/vmlinux` for CO-RE relocation
 when the daemon loads its eBPF programs.
@@ -17,8 +18,8 @@ Check the node before installing:
 
 ```bash
 stat -fc %T /sys/fs/cgroup       # must print cgroup2fs
-cat /sys/kernel/security/lsm     # must contain "bpf" for open/exec enforcement
 test -r /sys/kernel/btf/vmlinux && echo "BTF present"
+cat /sys/kernel/security/lsm     # "bpf" here means the LSM hooks rather than the fallback
 ```
 
 The daemon pod runs privileged with `hostPID: true`, which the `baseline` and
