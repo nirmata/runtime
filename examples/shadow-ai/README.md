@@ -24,6 +24,7 @@ any of these.
 | [trusted-and-untrusted-agents](trusted-and-untrusted-agents/) | name | Give a declared agent a hard TLS-to-one-Service boundary, and report which LLM providers an undeclared one resolves | enforce and monitor | cgroup v2 |
 | [detect-ai-sdks](detect-ai-sdks/) | file | Report the AI SDKs, model files, model caches, and agent credentials a workload reads | monitor | BPF-LSM |
 | [detect-agent-cli](detect-agent-cli/) | process | Report the coding-agent CLIs and self-hosted inference servers a workload launches | monitor | BPF-LSM |
+| [monitor-claude-code](monitor-claude-code/) | process, file, name, destination | Run Claude Code in a container and inventory its observable runtime activity | monitor | BPF-LSM for `open` and `exec`; cgroup v2 for network-side findings |
 | [detect-mcp-servers](detect-mcp-servers/) | process, name | Report every stdio MCP server a workload launches, and the remote MCP endpoints it resolves | monitor | BPF-LSM for the stdio half; cgroup v2 for the remote half |
 | [detect-mcp-config-access](detect-mcp-config-access/) | file | Detect a process reading an MCP configuration file, credentials included | monitor | BPF-LSM |
 
