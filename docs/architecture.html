@@ -1,0 +1,711 @@
+<!doctype html>
+<title>Nirmata Runtime Architecture</title>
+<meta charset="utf-8" />
+<style>
+  @import url("https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Ubuntu:wght@300;500;700&family=Ubuntu+Mono:wght@400;700&display=swap");
+
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --panel: #f3f6fb;
+    --panel-border: #e4e9f2;
+    --ink: #1e345d;
+    --ink-soft: #5a6472;
+    --ink-faint: #898d9a;
+    --navy: #1e345d;
+    --navy-strong: #16294a;
+    --blue: #2e5596;
+    --cyan: #71cfeb;
+    --on-navy: #ffffff;
+    --on-cyan: #143252;
+    --shadow: 0 2px 10px rgba(30, 52, 93, 0.08);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1620;
+      --surface: #141c28;
+      --panel: #1a2434;
+      --panel-border: #2a3a52;
+      --ink: #e9f0fa;
+      --ink-soft: #a6b4c9;
+      --ink-faint: #7c8aa1;
+      --navy: #2c4b76;
+      --navy-strong: #21395a;
+      --blue: #8fb8ee;
+      --cyan: #6fd3f0;
+      --on-navy: #f2f7fd;
+      --on-cyan: #12283f;
+      --shadow: 0 2px 14px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0f1620;
+    --surface: #141c28;
+    --panel: #1a2434;
+    --panel-border: #2a3a52;
+    --ink: #e9f0fa;
+    --ink-soft: #a6b4c9;
+    --ink-faint: #7c8aa1;
+    --navy: #2c4b76;
+    --navy-strong: #21395a;
+    --blue: #8fb8ee;
+    --cyan: #6fd3f0;
+    --on-navy: #f2f7fd;
+    --on-cyan: #12283f;
+    --shadow: 0 2px 14px rgba(0, 0, 0, 0.35);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink-soft);
+    font-family: "Open Sans", system-ui, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  code, .mono, table th {
+    font-family: "Ubuntu Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  h1, h2, h3 { text-wrap: balance; font-weight: 700; letter-spacing: -0.005em; margin: 0; color: var(--ink); }
+  p { margin: 0; }
+
+  a { color: var(--blue); text-decoration-color: color-mix(in srgb, var(--blue) 40%, transparent); text-underline-offset: 2px; }
+  a:hover { text-decoration-color: var(--blue); }
+
+  code {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 0.05em 0.4em;
+    font-size: 0.86em;
+    color: var(--ink);
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; padding-inline: 24px; }
+
+  .band { padding-block: 56px; }
+  .band-alt { background: var(--panel); border-block: 1px solid var(--panel-border); }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: "Ubuntu Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--navy);
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    padding: 4px 10px 4px 8px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--cyan); flex: none; }
+
+  /* Header — the deck's title-slide treatment: bright cyan field, navy/blue wordmark */
+  header.top {
+    background: var(--cyan);
+    padding-block: 60px 44px;
+  }
+  header.top .eyebrow { background: rgba(255, 255, 255, 0.55); border-color: rgba(20, 50, 82, 0.18); color: var(--on-cyan); }
+  header.top .eyebrow .dot { background: var(--navy); }
+  h1.name {
+    font-family: "Ubuntu", "Open Sans", sans-serif;
+    font-weight: 300;
+    color: var(--on-cyan);
+    font-size: clamp(38px, 6vw, 58px);
+    letter-spacing: -0.01em;
+  }
+  h1.name b { font-weight: 700; color: var(--navy-strong); }
+  .kicker {
+    font-size: 16px;
+    color: var(--on-cyan);
+    opacity: 0.88;
+    max-width: 640px;
+    margin-top: 16px;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 26px;
+  }
+  .tag {
+    font-family: "Ubuntu Mono", monospace;
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 5px;
+    color: var(--on-cyan);
+    background: rgba(255, 255, 255, 0.6);
+  }
+  .tag b { color: var(--navy-strong); font-weight: 700; }
+
+  h2.section-title { font-size: clamp(22px, 3vw, 28px); margin-bottom: 8px; }
+  .section-dek { color: var(--ink-soft); max-width: 640px; margin-bottom: 32px; font-size: 15px; }
+
+  /* Deck motif: a light panel with a thin cyan accent strip on the leading edge */
+  .strip-panel {
+    position: relative;
+    background: var(--panel);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    padding: 18px 20px 18px 24px;
+  }
+  .strip-panel::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 5px;
+    background: var(--cyan);
+  }
+
+  /* Deck motif: a solid navy bar carrying the "so what" line in light text */
+  .callout {
+    background: var(--navy);
+    color: var(--on-navy);
+    border-radius: 10px;
+    padding: 16px 22px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .callout code { background: rgba(255, 255, 255, 0.14); border-color: rgba(255, 255, 255, 0.22); color: var(--on-navy); }
+
+  /* Problem strip */
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .split > div { background: var(--surface); border: 1px solid var(--panel-border); border-radius: 10px; padding: 22px 24px; }
+  .split h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 14px; font-family: "Ubuntu Mono", monospace; font-weight: 700; }
+  .split .before h3 { color: var(--ink-faint); }
+  .split .after h3 { color: var(--blue); }
+  .split ul { margin: 0; padding-left: 0; list-style: none; color: var(--ink-soft); font-size: 14.5px; }
+  .split li { padding-left: 20px; position: relative; }
+  .split li + li { margin-top: 8px; }
+  .split li::before { content: "\25aa"; color: var(--cyan); position: absolute; left: 0; top: 0; font-size: 13px; }
+  .verdict { margin-top: 22px; }
+
+  /* Diagram */
+  .diagram-scroll { overflow-x: auto; margin-inline: -4px; padding: 4px; }
+  figure.arch { margin: 0; }
+  figure.arch svg { display: block; width: 100%; height: auto; min-width: 760px; }
+  figcaption {
+    margin-top: 16px;
+    font-size: 13.5px;
+    color: var(--ink-faint);
+    max-width: 660px;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 18px; font-size: 12.5px; color: var(--ink-soft); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 14px; height: 3px; display: inline-block; border-radius: 2px; }
+
+  /* Behavior grid */
+  .grid5 {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+  }
+  .beh .mono { font-size: 14px; color: var(--navy); font-weight: 700; font-family: "Ubuntu Mono", monospace; }
+  .beh p { margin-top: 8px; font-size: 13px; color: var(--ink-soft); line-height: 1.5; }
+  .beh .badge {
+    display: inline-block;
+    margin-top: 10px;
+    font-family: "Ubuntu Mono", monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .badge.enforce { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+  .badge.observe { background: color-mix(in srgb, var(--cyan) 24%, transparent); color: var(--on-cyan); }
+
+  /* Feature list */
+  .feat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+  .feat { background: var(--surface); border: 1px solid var(--panel-border); border-radius: 10px; padding: 20px 22px; }
+  .feat h3 { font-size: 15.5px; margin-bottom: 6px; }
+  .feat p { font-size: 14px; color: var(--ink-soft); }
+
+  /* Comparison table */
+  .table-wrap { overflow-x: auto; border-radius: 10px; box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; background: var(--surface); }
+  th, td { text-align: left; padding: 13px 16px; font-size: 13.5px; vertical-align: top; }
+  thead th { font-family: "Open Sans", sans-serif; font-size: 12px; letter-spacing: 0.03em; font-weight: 700; background: var(--navy); color: var(--on-navy); }
+  tbody tr:nth-child(even) td { background: var(--panel); }
+  td.layer { font-weight: 700; color: var(--navy); white-space: nowrap; }
+  tr.us td { position: relative; }
+  tr.us td:first-child::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--cyan); }
+  td.blind { color: var(--ink-soft); }
+
+  /* Adoption steps — big blue numeral beside a cyan-accented panel, per the deck */
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .step { display: flex; gap: 12px; align-items: flex-start; }
+  .step-label {
+    flex: none;
+    font-family: "Open Sans", sans-serif;
+    font-weight: 700;
+    font-size: 30px;
+    line-height: 1;
+    color: var(--blue);
+    padding-top: 2px;
+  }
+  .step-body { flex: 1; min-width: 0; }
+  .step h3 { font-size: 15px; margin-bottom: 6px; }
+  .step p { font-size: 13.5px; color: var(--ink-soft); }
+
+  /* Boundaries */
+  .kv { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  .kv-row { display: grid; grid-template-columns: 190px 1fr; gap: 18px; }
+  .kv dt { font-family: "Ubuntu Mono", monospace; font-size: 12.5px; color: var(--navy); font-weight: 700; padding-top: 2px; }
+  .kv dd { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+  .kv dd strong { color: var(--ink); font-weight: 700; }
+
+  .status-box { margin-top: 32px; }
+  .status-box .eyebrow { background: rgba(255, 255, 255, 0.16); border-color: rgba(255, 255, 255, 0.24); color: var(--on-navy); margin-bottom: 10px; }
+  .status-box .eyebrow .dot { background: var(--cyan); }
+  .status-box p { font-weight: 400; font-size: 14px; }
+  .status-box a { color: var(--on-navy); text-decoration: underline; }
+
+  footer {
+    padding-block: 40px;
+    color: var(--ink-faint);
+    font-size: 13px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  footer .links { display: flex; gap: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 760px) {
+    .grid5 { grid-template-columns: repeat(2, 1fr); }
+    .feat-grid { grid-template-columns: 1fr; }
+    .split { grid-template-columns: 1fr; }
+    .steps { grid-template-columns: 1fr 1fr; }
+    .kv-row { grid-template-columns: 1fr; gap: 4px; }
+  }
+  @media (max-width: 460px) {
+    .grid5 { grid-template-columns: 1fr 1fr; }
+    .steps { grid-template-columns: 1fr; }
+  }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>Architecture overview</span>
+    <h1 class="name">Nirmata <b>Runtime</b> for Kyverno</h1>
+    <p class="kicker">
+      Kyverno-style CEL policy, enforced in the kernel. A per-node daemon attaches eBPF
+      programs to the pods a <code>RuntimePolicy</code> selects, so a denied file open,
+      exec, or network connection never completes &mdash; and a permitted one still shows up
+      as a finding.
+    </p>
+    <div class="meta-row">
+      <span class="tag">Status <b>pre-1.0 &middot; v1alpha1</b></span>
+      <span class="tag">CRD <b>RuntimePolicy</b></span>
+      <span class="tag">Mechanism <b>eBPF &middot; BPF-LSM &middot; cgroup_skb</b></span>
+      <span class="tag">Rules <b>CEL</b></span>
+      <span class="tag">Findings <b>OpenReports</b></span>
+      <span class="tag">License <b>Apache-2.0</b></span>
+    </div>
+  </div>
+</header>
+
+<section class="band">
+  <div class="wrap">
+    <h2 class="section-title">Admission checks the spec. Nothing checks the behavior.</h2>
+    <p class="section-dek">A signed image and a validated pod spec say nothing about what the running process then does with them. A clean admission record and a compromised process produce the same audit trail.</p>
+    <div class="split">
+      <div class="before">
+        <h3>Before the pod starts</h3>
+        <ul>
+          <li>Which image, which labels, which privileges</li>
+          <li>A verdict on what the workload <em>declares</em></li>
+          <li>Already solved &mdash; that's Kyverno at admission</li>
+        </ul>
+      </div>
+      <div class="after">
+        <h3>After the pod starts &mdash; unwatched until now</h3>
+        <ul>
+          <li>The files the process opens</li>
+          <li>The binaries it executes</li>
+          <li>The destinations and protocols it uses</li>
+          <li>The names it resolves</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout verdict">Nirmata Runtime is the layer that watches the right-hand column &mdash; decided in the kernel, on the pod's own cgroup, without asking the workload to cooperate.</div>
+  </div>
+</section>
+
+<section class="band band-alt">
+  <div class="wrap">
+    <h2 class="section-title">How a policy becomes a kernel decision</h2>
+    <p class="section-dek">One daemon per node watches two informers &mdash; <code>RuntimePolicy</code> and its own node's pods &mdash; compiles CEL into allow/deny sets, and programs them into eBPF maps read by hooks already attached to each pod's cgroup.</p>
+
+    <div class="diagram-scroll">
+      <figure class="arch">
+        <svg viewBox="0 0 1180 410" role="img" aria-label="A RuntimePolicy and a Pod feed the per-node kyverno-runtime daemon, which programs eBPF hooks on the pod's cgroup. The kernel either blocks the operation in enforce mode or counts it in monitor mode; counted observations flow through a collector and monitor into Reports, status, metrics, and an optional push sink.">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+            </marker>
+            <marker id="arrowBlock" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="var(--navy)" />
+            </marker>
+            <marker id="arrowObserve" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="var(--cyan)" />
+            </marker>
+          </defs>
+
+          <style>
+            .lbl { font: 700 12.5px "Open Sans", sans-serif; fill: var(--ink); }
+            .lbl-sm { font: 700 10.5px "Ubuntu Mono", monospace; fill: var(--ink-faint); letter-spacing: 0.02em; }
+            .cap { font: 400 11.5px "Open Sans", sans-serif; fill: var(--ink-soft); }
+            .box { fill: var(--surface); stroke: var(--panel-border); stroke-width: 1.2; }
+            .box-fill { fill: var(--panel); stroke: var(--panel-border); stroke-width: 1.2; }
+            .grp { fill: none; stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.6; }
+            .flow { fill: none; stroke: var(--ink-faint); stroke-width: 1.4; }
+            .flow-block { fill: none; stroke: var(--navy); stroke-width: 1.8; }
+            .flow-observe { fill: none; stroke: var(--cyan); stroke-width: 1.8; }
+          </style>
+
+          <!-- Column 1: control plane objects -->
+          <rect class="box" x="20" y="60" width="150" height="54" rx="7" />
+          <text class="lbl" x="95" y="82" text-anchor="middle">RuntimePolicy</text>
+          <text class="cap" x="95" y="99" text-anchor="middle">CRD · CEL rules</text>
+
+          <rect class="box" x="20" y="150" width="150" height="54" rx="7" />
+          <text class="lbl" x="95" y="172" text-anchor="middle">Pod</text>
+          <text class="cap" x="95" y="189" text-anchor="middle">labels · cgroup</text>
+
+          <line class="flow" x1="170" y1="87" x2="222" y2="140" marker-end="url(#arrow)" />
+          <line class="flow" x1="170" y1="177" x2="222" y2="150" marker-end="url(#arrow)" />
+
+          <!-- Column 2: daemon -->
+          <rect class="grp" x="226" y="60" width="190" height="144" rx="10" />
+          <text class="lbl-sm" x="238" y="76">KYVERNO-RUNTIME DAEMON</text>
+          <rect class="box-fill" x="240" y="90" width="162" height="46" rx="6" />
+          <text class="lbl" x="321" y="112" text-anchor="middle">compiler</text>
+          <text class="cap" x="321" y="128" text-anchor="middle">CEL → allow/deny</text>
+          <rect class="box-fill" x="240" y="146" width="162" height="46" rx="6" />
+          <text class="lbl" x="321" y="168" text-anchor="middle">controller</text>
+          <text class="cap" x="321" y="184" text-anchor="middle">informers · match</text>
+
+          <line class="flow" x1="416" y1="132" x2="470" y2="145" marker-end="url(#arrow)" />
+
+          <!-- Column 3: kernel hooks on pod cgroup -->
+          <rect class="grp" x="474" y="46" width="232" height="220" rx="10" />
+          <text class="lbl-sm" x="486" y="62">EBPF ON THE POD'S CGROUP</text>
+
+          <rect class="box-fill" x="488" y="76" width="204" height="46" rx="6" />
+          <text class="lbl" x="590" y="98" text-anchor="middle">file_open · bprm_check</text>
+          <text class="cap" x="590" y="114" text-anchor="middle">open + exec (LSM)</text>
+
+          <rect class="box-fill" x="488" y="132" width="204" height="46" rx="6" />
+          <text class="lbl" x="590" y="154" text-anchor="middle">cgroup_skb egress</text>
+          <text class="cap" x="590" y="170" text-anchor="middle">network + protocol</text>
+
+          <rect class="box-fill" x="488" y="188" width="204" height="46" rx="6" />
+          <text class="lbl" x="590" y="210" text-anchor="middle">UDP/53 snoop</text>
+          <text class="cap" x="590" y="226" text-anchor="middle">dns (observe only)</text>
+
+          <!-- kernel decision fork -->
+          <line class="flow-block" x1="706" y1="130" x2="748" y2="90" marker-end="url(#arrowBlock)" />
+          <line class="flow-observe" x1="706" y1="150" x2="748" y2="190" marker-end="url(#arrowObserve)" />
+
+          <rect x="752" y="60" width="146" height="50" rx="7" fill="var(--navy)" />
+          <text x="825" y="80" text-anchor="middle" style="font:700 12.5px 'Open Sans',sans-serif; fill:var(--on-navy);">-EPERM / drop</text>
+          <text x="825" y="97" text-anchor="middle" style="font:400 11px 'Open Sans',sans-serif; fill:var(--on-navy); opacity:.82;">mode: enforce</text>
+
+          <rect x="752" y="166" width="146" height="50" rx="7" fill="var(--surface)" stroke="var(--cyan)" stroke-width="1.6" />
+          <text class="lbl" x="825" y="186" text-anchor="middle">counted</text>
+          <text class="cap" x="825" y="203" text-anchor="middle">poll counter / ring buf</text>
+
+          <line class="flow-observe" x1="898" y1="191" x2="944" y2="191" marker-end="url(#arrowObserve)" />
+
+          <!-- Column 4: event plane -->
+          <rect class="grp" x="948" y="150" width="212" height="86" rx="10" />
+          <text class="lbl-sm" x="960" y="166">EVENT PLANE</text>
+          <rect class="box-fill" x="962" y="176" width="184" height="46" rx="6" />
+          <text class="lbl" x="1054" y="196" text-anchor="middle">collector → attribution</text>
+          <text class="cap" x="1054" y="212" text-anchor="middle">→ monitor (CEL match)</text>
+
+          <!-- down to outputs -->
+          <line class="flow" x1="1054" y1="236" x2="1054" y2="266" marker-end="url(#arrow)" />
+
+          <!-- Column 5: outputs, row of four -->
+          <rect class="box-fill" x="826" y="270" width="150" height="50" rx="7" />
+          <text class="lbl" x="901" y="290" text-anchor="middle">Report</text>
+          <text class="cap" x="901" y="307" text-anchor="middle">OpenReports, pod ns</text>
+
+          <rect class="box-fill" x="984" y="270" width="150" height="50" rx="7" />
+          <text class="lbl" x="1059" y="290" text-anchor="middle">status.nodes</text>
+          <text class="cap" x="1059" y="307" text-anchor="middle">Applied · TargetsValid</text>
+
+          <rect class="box-fill" x="826" y="330" width="150" height="50" rx="7" />
+          <text class="lbl" x="901" y="350" text-anchor="middle">/metrics</text>
+          <text class="cap" x="901" y="367" text-anchor="middle">Prometheus counters</text>
+
+          <rect x="984" y="330" width="150" height="50" rx="7" fill="none" stroke="var(--ink-faint)" stroke-width="1.2" stroke-dasharray="4 3" />
+          <text class="lbl" x="1059" y="350" text-anchor="middle">push sink</text>
+          <text class="cap" x="1059" y="367" text-anchor="middle">gRPC, optional</text>
+
+          <path class="flow" d="M1054,222 C1054,250 901,250 901,266" marker-end="url(#arrow)" />
+          <path class="flow" d="M1054,222 C1054,250 1059,250 1059,266" marker-end="url(#arrow)" />
+          <path class="flow" d="M901,320 L901,326" marker-end="url(#arrow)" />
+          <path class="flow" d="M1059,320 L1059,326" marker-end="url(#arrow)" />
+        </svg>
+        <figcaption>
+          Every enforce decision is a map lookup at the hook &mdash; no round trip to userspace.
+          Monitor mode leaves the same maps empty and re-derives the same verdict from drained
+          counters, so one policy object produces either outcome depending only on <code>spec.mode</code>.
+        </figcaption>
+      </figure>
+    </div>
+
+    <div class="legend">
+      <span><i style="background:var(--navy)"></i>enforce path &mdash; kernel returns <code>-EPERM</code> or drops the packet</span>
+      <span><i style="background:var(--cyan)"></i>observation path &mdash; counted, attributed, matched in userspace</span>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <h2 class="section-title">Five behaviors, one policy object</h2>
+    <p class="section-dek">Each <code>RuntimePolicy</code> behavior sets an <code>allow</code> and/or <code>deny</code> list &mdash; literal values, a CEL expression, or both, unioned. <code>deny.values: ["*"]</code> flips a behavior from allow-all to deny-all-except-allowed.</p>
+
+    <div class="grid5">
+      <div class="beh strip-panel">
+        <div class="mono">open</div>
+        <p>File paths a process reads. Matched against a per-cgroup map at <code>file_open</code>.</p>
+        <span class="badge enforce">enforce or observe</span>
+      </div>
+      <div class="beh strip-panel">
+        <div class="mono">exec</div>
+        <p>Binary paths a process launches. Matched at <code>bprm_check_security</code>.</p>
+        <span class="badge enforce">enforce or observe</span>
+      </div>
+      <div class="beh strip-panel">
+        <div class="mono">network</div>
+        <p>IPv4 addresses, CIDRs, domains, and cluster Service names. Decided at <code>connect</code> time.</p>
+        <span class="badge enforce">enforce or observe</span>
+      </div>
+      <div class="beh strip-panel">
+        <div class="mono">protocol</div>
+        <p>The application protocol a flow actually speaks, classified from its first data segment &mdash; independent of the port it used.</p>
+        <span class="badge enforce">enforce or observe</span>
+      </div>
+      <div class="beh strip-panel">
+        <div class="mono">dns</div>
+        <p>Hostnames a workload resolves. Reports names outside the declared set.</p>
+        <span class="badge observe">observe only</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band band-alt">
+  <div class="wrap">
+    <h2 class="section-title">Key features</h2>
+    <p class="section-dek">A deliberately narrow CRD, evaluated with the CEL libraries Kyverno already ships, producing output a cluster's existing tooling already reads.</p>
+
+    <div class="feat-grid">
+      <div class="feat">
+        <h3>Enforce or monitor, per policy</h3>
+        <p><code>spec.mode</code> chooses the outcome; the same policy object either blocks a workload or reports on it, so what you learn in monitor mode is exactly what you later enforce.</p>
+      </div>
+      <div class="feat">
+        <h3>Readable findings under broad policy</h3>
+        <p>A <code>monitorFilter</code> CEL predicate narrows which monitor-mode observations become a finding, so a wide discovery policy still produces a Report someone will read.</p>
+      </div>
+      <div class="feat">
+        <h3>Default deny with allow-lists</h3>
+        <p><code>deny.values: ["*"]</code> turns any behavior into deny-all-except-allowed, and matching policies union their allow and deny sets across a pod.</p>
+      </div>
+      <div class="feat">
+        <h3>CEL-powered, and current</h3>
+        <p>Literal values, CEL expressions, reusable <code>spec.variables</code>, and the Kyverno <code>resource</code>, <code>http</code>, and <code>json</code> libraries; <code>evaluationInterval</code> re-reads external lists without a policy edit.</p>
+      </div>
+      <div class="feat">
+        <h3>Kubernetes-native output</h3>
+        <p>OpenReports <code>Report</code> objects per pod, sharded per-node <code>status.nodes</code> with <code>Applied</code>/<code>TargetsValid</code> conditions, and Prometheus counters that distinguish an allowed operation from a blocked one.</p>
+      </div>
+      <div class="feat">
+        <h3>Cluster-wide, fail-safe scoping</h3>
+        <p><code>podSelector</code> and <code>namespaceSelector</code> are ANDed and cluster-scoped; an <code>enforce</code>-mode policy must set one of them explicitly, so blast radius is visible in the policy, not inferred.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <h2 class="section-title">Why it matters</h2>
+    <p class="section-dek">The case for a kernel-decided runtime layer, in terms an operator or a security reviewer already reasons in.</p>
+
+    <div class="feat-grid">
+      <div class="feat">
+        <h3>Block, not just alert</h3>
+        <p>A denied read, exec, or connection fails in the kernel, at the moment it's attempted. There is no window between detection and response, and no incident to staff for the operations it stops.</p>
+      </div>
+      <div class="feat">
+        <h3>Evidence, not inference</h3>
+        <p>Findings carry the attempt, the destination, and the decision, attributed to the pod and container &mdash; and the process, for <code>exec</code>/<code>open</code>. An auditor reads an outcome, not a guess about intent.</p>
+      </div>
+      <div class="feat">
+        <h3>Nothing to change in the workload</h3>
+        <p>No sidecar, no agent baked into the image, no proxy environment variables, no CA in the trust store, no CNI migration. <code>helm install</code>, and the pod spec is untouched.</p>
+      </div>
+      <div class="feat">
+        <h3>The policy stack you already run</h3>
+        <p>An admission-validated CRD and the same Kyverno CEL libraries used elsewhere in the cluster, so review, GitOps, and rollback work exactly as they already do.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band band-alt">
+  <div class="wrap">
+    <h2 class="section-title">Where the layers you already own go blind</h2>
+    <p class="section-dek">Every layer above the kernel decides about traffic the workload chose to send it. A workload that never cooperates &mdash; a debug container, an unreviewed sidecar, a compromised process &mdash; never reaches most of them.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Layer</th><th>Governs</th><th>Blind to</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="layer">Gateway</td>
+            <td>Models, tools, prompts, budgets, approvals</td>
+            <td class="blind">Anything not addressed to it</td>
+          </tr>
+          <tr>
+            <td class="layer">TLS-intercepting proxy</td>
+            <td>Content of any HTTPS it intercepts</td>
+            <td class="blind">Traffic that doesn't route through it or trust its CA</td>
+          </tr>
+          <tr>
+            <td class="layer">Admission control</td>
+            <td>What may be created; can inject env vars and a CA</td>
+            <td class="blind">Whether the process actually honors either</td>
+          </tr>
+          <tr>
+            <td class="layer">CNI NetworkPolicy</td>
+            <td>Who may reach whom, L3/L4 and FQDN</td>
+            <td class="blind">Attempts, process identity, its own enforcement status</td>
+          </tr>
+          <tr class="us">
+            <td class="layer">Nirmata Runtime</td>
+            <td>Per-pod facts decided in the kernel: destination and protocol of every flow, file and exec enforcement, and the attempts as findings</td>
+            <td class="blind">Content &mdash; that requires the client's cooperation, and belongs to the layers above</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <h2 class="section-title">Adoption path: monitor first, enforce second</h2>
+    <p class="section-dek">One policy object serves both modes, so nothing learned in monitor mode has to be re-expressed to enforce it.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-label">1</div>
+        <div class="step-body">
+          <h3>Install</h3>
+          <p><code>helm install</code> the DaemonSet. Egress observation and enforcement need only a cgroup v2 host with BPF support.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-label">2</div>
+        <div class="step-body">
+          <h3>Observe</h3>
+          <p>Apply a broad <code>monitor</code>-mode policy with a <code>monitorFilter</code> and read the Reports. Every finding is something you would have blocked.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-label">3</div>
+        <div class="step-body">
+          <h3>Enforce</h3>
+          <p>Narrow <code>podSelector</code> to the workloads that should never do it, then flip the same policy to <code>mode: enforce</code>.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-label">4</div>
+        <div class="step-body">
+          <h3>Sustain</h3>
+          <p>Drive provider and package lists from a ConfigMap or feed with <code>evaluationInterval</code>, so staying current needs no policy edit.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band band-alt">
+  <div class="wrap">
+    <h2 class="section-title">What this deliberately does not do</h2>
+    <p class="section-dek">Stating the boundary is what makes the claims inside it credible.</p>
+
+    <dl class="kv">
+      <div class="kv-row">
+        <dt>Destination scoping</dt>
+        <dd>Stays with the CNI. Identity-based L3/L4, FQDN egress, ingress, and encryption are done better there; <code>network</code> targets here are attribution plus static hard denies, not a replacement egress firewall.</dd>
+      </div>
+      <div class="kv-row">
+        <dt>Semantic AI enforcement</dt>
+        <dd>Stays with the proxy. Which model, which tool, which prompt needs a layer that terminates the connection &mdash; a userspace duplicate over undecryptable traffic would be strictly worse.</dd>
+      </div>
+      <div class="kv-row">
+        <dt>Ingress</dt>
+        <dd>Out of scope. Every hook here is egress or execution, so a pod <em>serving</em> a model, an MCP server, or an agent card is not observed &mdash; that belongs to admission control and RBAC on <code>pods/portforward</code>.</dd>
+      </div>
+      <div class="kv-row">
+        <dt>Content inside TLS</dt>
+        <dd>Not knowable here. Model names, prompts, tool arguments, and HTTP paths require the client's cooperation, which is exactly what a shadow workload withholds.</dd>
+      </div>
+    </dl>
+
+    <div class="callout status-box">
+      <span class="eyebrow"><span class="dot"></span>Current status</span>
+      <p>Pre-1.0, API <code>v1alpha1</code>. File <code>open</code> and process <code>exec</code> enforcement need a kernel booted with BPF-LSM active (<code>lsm=bpf</code>); egress is keyed on IPv4 destination addresses only, so IPv6 is neither enforced nor observed; <code>network</code>, <code>protocol</code>, <code>open</code>, and <code>exec</code> observations are drained on a poll interval rather than streamed; policy exceptions are not yet supported. See <a href="dev/DESIGN.md#known-gaps--future-work">Known gaps</a> for the full, current list.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" style="display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; justify-content:space-between; width:100%;">
+    <span>Nirmata Runtime &middot; Apache-2.0</span>
+    <span class="links">
+      <a href="../README.md">Project README</a>
+      <a href="dev/DESIGN.md">Design document</a>
+      <a href="users/why-runtime.md">Why a runtime layer</a>
+      <a href="users/reference/runtimepolicy.md">RuntimePolicy reference</a>
+      <a href="https://github.com/nirmata/runtime">GitHub</a>
+    </span>
+  </div>
+</footer>
