@@ -60,7 +60,7 @@ The Dockerfile follows Anthropic's supported npm installation path. The default 
 current release. Pin the package version for a reproducible run:
 
 ```bash
-CLAUDE_CODE_VERSION=2.x.y ./demo.sh
+CLAUDE_CODE_VERSION=2.1.63 ./demo.sh
 ```
 
 ## Verify
