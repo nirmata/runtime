@@ -306,18 +306,7 @@ func (w *podWatcher) handleCreateOrUpdate(pod *corev1.Pod, evType string) error 
 			"resolved", len(cgInfos), "reason", resolveErr.Error())
 	}
 
-	fanOutErr := w.fanOut(pod, ns.Labels, cgInfos, evType)
-
-	if resolveRetryable(cgInfos, resolveErr) {
-		return errors.Join(fanOutErr, resolveErr)
-	}
-	return fanOutErr
-}
-
-// only a total resolution failure is worth a retry, since that is what a
-// running container whose cgroup has not been found yet looks like
-func resolveRetryable(cgInfos []*containers.ContainerCgroupInfo, err error) bool {
-	return err != nil && len(cgInfos) == 0
+	return w.fanOut(pod, ns.Labels, cgInfos, evType)
 }
 
 // every handler's teardown is keyed by pod UID, so the UID is all a delete
