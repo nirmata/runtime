@@ -506,7 +506,10 @@ func TestPodHandleCreateOrUpdateFansOutPartialCgInfos(t *testing.T) {
 
 // A pod whose only running container reports an unresolvable id is not
 // retried: the same OS/runtime facts that produced the miss are still there
-// on the next attempt, so retrying only delays the same outcome.
+// on the next attempt, so retrying only delays the same outcome. Driven
+// through processNextWorkItem rather than handleCreateOrUpdate directly, so a
+// regression that requeues the key via AddRateLimited would fail this test
+// even though handleCreateOrUpdate's returned error looks the same either way.
 func TestPodUnresolvableContainerIsNotRetried(t *testing.T) {
 	p := pod("ns", "p", "uid-1")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
@@ -517,9 +520,17 @@ func TestPodUnresolvableContainerIsNotRetried(t *testing.T) {
 	h := &recordingPodHandler{name: "h"}
 	w, _ := newTestPodWatcher(t, podHandlers(h), p)
 
-	err := w.handleCreateOrUpdate(p, events.EventTypeCreate)
-	if err != nil {
-		t.Fatalf("unresolvable containers must not surface as a retryable error, got: %v", err)
+	key := queueKey{Type: events.EventTypeCreate, Key: "ns/p"}
+	w.queue.Add(key)
+	if !w.processNextWorkItem() {
+		t.Fatal("processNextWorkItem returned false")
+	}
+
+	if got := w.queue.Len(); got != 0 {
+		t.Errorf("queue len = %d, want the item forgotten rather than requeued", got)
+	}
+	if got := w.queue.NumRequeues(key); got != 0 {
+		t.Errorf("NumRequeues = %d, want 0: an unresolvable container must not drive a requeue", got)
 	}
 	// the handlers still saw the event, with an empty set
 	calls := h.podEventCalls()
