@@ -107,7 +107,7 @@ so **no CI job on your pull request exercises the LSM hooks.** The narrower
 `test-e2e-gate`, `test-e2e-egress`, and `test-e2e-protocol` lanes run on every
 PR instead.
 
-If your change touches `pkg/bpf/lsm`, `pkg/lsmmgr`, or the `open`/`exec`
+If your change touches `pkg/bpf/openexec`, `pkg/openexecmgr`, or the `open`/`exec`
 behaviors, run `make test-e2e-lsm` (or the full `make test-e2e`) yourself
 before opening the PR — on Docker Desktop's LinuxKit VM, or on a Linux VM you
 boot with a `bpf`-inclusive `lsm=` kernel parameter — and say in the PR

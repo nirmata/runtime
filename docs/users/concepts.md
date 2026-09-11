@@ -32,13 +32,13 @@ still reduces to an address lookup. It sees only unencrypted UDP resolution, whi
 domain allow-list a convenience and not a containment boundary — see
 [limits of domain names](reference/runtimepolicy.md#limits-of-domain-names).
 
-File `open` and process `exec` are enforced by BPF-LSM programs attached to the
-`file_open` and `bprm_check_security` kernel hooks. Each program looks up the path (or
-binary path) in a per-cgroup map built from the policy's `allow`/`deny` lists and
-returns `-EPERM` to block it, so the operation never completes. File `open` and process
-`exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in
-`/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock
-distributions and hosted CI runners are typically not booted with it.
+File `open` and process `exec` are enforced by a program that looks up the path (or binary
+path) in a per-cgroup map built from the policy's `allow`/`deny` lists and returns `-EPERM`
+to block it, so the operation never completes. On a kernel booted with BPF-LSM active —
+`bpf` present in `/sys/kernel/security/lsm` — it attaches to the `file_open` and
+`bprm_check_security` LSM hooks; otherwise it attaches to `security_file_open`, which needs
+no boot parameter. Both enforce; an exec is matched against your `open` rules as well only
+on the first. See [platform support](platforms.md).
 
 ## Allow, deny, and default deny
 

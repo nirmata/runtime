@@ -13,7 +13,7 @@ import (
 // the source, which the collector then restarts with backoff.
 type PollFunc func(ctx context.Context) ([]runtimeevent.Event, error)
 
-// pollSource adapts periodic counter scraping (egressmgr/lsmmgr map reads) to
+// pollSource adapts periodic counter scraping (egressmgr/openexecmgr map reads) to
 // the runtimeevent.Source seam.
 type pollSource struct {
 	name     string

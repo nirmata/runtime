@@ -19,7 +19,7 @@ regenerated objects together.
 
 ## Why `vmlinux.h` is minimal and committed, not generated
 
-`pkg/bpf/lsm/_cprog/include/vmlinux.h` is a small, hand-maintained header, not
+`pkg/bpf/include/vmlinux.h` is a small, hand-maintained header, not
 the output of `bpftool btf dump file /sys/kernel/btf/vmlinux format c`. The
 full dump is ~3 MB / ~153k lines and describes whatever kernel the builder
 host happens to run, so generating it at build time makes the objects differ

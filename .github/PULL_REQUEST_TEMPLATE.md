@@ -11,7 +11,7 @@
 - [ ] For a change to the managers, collector, evaluator, or reporter: validated on
       a kind cluster (`make kind-install`, plus a targeted check such as
       `make smoke-quickstart`, `make test-e2e-egress`, or `make test-e2e-protocol`)
-- [ ] For a change touching `pkg/bpf/lsm`, `pkg/lsmmgr`, or `open`/`exec` behavior:
+- [ ] For a change touching `pkg/bpf/openexec`, `pkg/openexecmgr`, or `open`/`exec` behavior:
       ran `make test-e2e-lsm` (or `make test-e2e`) on a host with BPF-LSM active
       (Docker Desktop or a `lsm=...,bpf` Linux VM) — CI cannot exercise this, see
       [CONTRIBUTING.md](../CONTRIBUTING.md#the-lsm-e2e-lane-has-no-pr-signal)

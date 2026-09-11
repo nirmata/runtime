@@ -34,8 +34,6 @@ daemon:
   # attaching LSM and cgroup eBPF programs on the node currently requires.
   securityContext:
     privileged: true
-    runAsUser: 0
-    readOnlyRootFilesystem: true
   # updateStrategy: passed through to the DaemonSet's spec.updateStrategy.
   # Empty uses the Kubernetes default (RollingUpdate).
   updateStrategy: {}

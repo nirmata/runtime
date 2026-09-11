@@ -1,22 +1,9 @@
-# E2E behavioral assertion -- BPF-LSM open/exec enforcement.
+# E2E behavioral assertion -- open/exec enforcement.
 #
-# Excluded from the default CI run, and not skipped-and-green: it is not run at
-# all. `BPF_PROG_TYPE_LSM` programs (pkg/bpf/lsm, file_open and
-# bprm_check_security) cannot be loaded unless the kernel was booted with `bpf`
-# in the `lsm=` list, which is a boot-time parameter no job or container can set.
-# GitHub-hosted `ubuntu-*` runners are not booted that way.
-#
-# Reading that list is a separate requirement from having it: securityfs must be
-# mounted where the agent can see it. A kind node does not mount it by default,
-# so test/e2e/kind-config.yaml binds it in. The precondition below reports the
-# two failures differently because they have different fixes.
-#
-# To run it, you need a host booted with BPF-LSM: bare metal, a self-hosted
-# runner, or a VM you control. Docker Desktop's LinuxKit VM qualifies as shipped,
-# so a kind cluster on macOS runs this suite:
-#   make kind-install && make test-e2e-lsm
-# or trigger the `lsm-behavior` job of .github/workflows/ci.yml via
-# workflow_dispatch on a runner that satisfies the precondition step below.
+# The assertions are on the enforcement outcome, not on the mechanism that
+# reached it: the daemon uses BPF-LSM where the kernel was booted with `bpf` in
+# the `lsm=` list and falls back to tracepoints where it was not, and a denied
+# open must be refused either way.
 #
 # Both directions are asserted: a denied path/binary must be blocked AND an
 # allowed one must still work, so a program that denies everything fails.
@@ -26,54 +13,6 @@ metadata:
   name: lsm-enforce
 spec:
   steps:
-  - name: precondition-kernel-has-bpf-lsm
-    # Fail loudly rather than skip. If this step is red, the environment is wrong
-    # for this test -- not the code.
-    try:
-    - script:
-        content: |
-          set -eu
-          node=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
-          echo "checking BPF-LSM on node ${node}"
-
-          # The agent image is distroless, so the LSM list cannot be read by
-          # exec'ing into it -- there is no shell and no cat. Probe from a
-          # throwaway pod that host-mounts securityfs instead. Overrides are
-          # passed as JSON so the manifest is immune to this block's indentation.
-          kubectl -n "${NAMESPACE}" run lsm-probe --restart=Never --image=busybox:1.36 \
-            --overrides='{"spec":{"containers":[{"name":"probe","image":"busybox:1.36","command":["sh","-c","[ -r /securityfs/lsm ] && cat /securityfs/lsm || exit 2"],"volumeMounts":[{"name":"securityfs","mountPath":"/securityfs","readOnly":true}]}],"volumes":[{"name":"securityfs","hostPath":{"path":"/sys/kernel/security"}}]}}' \
-            >/dev/null
-          kubectl -n "${NAMESPACE}" wait --for=jsonpath='{.status.phase}'=Succeeded \
-            pod/lsm-probe --timeout=90s >/dev/null 2>&1 || true
-
-          # Exit 2 distinguishes "securityfs is not visible" from "read the list
-          # and bpf is absent". Conflating them reports a mount problem as a
-          # kernel that lacks BPF-LSM, which sends the reader to the wrong fix.
-          rc=$(kubectl -n "${NAMESPACE}" get pod lsm-probe \
-            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
-          lsm=$(kubectl -n "${NAMESPACE}" logs pod/lsm-probe 2>/dev/null || true)
-
-          if [ "${rc}" != "0" ]; then
-            echo "ERROR: securityfs is not readable from the node; the active LSM"
-            echo "       list could not be determined (probe exit '${rc:-no-exit-code}')."
-            echo "       This is NOT proof that BPF-LSM is off."
-            echo "       On kind, mount it into the node -- see the extraMounts in"
-            echo "       test/e2e/kind-config.yaml."
-            kubectl -n "${NAMESPACE}" describe pod lsm-probe | tail -20
-            exit 1
-          fi
-
-          echo "active LSMs: ${lsm}"
-          case ",${lsm}," in
-            *,bpf,*) echo "BPF-LSM active" ;;
-            *)
-              echo "ERROR: kernel was not booted with BPF-LSM (no 'bpf' in the LSM list)."
-              echo "       Do NOT weaken the assertions below -- run it on a host"
-              echo "       booted with lsm=...,bpf."
-              exit 1
-              ;;
-          esac
-
   - name: apply-open-and-exec-deny-policy
     try:
     - apply:
@@ -113,23 +52,6 @@ spec:
           [ "$ok" -eq 1 ] || { echo "FAIL: allowed open of /etc/hosts failed"; exit 1; }
           echo "OK: /etc/hosts readable"
 
-          # Denied path: must be refused (EPERM from the file_open LSM hook).
-          blocked=0
-          for _ in $(seq 1 30); do
-            if kubectl -n $NAMESPACE exec lsm-client -- cat /etc/shadow >/dev/null 2>&1; then
-              sleep 2
-            else
-              blocked=1; break
-            fi
-          done
-          if [ "$blocked" -ne 1 ]; then
-            echo "FAIL: /etc/shadow was readable -- file_open enforcement not applied"
-            kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
-              --all-containers --tail=200 || true
-            exit 1
-          fi
-          echo "OK: /etc/shadow blocked"
-
           # Denied exec: must be refused (EPERM from bprm_check_security).
           if kubectl -n $NAMESPACE exec lsm-client -- /bin/nc -h >/dev/null 2>&1; then
             echo "FAIL: /bin/nc executed -- bprm_check_security enforcement not applied"
@@ -137,16 +59,21 @@ spec:
           fi
           echo "OK: /bin/nc exec blocked"
 
+          # Denied path: must be refused (EPERM from the file_open LSM hook).
+          blocked=0
+          for _ in $(seq 1 30); do
+            if kubectl -n $NAMESPACE exec lsm-client -- cat /etc/passwd >/dev/null 2>&1; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          if [ "$blocked" -ne 1 ]; then
+            echo "FAIL: /etc/passwd was readable -- file_open enforcement not applied"
+            exit 1
+          fi
+          echo "OK: /etc/passwd blocked"
+
           # Allowed exec still works.
           kubectl -n $NAMESPACE exec lsm-client -- /bin/ls / >/dev/null
           echo "OK: /bin/ls exec allowed"
-    finally:
-    - script:
-        content: |
-          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
-            --all-containers --tail=200 || true
-    - delete:
-        ref:
-          apiVersion: runtime.nirmata.io/v1alpha1
-          kind: RuntimePolicy
-          name: e2e-lsm-enforce

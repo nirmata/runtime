@@ -19,10 +19,11 @@
 #   protocol-enforce/ -- behavioral assertion for the application-protocol
 #                      classifier: per-protocol verdicts on one destination
 #                      and port. Same kernel requirements as egress-enforce.
-#   dispatch-only/  -- excluded from the default run. Requires `lsm=bpf` in
-#                      /sys/kernel/security/lsm, which GitHub hosted runners do
-#                      not have (issue #60). Run via the workflow_dispatch lane
-#                      or `make test-e2e-lsm` on a suitably booted host.
+#   dispatch-only/  -- open/exec enforcement, carried by the BPF-LSM hooks
+#                      where the kernel was booted with `bpf` in the `lsm=`
+#                      list and by the tracepoint fallback otherwise. Excluded
+#                      from the default run; CI gives it its own job, or run
+#                      `make test-e2e-lsm`.
 #
 # Run with: make test-e2e (excludes dispatch-only) / make test-e2e-lsm
 apiVersion: chainsaw.kyverno.io/v1alpha1

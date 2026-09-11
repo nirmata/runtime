@@ -37,6 +37,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_ARRAY = 2,
 	BPF_MAP_TYPE_PROG_ARRAY = 3,
 	BPF_MAP_TYPE_PERCPU_ARRAY = 6,
+	BPF_MAP_TYPE_ARRAY_OF_MAPS = 12,
 	BPF_MAP_TYPE_HASH_OF_MAPS = 13,
 	BPF_MAP_TYPE_RINGBUF = 27,
 };
@@ -68,6 +69,7 @@ struct path {
 
 struct file {
 	struct path f_path; /* &f->f_path passed to bpf_d_path (CO-RE) */
+	unsigned int f_flags; /* carries __FMODE_EXEC on the open of a binary (CO-RE) */
 } __attribute__((preserve_access_index));
 
 struct linux_binprm {

@@ -1,0 +1,605 @@
+package openexecmgr
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sync"
+	"testing"
+
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
+)
+
+// TestScenario_PolicyAndPodLifecycle walks a realistic event sequence and checks the
+// bidirectional bookkeeping after every step, plus the enforcer state the sequence
+// should have produced.
+func TestScenario_PolicyAndPodLifecycle(t *testing.T) {
+	h := newHarness(t)
+	webSel := selFor(map[string]string{"app": "web"})
+	dbSel := selFor(map[string]string{"app": "db"})
+
+	step := func(name string, fn func() error) {
+		t.Helper()
+		if err := fn(); err != nil {
+			t.Fatalf("step %q: %v", name, err)
+		}
+		assertInvariant(t, h.l)
+	}
+
+	// 1. policy first, no pods yet
+	step("create rp1", func() error {
+		return h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, webSel,
+			pair(nil, []string{"/etc/shadow"}), pair([]string{"/bin/ls"}, nil)), events.EventTypeCreate)
+	})
+	openEnf, execEnf := h.enf("rp1", open), h.enf("rp1", exec)
+
+	// 2. two pods show up, one matching
+	step("create podWeb", func() error {
+		return h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate)
+	})
+	step("create podDb", func() error {
+		return h.l.PodEvent(testPod("podDb", map[string]string{"app": "db"}), nil, cgs(21), events.EventTypeCreate)
+	})
+	if got := openEnf.cgidSet(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Fatalf("open cgids = %v, want [11 12]", got)
+	}
+	if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Fatalf("open observed cgids = %v, want [11 12]", got)
+	}
+
+	// 3. a second policy monitors the db pod: it must observe without programming
+	step("create rp2 in monitor mode", func() error {
+		return h.l.RuntimePolicyEvent(result("rp2", compiler.ModeMonitor, dbSel, pair(nil, []string{"*"}), nil), events.EventTypeCreate)
+	})
+	rp2Enf := h.enf("rp2", open)
+	if rp2Enf.denyAll || len(rp2Enf.denySet()) != 0 {
+		t.Errorf("rp2 (monitor) programmed maps: denyAll=%v deny=%v", rp2Enf.denyAll, rp2Enf.denySet())
+	}
+	if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
+		t.Errorf("open observed cgids = %v, want [11 12 21]", got)
+	}
+
+	// 4. the observed paths of both pods are collected in one poll
+	h.prog(open).seed(21, map[string]uint32{"/etc/shadow": 2})
+	h.prog(open).seed(11, map[string]uint32{"/etc/hosts": 1})
+	evs, err := h.l.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("collected %d events, want 2 (one per pod): %+v", len(evs), evs)
+	}
+
+	// 5. rp1's selector moves to the db pod: podWeb detaches, podDb attaches
+	step("retarget rp1 to db", func() error {
+		return h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, dbSel,
+			pair(nil, []string{"/etc/shadow"}), pair([]string{"/bin/ls"}, nil)), events.EventTypeUpdate)
+	})
+	if got := openEnf.cgidSet(); !slices.Equal(got, []uint64{21}) {
+		t.Fatalf("open cgids after retarget = %v, want [21]", got)
+	}
+	if got := attachedPolicyUIDs(h.l.pods["podDb"]); !slices.Equal(got, []string{"rp1", "rp2"}) {
+		t.Fatalf("podDb attachedOpenExecs = %v, want [rp1 rp2]", got)
+	}
+	if got := attachedPolicyUIDs(h.l.pods["podWeb"]); len(got) != 0 {
+		t.Fatalf("podWeb attachedOpenExecs = %v, want empty", got)
+	}
+
+	// 6. podWeb is relabelled into rp1's new selector: it must be picked up
+	step("relabel podWeb to db", func() error {
+		return h.l.PodEvent(testPod("podWeb", map[string]string{"app": "db"}), nil, cgs(11, 12), events.EventTypeUpdate)
+	})
+	if got := openEnf.cgidSet(); !slices.Equal(got, []uint64{11, 12, 21}) {
+		t.Fatalf("open cgids after relabel = %v, want [11 12 21]", got)
+	}
+	if got := attachedPolicyUIDs(h.l.pods["podWeb"]); !slices.Equal(got, []string{"rp1", "rp2"}) {
+		t.Fatalf("podWeb attachedOpenExecs after relabel = %v, want [rp1 rp2]", got)
+	}
+
+	// 7. rp1 drops exec enforcement and changes its open target set
+	step("rp1 drops exec", func() error {
+		return h.l.RuntimePolicyEvent(result("rp1", compiler.ModeEnforce, dbSel,
+			pair(nil, []string{"/etc/passwd", "*"}), pair(nil, nil)), events.EventTypeUpdate)
+	})
+	if execEnf.closeCount != 1 {
+		t.Fatalf("exec enforcer Close called %d times, want 1", execEnf.closeCount)
+	}
+	if got := progTypes(h.l.openExecAttachments["rp1"]); !slices.Equal(got, []string{open}) {
+		t.Fatalf("rp1 prog types = %v, want [%s]", got, open)
+	}
+	if got := openEnf.denySet(); !slices.Equal(got, []string{"/etc/passwd"}) {
+		t.Fatalf("open deny set = %v, want [/etc/passwd]", got)
+	}
+	if !openEnf.denyAll {
+		t.Fatal("open default deny = false, want true")
+	}
+
+	// 8. the db pod's containers churn
+	step("podDb cgid churn", func() error {
+		return h.l.PodEvent(testPod("podDb", map[string]string{"app": "db"}), nil, cgs(22, 23), events.EventTypeUpdate)
+	})
+	for name, f := range map[string]*fakeEnforcer{"rp1": openEnf, "rp2": rp2Enf} {
+		if got := f.cgidSet(); !slices.Equal(got, []uint64{11, 12, 22, 23}) {
+			t.Fatalf("%s cgids after churn = %v, want [11 12 22 23]", name, got)
+		}
+	}
+
+	// 9. both pods go away
+	step("delete podDb", func() error {
+		return h.l.PodDeleted("podDb")
+	})
+	step("delete podWeb", func() error {
+		return h.l.PodDeleted("podWeb")
+	})
+	for name, f := range map[string]*fakeEnforcer{"rp1": openEnf, "rp2": rp2Enf} {
+		if got := f.cgidSet(); len(got) != 0 {
+			t.Fatalf("%s cgids after pod delete = %v, want empty", name, got)
+		}
+	}
+	for _, pt := range []string{open, exec} {
+		if got := h.prog(pt).observedSet(); len(got) != 0 {
+			t.Fatalf("%s observed cgids after pod delete = %v, want empty", pt, got)
+		}
+	}
+	for _, uid := range []string{"rp1", "rp2"} {
+		if got := attachedPodUIDs(h.l.openExecAttachments[uid]); len(got) != 0 {
+			t.Fatalf("%s attached pods = %v, want empty", uid, got)
+		}
+	}
+
+	// 10. and finally both policies are deleted
+	step("delete rp1", func() error {
+		return h.l.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "rp1"}, events.EventTypeDelete)
+	})
+	step("delete rp2", func() error {
+		return h.l.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "rp2"}, events.EventTypeDelete)
+	})
+	if len(h.l.openExecAttachments) != 0 {
+		t.Fatalf("attachments = %v, want empty", h.l.openExecAttachments)
+	}
+	if openEnf.closeCount != 1 || rp2Enf.closeCount != 1 {
+		t.Fatalf("close counts = rp1 open:%d rp2 open:%d, want 1 each", openEnf.closeCount, rp2Enf.closeCount)
+	}
+	for _, f := range []*fakeEnforcer{openEnf, execEnf, rp2Enf} {
+		if len(f.usedClosed) != 0 {
+			t.Fatalf("enforcer %s used after Close: %v", f.target, f.usedClosed)
+		}
+	}
+}
+
+// drives the pod and policy informer entry points from separate goroutines, as the
+// real informers run. beyond -race, the end state is deterministic because the
+// manager serializes every event: a pod is attached to a policy iff its labels
+// match, whatever order the events arrived in.
+func TestConcurrent_PodAndPolicyEvents(t *testing.T) {
+	const (
+		numPods     = 12
+		numPolicies = 6
+	)
+	h := newHarness(t)
+
+	labelFor := func(i int) map[string]string {
+		if i%2 == 0 {
+			return map[string]string{"app": "web"}
+		}
+		return map[string]string{"app": "db"}
+	}
+	selForPolicy := func(i int) map[string]string {
+		if i%2 == 0 {
+			return map[string]string{"app": "web"}
+		}
+		return map[string]string{"app": "db"}
+	}
+	modeFor := func(i int) string {
+		// half the policies observe, half enforce
+		if i%4 < 2 {
+			return compiler.ModeEnforce
+		}
+		return compiler.ModeMonitor
+	}
+	podUID := func(i int) string { return fmt.Sprintf("pod%02d", i) }
+	rpUID := func(i int) string { return fmt.Sprintf("rp%02d", i) }
+	matches := func(podIdx, rpIdx int) bool { return podIdx%2 == rpIdx%2 }
+
+	// phase 1: pods and policies are created concurrently
+	var wg sync.WaitGroup
+	errCh := make(chan error, numPods+numPolicies)
+	for i := range numPods {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), nil, cgs(uint64(100+i)), events.EventTypeCreate); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	for i := range numPolicies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rp := result(rpUID(i), modeFor(i), selFor(selForPolicy(i)), pair(nil, []string{"/etc/shadow"}), nil)
+			if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	drainErrs(t, errCh)
+	assertInvariant(t, h.l)
+	assertConcurrentState(t, h, numPods, numPolicies, matches, rpUID, podUID, func(i int) uint64 { return uint64(100 + i) })
+
+	// phase 2: pod cgids churn while the policies get new target paths, concurrently
+	for i := range numPods {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), nil, cgs(uint64(200+i)), events.EventTypeUpdate); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	for i := range numPolicies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rp := result(rpUID(i), modeFor(i), selFor(selForPolicy(i)), pair(nil, []string{"/etc/shadow", "/etc/passwd"}), nil)
+			if err := h.l.RuntimePolicyEvent(rp, events.EventTypeUpdate); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	drainErrs(t, errCh)
+	assertInvariant(t, h.l)
+	assertConcurrentState(t, h, numPods, numPolicies, matches, rpUID, podUID, func(i int) uint64 { return uint64(200 + i) })
+	for i := range numPolicies {
+		want := []string{"/etc/passwd", "/etc/shadow"}
+		if compiler.IsObserveMode(modeFor(i)) {
+			want = nil
+		}
+		if got := h.enf(rpUID(i), open).denySet(); !slices.Equal(got, want) {
+			t.Errorf("%s deny set = %v, want %v", rpUID(i), got, want)
+		}
+	}
+
+	// phase 3: observations are collected while pod events keep arriving
+	for i := range numPolicies {
+		h.prog(open).seed(uint64(200+i), map[string]uint32{"/etc/shadow": 1})
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := h.l.CollectObservations(context.Background()); err != nil {
+			errCh <- err
+		}
+	}()
+	for i := range numPods {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.l.PodEvent(testPod(podUID(i), labelFor(i)), nil, cgs(uint64(300+i)), events.EventTypeUpdate); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	drainErrs(t, errCh)
+	assertInvariant(t, h.l)
+
+	// phase 4: half the pods are deleted while half the policies are deleted
+	for i := range numPods {
+		if i >= numPods/2 {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.l.PodDeleted(podUID(i)); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	for i := range numPolicies {
+		if i >= numPolicies/2 {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.l.RuntimePolicyEvent(&compiler.EvaluationResult{UID: rpUID(i)}, events.EventTypeDelete); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	drainErrs(t, errCh)
+	assertInvariant(t, h.l)
+	if len(h.l.pods) != numPods-numPods/2 {
+		t.Errorf("pods = %d, want %d", len(h.l.pods), numPods-numPods/2)
+	}
+	if len(h.l.openExecAttachments) != numPolicies-numPolicies/2 {
+		t.Errorf("attachments = %d, want %d", len(h.l.openExecAttachments), numPolicies-numPolicies/2)
+	}
+}
+
+func drainErrs(t *testing.T, errCh chan error) {
+	t.Helper()
+	for {
+		select {
+		case err := <-errCh:
+			t.Errorf("event returned an error: %v", err)
+		default:
+			return
+		}
+	}
+}
+
+func assertConcurrentState(
+	t *testing.T,
+	h *harness,
+	numPods, numPolicies int,
+	matches func(podIdx, rpIdx int) bool,
+	rpUID, podUID func(int) string,
+	cgidFor func(int) uint64,
+) {
+	t.Helper()
+	if len(h.l.pods) != numPods {
+		t.Fatalf("pods = %d, want %d", len(h.l.pods), numPods)
+	}
+	if len(h.l.openExecAttachments) != numPolicies {
+		t.Fatalf("attachments = %d, want %d", len(h.l.openExecAttachments), numPolicies)
+	}
+	observedWant := map[uint64]struct{}{}
+	for i := range numPolicies {
+		var wantPods []string
+		var wantCgids []uint64
+		for j := range numPods {
+			if matches(j, i) {
+				wantPods = append(wantPods, podUID(j))
+				wantCgids = append(wantCgids, cgidFor(j))
+				observedWant[cgidFor(j)] = struct{}{}
+			}
+		}
+		slices.Sort(wantPods)
+		slices.Sort(wantCgids)
+		la := h.l.openExecAttachments[rpUID(i)]
+		if got := attachedPodUIDs(la); !slices.Equal(got, wantPods) {
+			t.Errorf("%s attached pods = %v, want %v", rpUID(i), got, wantPods)
+		}
+		f := h.enf(rpUID(i), open)
+		if got := f.cgidSet(); !slices.Equal(got, wantCgids) {
+			t.Errorf("%s enforcer cgids = %v, want %v", rpUID(i), got, wantCgids)
+		}
+	}
+	// observation is on for every cgid any policy attached, in both modes
+	if got := h.prog(open).observedSet(); !slices.Equal(got, sortedU64(observedWant)) {
+		t.Errorf("observed cgids = %v, want %v", got, sortedU64(observedWant))
+	}
+}
+
+// TestMirrorCgidsSurvivesOverlappingExecPolicies pins that a pod selected by two
+// exec policies keeps its cgroup in the observation sinks until the last of them
+// lets go. The sinks hold one unqualified set, so a per-policy detach that
+// forwarded its delta verbatim would blind the surviving policy.
+func TestMirrorCgidsSurvivesOverlappingExecPolicies(t *testing.T) {
+	h, sink := newHarnessWithSink(t)
+	sel := selFor(map[string]string{"app": "web"})
+
+	execOnly := func(uid string) *compiler.EvaluationResult {
+		return result(uid, compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/nc"}))
+	}
+
+	for _, uid := range []string{"rp1", "rp2"} {
+		if err := h.l.RuntimePolicyEvent(execOnly(uid), events.EventTypeCreate); err != nil {
+			t.Fatalf("create %s: %v", uid, err)
+		}
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Fatalf("sink after both policies = %v, want [11 12]", got)
+	}
+
+	// rp1 goes away; rp2 still selects the pod, so the sink must not change.
+	if err := h.l.RuntimePolicyEvent(execOnly("rp1"), events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rp1: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Errorf("sink after deleting rp1 = %v, want [11 12] -- rp2 still selects podWeb", got)
+	}
+
+	// rp2 is the last holder, so now the cgroups leave the sink.
+	if err := h.l.RuntimePolicyEvent(execOnly("rp2"), events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rp2: %v", err)
+	}
+	if got := sink.set(); len(got) != 0 {
+		t.Errorf("sink after deleting the last exec policy = %v, want empty", got)
+	}
+}
+
+// TestMirrorCgidsPodDeleteWithOverlappingExecPolicies is the pod-side inverse:
+// the pod itself going away must clear the sink even though two attachments
+// referenced it.
+func TestMirrorCgidsPodDeleteWithOverlappingExecPolicies(t *testing.T) {
+	h, sink := newHarnessWithSink(t)
+	sel := selFor(map[string]string{"app": "web"})
+
+	for _, uid := range []string{"rp1", "rp2"} {
+		if err := h.l.RuntimePolicyEvent(
+			result(uid, compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/nc"})),
+			events.EventTypeCreate); err != nil {
+			t.Fatalf("create %s: %v", uid, err)
+		}
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11}) {
+		t.Fatalf("sink = %v, want [11]", got)
+	}
+
+	if err := h.l.PodDeleted("podWeb"); err != nil {
+		t.Fatalf("PodDeleted: %v", err)
+	}
+	if got := sink.set(); len(got) != 0 {
+		t.Errorf("sink after the pod was deleted = %v, want empty", got)
+	}
+}
+
+// TestRpDeletedOpenOnlyPolicyLeavesSinkAlone pins the policyMaps guard: an
+// attachment with no exec program has never mirrored anything, so tearing it
+// down must not withdraw cgroups an exec policy put in the sinks.
+func TestRpDeletedOpenOnlyPolicyLeavesSinkAlone(t *testing.T) {
+	h, sink := newHarnessWithSink(t)
+	sel := selFor(map[string]string{"app": "web"})
+
+	openOnly := result("rpOpen", compiler.ModeEnforce, sel, pair(nil, []string{"/etc/shadow"}), nil)
+	execOnly := result("rpExec", compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/nc"}))
+	for _, rp := range []*compiler.EvaluationResult{openOnly, execOnly} {
+		if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+			t.Fatalf("create %s: %v", rp.UID, err)
+		}
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Fatalf("sink = %v, want [11 12]", got)
+	}
+
+	if err := h.l.RuntimePolicyEvent(openOnly, events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rpOpen: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Errorf("sink after deleting the open-only policy = %v, want [11 12] -- rpExec still selects podWeb", got)
+	}
+
+	if err := h.l.RuntimePolicyEvent(execOnly, events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rpExec: %v", err)
+	}
+	if got := sink.set(); len(got) != 0 {
+		t.Errorf("sink after deleting the exec policy = %v, want empty", got)
+	}
+}
+
+// TestRpDeletedWithdrawsEveryAttachedPod pins that the withdrawal iterates the
+// whole attachedPods set: a delete that only forwarded the first pod's cgroups
+// would leave the rest admitted to the sinks with no policy behind them.
+func TestRpDeletedWithdrawsEveryAttachedPod(t *testing.T) {
+	h, sink := newHarnessWithSink(t)
+	sel := selFor(map[string]string{"app": "web"})
+	rp := result("rpExec", compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/nc"}))
+
+	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("create rpExec: %v", err)
+	}
+	pods := map[string][]uint64{"podA": {11, 12}, "podB": {21}, "podC": {31, 32}}
+	for _, uid := range []string{"podA", "podB", "podC"} {
+		if err := h.l.PodEvent(testPod(uid, map[string]string{"app": "web"}), nil, cgs(pods[uid]...), events.EventTypeCreate); err != nil {
+			t.Fatalf("create %s: %v", uid, err)
+		}
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12, 21, 31, 32}) {
+		t.Fatalf("sink = %v, want [11 12 21 31 32]", got)
+	}
+
+	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rpExec: %v", err)
+	}
+	if got := sink.set(); len(got) != 0 {
+		t.Errorf("sink after deleting the only exec policy = %v, want empty", got)
+	}
+}
+
+// TestObservationStopsWhenTheLastPolicyDetaches pins that a policy tearing down
+// stops the per-cgid counting it turned on. The pod's own attachment is still
+// in its bookkeeping at that point, so a sole-watcher check that does not skip
+// it finds itself and leaves observation running forever.
+func TestObservationStopsWhenTheLastPolicyDetaches(t *testing.T) {
+	h := newHarness(t)
+	rp := result("rp1", compiler.ModeEnforce, selFor(map[string]string{"app": "web"}), pair(nil, []string{"/etc/shadow"}), nil)
+
+	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+		t.Fatalf("create rp1: %v", err)
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Fatalf("observed = %v, want [11 12]", got)
+	}
+
+	if err := h.l.RuntimePolicyEvent(rp, events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rp1: %v", err)
+	}
+	if got := h.prog(open).observedSet(); len(got) != 0 {
+		t.Errorf("observed after deleting the only policy = %v, want empty", got)
+	}
+}
+
+// TestObservationIsScopedPerProgramType pins that the sole-watcher check is per
+// program type: a pod an open policy still selects must stop being counted for
+// exec once the only exec policy detaches, and vice versa.
+func TestObservationIsScopedPerProgramType(t *testing.T) {
+	h := newHarness(t)
+	sel := selFor(map[string]string{"app": "web"})
+	openOnly := result("rpOpen", compiler.ModeEnforce, sel, pair(nil, []string{"/etc/shadow"}), nil)
+	execOnly := result("rpExec", compiler.ModeEnforce, sel, nil, pair(nil, []string{"/bin/nc"}))
+
+	for _, rp := range []*compiler.EvaluationResult{openOnly, execOnly} {
+		if err := h.l.RuntimePolicyEvent(rp, events.EventTypeCreate); err != nil {
+			t.Fatalf("create %s: %v", rp.UID, err)
+		}
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	for _, progType := range []string{open, exec} {
+		if got := h.prog(progType).observedSet(); !slices.Equal(got, []uint64{11}) {
+			t.Fatalf("%s observed = %v, want [11]", progType, got)
+		}
+	}
+
+	if err := h.l.RuntimePolicyEvent(execOnly, events.EventTypeDelete); err != nil {
+		t.Fatalf("delete rpExec: %v", err)
+	}
+	if got := h.prog(exec).observedSet(); len(got) != 0 {
+		t.Errorf("exec observed after deleting the only exec policy = %v, want empty", got)
+	}
+	if got := h.prog(open).observedSet(); !slices.Equal(got, []uint64{11}) {
+		t.Errorf("open observed = %v, want [11] -- rpOpen still selects podWeb", got)
+	}
+}
+
+// TestSinkWithdrawsWhenTheExecBehaviorIsRemoved covers the update path into the
+// same withdrawal rpDeleted does: a policy that keeps its attachment but drops
+// its exec entries still has to release its pods from the observation sinks.
+func TestSinkWithdrawsWhenTheExecBehaviorIsRemoved(t *testing.T) {
+	h, sink := newHarnessWithSink(t)
+	sel := selFor(map[string]string{"app": "web"})
+	withExec := result("rp1", compiler.ModeEnforce, sel, pair(nil, []string{"/etc/shadow"}), pair(nil, []string{"/bin/nc"}))
+
+	if err := h.l.RuntimePolicyEvent(withExec, events.EventTypeCreate); err != nil {
+		t.Fatalf("create rp1: %v", err)
+	}
+	if err := h.l.PodEvent(testPod("podWeb", map[string]string{"app": "web"}), nil, cgs(11, 12), events.EventTypeCreate); err != nil {
+		t.Fatalf("create podWeb: %v", err)
+	}
+	if got := sink.set(); !slices.Equal(got, []uint64{11, 12}) {
+		t.Fatalf("sink = %v, want [11 12]", got)
+	}
+
+	// the open behavior stays, so the attachment survives; only exec goes away
+	openOnly := result("rp1", compiler.ModeEnforce, sel, pair(nil, []string{"/etc/shadow"}), nil)
+	if err := h.l.RuntimePolicyEvent(openOnly, events.EventTypeUpdate); err != nil {
+		t.Fatalf("update rp1: %v", err)
+	}
+	if _, ok := h.l.openExecAttachments["rp1"]; !ok {
+		t.Fatal("attachment gone, the update was meant to keep the open behavior")
+	}
+	if got := sink.set(); len(got) != 0 {
+		t.Errorf("sink after the exec behavior was removed = %v, want empty", got)
+	}
+}

@@ -15,7 +15,7 @@ import (
 	"github.com/go-logr/logr"
 )
 
-//go:generate go tool bpf2go execTrace ./_cprog/exec.bpf.c -- -I../include -I./_cprog
+//go:generate go tool bpf2go -target bpfel execTrace ./_cprog/exec.bpf.c -- -I../include -I./_cprog
 
 // SourceName is the name this source reports to the collector, and the value of
 // the `source` label on its ingest and drop metrics.
@@ -30,8 +30,8 @@ var statNames = [...]string{"argvOverflow", "ringbufFull", "argvUnreadable"}
 const statCount = len(statNames)
 
 // Source streams one event per execve in a selected cgroup, with argv — the
-// observation-only counterpart to pkg/bpf/lsm's enforcing bprm_check_security
-// program, whose hook does not carry arguments. Argv is what identifies a
+// observation-only counterpart to pkg/bpf/openexec's enforcing
+// bprm_check_security program, whose hook does not carry arguments. Argv is what identifies a
 // stdio MCP server (`npx @modelcontextprotocol/...`, `uvx ...`).
 //
 // The kernel side takes sched_process_exec as a raw tracepoint rather than
