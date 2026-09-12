@@ -1,0 +1,25 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: monitor-claude-code
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: claude-code-demo
+  behaviors:
+  - exec:
+      deny:
+        values: ["*"]
+  - open:
+      deny:
+        values: ["*"]
+  - network:
+      deny:
+        values: ["*"]
+  - protocol:
+      deny:
+        values: ["*"]
+  - dns:
+      deny:
+        values: ["*"]

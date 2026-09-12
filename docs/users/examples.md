@@ -79,6 +79,7 @@ with what each signal can and cannot establish, in
 | [trusted-and-untrusted-agents](../../examples/shadow-ai/trusted-and-untrusted-agents/) | Give a declared agent a hard TLS-to-one-Service boundary, and report which LLM providers an undeclared one resolves | enforce and monitor | cgroup v2 |
 | [detect-ai-sdks](../../examples/shadow-ai/detect-ai-sdks/) | Report the AI SDKs, model files, model caches, and agent credentials a workload reads | monitor | BPF-LSM |
 | [detect-agent-cli](../../examples/shadow-ai/detect-agent-cli/) | Report the coding-agent CLIs and self-hosted inference servers a workload launches | monitor | BPF-LSM |
+| [monitor-claude-code](../../examples/shadow-ai/monitor-claude-code/) | Run Claude Code in a container and inventory its process, file, network, protocol, and DNS activity | monitor | BPF-LSM for `open` and `exec`; cgroup v2 for network-side findings |
 | [detect-mcp-servers](../../examples/shadow-ai/detect-mcp-servers/) | Report every stdio MCP server a workload launches, identified by the package it was asked to run rather than the binary that ran it | monitor | BPF-LSM for the stdio half; cgroup v2 for the remote half |
 | [detect-mcp-config-access](../../examples/shadow-ai/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM |
 
