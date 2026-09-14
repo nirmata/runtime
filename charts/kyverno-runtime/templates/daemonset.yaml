@@ -78,6 +78,12 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: DAEMONSET_NAME
+          value: {{ include "kyverno-runtime.fullname" . | quote }}
         ports:
         - name: metrics
           containerPort: {{ .Values.daemon.metrics.port }}

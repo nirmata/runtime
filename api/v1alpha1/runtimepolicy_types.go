@@ -212,6 +212,13 @@ const (
 	ConditionPodsMatched = "PodsMatched"
 	ReasonNoMatchingPods = "NoMatchingPods"
 	ReasonPodsMatched    = "PodsMatched"
+
+	// ConditionEventSourcesAvailable reports whether every event source a
+	// monitor-mode policy needs is ready on every daemon.
+	ConditionEventSourcesAvailable = "EventSourcesAvailable"
+	ReasonEventSourcesAvailable    = "EventSourcesAvailable"
+	ReasonEventSourcesUnavailable  = "EventSourcesUnavailable"
+	ReasonEventSourcesUnknown      = "EventSourcesUnknown"
 )
 
 // PodsMatchedCondition builds the PodsMatched condition every manager records,
@@ -262,6 +269,24 @@ type NodePolicyStatus struct {
 	// Message explains a false EnforcementAvailable or ObservationAvailable.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// EventSources reports the event sources this monitor-mode policy needs on
+	// this node.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	EventSources []EventSourceStatus `json:"eventSources,omitempty"`
+}
+
+// EventSourceStatus is one source's lifecycle status on a daemon node.
+type EventSourceStatus struct {
+	Name string `json:"name"`
+
+	Status metav1.ConditionStatus `json:"status"`
+
+	Reason string `json:"reason"`
+
+	Message string `json:"message"`
 }
 
 // +genclient

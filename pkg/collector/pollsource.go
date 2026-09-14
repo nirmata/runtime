@@ -53,6 +53,7 @@ func (p *pollSource) Name() string { return p.name }
 func (p *pollSource) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 	tick, stop := p.ticks(p.interval)
 	defer stop()
+	runtimeevent.SourceReady(ctx)
 
 	for {
 		select {

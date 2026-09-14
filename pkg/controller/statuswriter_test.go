@@ -11,6 +11,7 @@ import (
 	fakeversioned "github.com/nirmata/runtime/pkg/client/clientset/versioned/fake"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
@@ -37,6 +38,13 @@ func policyObj(name, uid string) *v1alpha1.RuntimePolicy {
 	return &v1alpha1.RuntimePolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(uid)},
 	}
+}
+
+func monitorPolicyWithBehaviors(name, uid string, behaviors ...v1alpha1.PolicyBehavior) *v1alpha1.RuntimePolicy {
+	mode := v1alpha1.PolicyModeMonitor
+	policy := policyObj(name, uid)
+	policy.Spec = v1alpha1.RuntimePolicySpec{Mode: &mode, Behaviors: behaviors}
+	return policy
 }
 
 func evalResult(uid, name, mode string, sel labels.Selector) *compiler.EvaluationResult {
@@ -1358,6 +1366,282 @@ func TestNewStatusWriterDefaultsInterval(t *testing.T) {
 	sw := NewStatusWriter(fakeversioned.NewSimpleClientset(), "node-a", 0, logr.Discard(), nil, nil)
 	if sw.interval != DefaultStatusFlushInterval {
 		t.Errorf("interval = %v, want the %v default", sw.interval, DefaultStatusFlushInterval)
+	}
+}
+
+func TestStatusWriterProjectsSourceStateRecordedBeforePolicy(t *testing.T) {
+	mode := v1alpha1.PolicyModeMonitor
+	policy := policyObj("p", "uid-1")
+	policy.Spec = v1alpha1.RuntimePolicySpec{
+		Mode: &mode,
+		Behaviors: []v1alpha1.PolicyBehavior{
+			{Exec: &v1alpha1.Behavior{}},
+			{DNS: &v1alpha1.Behavior{}},
+		},
+	}
+	sw, client := newTestStatusWriter(t, "node-a", policy)
+	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
+		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
+	})
+	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeMonitor, labels.Everything()), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := getPolicy(t, client, "p")
+	gate := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionEventSourcesAvailable)
+	if gate.Status != metav1.ConditionUnknown {
+		t.Errorf("EventSourcesAvailable = %s, want Unknown while dnsquery has not reported", gate.Status)
+	}
+
+	sw.RecordSourceStatus(dnsQuerySource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got = getPolicy(t, client, "p")
+	gate = conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionEventSourcesAvailable)
+	if gate.Status != metav1.ConditionTrue {
+		t.Errorf("EventSourcesAvailable = %s, want True", gate.Status)
+	}
+
+	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got = getPolicy(t, client, "p")
+	gate = conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionEventSourcesAvailable)
+	if gate.Status != metav1.ConditionFalse || gate.Reason != v1alpha1.ReasonEventSourcesUnavailable {
+		t.Errorf("EventSourcesAvailable = (%s, %s), want (False, %s)", gate.Status, gate.Reason, v1alpha1.ReasonEventSourcesUnavailable)
+	}
+	applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+	if applied.Status != metav1.ConditionFalse || applied.Reason != v1alpha1.ReasonEventSourcesUnavailable {
+		t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, v1alpha1.ReasonEventSourcesUnavailable)
+	}
+}
+
+func TestAggregateEventSourcesExpectedNodes(t *testing.T) {
+	available := v1alpha1.EventSourceStatus{Name: execTraceSource, Status: metav1.ConditionTrue, Reason: runtimeevent.SourceReasonReady}
+	unavailable := v1alpha1.EventSourceStatus{Name: execTraceSource, Status: metav1.ConditionFalse, Reason: runtimeevent.SourceReasonReaderFailed}
+	tests := []struct {
+		name     string
+		nodes    []v1alpha1.NodePolicyStatus
+		expected ExpectedSourceNodes
+		depends  []string
+		status   metav1.ConditionStatus
+		message  string
+	}{
+		{name: "missing expected report", nodes: []v1alpha1.NodePolicyStatus{{NodeName: "node-a", EventSources: []v1alpha1.EventSourceStatus{available}}}, expected: ExpectedSourceNodes{Names: []string{"node-a", "node-b"}, Desired: 2, Synced: true}, status: metav1.ConditionUnknown},
+		{name: "failed node wins over missing report", nodes: []v1alpha1.NodePolicyStatus{{NodeName: "node-a", EventSources: []v1alpha1.EventSourceStatus{unavailable}}}, expected: ExpectedSourceNodes{Names: []string{"node-a", "node-b"}, Desired: 2, Synced: true}, status: metav1.ConditionFalse},
+		{name: "incomplete inventory retains known failure", nodes: []v1alpha1.NodePolicyStatus{{NodeName: "node-a", EventSources: []v1alpha1.EventSourceStatus{unavailable}}}, expected: ExpectedSourceNodes{Desired: 0, Synced: false}, status: metav1.ConditionFalse},
+		{name: "no expected daemon nodes", expected: ExpectedSourceNodes{Desired: 0, Synced: true}, status: metav1.ConditionUnknown},
+		{name: "outside placement ignored once synced", nodes: []v1alpha1.NodePolicyStatus{{NodeName: "node-a", EventSources: []v1alpha1.EventSourceStatus{available}}, {NodeName: "node-old", EventSources: []v1alpha1.EventSourceStatus{unavailable}}}, expected: ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}, status: metav1.ConditionTrue},
+		{name: "garbage status cannot claim readiness", nodes: []v1alpha1.NodePolicyStatus{{NodeName: "node-a", EventSources: []v1alpha1.EventSourceStatus{{Name: execTraceSource, Status: "Other", Reason: runtimeevent.SourceReasonReady}}}}, expected: ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}, status: metav1.ConditionUnknown},
+		{name: "two failing sources count one node", nodes: []v1alpha1.NodePolicyStatus{{NodeName: "node-a", EventSources: []v1alpha1.EventSourceStatus{unavailable, {Name: dnsQuerySource, Status: metav1.ConditionFalse, Reason: runtimeevent.SourceReasonReaderFailed}}}}, expected: ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}, depends: []string{execTraceSource, dnsQuerySource}, status: metav1.ConditionFalse, message: "on 1 of 1 expected daemon node(s)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dependencies := tc.depends
+			if dependencies == nil {
+				dependencies = []string{execTraceSource}
+			}
+			got, ok := aggregateEventSources(tc.nodes, metav1.NewTime(fixedNow), dependencies, tc.expected, true)
+			if !ok || got.Status != tc.status {
+				t.Errorf("aggregateEventSources = (%v, %s), want (true, %s)", ok, got.Status, tc.status)
+			}
+			if tc.message != "" && !strings.Contains(got.Message, tc.message) {
+				t.Errorf("aggregateEventSources message = %q, want %q", got.Message, tc.message)
+			}
+		})
+	}
+}
+
+// TestSourceFailureBeforePolicyIsPublished ensures an initialization failure
+// is retained until a policy needing that source appears.
+func TestSourceFailureBeforePolicyIsPublished(t *testing.T) {
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	sw, client := newTestStatusWriter(t, "node-a", policy)
+	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
+		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
+	})
+	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonInitializationFailed)
+	if err := sw.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "uid-1", Name: "p", Mode: compiler.ModeMonitor,
+		Exec: &compiler.AllowDenyPair{Deny: []string{"/bin/sh"}}}, events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := getPolicy(t, client, "p")
+	if status := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionEventSourcesAvailable).Status; status != metav1.ConditionFalse {
+		t.Errorf("EventSourcesAvailable = %s, want False", status)
+	}
+	if status := got.Status.Nodes[0].EventSources[0].Status; status != metav1.ConditionFalse {
+		t.Errorf("node event source status = %s, want False", status)
+	}
+}
+
+// TestEventSourcePartialRecoveryStaysUnavailable ensures one recovered source
+// cannot hide a second source failure needed by the same policy.
+func TestEventSourcePartialRecoveryStaysUnavailable(t *testing.T) {
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}}, v1alpha1.PolicyBehavior{DNS: &v1alpha1.Behavior{}})
+	sw, client := newTestStatusWriter(t, "node-a", policy)
+	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
+		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
+	})
+	if err := sw.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "uid-1", Name: "p", Mode: compiler.ModeMonitor,
+		Exec: &compiler.AllowDenyPair{Deny: []string{"/bin/sh"}}, DNS: &compiler.AllowDenyPair{Deny: []string{"*"}}}, events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{execTraceSource, dnsQuerySource} {
+		sw.RecordSourceStatus(source, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
+	}
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := getPolicy(t, client, "p")
+	gate := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionEventSourcesAvailable)
+	if gate.Status != metav1.ConditionFalse || !strings.Contains(gate.Message, dnsQuerySource) {
+		t.Errorf("EventSourcesAvailable = (%s, %q), want dnsquery failure", gate.Status, gate.Message)
+	}
+}
+
+// TestPolicySourceDependenciesFollowCurrentSpec ensures a policy update drops
+// source entries that its current mode and behaviors no longer require.
+func TestPolicySourceDependenciesFollowCurrentSpec(t *testing.T) {
+	cases := []struct {
+		name     string
+		mode     v1alpha1.RuntimePolicyMode
+		behavior v1alpha1.PolicyBehavior
+	}{
+		{name: "unrelated behavior", mode: v1alpha1.PolicyModeMonitor, behavior: v1alpha1.PolicyBehavior{Open: &v1alpha1.Behavior{}}},
+		{name: "enforcement ignores optional reader", mode: v1alpha1.PolicyModeEnforce, behavior: v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+			sw, client := newTestStatusWriter(t, "node-a", policy)
+			sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
+				return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
+			})
+			sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
+			if err := sw.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "uid-1", Name: "p", Mode: compiler.ModeMonitor,
+				Exec: &compiler.AllowDenyPair{Deny: []string{"/bin/sh"}}}, events.EventTypeCreate); err != nil {
+				t.Fatal(err)
+			}
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			current := getPolicy(t, client, "p")
+			current.Spec.Mode = &tc.mode
+			current.Spec.Behaviors = []v1alpha1.PolicyBehavior{tc.behavior}
+			if _, err := client.RuntimeV1alpha1().RuntimePolicies().Update(context.Background(), current, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			sw.MarkAllDirty()
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got := getPolicy(t, client, "p")
+			if len(got.Status.Nodes[0].EventSources) != 0 {
+				t.Errorf("eventSources = %+v, want none after the spec update", got.Status.Nodes[0].EventSources)
+			}
+			if hasCondition(got.Status.Conditions, v1alpha1.ConditionEventSourcesAvailable) {
+				t.Error("EventSourcesAvailable survived after all source dependencies were removed")
+			}
+			if applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied); applied.Status != metav1.ConditionTrue {
+				t.Errorf("Applied = %+v, want True after removing the optional source dependency", applied)
+			}
+		})
+	}
+}
+
+// TestCompileFailureOutranksEventSourceFailure keeps a compiler rejection as
+// Applied's explanation even when a required observation source is down.
+func TestCompileFailureOutranksEventSourceFailure(t *testing.T) {
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	sw, client := newTestStatusWriter(t, "node-a", policy)
+	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
+		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
+	})
+	if err := sw.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "uid-1", Name: "p", Mode: compiler.ModeMonitor,
+		Exec: &compiler.AllowDenyPair{Deny: []string{"/bin/sh"}}}, events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse,
+		Reason: v1alpha1.ReasonCompileFailed, Message: "policy compilation failed"})
+	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonInitializationFailed)
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := getPolicy(t, client, "p")
+	applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+	if applied.Status != metav1.ConditionFalse || applied.Reason != v1alpha1.ReasonCompileFailed {
+		t.Errorf("Applied = (%s, %s), want (False, %s)", applied.Status, applied.Reason, v1alpha1.ReasonCompileFailed)
+	}
+}
+
+// TestHealthySourceShardCannotEraseFailedNode keeps the aggregate false when
+// a healthy node flushes after a different daemon reports source failure.
+func TestHealthySourceShardCannotEraseFailedNode(t *testing.T) {
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	swA, client := newTestStatusWriter(t, "node-a", policy)
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
+	swB.clock = func() time.Time { return fixedNow }
+	for _, sw := range []*StatusWriter{swA, swB} {
+		sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
+			return ExpectedSourceNodes{Names: []string{"node-a", "node-b"}, Desired: 2, Synced: true}
+		})
+		if err := sw.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "uid-1", Name: "p", Mode: compiler.ModeMonitor,
+			Exec: &compiler.AllowDenyPair{Deny: []string{"/bin/sh"}}}, events.EventTypeCreate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	swB.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
+	if err := swB.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	swA.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	if err := swA.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := getPolicy(t, client, "p")
+	if status := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionEventSourcesAvailable).Status; status != metav1.ConditionFalse {
+		t.Errorf("EventSourcesAvailable = %s, want False after node-a flushes", status)
+	}
+}
+
+// TestMembershipChangeReconcilesCleanPolicy ensures a placement update causes
+// a new aggregate even when no policy or source transition occurred.
+func TestMembershipChangeReconcilesCleanPolicy(t *testing.T) {
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	sw, client := newTestStatusWriter(t, "node-a", policy)
+	expected := ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
+	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes { return expected })
+	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	if err := sw.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "uid-1", Name: "p", Mode: compiler.ModeMonitor,
+		Exec: &compiler.AllowDenyPair{Deny: []string{"/bin/sh"}}}, events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if status := conditionOfType(t, getPolicy(t, client, "p").Status.Conditions, v1alpha1.ConditionEventSourcesAvailable).Status; status != metav1.ConditionTrue {
+		t.Fatalf("EventSourcesAvailable = %s, want True", status)
+	}
+
+	expected = ExpectedSourceNodes{Names: []string{"node-a", "node-b"}, Desired: 2, Synced: true}
+	sw.MarkAllDirty()
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if status := conditionOfType(t, getPolicy(t, client, "p").Status.Conditions, v1alpha1.ConditionEventSourcesAvailable).Status; status != metav1.ConditionUnknown {
+		t.Errorf("EventSourcesAvailable = %s, want Unknown after node-b is expected", status)
 	}
 }
 

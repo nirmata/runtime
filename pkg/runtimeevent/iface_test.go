@@ -78,6 +78,17 @@ func TestSourceSinkSeamsAreImplementable(t *testing.T) {
 	}
 }
 
+func TestSourceReadyCallsCallbackOnlyWhenInstalled(t *testing.T) {
+	called := 0
+	ctx := WithSourceReady(context.Background(), func() { called++ })
+	SourceReady(ctx)
+	SourceReady(context.Background())
+
+	if called != 1 {
+		t.Errorf("ready callback calls = %d, want 1", called)
+	}
+}
+
 func TestPolicyStatusRecorderSeam(t *testing.T) {
 	var rec PolicyStatusRecorder = &fakeRecorder{}
 	rec.RecordCondition("policy-uid", "policy-name", metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue, Reason: "Monitoring"})

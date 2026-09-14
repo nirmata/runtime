@@ -47,8 +47,14 @@ type Source struct {
 	statInterval time.Duration
 	objs         execTraceObjects
 	link         link.Link
-	rd           *ringbuf.Reader
+	rd           ringReader
+	newReader    func() (ringReader, error)
 	clock        func() time.Time
+}
+
+type ringReader interface {
+	Read() (ringbuf.Record, error)
+	Close() error
 }
 
 // New loads and attaches the kernel program. The caller owns Close.
@@ -72,13 +78,9 @@ func New(log logr.Logger, statInterval time.Duration) (*Source, error) {
 	}
 	s.link = l
 
-	rd, err := ringbuf.NewReader(s.objs.Events)
-	if err != nil {
-		_ = l.Close()
-		_ = s.objs.Close()
-		return nil, fmt.Errorf("%s: opening ring buffer: %w", SourceName, err)
+	s.newReader = func() (ringReader, error) {
+		return ringbuf.NewReader(s.objs.Events)
 	}
-	s.rd = rd
 
 	return s, nil
 }
@@ -110,21 +112,29 @@ func (s *Source) DeleteCgids(cgids []uint64) error {
 
 // Run drains the ring buffer until ctx is done.
 func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
+	rd, err := s.newReader()
+	if err != nil {
+		return fmt.Errorf("%s: opening ring buffer: %w", SourceName, err)
+	}
+	s.rd = rd
+	defer func() { _ = rd.Close() }()
+
 	// ringbuf.Read has no deadline; closing the reader is what unblocks it.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = s.rd.Close()
+			_ = rd.Close()
 		case <-done:
 		}
 	}()
 
 	go s.pollStats(ctx, done)
+	runtimeevent.SourceReady(ctx)
 
 	for {
-		rec, err := s.rd.Read()
+		rec, err := rd.Read()
 		if err != nil {
 			if errors.Is(err, ringbuf.ErrClosed) || ctx.Err() != nil {
 				return nil

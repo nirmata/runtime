@@ -837,7 +837,8 @@ an unzeroed tail is a cross-pod argv leak, not untidiness.
 ## Status reporting
 
 `pkg/controller.StatusWriter` is the single writer of `RuntimePolicyStatus` and the single
-implementation of `runtimeevent.PolicyStatusRecorder`. It consumes the policy event stream only;
+implementation of `runtimeevent.PolicyStatusRecorder`. It consumes policy events, source lifecycle
+transitions, and daemon placement changes;
 pod-level detail belongs to the Reports and the Prometheus counters, not to the status.
 
 Because every node runs a daemon and `RuntimePolicy` is cluster-scoped, status is **sharded**:
@@ -873,11 +874,41 @@ shard, and never prunes before its node watch has synced. A node that still exis
 runs a daemon (a taint, an unscheduled DaemonSet) keeps its shard; the watch only answers
 whether the node object is there.
 
+Optional event sources have their own lifecycle. The daemon registers `exec-trace` and
+`dnsquery` before attempting to load their kernel programs. The collector records each start
+and failure, and a source signals readiness only after its reader is usable. Starting and
+unavailable sources expose a zero `source_available` gauge; constructor and reader failures
+increment `source_failures_total` with bounded reasons. Quiet sources remain available without
+needing an event. Constructor failures require a daemon restart; reader failures use the
+collector's restart backoff. The exec tracer also requires a functioning open/exec manager to
+populate its cgroup gate.
+
+Each node shard's `eventSources` list includes the optional sources relevant to the policy:
+`dnsquery` for monitor DNS and `exec-trace` for monitor exec. The latter represents argv coverage;
+filename observations can still arrive through the open/exec counter source. `EventSourcesAvailable`
+is `False` if any relevant source fails, `Unknown` while a required source or node has not
+reported, and `True` when every expected daemon node reports readiness. Monitor `Applied`
+inherits a false or unknown source condition. Enforce policies and unrelated monitor behaviors
+do not depend on these optional readers.
+
+`pkg/controller.DaemonPlacement` watches the daemon's DaemonSet and its owned pods. The chart
+injects `POD_NAMESPACE` and `DAEMONSET_NAME` to identify that deployment. Pod node assignments
+(including the DaemonSet controller's target affinity on pending pods) identify expected nodes;
+`desiredNumberScheduled` accounts for nodes whose pods have not appeared yet. The daemon does
+not duplicate Kubernetes scheduling rules for selectors, affinity, or tolerations. Unobserved
+DaemonSet generations and incomplete inventories produce `Unknown` unless a known source
+failure already requires `False`. Node, DaemonSet, and pod changes dirty policy status, so
+membership changes are reconciled without a policy edit. Completed placement changes exclude
+departed daemon nodes from source aggregation; only Node deletion removes their shards.
+Unavailable placement discovery also produces `Unknown`. These are last-reported source states,
+not heartbeats: a daemon restart replaces its shard, but temporary node unreachability keeps
+the last report. Source readiness does not establish lossless delivery or detect kernel stalls.
+
 `Applied` is derived rather than recorded: `StatusWriter` computes it at flush time from
-`spec.mode` plus the aggregated `EnforcementAvailable` / `ObservationAvailable` for that mode and
-the aggregated `PodsMatched` — a mode that promises enforcement or observation does not read as
+`spec.mode` plus the aggregated `EnforcementAvailable` / `ObservationAvailable` for that mode,
+`EventSourcesAvailable` for relevant monitor policies, and `PodsMatched` — a mode that promises enforcement or observation does not read as
 applied while any node's attachment behind it never took, or while no node has a matching pod.
-The two are checked in that order, so an attachment failure (the more actionable case) is
+The gates are checked in that order, so an attachment failure (the more actionable case) is
 reported ahead of, and is never masked by, a selector that also happens to match nothing at the
 same time. The one direct exception to the derivation is `reportCompileFailure`, which records
 `Applied=False/CompileFailed` itself for a policy the compiler rejected outright — there is no
@@ -913,11 +944,13 @@ has not ticked recently, and is otherwise honest about having nothing else to ch
 `--metrics-addr=:{{ .Values.daemon.metrics.port }}` and declares the matching `containerPort`.
 An empty value disables the endpoint without disabling the counters.
 
-`pkg/metrics/metrics.go` registers exactly six collectors, all under the `nirmata_runtime`
+`pkg/metrics/metrics.go` registers collectors under the `nirmata_runtime`
 namespace: `events_ingested_total{source,kind}`, `events_dropped_total{source,reason}`,
 `attribution_misses_total`, `findings_emitted_total{policy,behavior}`,
 `monitor_filter_eval_errors_total{policy,expression}`, and
-`report_writes_total{result}`. The `reason` values something produces are `buffer_full`
+`report_writes_total{result}`, `source_available{source}`, and
+`source_failures_total{source,reason}`. Source failure reasons are `InitializationFailed`,
+`ReaderFailed`, `UnexpectedExit`, and `DependencyUnavailable`. Drop reasons are `buffer_full`
 (`pkg/collector`), `unattributed` (`pkg/monitor`, `pkg/reporter`),
 `unattributed_kernel_deny` (`pkg/monitor`), `ringbuf_full` / `name_unreadable` /
 `undecodable` (`pkg/bpf/dnsquery`, all under `source="dnsquery"`), and `queue_full` /

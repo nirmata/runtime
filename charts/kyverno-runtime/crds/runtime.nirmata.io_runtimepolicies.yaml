@@ -523,6 +523,32 @@ spec:
                         EnforcementAvailable reports whether the kernel programs and maps
                         enforcing this policy are attached and programmed on this node.
                       type: boolean
+                    eventSources:
+                      description: |-
+                        EventSources reports the event sources this monitor-mode policy needs on
+                        this node.
+                      items:
+                        description: EventSourceStatus is one source's lifecycle status
+                          on a daemon node.
+                        properties:
+                          message:
+                            type: string
+                          name:
+                            type: string
+                          reason:
+                            type: string
+                          status:
+                            type: string
+                        required:
+                        - message
+                        - name
+                        - reason
+                        - status
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     lastEvaluatedTime:
                       format: date-time
                       type: string

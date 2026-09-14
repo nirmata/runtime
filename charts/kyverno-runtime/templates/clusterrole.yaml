@@ -18,6 +18,10 @@ rules:
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["get", "list", "watch"]
+# daemon: identifies expected event-source nodes from its own deployment
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: ["runtime.nirmata.io"]
   resources: ["runtimepolicies"]
   verbs: ["get", "list", "watch"]

@@ -94,7 +94,7 @@ is the one-line-per-package index.
 | `api/v1alpha1` | The `RuntimePolicy` CRD: spec, `mode`, and the node-sharded status + conditions. |
 | `pkg/compiler` | Compiles a `RuntimePolicy` into CEL programs and evaluates it into an `EvaluationResult`. Policy-time, not per event. |
 | `pkg/utils` | `Guard(op, fn)` — the panic barrier used at handler fan-out boundaries so one bad handler cannot take out its siblings. |
-| `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID) plus `StatusWriter`. |
+| `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID), `StatusWriter`, and `DaemonPlacement` for expected event-source nodes. |
 | `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
 | `pkg/bpf/openexec`, `pkg/bpf/egressfilter` | The enforcing eBPF programs: an open/exec dispatcher plus a tail-called policy executor, and a `cgroup_skb/egress` IPv4 filter. Open/exec attaches as BPF-LSM on `file_open`/`bprm_check_security` where the kernel allows it and as `fmod_ret` on `security_file_open` otherwise. Policies are map entries, not programs. Both map-driven, plus per-cgroup observation counters. |
 | `pkg/bpf/exectrace` | Observation-only `raw_tp/sched_process_exec` program streaming per-exec events with argv over a ring buffer; a `runtimeevent.Source`. |
@@ -136,6 +136,9 @@ The filtering rules that apply to that pipeline:
   it is counted: a silent drop hides an attribution regression.
 - Buffer-full drops are likewise counted, labeled by source and reason. Never add a drop path
   without a counter.
+- Register source availability before initialization, and signal readiness only when collection
+  is usable. Optional reader failures reach source metrics and relevant policies' node-sharded
+  `EventSourcesAvailable`; a missing expected daemon report is unknown, never healthy.
 - `open`/`exec` observations are kept even when metadata is sparse, so long as the pod is known.
 - Egress observation is destination-IPv4 only. It does see flows a default-deny drops: the BPF
   program computes its decision, records it, and only then returns, and the decision is part of the

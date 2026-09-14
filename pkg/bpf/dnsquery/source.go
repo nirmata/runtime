@@ -75,6 +75,7 @@ func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 	if err != nil {
 		return fmt.Errorf("%s: open ring buffer: %w", SourceName, err)
 	}
+	runtimeevent.SourceReady(ctx)
 
 	// Read blocks in the kernel and does not observe ctx, so closing the reader
 	// is what unblocks it.
