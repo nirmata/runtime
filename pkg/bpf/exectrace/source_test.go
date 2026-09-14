@@ -3,6 +3,7 @@ package exectrace
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -104,5 +105,74 @@ func TestSourceRunDoesNotAnnounceReadyWhenReaderCannotOpen(t *testing.T) {
 	case <-ready:
 		t.Error("reader-open failure announced readiness")
 	default:
+	}
+}
+
+// TestSourceCloseSerializesReaderPublication keeps concurrent teardown from
+// missing a reader opened by a source run or allowing one to open afterward.
+func TestSourceCloseSerializesReaderPublication(t *testing.T) {
+	for _, timing := range []string{"before run", "during reader creation", "while reading"} {
+		t.Run(timing, func(t *testing.T) {
+			rd := newFakeRingReader(nil)
+			creating, release := make(chan struct{}), make(chan struct{})
+			ready := make(chan struct{}, 1)
+			s := &Source{
+				log: logr.Discard(), statInterval: time.Hour, clock: time.Now,
+				newReader: func() (ringReader, error) {
+					close(creating)
+					<-release
+					return rd, nil
+				},
+			}
+			if timing == "before run" {
+				if err := s.Close(); err != nil {
+					t.Fatal(err)
+				}
+				close(release)
+			}
+			ctx, cancel := context.WithCancel(runtimeevent.WithSourceReady(context.Background(), func() { ready <- struct{}{} }))
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- s.Run(ctx, make(chan runtimeevent.Event)) }()
+
+			if timing != "before run" {
+				<-creating
+				if timing == "while reading" {
+					close(release)
+					<-ready
+				}
+				started, closed := make(chan struct{}), make(chan error, 2)
+				go func() { close(started); closed <- s.Close() }()
+				<-started
+				go func() { closed <- s.Close() }()
+				if timing == "during reader creation" {
+					close(release)
+				}
+				for range 2 {
+					if err := <-closed; err != nil {
+						t.Errorf("Close = %v", err)
+					}
+				}
+			}
+			select {
+			case err := <-done:
+				if timing == "before run" {
+					if !errors.Is(err, os.ErrClosed) {
+						t.Errorf("Run = %v, want a closed source error", err)
+					}
+					select {
+					case <-creating:
+						t.Error("a closed source opened a reader")
+					default:
+					}
+				} else if err != nil {
+					t.Errorf("Run = %v, want nil after Close", err)
+				}
+			case <-time.After(time.Second):
+				cancel()
+				<-done
+				t.Error("Run did not return after Close")
+			}
+		})
 	}
 }

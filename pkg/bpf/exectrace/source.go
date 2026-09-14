@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/nirmata/runtime/pkg/runtimeevent"
@@ -47,7 +48,9 @@ type Source struct {
 	statInterval time.Duration
 	objs         execTraceObjects
 	link         link.Link
+	mu           sync.Mutex
 	rd           ringReader
+	closed       bool
 	newReader    func() (ringReader, error)
 	clock        func() time.Time
 }
@@ -112,11 +115,20 @@ func (s *Source) DeleteCgids(cgids []uint64) error {
 
 // Run drains the ring buffer until ctx is done.
 func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
+	// Reader creation and publication share Close's lock so teardown cannot
+	// miss a reader or close its map while it is being opened.
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return fmt.Errorf("%s: source is closed: %w", SourceName, os.ErrClosed)
+	}
 	rd, err := s.newReader()
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("%s: opening ring buffer: %w", SourceName, err)
 	}
 	s.rd = rd
+	s.mu.Unlock()
 	defer func() { _ = rd.Close() }()
 
 	// ringbuf.Read has no deadline; closing the reader is what unblocks it.
@@ -214,6 +226,13 @@ func (s *Source) readStats() ([statCount]uint64, error) {
 }
 
 func (s *Source) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+
 	var errs []error
 	if s.rd != nil {
 		if err := s.rd.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
