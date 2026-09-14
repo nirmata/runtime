@@ -485,34 +485,6 @@ func TestPodProcessNextWorkItemReturnsFalseAfterShutdown(t *testing.T) {
 	}
 }
 
-// containers.ResolveCgInfos reports partial success, so a failure that still
-// yielded cgroups must not be retryable and the partial result must not be
-// discarded.
-func TestResolveRetryableOnlyWhenNothingResolved(t *testing.T) {
-	boom := errors.New("one container is not started yet")
-	partial := []*containers.ContainerCgroupInfo{{ID: 1, Path: "/sys/fs/cgroup/a", Name: "c1"}}
-
-	tests := []struct {
-		name    string
-		cgInfos []*containers.ContainerCgroupInfo
-		err     error
-		want    bool
-	}{
-		{name: "clean resolve", cgInfos: partial, err: nil, want: false},
-		{name: "nothing resolved and no error", cgInfos: nil, err: nil, want: false},
-		{name: "partial success keeps the result and does not requeue", cgInfos: partial, err: boom, want: false},
-		{name: "total failure is retryable", cgInfos: nil, err: boom, want: true},
-		{name: "empty non-nil slice with error is retryable", cgInfos: []*containers.ContainerCgroupInfo{}, err: boom, want: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveRetryable(tc.cgInfos, tc.err); got != tc.want {
-				t.Errorf("resolveRetryable(%d infos, err=%v) = %v, want %v", len(tc.cgInfos), tc.err, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestPodHandleCreateOrUpdateFansOutPartialCgInfos proves the partial result
 // reaches the handlers rather than being dropped on the floor with the error.
 func TestPodHandleCreateOrUpdateFansOutPartialCgInfos(t *testing.T) {
@@ -532,10 +504,13 @@ func TestPodHandleCreateOrUpdateFansOutPartialCgInfos(t *testing.T) {
 	}
 }
 
-// TestPodUnresolvableContainerIsRetried covers the retryable branch end to end:
-// a pod whose only running container reports an unresolvable id resolves
-// nothing, so the event is requeued rather than silently accepted.
-func TestPodUnresolvableContainerIsRetried(t *testing.T) {
+// A pod whose only running container reports an unresolvable id is not
+// retried: the same OS/runtime facts that produced the miss are still there
+// on the next attempt, so retrying only delays the same outcome. Driven
+// through processNextWorkItem rather than handleCreateOrUpdate directly, so a
+// regression that requeues the key via AddRateLimited would fail this test
+// even though handleCreateOrUpdate's returned error looks the same either way.
+func TestPodUnresolvableContainerIsNotRetried(t *testing.T) {
 	p := pod("ns", "p", "uid-1")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:        "c1",
@@ -545,9 +520,17 @@ func TestPodUnresolvableContainerIsRetried(t *testing.T) {
 	h := &recordingPodHandler{name: "h"}
 	w, _ := newTestPodWatcher(t, podHandlers(h), p)
 
-	err := w.handleCreateOrUpdate(p, events.EventTypeCreate)
-	if err == nil {
-		t.Fatal("a pod with no resolvable containers produced no error, so the event would never be retried")
+	key := queueKey{Type: events.EventTypeCreate, Key: "ns/p"}
+	w.queue.Add(key)
+	if !w.processNextWorkItem() {
+		t.Fatal("processNextWorkItem returned false")
+	}
+
+	if got := w.queue.Len(); got != 0 {
+		t.Errorf("queue len = %d, want the item forgotten rather than requeued", got)
+	}
+	if got := w.queue.NumRequeues(key); got != 0 {
+		t.Errorf("NumRequeues = %d, want 0: an unresolvable container must not drive a requeue", got)
 	}
 	// the handlers still saw the event, with an empty set
 	calls := h.podEventCalls()

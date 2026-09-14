@@ -998,8 +998,9 @@ future `PLAN.md`.
   layouts with a cgroup v1 fallback, and `ResolveCgInfos` returns partial results plus a joined
   error instead of failing or panicking on the first bad container. It is still a path-shape
   heuristic: an unrecognized layout yields no cgroup ID, no enforcement, and no observation for that
-  container. The failure is now logged and requeued rather than silent, but there is no positive
-  confirmation that a pod is covered.
+  container. The failure is now logged rather than silent, but there is no positive confirmation
+  that a pod is covered — and it is never retried, since the same OS/runtime facts that produced
+  the miss are still there on the next attempt.
 - **Unsupported network targets are rejected, not programmed.** The egress maps are IPv4 `/32`
   hashes by construction (`u32` key, `ip->daddr` only, no L4 parsing). `egressfilter.ParseTargets`
   expands CIDRs of `/24` or narrower and rejects IPv6, wider CIDRs, and hostnames as typed
