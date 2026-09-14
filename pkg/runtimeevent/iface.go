@@ -6,10 +6,52 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// SourceState is the lifecycle state of an event source.
+type SourceState string
+
+const (
+	SourceStateStarting    SourceState = "Starting"
+	SourceStateAvailable   SourceState = "Available"
+	SourceStateUnavailable SourceState = "Unavailable"
+)
+
+const (
+	SourceReasonInitializationFailed  = "InitializationFailed"
+	SourceReasonReaderFailed          = "ReaderFailed"
+	SourceReasonUnexpectedExit        = "UnexpectedExit"
+	SourceReasonDependencyUnavailable = "DependencyUnavailable"
+	SourceReasonStarting              = "Starting"
+	SourceReasonReady                 = "Ready"
+)
+
+// SourceStatusFunc observes source lifecycle changes. Reasons are stable
+// diagnostic categories and must not include raw error text.
+type SourceStatusFunc func(source string, state SourceState, reason string)
+
+type sourceReadyContextKey struct{}
+
+// WithSourceReady installs the callback a source calls once it can produce
+// events. A nil callback leaves ctx unchanged.
+func WithSourceReady(ctx context.Context, ready func()) context.Context {
+	if ready == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sourceReadyContextKey{}, ready)
+}
+
+// SourceReady reports that a source initialized from ctx is ready to produce
+// events. Contexts without a readiness callback are valid.
+func SourceReady(ctx context.Context) {
+	if ready, ok := ctx.Value(sourceReadyContextKey{}).(func()); ok {
+		ready()
+	}
+}
+
 // Source produces events.
 type Source interface {
 	Name() string
-	// Run blocks until ctx is done. Sends events on out. Must not close out.
+	// Run calls SourceReady after initialization, then sends events until ctx
+	// is done. It must not close out.
 	Run(ctx context.Context, out chan<- Event) error
 }
 

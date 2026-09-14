@@ -734,9 +734,9 @@ program must never inherit deny entries and an enforcing one must not start from
 
 `status` is written per node. Each daemon owns exactly one entry in `status.nodes` (keyed by
 `nodeName`) and never touches another node's entry; each shard carries that node's compact
-answers — `enforcementAvailable`, `observationAvailable`, `podsMatched`, and a `message` naming
+answers — `enforcementAvailable`, `observationAvailable`, `eventSources`, `podsMatched`, and a `message` naming
 what is unavailable there. `status.lastEvaluatedTime` is the newest shard timestamp, and the
-cluster-scoped `Applied`, `EnforcementAvailable`, `ObservationAvailable` and `PodsMatched`
+cluster-scoped `Applied`, `EnforcementAvailable`, `ObservationAvailable`, `EventSourcesAvailable` and `PodsMatched`
 conditions are derived from the shards, so on a mixed cluster the top-level value states
 something true of the cluster rather than of whichever node wrote last. Updates are flushed
 every 30 seconds with conflict retry.
@@ -769,11 +769,12 @@ Conditions:
 
 | Type | Reasons | Meaning |
 | --- | --- | --- |
-| `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed`, `EnforcementUnavailable`, `ObservationUnavailable`, `NoMatchingPods` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for a policy that omits `spec.mode`, which is neither enforced nor reported. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in such a policy is applied, including the rules either side of the bad one. `EnforcementUnavailable` / `ObservationUnavailable` report `False` when the `EnforcementAvailable` / `ObservationAvailable` condition (below) is `False` for the policy's mode: a mode that promises enforcement or observation does not read as applied while any node's attachment behind it never took. `NoMatchingPods` reports `False` when the `PodsMatched` condition (below) is `False` — no node has a matching pod — and the mode's own `EnforcementAvailable` / `ObservationAvailable` is not — that is, is either `True` or was never recorded at all, which is the normal case for a policy whose behaviors never hit a programming failure. When both conditions are `False` at once, `EnforcementUnavailable` / `ObservationUnavailable` takes priority and `NoMatchingPods` is not reported. |
+| `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed`, `EnforcementUnavailable`, `ObservationUnavailable`, `EventSourcesUnavailable`, `EventSourcesUnknown`, `NoMatchingPods` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for an internal policy constructed without a mode; the API server defaults an omitted `spec.mode` to `monitor`. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in such a policy is applied, including the rules either side of the bad one. `EnforcementUnavailable` / `ObservationUnavailable` report `False` when the `EnforcementAvailable` / `ObservationAvailable` condition (below) is `False` for the policy's mode: a mode that promises enforcement or observation does not read as applied while any node's attachment behind it never took. `NoMatchingPods` reports `False` when the `PodsMatched` condition (below) is `False` — no node has a matching pod — and the mode's own `EnforcementAvailable` / `ObservationAvailable` is not — that is, is either `True` or was never recorded at all, which is the normal case for a policy whose behaviors never hit a programming failure. When both conditions are `False` at once, `EnforcementUnavailable` / `ObservationUnavailable` takes priority and `NoMatchingPods` is not reported. |
 | `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServices` | Whether every `network` and `protocol` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServices` lists the Service and endpoint names that are not in cache. |
 | `ExecRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `exec` path could be programmed. `UnsupportedPaths` lists the rejected values and why. |
 | `OpenRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `open` path could be programmed. |
 | `ObservationAvailable` | `ObservationAvailable`, `ObservationUnavailable` | Set to `False` when observation could not be attached on at least one node — a node not booted with `lsm=bpf`, or a loaded LSM program with no observation maps — with the failing nodes and their causes named in the message; a monitor-mode policy on such a node silently produces no findings until this clears. Set to `True` when every node reporting it has observation attached. Each node's own answer is `status.nodes[*].observationAvailable`. |
+| `EventSourcesAvailable` | `EventSourcesAvailable`, `EventSourcesUnavailable`, `EventSourcesUnknown` | Availability of poll and ring-buffer sources required by the monitor policy's active behaviors. `False` identifies source failures, `Unknown` means an expected daemon or source has not reported, and `True` means all expected nodes report ready sources. A false or unknown value also gates monitor `Applied`. Each node records source name, status, reason, and message in `status.nodes[*].eventSources`. |
 | `EnforcementAvailable` | `EnforcementAvailable`, `EnforcementUnavailable` | Set to `False` when a kernel map could not be programmed or attached on at least one node — a node not booted with `lsm=bpf`, a full map, a failed update — with the failing nodes and their causes named in the message, so part of the policy is not enforced there. Set to `True` when every node reporting it has enforcement programmed. Each node's own answer is `status.nodes[*].enforcementAvailable`. |
 | `PodsMatched` | `PodsMatched`, `NoMatchingPods` | Whether any node currently has a pod selected by `spec.podSelector` / `spec.namespaceSelector`. `NoMatchingPods` catches a selector that is well-formed but matches nothing anywhere — otherwise indistinguishable from a policy that is enforcing on pods that simply never triggered it. Nodes where none of the policy's pods are scheduled do not make it `False`. Each node's own answer is `status.nodes[*].podsMatched`. |
 
@@ -782,6 +783,35 @@ carries it depends on where the value came from: a literal is checked when the p
 and a bad one reports `Applied=False` with `CompileFailed`, while a value an `expression`
 produced is checked when it is programmed and reports the per-behavior condition. Either way it
 also reaches an operator-visible log line.
+
+Source coverage follows the daemon's DaemonSet placement. The controller's desired pod count
+and its pods' target nodes identify expected reporters, including pending daemons. A newly
+expected node without a source report makes coverage `Unknown`; a known failure still takes
+priority and keeps it `False`. Node additions, deletions, and daemon placement changes trigger
+status reconciliation without a policy edit. Deleted nodes' shards are removed, and nodes
+excluded by a completed placement change stop contributing to source coverage. During incomplete
+placement discovery, retained failures remain visible. If discovery is unavailable or the
+DaemonSet has no expected nodes, coverage is `Unknown` rather than healthy.
+Membership changes converge after the DaemonSet controller and informer caches update, followed
+by the status flush interval; a stale desired count can temporarily keep coverage `Unknown`
+after a node has been deleted.
+
+Required producers are `openexec-observe` for open and exec, `egress-observe` for network and
+protocol, `dnsquery` for DNS, and additionally `exec-trace` for exec argv.
+A behavior contributes dependencies only when an allow or deny rule contains literal values or
+a nonempty CEL expression. Empty behaviors and empty rules contribute none. Expressions retain
+their dependencies when an evaluation returns an empty list, since reevaluation can produce
+targets. This is a conservative coverage check, independent of the current finding count.
+
+These are last-reported states, not a daemon heartbeat. A temporarily unreachable node retains
+its last report; a restarted daemon replaces its node's source states. An available source does
+not guarantee lossless observations or detect every kernel stall. Losing `exec-trace` removes
+argv coverage while filename observations may continue; losing `openexec-observe` removes
+file-open and exec filename counter observations, and losing `egress-observe` removes network and protocol
+observations. A failure to initialize the open/exec manager also prevents argv coverage because
+the tracer's cgroup gate cannot be populated. Losing `dnsquery` removes DNS question findings.
+Observation source availability does not gate enforcement. Constructor failures require a daemon
+restart after correcting the logged cause; reader failures retry automatically.
 
 ## Findings and Reports
 
@@ -978,6 +1008,11 @@ exception in shape — a program of its own, streamed rather than counted — an
   preserved — not the ordering or timing of individual occurrences within a window. A `dns`
   question is a single record delivered as it happens, so only the reporter's flush
   interval applies to it.
+- **Observation sources can be unavailable.** Open and exec filename counters use
+  `openexec-observe`; network and protocol use `egress-observe`. Exec argv uses `exec-trace`,
+  a streamed source separate from filename counters; DNS questions use `dnsquery`.
+  `EventSourcesAvailable` and source availability metrics report initialization and reader failures. Their last-known
+  readiness is not a heartbeat and does not guarantee lossless observation.
 - **Open/exec path counters cap per cgroup.** The per-cgroup path map holds 2048 distinct
   `(path, decision)` keys; a workload touching more than that within one poll interval loses
   the excess. The read-and-reset drain mitigates this but does not eliminate it.

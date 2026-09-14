@@ -22,6 +22,7 @@ import (
 	"github.com/nirmata/runtime/pkg/pushsink"
 	"github.com/nirmata/runtime/pkg/reporter"
 	"github.com/nirmata/runtime/pkg/reportevents"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 	"github.com/nirmata/runtime/pkg/services"
 	"github.com/nirmata/runtime/pkg/utils"
 
@@ -224,7 +225,6 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 		return obj, nil
 	})
-	nodeFactory.Start(ctx.Done())
 	nodeGone := func(name string) bool {
 		// before the first sync the watch cannot distinguish a deleted node
 		// from one it has not listed yet
@@ -242,6 +242,30 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// sw owns this node's shard of every RuntimePolicy status.
 	sw := controller.NewStatusWriter(c, nodeName, controller.DefaultStatusFlushInterval, logger.WithName("statuswriter"), nodeGone, onConditionChanged)
+	sw.SetExpectedSourceNodes(func() controller.ExpectedSourceNodes { return controller.ExpectedSourceNodes{} })
+	if namespace, daemonSetName := os.Getenv("POD_NAMESPACE"), os.Getenv("DAEMONSET_NAME"); namespace != "" && daemonSetName != "" {
+		placement, err := controller.NewDaemonPlacement(k8sClient, namespace, daemonSetName, nodeInformer, sw.MarkAllDirty)
+		if err != nil {
+			return err
+		}
+		sw.SetExpectedSourceNodes(placement.Snapshot)
+		g.Go(func() error { return placement.Run(ctx) })
+	} else {
+		logger.Info("daemon placement unavailable; POD_NAMESPACE and DAEMONSET_NAME are required for event source coverage status")
+		if _, err := nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc: func(any) { sw.MarkAllDirty() }, DeleteFunc: func(any) { sw.MarkAllDirty() },
+		}); err != nil {
+			return err
+		}
+	}
+	nodeFactory.Start(ctx.Done())
+	recordSourceStatus := func(source string, state runtimeevent.SourceState, reason string) {
+		m.RecordSourceStatus(source, state, reason)
+		sw.RecordSourceStatus(source, state, reason)
+	}
+	for _, source := range []string{egressObserveSource, openExecSource, exectrace.SourceName, dnsquery.SourceName} {
+		recordSourceStatus(source, runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting)
+	}
 
 	em := egressmgr.NewEgressManager(logger, sw, func(reason string, delta uint64) {
 		m.EventsDropped.WithLabelValues(egressObserveSource, reason).Add(float64(delta))
@@ -254,6 +278,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	execSrc, err := exectrace.New(logger.WithName("exectrace"), observeInterval)
 	if err != nil {
 		logger.Error(err, "exec tracing unavailable; argv will not be observed")
+		recordSourceStatus(exectrace.SourceName, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonInitializationFailed)
 		execSrc = nil
 	} else {
 		defer func() { _ = execSrc.Close() }()
@@ -296,7 +321,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	policyHandlers := []events.RuntimePolicyEventHandler{em, sw, mon}
 
 	// Poll the managers' observation maps, attribute, then hand to the monitor.
-	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m)
+	col := collector.New(logger.WithName("collector"), eventBufferSize, sourceRestartBackoff, m,
+		collector.WithSourceStatusFunc(recordSourceStatus))
 	col.AddSource(collector.NewPollSource(egressObserveSource, observeInterval, em.CollectObservations))
 
 	lsmEnabled, err := utils.BpfLSMEnabled()
@@ -310,6 +336,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	}, lsmEnabled, execSinks...)
 	if err != nil {
 		logger.Error(err, "failed to create openexec manager, exec and open enforcement won't work")
+		recordSourceStatus(openExecSource, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonInitializationFailed)
+		if execSrc != nil {
+			recordSourceStatus(exectrace.SourceName, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonDependencyUnavailable)
+		}
 	} else {
 		podHandlers = append(podHandlers, execMgr)
 		policyHandlers = append(policyHandlers, execMgr)
@@ -318,7 +348,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// A typed nil in the Source interface is not nil, so the check is here
 	// rather than left to AddSource.
-	if execSrc != nil {
+	if execSrc != nil && execMgr != nil {
 		col.AddSource(execSrc)
 	}
 	col.AddStage(attrIdx)
@@ -328,6 +358,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// cgroup_skb program leaves every other behavior working.
 	if dnsObs, err := dnsquery.New(); err != nil {
 		logger.Error(err, "dns question observation disabled")
+		recordSourceStatus(dnsquery.SourceName, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonInitializationFailed)
 	} else {
 		defer func() { _ = dnsObs.Close() }()
 		dm := dnsmgr.New(logger.WithName("dnsmgr"), dnsObs)

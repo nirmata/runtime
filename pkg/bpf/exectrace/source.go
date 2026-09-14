@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/nirmata/runtime/pkg/runtimeevent"
@@ -47,8 +48,16 @@ type Source struct {
 	statInterval time.Duration
 	objs         execTraceObjects
 	link         link.Link
-	rd           *ringbuf.Reader
+	mu           sync.Mutex
+	rd           ringReader
+	closed       bool
+	newReader    func() (ringReader, error)
 	clock        func() time.Time
+}
+
+type ringReader interface {
+	Read() (ringbuf.Record, error)
+	Close() error
 }
 
 // New loads and attaches the kernel program. The caller owns Close.
@@ -72,13 +81,9 @@ func New(log logr.Logger, statInterval time.Duration) (*Source, error) {
 	}
 	s.link = l
 
-	rd, err := ringbuf.NewReader(s.objs.Events)
-	if err != nil {
-		_ = l.Close()
-		_ = s.objs.Close()
-		return nil, fmt.Errorf("%s: opening ring buffer: %w", SourceName, err)
+	s.newReader = func() (ringReader, error) {
+		return ringbuf.NewReader(s.objs.Events)
 	}
-	s.rd = rd
 
 	return s, nil
 }
@@ -110,21 +115,38 @@ func (s *Source) DeleteCgids(cgids []uint64) error {
 
 // Run drains the ring buffer until ctx is done.
 func (s *Source) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
+	// Reader creation and publication share Close's lock so teardown cannot
+	// miss a reader or close its map while it is being opened.
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return fmt.Errorf("%s: source is closed: %w", SourceName, os.ErrClosed)
+	}
+	rd, err := s.newReader()
+	if err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("%s: opening ring buffer: %w", SourceName, err)
+	}
+	s.rd = rd
+	s.mu.Unlock()
+	defer func() { _ = rd.Close() }()
+
 	// ringbuf.Read has no deadline; closing the reader is what unblocks it.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = s.rd.Close()
+			_ = rd.Close()
 		case <-done:
 		}
 	}()
 
 	go s.pollStats(ctx, done)
+	runtimeevent.SourceReady(ctx)
 
 	for {
-		rec, err := s.rd.Read()
+		rec, err := rd.Read()
 		if err != nil {
 			if errors.Is(err, ringbuf.ErrClosed) || ctx.Err() != nil {
 				return nil
@@ -204,6 +226,13 @@ func (s *Source) readStats() ([statCount]uint64, error) {
 }
 
 func (s *Source) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+
 	var errs []error
 	if s.rd != nil {
 		if err := s.rd.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
