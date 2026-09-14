@@ -1369,14 +1369,16 @@ func TestNewStatusWriterDefaultsInterval(t *testing.T) {
 	}
 }
 
+// TestStatusWriterProjectsSourceStateRecordedBeforePolicy keeps startup source
+// state visible to policies that the informer delivers later.
 func TestStatusWriterProjectsSourceStateRecordedBeforePolicy(t *testing.T) {
 	mode := v1alpha1.PolicyModeMonitor
 	policy := policyObj("p", "uid-1")
 	policy.Spec = v1alpha1.RuntimePolicySpec{
 		Mode: &mode,
 		Behaviors: []v1alpha1.PolicyBehavior{
-			{Exec: &v1alpha1.Behavior{}},
-			{DNS: &v1alpha1.Behavior{}},
+			{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}},
+			{DNS: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"*"}}}},
 		},
 	}
 	sw, client := newTestStatusWriter(t, "node-a", policy)
@@ -1384,6 +1386,7 @@ func TestStatusWriterProjectsSourceStateRecordedBeforePolicy(t *testing.T) {
 		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
 	})
 	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	sw.RecordSourceStatus(openExecObserveSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
 	if err := sw.RuntimePolicyEvent(evalResult("uid-1", "p", compiler.ModeMonitor, labels.Everything()), events.EventTypeCreate); err != nil {
 		t.Fatal(err)
 	}
@@ -1460,7 +1463,7 @@ func TestAggregateEventSourcesExpectedNodes(t *testing.T) {
 // TestSourceFailureBeforePolicyIsPublished ensures an initialization failure
 // is retained until a policy needing that source appears.
 func TestSourceFailureBeforePolicyIsPublished(t *testing.T) {
-	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}})
 	sw, client := newTestStatusWriter(t, "node-a", policy)
 	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
 		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
@@ -1485,7 +1488,7 @@ func TestSourceFailureBeforePolicyIsPublished(t *testing.T) {
 // TestEventSourcePartialRecoveryStaysUnavailable ensures one recovered source
 // cannot hide a second source failure needed by the same policy.
 func TestEventSourcePartialRecoveryStaysUnavailable(t *testing.T) {
-	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}}, v1alpha1.PolicyBehavior{DNS: &v1alpha1.Behavior{}})
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}}, v1alpha1.PolicyBehavior{DNS: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"*"}}}})
 	sw, client := newTestStatusWriter(t, "node-a", policy)
 	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
 		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
@@ -1497,6 +1500,7 @@ func TestEventSourcePartialRecoveryStaysUnavailable(t *testing.T) {
 	for _, source := range []string{execTraceSource, dnsQuerySource} {
 		sw.RecordSourceStatus(source, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
 	}
+	sw.RecordSourceStatus(openExecObserveSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
 	if err := sw.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1519,12 +1523,12 @@ func TestPolicySourceDependenciesFollowCurrentSpec(t *testing.T) {
 		mode     v1alpha1.RuntimePolicyMode
 		behavior v1alpha1.PolicyBehavior
 	}{
-		{name: "unrelated behavior", mode: v1alpha1.PolicyModeMonitor, behavior: v1alpha1.PolicyBehavior{Open: &v1alpha1.Behavior{}}},
-		{name: "enforcement ignores optional reader", mode: v1alpha1.PolicyModeEnforce, behavior: v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}}},
+		{name: "empty behavior", mode: v1alpha1.PolicyModeMonitor, behavior: v1alpha1.PolicyBehavior{Open: &v1alpha1.Behavior{}}},
+		{name: "enforcement ignores observation sources", mode: v1alpha1.PolicyModeEnforce, behavior: v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+			policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}})
 			sw, client := newTestStatusWriter(t, "node-a", policy)
 			sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
 				return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
@@ -1564,7 +1568,7 @@ func TestPolicySourceDependenciesFollowCurrentSpec(t *testing.T) {
 // TestCompileFailureOutranksEventSourceFailure keeps a compiler rejection as
 // Applied's explanation even when a required observation source is down.
 func TestCompileFailureOutranksEventSourceFailure(t *testing.T) {
-	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}})
 	sw, client := newTestStatusWriter(t, "node-a", policy)
 	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
 		return ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
@@ -1589,11 +1593,12 @@ func TestCompileFailureOutranksEventSourceFailure(t *testing.T) {
 // TestHealthySourceShardCannotEraseFailedNode keeps the aggregate false when
 // a healthy node flushes after a different daemon reports source failure.
 func TestHealthySourceShardCannotEraseFailedNode(t *testing.T) {
-	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}})
 	swA, client := newTestStatusWriter(t, "node-a", policy)
 	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
 	swB.clock = func() time.Time { return fixedNow }
 	for _, sw := range []*StatusWriter{swA, swB} {
+		sw.RecordSourceStatus(openExecObserveSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
 		sw.SetExpectedSourceNodes(func() ExpectedSourceNodes {
 			return ExpectedSourceNodes{Names: []string{"node-a", "node-b"}, Desired: 2, Synced: true}
 		})
@@ -1619,11 +1624,12 @@ func TestHealthySourceShardCannotEraseFailedNode(t *testing.T) {
 // TestMembershipChangeReconcilesCleanPolicy ensures a placement update causes
 // a new aggregate even when no policy or source transition occurred.
 func TestMembershipChangeReconcilesCleanPolicy(t *testing.T) {
-	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{}})
+	policy := monitorPolicyWithBehaviors("p", "uid-1", v1alpha1.PolicyBehavior{Exec: &v1alpha1.Behavior{Deny: &v1alpha1.BehaviorRule{Values: []string{"/bin/sh"}}}})
 	sw, client := newTestStatusWriter(t, "node-a", policy)
 	expected := ExpectedSourceNodes{Names: []string{"node-a"}, Desired: 1, Synced: true}
 	sw.SetExpectedSourceNodes(func() ExpectedSourceNodes { return expected })
 	sw.RecordSourceStatus(execTraceSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	sw.RecordSourceStatus(openExecObserveSource, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
 	if err := sw.RuntimePolicyEvent(&compiler.EvaluationResult{UID: "uid-1", Name: "p", Mode: compiler.ModeMonitor,
 		Exec: &compiler.AllowDenyPair{Deny: []string{"/bin/sh"}}}, events.EventTypeCreate); err != nil {
 		t.Fatal(err)

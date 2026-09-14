@@ -874,22 +874,38 @@ shard, and never prunes before its node watch has synced. A node that still exis
 runs a daemon (a taint, an unscheduled DaemonSet) keeps its shard; the watch only answers
 whether the node object is there.
 
-Optional event sources have their own lifecycle. The daemon registers `exec-trace` and
-`dnsquery` before attempting to load their kernel programs. The collector records each start
-and failure, and a source signals readiness only after its reader is usable. Starting and
+Event sources have their own lifecycle. The daemon registers all four sources before
+attempting to initialize their dependencies. The collector records each start
+and failure, and a source signals readiness only after its reader is usable. A poll source
+waits for its first successful poll, including an empty result, before announcing readiness;
+restarting a failing poller does not establish recovery. Starting and
 unavailable sources expose a zero `source_available` gauge; constructor and reader failures
 increment `source_failures_total` with bounded reasons. Quiet sources remain available without
 needing an event. Constructor failures require a daemon restart; reader failures use the
 collector's restart backoff. The exec tracer also requires a functioning open/exec manager to
 populate its cgroup gate.
 
-Each node shard's `eventSources` list includes the optional sources relevant to the policy:
-`dnsquery` for monitor DNS and `exec-trace` for monitor exec. The latter represents argv coverage;
-filename observations can still arrive through the open/exec counter source. `EventSourcesAvailable`
+Each node shard's `eventSources` list includes every producer relevant to the monitor policy:
+
+| Behavior | Required sources |
+| --- | --- |
+| `open` | `openexec-observe` |
+| `exec` | `openexec-observe`, `exec-trace` |
+| `network`, `protocol` | `egress-observe` |
+| `dns` | `dnsquery` |
+
+The exec tracer represents argv coverage. If that reader fails independently, filename
+observations can still arrive through the open/exec counter source. If its manager dependency
+fails to initialize, neither argv nor filename coverage is available. `EventSourcesAvailable`
 is `False` if any relevant source fails, `Unknown` while a required source or node has not
 reported, and `True` when every expected daemon node reports readiness. Monitor `Applied`
-inherits a false or unknown source condition. Enforce policies and unrelated monitor behaviors
-do not depend on these optional readers.
+inherits a false or unknown source condition. Enforce policies do not depend on observation
+source availability, and a monitor policy only depends on the producers of its active behaviors.
+A behavior is active when an allow or deny rule contains literal values or a nonempty CEL
+expression. Empty behaviors and empty rules add no dependency. Expressions retain their source
+dependencies even if one evaluation returns an empty list, because reevaluation can produce
+targets. The API server defaults an omitted mode to `monitor`; an internal spec that bypasses
+defaulting and has a nil mode is not classified as observe mode.
 
 `pkg/controller.DaemonPlacement` watches the daemon's DaemonSet and its owned pods. The chart
 injects `POD_NAMESPACE` and `DAEMONSET_NAME` to identify that deployment. Pod node assignments

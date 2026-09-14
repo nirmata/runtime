@@ -54,6 +54,7 @@ The pipeline-wide drop reasons:
 
 All four collector sources expose `nirmata_runtime_source_available`. A quiet source can be
 healthy: readiness means its collection machinery is usable, independent of event volume.
+A poll source announces readiness after its first successful poll, even if it returns no events.
 The collector's `/healthz` endpoint checks its dispatch loop and policy cache; individual
 source failures do not fail that endpoint.
 
@@ -71,9 +72,12 @@ after the source confirms readiness. Failure series appear when that failure occ
 series are initialized before source construction. Availability does not prove lossless
 delivery or detect every kernel-side stall; continue checking the drop counters separately.
 
-Monitor policies with exec or DNS behaviors also expose `EventSourcesAvailable` and per-node
-`eventSources` in [policy status](runtimepolicy.md#status). Losing `exec-trace` removes argv
-coverage; filename observations can remain available through `openexec-observe`.
+Monitor policies expose `EventSourcesAvailable` and per-node `eventSources` for their active
+behaviors in [policy status](runtimepolicy.md#status). Open and exec depend on
+`openexec-observe`, network and protocol depend on `egress-observe`, DNS depends on `dnsquery`,
+and exec additionally depends on `exec-trace`. Losing only `exec-trace` removes argv coverage;
+filename observations can remain available through `openexec-observe`. A failure to initialize
+the open/exec manager removes both forms of exec coverage.
 
 ## DNS question loss
 

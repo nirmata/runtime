@@ -98,7 +98,9 @@ After `make kind-install`, create a monitor policy with exec and DNS behaviors, 
 the daemon's BPF privileges exercises constructor failures without a production fault flag;
 restore its exact security context and wait for rollout before checking recovery. Constructor
 failures require restarting the daemon, while reader failures are covered by the collector's
-deterministic retry tests. The placement tests cover pending target affinity, DaemonSet ownership,
+deterministic retry tests. Dependency tests cover every behavior's poll or ring-buffer producer,
+empty rules, expression-backed rules, and internal specs without a defaulted mode. The placement
+tests cover pending target affinity, DaemonSet ownership,
 rollout deduplication, deletion, and unobserved placement generations.
 
 ### Validating the push sink

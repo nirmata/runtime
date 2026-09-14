@@ -137,7 +137,7 @@ The filtering rules that apply to that pipeline:
 - Buffer-full drops are likewise counted, labeled by source and reason. Never add a drop path
   without a counter.
 - Register source availability before initialization, and signal readiness only when collection
-  is usable. Optional reader failures reach source metrics and relevant policies' node-sharded
+  is usable. Poll and ring-buffer source failures reach metrics and relevant policies' node-sharded
   `EventSourcesAvailable`; a missing expected daemon report is unknown, never healthy.
 - `open`/`exec` observations are kept even when metadata is sparse, so long as the pod is known.
 - Egress observation is destination-IPv4 only. It does see flows a default-deny drops: the BPF

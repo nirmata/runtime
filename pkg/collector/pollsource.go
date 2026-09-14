@@ -53,7 +53,7 @@ func (p *pollSource) Name() string { return p.name }
 func (p *pollSource) Run(ctx context.Context, out chan<- runtimeevent.Event) error {
 	tick, stop := p.ticks(p.interval)
 	defer stop()
-	runtimeevent.SourceReady(ctx)
+	ready := false
 
 	for {
 		select {
@@ -63,6 +63,10 @@ func (p *pollSource) Run(ctx context.Context, out chan<- runtimeevent.Event) err
 			evs, err := p.poll(ctx)
 			if err != nil {
 				return fmt.Errorf("polling %s: %w", p.name, err)
+			}
+			if !ready {
+				runtimeevent.SourceReady(ctx)
+				ready = true
 			}
 			for _, ev := range evs {
 				select {

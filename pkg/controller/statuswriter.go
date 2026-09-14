@@ -28,8 +28,10 @@ import (
 const DefaultStatusFlushInterval = 30 * time.Second
 
 const (
-	execTraceSource = "exec-trace"
-	dnsQuerySource  = "dnsquery"
+	execTraceSource       = "exec-trace"
+	dnsQuerySource        = "dnsquery"
+	openExecObserveSource = "openexec-observe"
+	egressObserveSource   = "egress-observe"
 )
 
 // ExpectedSourceNodes describes the DaemonSet nodes that should publish event
@@ -290,7 +292,7 @@ func (s *StatusWriter) appliedCondition(mode string, conditions map[string]metav
 		cond.Message = gate.Message
 		return cond
 	}
-	if mode == compiler.ModeMonitor {
+	if compiler.IsObserveMode(mode) {
 		if gate, ok := conditions[v1alpha1.ConditionEventSourcesAvailable]; ok && gate.Status != metav1.ConditionTrue {
 			cond.Status = gate.Status
 			cond.Reason = gate.Reason
@@ -646,57 +648,92 @@ func currentPolicyMode(spec v1alpha1.RuntimePolicySpec, fallback string) string 
 }
 
 func sourceDependencies(spec v1alpha1.RuntimePolicySpec) []string {
-	mode := compiler.ModeMonitor
-	if spec.Mode != nil {
-		mode = string(*spec.Mode)
-	}
-	if !compiler.IsObserveMode(mode) {
+	if spec.Mode == nil || !compiler.IsObserveMode(string(*spec.Mode)) {
 		return nil
 	}
-	dependencies := make([]string, 0, 2)
+	var dependencies []string
 	for _, behavior := range spec.Behaviors {
-		if behavior.Exec != nil && !slices.Contains(dependencies, execTraceSource) {
+		if declaresTargets(behavior.Open) || declaresTargets(behavior.Exec) {
+			dependencies = append(dependencies, openExecObserveSource)
+		}
+		if declaresTargets(behavior.Network) || declaresTargets(behavior.Protocol) {
+			dependencies = append(dependencies, egressObserveSource)
+		}
+		if declaresTargets(behavior.Exec) {
 			dependencies = append(dependencies, execTraceSource)
 		}
-		if behavior.DNS != nil && !slices.Contains(dependencies, dnsQuerySource) {
+		if declaresTargets(behavior.DNS) {
 			dependencies = append(dependencies, dnsQuerySource)
 		}
 	}
 	sort.Strings(dependencies)
-	return dependencies
+	return slices.Compact(dependencies)
+}
+
+func declaresTargets(behavior *v1alpha1.Behavior) bool {
+	if behavior == nil {
+		return false
+	}
+	// Expressions can become nonempty on re-evaluation without a spec update.
+	for _, rule := range []*v1alpha1.BehaviorRule{behavior.Allow, behavior.Deny} {
+		if rule != nil && (len(rule.Values) != 0 || rule.Expression != "") {
+			return true
+		}
+	}
+	return false
 }
 
 func eventSourceStatus(name string, status sourceStatus) v1alpha1.EventSourceStatus {
-	result := v1alpha1.EventSourceStatus{Name: name, Status: metav1.ConditionUnknown, Reason: runtimeevent.SourceReasonStarting, Message: sourceMessage(name, runtimeevent.SourceStateStarting)}
+	result := v1alpha1.EventSourceStatus{Name: name, Status: metav1.ConditionUnknown, Reason: status.reason, Message: sourceMessage(name, status)}
+	if result.Reason == "" {
+		result.Reason = runtimeevent.SourceReasonStarting
+	}
 	switch status.state {
 	case runtimeevent.SourceStateAvailable:
-		result.Status, result.Reason, result.Message = metav1.ConditionTrue, status.reason, sourceMessage(name, status.state)
+		result.Status = metav1.ConditionTrue
 	case runtimeevent.SourceStateUnavailable:
-		result.Status, result.Reason, result.Message = metav1.ConditionFalse, status.reason, sourceMessage(name, status.state)
-	case runtimeevent.SourceStateStarting:
-		result.Reason, result.Message = status.reason, sourceMessage(name, status.state)
+		result.Status = metav1.ConditionFalse
 	}
 	return result
 }
 
-func sourceMessage(name string, state runtimeevent.SourceState) string {
+func sourceMessage(name string, status sourceStatus) string {
 	switch name {
 	case execTraceSource:
-		if state == runtimeevent.SourceStateAvailable {
+		if status.state == runtimeevent.SourceStateAvailable {
 			return "exec trace source is available"
 		}
-		if state == runtimeevent.SourceStateUnavailable {
+		if status.state == runtimeevent.SourceStateUnavailable {
+			if status.reason == runtimeevent.SourceReasonDependencyUnavailable {
+				return "exec trace source is unavailable because the open/exec manager could not load; argv and exec filename observations are unavailable"
+			}
 			return "exec trace source is unavailable; argv observations are unavailable, but exec filename observations may remain available"
 		}
 		return "exec trace source is starting"
 	case dnsQuerySource:
-		if state == runtimeevent.SourceStateAvailable {
+		if status.state == runtimeevent.SourceStateAvailable {
 			return "DNS query source is available"
 		}
-		if state == runtimeevent.SourceStateUnavailable {
+		if status.state == runtimeevent.SourceStateUnavailable {
 			return "DNS query source is unavailable; DNS name observations are unavailable"
 		}
 		return "DNS query source is starting"
+	case openExecObserveSource:
+		if status.state == runtimeevent.SourceStateAvailable {
+			return "open/exec observation counter source is available"
+		}
+		if status.state == runtimeevent.SourceStateUnavailable {
+			return "open/exec observation counter source is unavailable; file-open observations and exec filename counter observations are unavailable"
+		}
+		return "open/exec observation counter source is starting"
+	case egressObserveSource:
+		if status.state == runtimeevent.SourceStateAvailable {
+			return "egress observation counter source is available"
+		}
+		if status.state == runtimeevent.SourceStateUnavailable {
+			return "egress observation counter source is unavailable; network and protocol observations are unavailable"
+		}
+		return "egress observation counter source is starting"
 	default:
 		return "event source status is unavailable"
 	}
