@@ -333,6 +333,8 @@ policy's inner hash. That inner map is a single keyspace discriminated by `struc
 | `CGID` | the cgroup id, 8 bytes little-endian | `AddCgids` / `DeleteCgids` |
 | `DENY_ENTRY` | a NUL-padded path | `AddTargets` |
 | `ALLOW_ENTRY` | a NUL-padded path | `AddTargets` |
+| `DENY_PREFIX_ENTRY` | a NUL-padded directory, trailing separator included | `AddTargets` |
+| `ALLOW_PREFIX_ENTRY` | a NUL-padded directory, trailing separator included | `AddTargets` |
 | `FLAGS` | all zeroes; presence is the default-deny flag | `SetDefaultDeny` |
 
 `openexec.NewPolicyMap` creates the inner map and registers it in the dispatcher's array via
@@ -341,8 +343,16 @@ policy's inner hash. That inner map is a single keyspace discriminated by `struc
 dimension is zero, so a node with no policies of that kind pays one array lookup per operation.
 
 The executor walks the slots for its dimension, skips any policy whose inner map does not hold the
-current cgroup id, and evaluates the rest against the resolved path. The verdict accumulates across
-policies in the precedence **explicit deny > explicit allow > default deny > default allow**: only
+current cgroup id, and evaluates the rest against the resolved path. Each policy is asked twice:
+once for the whole path against the literal entries, then once per parent directory of the path
+against the prefix entries. The separator the schema keeps on a directory key is what stops
+`/usr/lib/` matching `/usr/library`, and `compiler.AncestorDirs` is the one definition of that walk
+— monitor mode reaches for it directly, and `runtime_policy_executor` reproduces it from the
+separator offsets it scans out of the path once per event, before the policy loop, so the scan is
+not repeated per policy. The walk is bounded at `MAX_PREFIX_DEPTH` for the verifier, which is the
+depth limit the user reference states. Within a policy a deny in either form beats an allow in
+either form. The verdict accumulates across policies in the precedence **explicit deny > explicit
+allow > default deny > default allow**: only
 an explicit deny short-circuits the walk, and a policy's default deny is skipped once anything has
 explicitly allowed the path. That is order-independent, and it is what makes separate policies union
 rather than intersect — one policy's `allow` lifts another policy's `deny: ["*"]` for that path,

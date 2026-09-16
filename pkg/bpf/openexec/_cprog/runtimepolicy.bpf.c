@@ -5,6 +5,31 @@
 #include <bpf/bpf_helpers.h>
 #include "maps.h"
 
+/* walks the path's ancestor directories against this policy's prefix entries,
+ * shallowest first. A deny is final; an allow is reported to the caller, which
+ * still has to let a deeper deny in another policy override it. */
+static __always_inline int prefix_decision(struct policy_entry_map *pm, struct policy_ctx *ctx, struct entry *key, __u8 type) {
+    for (int d = 0; d < MAX_PREFIX_DEPTH; d++) {
+        if (d >= ctx->nslash) {
+            break;
+        }
+
+        __u32 len = (__u32)ctx->slash[d] + 1;
+        if (len == 0 || len > MAX_PATH_LEN) {
+            break;
+        }
+
+        __builtin_memset(key->data, 0, sizeof(key->data));
+        bpf_probe_read_kernel(key->data, len, ctx->path);
+        key->data_type = type;
+
+        if (bpf_map_lookup_elem(pm, key) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static __always_inline void path_decision(struct policy_entry_map *pm, struct policy_ctx *ctx, struct entry *key) {
     key->data_type = FLAGS;
     __builtin_memset(key->data, 0, sizeof(key->data));
@@ -24,8 +49,16 @@ static __always_inline void path_decision(struct policy_entry_map *pm, struct po
     }
 
     key->data_type = ALLOW_ENTRY;
+    __u8 *allowed = bpf_map_lookup_elem(pm, key);
 
-    if (bpf_map_lookup_elem(pm, key) != NULL) {
+    /* a deny outranks an allow whichever form either takes, so the directory
+     * denies are checked even once the literal allow has hit */
+    if (prefix_decision(pm, ctx, key, DENY_PREFIX_ENTRY)) {
+        ctx->reason = EXPLICIT_DENY;
+        return;
+    }
+
+    if (allowed || prefix_decision(pm, ctx, key, ALLOW_PREFIX_ENTRY)) {
         ctx->reason = EXPLICIT_ALLOW;
         return;
     }
@@ -91,6 +124,17 @@ int runtime_policy_executor(void *ctx)
     if (!pc || *pc == 0) {
         return 0;
     } 
+
+    prog_ctx->nslash = 0;
+    for (int i = 0; i < MAX_PATH_LEN; i++) {
+        if (prog_ctx->path[i] == '\0' || prog_ctx->nslash >= MAX_PREFIX_DEPTH) {
+            break;
+        }
+        if (prog_ctx->path[i] == '/') {
+            prog_ctx->slash[prog_ctx->nslash & (MAX_PREFIX_DEPTH - 1)] = i;
+            prog_ctx->nslash++;
+        }
+    }
 
     __u64 cgid = bpf_get_current_cgroup_id();
     for (int i = 0; i < MAX_PROG_COUNT; i++) {

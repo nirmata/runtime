@@ -442,8 +442,8 @@ func (l *OpenExecManager) recordPathRulesCondition(rpUID, condType string, pair 
 		return
 	}
 
-	_, _, rejected := compiler.ParsePathList(pair.Deny)
-	_, _, allowRejected := compiler.ParsePathList(pair.Allow)
+	_, _, _, rejected := compiler.ParsePathList(pair.Deny)
+	_, _, _, allowRejected := compiler.ParsePathList(pair.Allow)
 	rejected = append(rejected, allowRejected...)
 	if len(rejected) == 0 {
 		l.recordCondition(rpUID, metav1.Condition{

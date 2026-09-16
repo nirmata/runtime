@@ -16,7 +16,8 @@ var valueCorpus = []string{
 	" /usr/bin/wget\n",
 	"/bin/sh",
 	"/opt/my app/run",
-	"/usr/bin/*",
+	"/usr/lib/*",
+	"/usr/lib/**",
 	"kubectl",
 	compiler.StarTarget,
 	" * \n",
@@ -38,7 +39,10 @@ var observedCorpus = []string{
 	"/usr/bin/wget",
 	"/usr/bin/wget2",
 	"/opt/my app/run",
-	"/usr/bin/*",
+	"/usr/lib/libc.so",
+	"/usr/lib/x86_64-linux-gnu/libc.so.6",
+	"/usr/lib",
+	"/usr/library/libc.so",
 	"/usr/bin/anything",
 	"kubectl",
 	"/" + strings.Repeat("a", compiler.MaxPathValueLen),
@@ -57,20 +61,37 @@ func TestMonitorMatchesWhatTheKernelWouldMatch(t *testing.T) {
 	if len(rejected) == 0 {
 		t.Fatal("the corpus no longer contains a value the kernel maps reject")
 	}
+	// a literal can never end in a separator, so the trailing one the schema
+	// keeps on a directory tells the two kinds of key apart without reaching
+	// for the kernel's discriminant
 	programmed := make(map[string]struct{}, len(keys))
+	prefixes := make(map[string]struct{})
 	for _, k := range keys {
-		programmed[trimEntry(k.Data)] = struct{}{}
+		key := trimEntry(k.Data)
+		if strings.HasSuffix(key, "/") {
+			prefixes[key] = struct{}{}
+			continue
+		}
+		programmed[key] = struct{}{}
 	}
 
 	if m.star != star {
 		t.Errorf("matcher star = %v, kernel default deny = %v", m.star, star)
 	}
-	if len(m.paths) != len(programmed) {
-		t.Errorf("matcher holds %d paths, the kernel maps hold %d keys", len(m.paths), len(programmed))
+	if len(m.paths) != len(programmed) || len(m.prefixes) != len(prefixes) {
+		t.Errorf("matcher holds %d paths and %d prefixes, the kernel maps hold %d and %d",
+			len(m.paths), len(m.prefixes), len(programmed), len(prefixes))
 	}
 
 	for _, path := range observedCorpus {
 		_, wantMatch := programmed[path]
+		// the kernel walks the observed path's ancestors against the same
+		// directory keys, bounded at the same depth
+		for _, dir := range compiler.AncestorDirs(path) {
+			if _, ok := prefixes[dir]; ok {
+				wantMatch = true
+			}
+		}
 		// the kernel never observes an empty path, and an all-NUL key is not a
 		// path the maps can hold
 		if path == "" {

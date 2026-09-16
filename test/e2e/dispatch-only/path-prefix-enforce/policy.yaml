@@ -1,0 +1,22 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-path-prefix-enforce
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: prefix-client
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /tmp/lib/*
+      allow:
+        # a directory is not something an allow can carve an exception out of
+        values:
+        - /tmp/lib/libc.so
+  - exec:
+      deny:
+        values:
+        - /tmp/bin/*

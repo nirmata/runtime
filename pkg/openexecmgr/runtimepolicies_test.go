@@ -623,6 +623,14 @@ func TestSyncProgType_TargetDiffs(t *testing.T) {
 		wantAllow:   []string{"/bin/cat", "/bin/sh"},
 		wantDeny:    []string{"/etc/passwd"},
 	}, {
+		name:        "a directory replacing the files it covered",
+		oldPair:     pair([]string{"/usr/lib/libc.so", "/usr/lib/libm.so"}, nil),
+		newPair:     pair([]string{"/usr/lib/*"}, nil),
+		wantAdd:     []compiler.AllowDenyPair{{Allow: []string{"/usr/lib/*"}}},
+		wantDel:     []compiler.AllowDenyPair{{Allow: []string{"/usr/lib/libc.so", "/usr/lib/libm.so"}}},
+		wantDenyAll: []bool{false},
+		wantAllow:   []string{"/usr/lib/"},
+	}, {
 		name:        "star entering deny turns default deny on",
 		oldPair:     pair(nil, []string{"/etc/shadow"}),
 		newPair:     pair(nil, []string{"/etc/shadow", "*"}),

@@ -2,6 +2,7 @@
 #include <bpf/bpf_helpers.h>
 
 #define MAX_PATH_LEN 128
+#define MAX_PREFIX_DEPTH 16
 #define EPERM 1
 
 #define DECISION_ALLOW 0
@@ -17,6 +18,10 @@ enum data_type {
     DENY_ENTRY,
     CGID,
     FLAGS,
+    /* data holds a directory including its trailing '/', so that "/usr/lib/"
+     * cannot match "/usr/library" */
+    ALLOW_PREFIX_ENTRY,
+    DENY_PREFIX_ENTRY,
 };
 
 enum path_stat {
@@ -71,6 +76,10 @@ struct policy_ctx {
     __u8 prog_type;
     __u8 reason;
     char path[MAX_PATH_LEN];
+    /* offsets of path's separators, so the per-policy prefix walk costs one
+     * scan of the path for the whole event rather than one per policy */
+    __u8 nslash;
+    __u8 slash[MAX_PREFIX_DEPTH];
 };
 
 /* 2048: the decision dimension can double the number of distinct keys. */

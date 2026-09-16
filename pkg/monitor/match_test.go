@@ -91,10 +91,16 @@ func TestPathMatcher(t *testing.T) {
 	}{
 		{name: "exact path", values: []string{"/etc/shadow"}, path: "/etc/shadow", want: true},
 		{name: "different path", values: []string{"/etc/shadow"}, path: "/etc/hosts"},
-		// the kernel maps are keyed on the exact path string, so monitor must
-		// not invent prefix or glob semantics the enforcer does not have
+		// the kernel keys a literal on the exact path string, so monitor must
+		// not invent semantics the enforcer does not have
 		{name: "parent directory is not a match", values: []string{"/etc"}, path: "/etc/shadow"},
-		{name: "glob is not expanded", values: []string{"/etc/*"}, path: "/etc/shadow"},
+		{name: "directory prefix", values: []string{"/etc/*"}, path: "/etc/shadow", want: true},
+		{name: "directory prefix at depth", values: []string{"/usr/lib/*"}, path: "/usr/lib/x86_64/libc.so", want: true},
+		{name: "directory prefix stops at the separator", values: []string{"/usr/lib/*"}, path: "/usr/library/libc.so"},
+		{name: "directory prefix does not cover the directory itself", values: []string{"/usr/lib/*"}, path: "/usr/lib"},
+		{name: "root prefix covers everything", values: []string{"/*"}, path: "/etc/shadow", want: true},
+		{name: "interior star is rejected, not matched", values: []string{"/etc/*/shadow"}, path: "/etc/a/shadow"},
+		{name: "deeper than the prefix depth bound", values: []string{"/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/*"}, path: "/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r"},
 		{name: "star is not an explicit match", values: []string{compiler.StarTarget}, path: "/etc/shadow", wantStar: true},
 		{name: "empty value", values: []string{""}, path: "/etc/shadow"},
 		{name: "empty path never matches", values: []string{"/etc/shadow"}, path: ""},

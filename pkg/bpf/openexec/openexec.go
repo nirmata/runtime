@@ -33,10 +33,12 @@ var ProgTypes = map[string]int{
 // mirrors enum data_type in _cprog/maps.h: the discriminant of every entry in
 // a policy map.
 const (
-	dataTypeAllow uint32 = 0
-	dataTypeDeny  uint32 = 1
-	dataTypeCgid  uint32 = 2
-	dataTypeFlags uint32 = 3
+	dataTypeAllow       uint32 = 0
+	dataTypeDeny        uint32 = 1
+	dataTypeCgid        uint32 = 2
+	dataTypeFlags       uint32 = 3
+	dataTypeAllowPrefix uint32 = 4
+	dataTypeDenyPrefix  uint32 = 5
 )
 
 func progCountKey(target string) (uint32, error) {

@@ -89,25 +89,32 @@ func (m netMatcher) matches(addr netip.Addr, domain string) bool {
 }
 
 // pathMatcher is the compiled form of one side of an open or exec behavior.
-// The kernel programs key their banned/allowed maps on the exact path string,
-// so matching here is exact too: anything cleverer would report findings the
+// The kernel programs key their banned/allowed maps on the exact path string
+// and on the directory prefixes compiler.AncestorDirs enumerates, so matching
+// here does the same two lookups: anything cleverer would report findings the
 // enforcing form of the same policy would not act on.
 type pathMatcher struct {
-	star  bool
-	paths map[string]struct{}
+	star     bool
+	paths    map[string]struct{}
+	prefixes map[string]struct{}
 }
 
 func newPathMatcher(values []string) pathMatcher {
-	// rejected values are dropped: lsm.PathKeys derives its keys from the same
+	// rejected values are dropped: openexec.PathKeys derives its keys from the same
 	// call, so matching one here would report a finding enforcement never acts on
-	paths, star, _ := compiler.ParsePathList(values)
+	paths, prefixes, star, _ := compiler.ParsePathList(values)
 	m := pathMatcher{star: star}
-	if len(paths) == 0 {
-		return m
+	if len(paths) > 0 {
+		m.paths = make(map[string]struct{}, len(paths))
+		for _, p := range paths {
+			m.paths[p] = struct{}{}
+		}
 	}
-	m.paths = make(map[string]struct{}, len(paths))
-	for _, p := range paths {
-		m.paths[p] = struct{}{}
+	if len(prefixes) > 0 {
+		m.prefixes = make(map[string]struct{}, len(prefixes))
+		for _, p := range prefixes {
+			m.prefixes[p] = struct{}{}
+		}
 	}
 	return m
 }
@@ -116,8 +123,15 @@ func (m pathMatcher) matches(path string) bool {
 	if path == "" {
 		return false
 	}
-	_, ok := m.paths[path]
-	return ok
+	if _, ok := m.paths[path]; ok {
+		return true
+	}
+	for _, dir := range compiler.AncestorDirs(path) {
+		if _, ok := m.prefixes[dir]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // nameMatcher is the compiled form of one side of a dns behavior. Both sides of

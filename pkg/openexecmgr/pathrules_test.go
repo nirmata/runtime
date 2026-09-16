@@ -67,9 +67,16 @@ func TestUnenforceablePathsSurfaceOnPolicyStatus(t *testing.T) {
 		wantOpen:   metav1.ConditionTrue,
 		wantReason: v1alpha1.ReasonUnsupportedPaths,
 	}, {
+		name:       "unsupported star spelling",
+		mode:       compiler.ModeEnforce,
+		execPair:   pair([]string{"/usr/lib/**"}, nil),
+		wantExec:   metav1.ConditionFalse,
+		wantOpen:   metav1.ConditionTrue,
+		wantReason: v1alpha1.ReasonUnsupportedPaths,
+	}, {
 		name:       "every value supported",
 		mode:       compiler.ModeEnforce,
-		openPair:   pair(nil, []string{"/etc/shadow"}),
+		openPair:   pair([]string{"/usr/lib/*"}, []string{"/etc/shadow"}),
 		execPair:   pair([]string{"/bin/ls"}, []string{compiler.StarTarget}),
 		wantExec:   metav1.ConditionTrue,
 		wantOpen:   metav1.ConditionTrue,

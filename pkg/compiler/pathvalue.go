@@ -32,15 +32,31 @@ var (
 	// without being exactly it. The sentinel switches the whole behavior to
 	// default deny, so a near-miss is corrected by the author, not normalized.
 	ErrPaddedStarValue = errors.New(`the default-deny wildcard must be written exactly as "*"`)
+	// ErrStarInPathValue reports a "*" anywhere other than the whole value or
+	// the end of a directory prefix.
+	ErrStarInPathValue = errors.New(`a "*" is only accepted as the whole value or as a trailing "/*": write a directory as "/usr/lib/*"`)
+	// ErrTrailingSlashPathValue reports a literal ending in "/". bpf_d_path
+	// never yields one, so such a value matches nothing.
+	ErrTrailingSlashPathValue = errors.New(`a path must not end in "/": to cover a directory write "/usr/lib/*"`)
 )
 
+// MaxPrefixDepth bounds how deep a directory prefix can match: only the first
+// MaxPrefixDepth separators of an observed path are turned into a prefix key,
+// in the kernel and in AncestorDirs alike, because the kernel loop that walks
+// them has to be bounded for the verifier.
+const MaxPrefixDepth = 16
+
 // PathValue is the parsed form of one exec or open path value. Exactly one of the
-// fields is meaningful: Star for the "*" sentinel, Path for a literal path.
+// fields is meaningful: Star for the "*" sentinel, Path for a literal path,
+// Prefix for a directory.
 type PathValue struct {
 	// Star is true when the value is the StarTarget sentinel.
 	Star bool
 	// Path is the literal path the kernel maps are keyed on, byte for byte.
 	Path string
+	// Prefix is the directory a "/*" value covers, keeping its trailing "/" so
+	// that "/usr/lib/" cannot match "/usr/library".
+	Prefix string
 }
 
 // ParsePathValue parses one policy-authored exec or open path value. This is
@@ -54,9 +70,12 @@ type PathValue struct {
 //
 //   - StarTarget ("*"), written exactly, yields Star; a value that merely
 //     trims to it is an error
+//   - a value ending in "/*" yields Prefix, the directory it covers at any
+//     depth
 //   - anything else yields Path, a literal never split into tokens and never
 //     interpreted as a glob
-//   - an empty, NUL-bearing, over-long or relative value is an error
+//   - an empty, NUL-bearing, over-long or relative value is an error, and so is
+//     a "*" in any other position
 func ParsePathValue(raw string) (PathValue, error) {
 	cleaned := strings.Trim(raw, " \t\r\n")
 
@@ -79,19 +98,46 @@ func ParsePathValue(raw string) (PathValue, error) {
 	case cleaned[0] != '/':
 		return PathValue{}, ErrRelativePathValue
 
+	case strings.HasSuffix(cleaned, "/*"):
+		prefix := strings.TrimSuffix(cleaned, StarTarget)
+		if strings.ContainsRune(prefix, '*') {
+			return PathValue{}, ErrStarInPathValue
+		}
+		return PathValue{Prefix: prefix}, nil
+
+	case strings.ContainsRune(cleaned, '*'):
+		return PathValue{}, ErrStarInPathValue
+
+	case strings.HasSuffix(cleaned, "/"):
+		return PathValue{}, ErrTrailingSlashPathValue
+
 	default:
 		return PathValue{Path: cleaned}, nil
 	}
 }
 
-// ParsePathList splits one behavior's path values into the three groups every
-// consumer needs: the literal paths, whether the default-deny sentinel is
-// present, and the values that could not be parsed. Paths are de-duplicated,
-// preserving first-seen order.
+// AncestorDirs returns the directory prefixes a path is covered by, each
+// keeping its trailing "/", shallowest first: "/usr/lib/libc.so" yields "/",
+// "/usr/" and "/usr/lib/". This is the list the kernel walks, so a prefix
+// matching here matches there.
+func AncestorDirs(path string) []string {
+	var dirs []string
+	for i := 0; i < len(path) && len(dirs) < MaxPrefixDepth; i++ {
+		if path[i] == '/' {
+			dirs = append(dirs, path[:i+1])
+		}
+	}
+	return dirs
+}
+
+// ParsePathList splits one behavior's path values into the four groups every
+// consumer needs: the literal paths, the directory prefixes, whether the
+// default-deny sentinel is present, and the values that could not be parsed.
+// Both lists are de-duplicated, preserving first-seen order.
 //
 // The kernel enforcer keys its maps off this, and monitor mode matches off it,
 // so neither can hold a path the other does not.
-func ParsePathList(values []string) (paths []string, star bool, rejected []RejectedTarget) {
+func ParsePathList(values []string) (paths, prefixes []string, star bool, rejected []RejectedTarget) {
 	seen := make(map[string]struct{}, len(values))
 	for _, raw := range values {
 		v, err := ParsePathValue(raw)
@@ -100,6 +146,12 @@ func ParsePathList(values []string) (paths []string, star bool, rejected []Rejec
 			rejected = append(rejected, RejectedTarget{Value: raw, Reason: err.Error()})
 		case v.Star:
 			star = true
+		case v.Prefix != "":
+			if _, dup := seen[v.Prefix]; dup {
+				continue
+			}
+			seen[v.Prefix] = struct{}{}
+			prefixes = append(prefixes, v.Prefix)
 		default:
 			if _, dup := seen[v.Path]; dup {
 				continue
@@ -108,5 +160,5 @@ func ParsePathList(values []string) (paths []string, star bool, rejected []Rejec
 			paths = append(paths, v.Path)
 		}
 	}
-	return paths, star, rejected
+	return paths, prefixes, star, rejected
 }
