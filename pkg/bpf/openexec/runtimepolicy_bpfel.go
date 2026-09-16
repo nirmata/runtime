@@ -30,6 +30,8 @@ type runtimePolicyPolicyCtx struct {
 	ProgType uint8
 	Reason   uint8
 	Path     [128]int8
+	Nslash   uint8
+	Slash    [16]uint8
 }
 
 // Names of all BPF objects in the ELF.
