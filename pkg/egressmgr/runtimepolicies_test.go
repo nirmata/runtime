@@ -71,14 +71,14 @@ func TestRpUpdatedKeepsSharedRpPointerAcrossUpdates(t *testing.T) {
 	gen2 := rp("rp-1", "enforce", webLabels, []string{"2.2.2.2"}, nil)
 	mustRpEvent(t, e, gen2, events.EventTypeUpdate)
 	assertSharedPointer(t, e, "rp-1", "pod-1")
-	wantLiveIps(t, f, []string{"2.2.2.2"}, []string{})
+	wantLiveIps(t, f, []string{"2.2.2.2/32"}, []string{})
 
 	// third generation: with a reassignment in rpUpdated, e.rps holds gen2 while
 	// the pod holds gen1, whose IPs pointer is frozen at the gen2 pair
 	gen3 := rp("rp-1", "enforce", webLabels, []string{"3.3.3.3"}, nil)
 	mustRpEvent(t, e, gen3, events.EventTypeUpdate)
 	assertSharedPointer(t, e, "rp-1", "pod-1")
-	wantLiveIps(t, f, []string{"3.3.3.3"}, []string{})
+	wantLiveIps(t, f, []string{"3.3.3.3/32"}, []string{})
 
 	attached := e.pods["pod-1"].attachedFilters["rp-1"]
 	if !slices.Equal(attached.IPs.Allow, []string{"3.3.3.3"}) {
@@ -89,7 +89,7 @@ func TestRpUpdatedKeepsSharedRpPointerAcrossUpdates(t *testing.T) {
 	// pointer removes an older generation's ips and leaks the current ones
 	f.reset()
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"3.3.3.3"}, nil)})
+	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"3.3.3.3/32"}, nil)})
 	wantLiveIps(t, f, []string{}, []string{})
 	wantAttachedRps(t, e, "pod-1")
 	if _, ok := e.rps["rp-1"]; ok {
@@ -138,7 +138,7 @@ func TestRpCreatedAppliesToMatchingPodsOnly(t *testing.T) {
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, []string{"9.9.9.9", "*"}), events.EventTypeCreate)
 
 	wantPairs(t, "AddIps(web)", web.adds, []ipPair{pair([]string{"1.1.1.1"}, []string{"9.9.9.9", "*"})})
-	wantLiveIps(t, web, []string{"1.1.1.1"}, []string{"9.9.9.9"})
+	wantLiveIps(t, web, []string{"1.1.1.1/32"}, []string{"9.9.9.9/32"})
 	wantDefaultDeny(t, web, true)
 	wantDefaultDenyOwners(t, e, "pod-web", "rp-1")
 	wantAttachedRps(t, e, "pod-web", "rp-1")
@@ -172,7 +172,7 @@ func TestRpUpdatedLeavingTrackedModeTearsDown(t *testing.T) {
 	if _, ok := e.rps["rp-1"]; ok {
 		t.Error("policy still tracked after leaving every supported mode")
 	}
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
+	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1/32"}, nil)})
 	wantLiveIps(t, f, []string{}, []string{})
 	wantDefaultDeny(t, f, false)
 	wantDefaultDenyOwners(t, e, "pod-1")
@@ -191,7 +191,7 @@ func TestRpUpdatedDetachUsesCopiedOldIps(t *testing.T) {
 	// the selector moves off this pod and the ip set changes at the same time
 	mustRpEvent(t, e, rp("rp-1", "enforce", apiLabels, []string{"3.3.3.3"}, nil), events.EventTypeUpdate)
 
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1", "2.2.2.2"}, []string{"8.8.8.8"})})
+	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1/32", "2.2.2.2/32"}, []string{"8.8.8.8/32"})})
 	wantPairs(t, "AddIps", f.adds, nil)
 	wantLiveIps(t, f, []string{}, []string{})
 	wantAttachedRps(t, e, "pod-1")
@@ -210,8 +210,8 @@ func TestRpUpdatedAppliesExactIpDiff(t *testing.T) {
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"2.2.2.2", "3.3.3.3"}, []string{"8.8.8.8", "9.9.9.9"}), events.EventTypeUpdate)
 
 	wantPairs(t, "AddIps", f.adds, []ipPair{pair([]string{"3.3.3.3"}, []string{"9.9.9.9"})})
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
-	wantLiveIps(t, f, []string{"2.2.2.2", "3.3.3.3"}, []string{"8.8.8.8", "9.9.9.9"})
+	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1/32"}, nil)})
+	wantLiveIps(t, f, []string{"2.2.2.2/32", "3.3.3.3/32"}, []string{"8.8.8.8/32", "9.9.9.9/32"})
 	if len(f.toggles) != 0 {
 		t.Errorf("default deny flag touched without a wildcard change: %v", f.toggles)
 	}
@@ -230,7 +230,7 @@ func TestRpUpdatedNoDiffStillMatchingIsNoop(t *testing.T) {
 	if len(f.toggles) != 0 {
 		t.Errorf("unexpected flag toggles on a no-op update: %v", f.toggles)
 	}
-	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{"8.8.8.8"})
+	wantLiveIps(t, f, []string{"1.1.1.1/32"}, []string{"8.8.8.8/32"})
 }
 
 func TestRpUpdatedWildcardAddedThenRemoved(t *testing.T) {
@@ -252,7 +252,7 @@ func TestRpUpdatedWildcardAddedThenRemoved(t *testing.T) {
 	wantPairs(t, "DeleteIps", f.deletes, nil)
 	wantDefaultDeny(t, f, false)
 	wantDefaultDenyOwners(t, e, "pod-1")
-	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
+	wantLiveIps(t, f, []string{"1.1.1.1/32"}, []string{})
 }
 
 func TestRpUpdatedNewlyMatchedPodGetsFullIpSetAndSharedPointer(t *testing.T) {
@@ -340,7 +340,7 @@ func TestRpDeletedRemovesAttachedIpsPerPod(t *testing.T) {
 
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 
-	wantPairs(t, "DeleteIps(web)", web.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
+	wantPairs(t, "DeleteIps(web)", web.deletes, []ipPair{pair([]string{"1.1.1.1/32"}, nil)})
 	wantLiveIps(t, web, []string{}, []string{})
 	wantDefaultDeny(t, web, false)
 	wantAttachedRps(t, e, "pod-web")
@@ -365,7 +365,7 @@ func TestRpDeletedUnknownUidIsNoop(t *testing.T) {
 		t.Errorf("flags touched deleting an unknown policy: %v", f.toggles)
 	}
 	wantAttachedRps(t, e, "pod-1", "rp-1")
-	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
+	wantLiveIps(t, f, []string{"1.1.1.1/32"}, []string{})
 }
 
 // a pod whose address maps could not be programmed runs unfiltered, and the

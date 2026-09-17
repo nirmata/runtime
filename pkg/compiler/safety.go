@@ -19,10 +19,6 @@ func IsObserveMode(mode string) bool {
 	return mode == ModeMonitor
 }
 
-// The accepted CIDR prefix width is narrower at program time:
-// egressfilter.ParseTargets expands only prefixes >= /24 and reports the rest
-// as rejected targets. Admission stays deliberately permissive so it never
-// rejects a value the runtime would accept.
 func networkValueErr(v string) error {
 	_, err := ParseNetworkValue(v)
 	return err

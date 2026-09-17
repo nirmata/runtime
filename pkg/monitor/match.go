@@ -22,9 +22,9 @@ type decision struct {
 //
 // Values are compiled once, when the policy is tracked, so HandleEvent does no
 // parsing on the event path. CIDR values are kept as prefixes and matched by
-// containment: egressfilter expands them into individual map keys at program
-// time, so a policy denying 10.0.0.0/24 must produce a finding for 10.0.0.7
-// rather than silently observing nothing.
+// containment, mirroring the kernel's longest-prefix lookup: a policy denying
+// 10.0.0.0/24 must produce a finding for 10.0.0.7 rather than silently
+// observing nothing.
 type netMatcher struct {
 	star     bool
 	addrs    map[netip.Addr]struct{}

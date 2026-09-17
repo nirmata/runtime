@@ -49,25 +49,25 @@ func TestFullLifecycleLeavesNoDanglingState(t *testing.T) {
 
 	// 2. a policy selecting only app=web, with a default deny
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1", "2.2.2.2"}, []string{"*"}), events.EventTypeCreate)
-	wantLiveIps(t, web, []string{"1.1.1.1", "2.2.2.2"}, []string{})
+	wantLiveIps(t, web, []string{"1.1.1.1/32", "2.2.2.2/32"}, []string{})
 	wantDefaultDeny(t, web, true)
 	wantLiveIps(t, api, []string{}, []string{})
 	wantDefaultDeny(t, api, false)
 
 	// 3. a cluster wide policy, also with a default deny
 	mustRpEvent(t, e, rp("rp-2", "enforce", nil, []string{"9.9.9.9"}, []string{"*"}), events.EventTypeCreate)
-	wantLiveIps(t, web, []string{"1.1.1.1", "2.2.2.2", "9.9.9.9"}, []string{})
-	wantLiveIps(t, api, []string{"9.9.9.9"}, []string{})
+	wantLiveIps(t, web, []string{"1.1.1.1/32", "2.2.2.2/32", "9.9.9.9/32"}, []string{})
+	wantLiveIps(t, api, []string{"9.9.9.9/32"}, []string{})
 	wantDefaultDenyOwners(t, e, "pod-web", "rp-1", "rp-2")
 	wantDefaultDenyOwners(t, e, "pod-api", "rp-2")
 
 	// 4. rp-1 moves to app=api and changes its ip set at the same time
 	mustRpEvent(t, e, rp("rp-1", "enforce", apiLabels, []string{"2.2.2.2", "3.3.3.3"}, []string{"*"}), events.EventTypeUpdate)
-	wantLiveIps(t, web, []string{"9.9.9.9"}, []string{})
+	wantLiveIps(t, web, []string{"9.9.9.9/32"}, []string{})
 	wantDefaultDeny(t, web, true) // rp-2 still requires it
 	wantDefaultDenyOwners(t, e, "pod-web", "rp-2")
 	wantAttachedRps(t, e, "pod-web", "rp-2")
-	wantLiveIps(t, api, []string{"2.2.2.2", "3.3.3.3", "9.9.9.9"}, []string{})
+	wantLiveIps(t, api, []string{"2.2.2.2/32", "3.3.3.3/32", "9.9.9.9/32"}, []string{})
 	wantAttachedRps(t, e, "pod-api", "rp-1", "rp-2")
 	assertSharedPointer(t, e, "rp-1", "pod-api")
 
@@ -75,7 +75,7 @@ func TestFullLifecycleLeavesNoDanglingState(t *testing.T) {
 	// re-evaluates every tracked selector, so the pod picks rp-1 up without a
 	// delete/create pair.
 	relabelPod(t, e, "pod-web", apiLabels, "/cg/web")
-	wantLiveIps(t, web, []string{"2.2.2.2", "3.3.3.3", "9.9.9.9"}, []string{})
+	wantLiveIps(t, web, []string{"2.2.2.2/32", "3.3.3.3/32", "9.9.9.9/32"}, []string{})
 	wantDefaultDeny(t, web, true)
 	wantAttachedRps(t, e, "pod-web", "rp-1", "rp-2")
 	assertSharedPointer(t, e, "rp-1", "pod-web")
@@ -83,7 +83,7 @@ func TestFullLifecycleLeavesNoDanglingState(t *testing.T) {
 	// 6. rp-1 goes away. every pod keeps exactly rp-2's contribution.
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 	for uid, f := range map[string]*fakeFilter{"pod-web": web, "pod-api": api} {
-		wantLiveIps(t, f, []string{"9.9.9.9"}, []string{})
+		wantLiveIps(t, f, []string{"9.9.9.9/32"}, []string{})
 		wantDefaultDeny(t, f, true)
 		wantAttachedRps(t, e, uid, "rp-2")
 		wantDefaultDenyOwners(t, e, uid, "rp-2")

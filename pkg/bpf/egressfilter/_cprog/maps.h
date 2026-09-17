@@ -18,18 +18,27 @@ struct ip_event_key {
     __u32 domain_id;
 };
 
+/* addr is compared most-significant-byte first, which is the order daddr
+ * already arrives in off the wire. */
+struct ipv4_lpm_key {
+    __u32 prefixlen;
+    __u8 addr[4];
+};
+
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 1024);
-    __type(key, __u32);
+    __type(key, struct ipv4_lpm_key);
     __type(value, __u8);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
 } banned_ips SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 1024);
-    __type(key, __u32);
+    __type(key, struct ipv4_lpm_key);
     __type(value, __u8);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
 } allowed_ips SEC(".maps");
 
 struct {
