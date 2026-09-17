@@ -25,6 +25,12 @@ type egressBlockIpEventKey struct {
 	DomainId uint32
 }
 
+type egressBlockIpv4LpmKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Addr      [4]uint8
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
