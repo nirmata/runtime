@@ -1,0 +1,14 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-cidr
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: cidr-client
+  behaviors:
+  - network:
+      deny:
+        values:
+        - 1.1.1.0/24
