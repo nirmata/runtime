@@ -100,7 +100,7 @@ func TestModeTransitionsRebuildProgramming(t *testing.T) {
 
 		mustRpEvent(t, e, rp("rp-1", compiler.ModeMonitor, webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeUpdate)
 
-		wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1"}, nil)})
+		wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"1.1.1.1/32"}, nil)})
 		wantPairs(t, "AddIps", f.adds, nil)
 		wantLiveIps(t, f, []string{}, []string{})
 		wantDefaultDeny(t, f, false)
@@ -118,7 +118,7 @@ func TestModeTransitionsRebuildProgramming(t *testing.T) {
 		mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, []string{"*"}), events.EventTypeUpdate)
 
 		wantPairs(t, "AddIps", f.adds, []ipPair{pair([]string{"1.1.1.1"}, []string{"*"})})
-		wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
+		wantLiveIps(t, f, []string{"1.1.1.1/32"}, []string{})
 		wantDefaultDeny(t, f, true)
 		wantDefaultDenyOwners(t, e, "pod-1", "rp-1")
 		wantObserveFlag(t, f, true)
@@ -313,11 +313,10 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 			wantIn:     []string{"2001:db8::1", egressfilter.ReasonIPv6},
 		},
 		{
-			name:       "cidr wider than /24",
+			name:       "cidr of any width is a supported target",
 			deny:       []string{"10.0.0.0/8"},
-			wantStatus: metav1.ConditionFalse,
-			wantReason: v1alpha1.ReasonUnsupportedTargets,
-			wantIn:     []string{"10.0.0.0/8", egressfilter.ReasonCIDRTooWide},
+			wantStatus: metav1.ConditionTrue,
+			wantReason: v1alpha1.ReasonAllTargetsSupported,
 		},
 		{
 			name:       "hostname is a supported target",
@@ -337,7 +336,7 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 			allow:      []string{"1.1.1.1", "not an address"},
 			wantStatus: metav1.ConditionFalse,
 			wantReason: v1alpha1.ReasonUnsupportedTargets,
-			wantIn:     []string{"not an address", egressfilter.ReasonNotAnIP},
+			wantIn:     []string{"not an address", egressfilter.ReasonInvalidEntry},
 		},
 	}
 
@@ -368,7 +367,7 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 			}
 			// the supported targets still reach the maps
 			if tc.name == "mixed: the supported half is still programmed" {
-				wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
+				wantLiveIps(t, f, []string{"1.1.1.1/32"}, []string{})
 			}
 		})
 	}

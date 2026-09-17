@@ -1,0 +1,69 @@
+# Denying a CIDR blocks the addresses inside it, and deleting the policy gives
+# them back. The second half is the assertion that matters: a filter that
+# programs a deny and never unprograms it passes a block-only test.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: egress-cidr
+spec:
+  steps:
+  - name: start-the-client
+    try:
+    - apply:
+        file: client.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: cidr-client
+          status:
+            phase: Running
+
+  - name: deny-1.1.1.0-24
+    try:
+    - apply:
+        file: policy.yaml
+
+  - name: resolving-through-1.1.1.1-fails
+    try:
+    - script:
+        content: |
+          set -eu
+          # The daemon programs maps on its own schedule, so poll rather than
+          # sleep.
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec cidr-client -- \
+                 nslookup kubernetes.io 1.1.1.1 >/dev/null 2>&1; then
+              sleep 2
+            else
+              echo "OK: 1.1.1.1 blocked"; exit 0
+            fi
+          done
+          echo "FAIL: 1.1.1.1 still resolving with 1.1.1.0/24 denied"
+          exit 1
+
+  - name: removing-the-policy-gives-1.1.1.1-back
+    try:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-cidr
+    - script:
+        content: |
+          set -eu
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec cidr-client -- \
+                 nslookup kubernetes.io 1.1.1.1 >/dev/null 2>&1; then
+              echo "OK: 1.1.1.1 reachable again"; exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: 1.1.1.1 still blocked after the policy was deleted"
+          exit 1
+    finally:
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=100 || true

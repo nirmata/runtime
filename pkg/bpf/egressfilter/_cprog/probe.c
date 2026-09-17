@@ -92,15 +92,19 @@ int cgroup_egress(struct __sk_buff *skb)
 
     __u32 decision = DECISION_ALLOW;
 
+    // a /32 probe: the trie resolves it against whatever prefix covers it
+    struct ipv4_lpm_key k = { .prefixlen = 32 };
+    __builtin_memcpy(k.addr, &ip->daddr, sizeof(k.addr));
+
     // if there's an explicit deny
-    if (bpf_map_lookup_elem(&banned_ips, &daddr) != NULL || (domain_id && 
+    if (bpf_map_lookup_elem(&banned_ips, &k) != NULL || (domain_id && 
         bpf_map_lookup_elem(&banned_domains, &domain_id))) {
             decision = DECISION_DENY;
     }
 
     // if DEFAULT_DENY, and that IP/domain is not in the allow list
     if (*f & (1 << DEFAULT_DENY)) {
-        if (bpf_map_lookup_elem(&allowed_ips, &daddr) == NULL &&
+        if (bpf_map_lookup_elem(&allowed_ips, &k) == NULL &&
             !(domain_id && bpf_map_lookup_elem(&allowed_domains, &domain_id))) {
             decision = DECISION_DENY;
         }

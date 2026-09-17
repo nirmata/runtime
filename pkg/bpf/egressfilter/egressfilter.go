@@ -91,8 +91,8 @@ func (e *EgressFilter) AddIps(pair *compiler.AllowDenyPair) ([]compiler.Rejected
 	e.logRejected(rejected)
 
 	return rejected, errors.Join(
-		putAddrs(allowedIPs, "allowed_ips", allow.addrs),
-		putAddrs(bannedIPs, "banned_ips", deny.addrs),
+		putPrefixes(allowedIPs, "allowed_ips", allow.prefixes),
+		putPrefixes(bannedIPs, "banned_ips", deny.prefixes),
 		allowErr,
 		denyErr,
 	)
@@ -112,25 +112,26 @@ func (e *EgressFilter) DeleteIps(pair *compiler.AllowDenyPair) ([]compiler.Rejec
 	allowedDomains, bannedDomains := e.domainMaps()
 
 	return rejected, errors.Join(
-		deleteAddrs(allowedIPs, "allowed_ips", allow.addrs),
-		deleteAddrs(bannedIPs, "banned_ips", deny.addrs),
+		deletePrefixes(allowedIPs, "allowed_ips", allow.prefixes),
+		deletePrefixes(bannedIPs, "banned_ips", deny.prefixes),
 		e.deleteDomains(allowedDomains, "allowed_domains", allow.hosts),
 		e.deleteDomains(bannedDomains, "banned_domains", deny.hosts),
 	)
 }
 
+// side refers to allow/deny side
 type sideTargets struct {
-	addrs []netip.Addr
-	hosts []string
+	prefixes []netip.Prefix
+	hosts    []string
 }
 
-// parsePair resolves both target lists of pair through the single target
-// schema. rejected is nil when nothing was rejected.
+// from a string based AllowDenyPair, call ParseTargets to actually get the formats we can include
+// in the maps, group what has been rejected.
 func parsePair(pair *compiler.AllowDenyPair) (allow, deny sideTargets, rejected []compiler.RejectedTarget) {
-	allowAddrs, allowHosts, _, allowRejected := ParseTargets(pair.Allow)
-	denyAddrs, denyHosts, _, denyRejected := ParseTargets(pair.Deny)
-	allow = sideTargets{addrs: allowAddrs, hosts: allowHosts}
-	deny = sideTargets{addrs: denyAddrs, hosts: denyHosts}
+	allowPrefixes, allowHosts, _, allowRejected := ParseTargets(pair.Allow)
+	denyPrefixes, denyHosts, _, denyRejected := ParseTargets(pair.Deny)
+	allow = sideTargets{prefixes: allowPrefixes, hosts: allowHosts}
+	deny = sideTargets{prefixes: denyPrefixes, hosts: denyHosts}
 	if len(allowRejected)+len(denyRejected) == 0 {
 		return allow, deny, nil
 	}
@@ -148,8 +149,8 @@ func (e *EgressFilter) ipMaps() (allowed, banned *ebpf.Map) {
 	return e.bpfObjs.AllowedIps, e.bpfObjs.BannedIps
 }
 
-func putAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
-	if len(addrs) == 0 {
+func putPrefixes(m *ebpf.Map, name string, prefixes []netip.Prefix) error {
+	if len(prefixes) == 0 {
 		return nil
 	}
 	if m == nil {
@@ -157,8 +158,8 @@ func putAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
 	}
 
 	var errs []error
-	for _, addr := range addrs {
-		key, ok := addrKey(addr)
+	for _, prefix := range prefixes {
+		key, ok := prefixKey(prefix)
 		if !ok {
 			continue
 		}
@@ -169,8 +170,8 @@ func putAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
 	return errors.Join(errs...)
 }
 
-func deleteAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
-	if len(addrs) == 0 {
+func deletePrefixes(m *ebpf.Map, name string, prefixes []netip.Prefix) error {
+	if len(prefixes) == 0 {
 		return nil
 	}
 	if m == nil {
@@ -178,8 +179,8 @@ func deleteAddrs(m *ebpf.Map, name string, addrs []netip.Addr) error {
 	}
 
 	var errs []error
-	for _, addr := range addrs {
-		key, ok := addrKey(addr)
+	for _, prefix := range prefixes {
+		key, ok := prefixKey(prefix)
 		if !ok {
 			continue
 		}

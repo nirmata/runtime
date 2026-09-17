@@ -15,8 +15,8 @@ func TestSharedAddressSurvivesOneOwnerDetaching(t *testing.T) {
 
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 
-	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"2.2.2.2"}, nil)})
-	wantLiveIps(t, f, []string{"1.1.1.1", "3.3.3.3"}, []string{})
+	wantPairs(t, "DeleteIps", f.deletes, []ipPair{pair([]string{"2.2.2.2/32"}, nil)})
+	wantLiveIps(t, f, []string{"1.1.1.1/32", "3.3.3.3/32"}, []string{})
 }
 
 func TestSharedAddressGoesWhenTheLastOwnerDetaches(t *testing.T) {
@@ -26,7 +26,7 @@ func TestSharedAddressGoesWhenTheLastOwnerDetaches(t *testing.T) {
 	mustRpEvent(t, e, rp("rp-2", "enforce", webLabels, []string{"1.1.1.1"}, nil), events.EventTypeCreate)
 
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
-	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
+	wantLiveIps(t, f, []string{"1.1.1.1/32"}, []string{})
 
 	mustRpEvent(t, e, deleteEvent("rp-2"), events.EventTypeDelete)
 	wantLiveIps(t, f, []string{}, []string{})
@@ -44,7 +44,7 @@ func TestSharedAddressSurvivesAnotherPolicyDroppingIt(t *testing.T) {
 	mustRpEvent(t, e, rp("rp-1", "enforce", webLabels, []string{"2.2.2.2"}, nil), events.EventTypeUpdate)
 
 	wantPairs(t, "DeleteIps", f.deletes, nil)
-	wantLiveIps(t, f, []string{"1.1.1.1", "2.2.2.2"}, []string{})
+	wantLiveIps(t, f, []string{"1.1.1.1/32", "2.2.2.2/32"}, []string{})
 }
 
 func TestOwnershipIsKeyedOnTheAddressNotItsSpelling(t *testing.T) {
@@ -55,7 +55,7 @@ func TestOwnershipIsKeyedOnTheAddressNotItsSpelling(t *testing.T) {
 
 	mustRpEvent(t, e, deleteEvent("rp-1"), events.EventTypeDelete)
 
-	wantLiveIps(t, f, []string{"1.1.1.1"}, []string{})
+	wantLiveIps(t, f, []string{"1.1.1.1/32"}, []string{})
 }
 
 func TestSharedDomainSurvivesOneOwnerDetaching(t *testing.T) {
