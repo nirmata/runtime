@@ -103,7 +103,7 @@ var bpfObjects = []bpfObjectSpec{
 			name:       "generic_tracepoint_handler",
 			typ:        ebpf.Tracing,
 			attach:     ebpf.AttachModifyReturn,
-			insnBudget: 2000,
+			insnBudget: 5000,
 		}},
 	},
 	{
