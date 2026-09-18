@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	v1alpha1client "github.com/nirmata/runtime/pkg/client/clientset/versioned"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/events"
+	"github.com/nirmata/runtime/pkg/runtimeevent"
 
 	"github.com/go-logr/logr"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -25,6 +27,27 @@ import (
 // DefaultStatusFlushInterval is the flush cadence used by the daemon.
 const DefaultStatusFlushInterval = 30 * time.Second
 
+const (
+	execTraceSource       = "exec-trace"
+	dnsQuerySource        = "dnsquery"
+	openExecObserveSource = "openexec-observe"
+	egressObserveSource   = "egress-observe"
+)
+
+// ExpectedSourceNodes describes the DaemonSet nodes that should publish event
+// source status. A non-synced or incomplete inventory cannot prove a source is
+// available everywhere.
+type ExpectedSourceNodes struct {
+	Names   []string
+	Desired int
+	Synced  bool
+}
+
+type sourceStatus struct {
+	state  runtimeevent.SourceState
+	reason string
+}
+
 // policyStatusState is this node's view of one policy's status.
 type policyStatusState struct {
 	// name is needed to address the object. An entry whose name is still unknown
@@ -34,7 +57,6 @@ type policyStatusState struct {
 
 	// conditions is keyed by condition type; the last write wins.
 	conditions map[string]metav1.Condition
-
 	// gen increments on every mutation. A flush records the gen it observed
 	// and only clears dirty when nothing changed while the API call was in
 	// flight.
@@ -73,10 +95,15 @@ type StatusWriter struct {
 	// against what was written to the API, not from RecordCondition: see
 	// notifyConditionChanges. A nil func disables it.
 	onConditionChanged func(policyUID, policyName string, cond metav1.Condition)
+	// expectedSourceNodes is nil when source status is aggregated over the
+	// reporting shards.
+	expectedSourceNodes func() ExpectedSourceNodes
 
 	mu sync.Mutex
 	// policies is keyed by policy UID.
 	policies map[string]*policyStatusState
+	// sources is daemon-wide state, retained before a relevant policy appears.
+	sources map[string]sourceStatus
 }
 
 // NewStatusWriter builds a StatusWriter for this node. A non-positive interval
@@ -96,6 +123,48 @@ func NewStatusWriter(client v1alpha1client.Interface, nodeName string, interval 
 		nodeGone:           nodeGone,
 		onConditionChanged: onConditionChanged,
 		policies:           make(map[string]*policyStatusState),
+		sources:            make(map[string]sourceStatus),
+	}
+}
+
+// SetExpectedSourceNodes installs the DaemonSet membership view used to
+// aggregate event source status. It marks every policy dirty because placement
+// changes can alter a cluster condition without a policy event.
+func (s *StatusWriter) SetExpectedSourceNodes(f func() ExpectedSourceNodes) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expectedSourceNodes = f
+	for _, st := range s.policies {
+		st.touch()
+	}
+}
+
+// MarkAllDirty makes the next flush recompute every policy's aggregate status.
+func (s *StatusWriter) MarkAllDirty() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, st := range s.policies {
+		st.touch()
+	}
+}
+
+// RecordSourceStatus records a daemon-wide source lifecycle transition. The
+// source state is projected into relevant policy shards during flush.
+func (s *StatusWriter) RecordSourceStatus(source string, state runtimeevent.SourceState, reason string) {
+	if source == "" || reason == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if previous, ok := s.sources[source]; ok && previous.state == state && previous.reason == reason {
+		return
+	}
+	s.sources[source] = sourceStatus{state: state, reason: reason}
+	if state == runtimeevent.SourceStateUnavailable {
+		s.log.V(0).Info("event source is unavailable", "source", source, "reason", reason)
+	}
+	for _, st := range s.policies {
+		st.touch()
 	}
 }
 
@@ -223,6 +292,14 @@ func (s *StatusWriter) appliedCondition(mode string, conditions map[string]metav
 		cond.Message = gate.Message
 		return cond
 	}
+	if compiler.IsObserveMode(mode) {
+		if gate, ok := conditions[v1alpha1.ConditionEventSourcesAvailable]; ok && gate.Status != metav1.ConditionTrue {
+			cond.Status = gate.Status
+			cond.Reason = gate.Reason
+			cond.Message = gate.Message
+			return cond
+		}
+	}
 
 	if gate, ok := conditions[v1alpha1.ConditionPodsMatched]; ok && gate.Status == metav1.ConditionFalse {
 		cond.Status = metav1.ConditionFalse
@@ -264,9 +341,8 @@ type flushItem struct {
 	name       string
 	mode       string
 	conditions []metav1.Condition
-	// shard carries this node's compact signals; NodeName and
-	// LastEvaluatedTime are the flusher's to fill.
-	shard v1alpha1.NodePolicyStatus
+	signals    map[string]metav1.Condition
+	sources    map[string]sourceStatus
 	// explicitApplied marks a directly recorded Applied, which the derived
 	// cluster-scoped one must stand aside for.
 	explicitApplied bool
@@ -303,11 +379,18 @@ func (s *StatusWriter) snapshot() []flushItem {
 			continue
 		}
 		item := flushItem{
-			uid:   uid,
-			name:  st.name,
-			mode:  st.mode,
-			shard: signalShard(st.conditions),
-			gen:   st.gen,
+			uid:     uid,
+			name:    st.name,
+			mode:    st.mode,
+			signals: make(map[string]metav1.Condition, len(st.conditions)),
+			sources: make(map[string]sourceStatus, len(s.sources)),
+			gen:     st.gen,
+		}
+		for name, status := range s.sources {
+			item.sources[name] = status
+		}
+		for typ, condition := range st.conditions {
+			item.signals[typ] = condition
 		}
 		conds := make([]metav1.Condition, 0, len(st.conditions))
 		for t, c := range st.conditions {
@@ -378,7 +461,8 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 		}
 
 		s.pruneDeletedNodeShards(&updated.Status)
-		shard := item.shard
+		dependencies := sourceDependencies(cur.Spec)
+		shard := signalShard(item.signals, item.sources, dependencies)
 		shard.NodeName = s.nodeName
 		shard.LastEvaluatedTime = &now
 		setNodeShard(&updated.Status, shard)
@@ -393,7 +477,7 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 			}
 			apimeta.SetStatusCondition(&updated.Status.Conditions, cond)
 		}
-		s.setClusterConditions(&updated.Status, item.mode, item.explicitApplied)
+		s.setClusterConditions(&updated.Status, currentPolicyMode(cur.Spec, item.mode), item.explicitApplied, dependencies)
 
 		if apiequality.Semantic.DeepEqual(before, updated.Status) {
 			// nothing to say; skip the write entirely
@@ -498,7 +582,7 @@ func recomputeLastEvaluated(status *v1alpha1.RuntimePolicyStatus) {
 
 // signalShard reduces recorded conditions to the compact per-node fields the
 // cluster-scoped aggregation reads.
-func signalShard(conditions map[string]metav1.Condition) v1alpha1.NodePolicyStatus {
+func signalShard(conditions map[string]metav1.Condition, sources map[string]sourceStatus, dependencies []string) v1alpha1.NodePolicyStatus {
 	var shard v1alpha1.NodePolicyStatus
 	if c, ok := conditions[v1alpha1.ConditionEnforcementAvailable]; ok {
 		shard.EnforcementAvailable = conditionBool(c)
@@ -515,6 +599,9 @@ func signalShard(conditions map[string]metav1.Condition) v1alpha1.NodePolicyStat
 			break
 		}
 	}
+	for _, name := range dependencies {
+		shard.EventSources = append(shard.EventSources, eventSourceStatus(name, sources[name]))
+	}
 	return shard
 }
 
@@ -526,9 +613,9 @@ func conditionBool(c metav1.Condition) *bool {
 // setClusterConditions derives the cluster-scoped availability, pods-matched
 // and Applied conditions from the per-node shards, so every daemon publishes
 // the same top-level answer instead of its own node's.
-func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus, mode string, explicitApplied bool) {
+func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus, mode string, explicitApplied bool, sourceDependencies []string) {
 	now := metav1.NewTime(s.clock())
-	agg := make(map[string]metav1.Condition, 3)
+	agg := make(map[string]metav1.Condition, 4)
 	// a type no shard reports is removed rather than left as written: keeping
 	// it would preserve a value the shards no longer back
 	record := func(c metav1.Condition, ok bool) {
@@ -546,9 +633,234 @@ func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus
 		v1alpha1.ReasonObservationAvailable, v1alpha1.ReasonObservationUnavailable,
 		func(n *v1alpha1.NodePolicyStatus) *bool { return n.ObservationAvailable }))
 	record(aggregatePodsMatched(status.Nodes, now))
+	expected, hasExpected := s.sourceNodes()
+	record(aggregateEventSources(status.Nodes, now, sourceDependencies, expected, hasExpected))
 	if !explicitApplied {
 		apimeta.SetStatusCondition(&status.Conditions, s.appliedCondition(mode, agg))
 	}
+}
+
+func currentPolicyMode(spec v1alpha1.RuntimePolicySpec, fallback string) string {
+	if spec.Mode != nil {
+		return string(*spec.Mode)
+	}
+	return fallback
+}
+
+func sourceDependencies(spec v1alpha1.RuntimePolicySpec) []string {
+	if spec.Mode == nil || !compiler.IsObserveMode(string(*spec.Mode)) {
+		return nil
+	}
+	var dependencies []string
+	for _, behavior := range spec.Behaviors {
+		if declaresTargets(behavior.Open) || declaresTargets(behavior.Exec) {
+			dependencies = append(dependencies, openExecObserveSource)
+		}
+		if declaresTargets(behavior.Network) || declaresTargets(behavior.Protocol) {
+			dependencies = append(dependencies, egressObserveSource)
+		}
+		if declaresTargets(behavior.Exec) {
+			dependencies = append(dependencies, execTraceSource)
+		}
+		if declaresTargets(behavior.DNS) {
+			dependencies = append(dependencies, dnsQuerySource)
+		}
+	}
+	sort.Strings(dependencies)
+	return slices.Compact(dependencies)
+}
+
+func declaresTargets(behavior *v1alpha1.Behavior) bool {
+	if behavior == nil {
+		return false
+	}
+	// Expressions can become nonempty on re-evaluation without a spec update.
+	for _, rule := range []*v1alpha1.BehaviorRule{behavior.Allow, behavior.Deny} {
+		if rule != nil && (len(rule.Values) != 0 || rule.Expression != "") {
+			return true
+		}
+	}
+	return false
+}
+
+func eventSourceStatus(name string, status sourceStatus) v1alpha1.EventSourceStatus {
+	result := v1alpha1.EventSourceStatus{Name: name, Status: metav1.ConditionUnknown, Reason: status.reason, Message: sourceMessage(name, status)}
+	if result.Reason == "" {
+		result.Reason = runtimeevent.SourceReasonStarting
+	}
+	switch status.state {
+	case runtimeevent.SourceStateAvailable:
+		result.Status = metav1.ConditionTrue
+	case runtimeevent.SourceStateUnavailable:
+		result.Status = metav1.ConditionFalse
+	}
+	return result
+}
+
+func sourceMessage(name string, status sourceStatus) string {
+	switch name {
+	case execTraceSource:
+		if status.state == runtimeevent.SourceStateAvailable {
+			return "exec trace source is available"
+		}
+		if status.state == runtimeevent.SourceStateUnavailable {
+			if status.reason == runtimeevent.SourceReasonDependencyUnavailable {
+				return "exec trace source is unavailable because the open/exec manager could not load; argv and exec filename observations are unavailable"
+			}
+			return "exec trace source is unavailable; argv observations are unavailable, but exec filename observations may remain available"
+		}
+		return "exec trace source is starting"
+	case dnsQuerySource:
+		if status.state == runtimeevent.SourceStateAvailable {
+			return "DNS query source is available"
+		}
+		if status.state == runtimeevent.SourceStateUnavailable {
+			return "DNS query source is unavailable; DNS name observations are unavailable"
+		}
+		return "DNS query source is starting"
+	case openExecObserveSource:
+		if status.state == runtimeevent.SourceStateAvailable {
+			return "open/exec observation counter source is available"
+		}
+		if status.state == runtimeevent.SourceStateUnavailable {
+			return "open/exec observation counter source is unavailable; file-open observations and exec filename counter observations are unavailable"
+		}
+		return "open/exec observation counter source is starting"
+	case egressObserveSource:
+		if status.state == runtimeevent.SourceStateAvailable {
+			return "egress observation counter source is available"
+		}
+		if status.state == runtimeevent.SourceStateUnavailable {
+			return "egress observation counter source is unavailable; network and protocol observations are unavailable"
+		}
+		return "egress observation counter source is starting"
+	default:
+		return "event source status is unavailable"
+	}
+}
+
+func aggregateEventSources(nodes []v1alpha1.NodePolicyStatus, now metav1.Time, dependencies []string, expected ExpectedSourceNodes, hasExpected bool) (metav1.Condition, bool) {
+	cond := metav1.Condition{Type: v1alpha1.ConditionEventSourcesAvailable, LastTransitionTime: now}
+	if len(dependencies) == 0 {
+		return cond, false
+	}
+	if !hasExpected {
+		for _, node := range nodes {
+			if len(node.EventSources) != 0 {
+				return aggregateEventSourceNodes(nodes, now, dependencies, len(nodes), false)
+			}
+		}
+		return cond, false
+	}
+	expectedNames := make(map[string]struct{}, len(expected.Names))
+	for _, name := range expected.Names {
+		if name != "" {
+			expectedNames[name] = struct{}{}
+		}
+	}
+	if expected.Desired == 0 && expected.Synced {
+		cond.Status, cond.Reason, cond.Message = metav1.ConditionUnknown, v1alpha1.ReasonEventSourcesUnknown, "event source status is unknown because there are no expected daemon nodes"
+		return cond, true
+	}
+	incomplete := !expected.Synced || len(expectedNames) != expected.Desired
+	if incomplete {
+		return aggregateEventSourceNodes(nodes, now, dependencies, expected.Desired, true)
+	}
+	byName := make(map[string]v1alpha1.NodePolicyStatus, len(nodes))
+	for _, node := range nodes {
+		byName[node.NodeName] = node
+	}
+	names := make([]string, 0, len(expectedNames))
+	for name := range expectedNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	selected := make([]v1alpha1.NodePolicyStatus, 0, len(names))
+	for _, name := range names {
+		if node, ok := byName[name]; ok {
+			selected = append(selected, node)
+		} else {
+			selected = append(selected, v1alpha1.NodePolicyStatus{NodeName: name})
+		}
+	}
+	return aggregateEventSourceNodes(selected, now, dependencies, expected.Desired, false)
+}
+
+func aggregateEventSourceNodes(nodes []v1alpha1.NodePolicyStatus, now metav1.Time, dependencies []string, desired int, inventoryIncomplete bool) (metav1.Condition, bool) {
+	cond := metav1.Condition{Type: v1alpha1.ConditionEventSourcesAvailable, LastTransitionTime: now}
+	if desired == 0 {
+		desired = len(nodes)
+	}
+	failures, unknown := make(map[string][]string), make(map[string][]string)
+	for _, node := range nodes {
+		for _, dependency := range dependencies {
+			status, ok := sourceStatusFor(node.EventSources, dependency)
+			if !ok || status.Status != metav1.ConditionTrue && status.Status != metav1.ConditionFalse {
+				unknown[node.NodeName] = append(unknown[node.NodeName], dependency)
+				continue
+			}
+			if status.Status == metav1.ConditionFalse {
+				entry := dependency
+				if status.Message != "" {
+					entry += ": " + status.Message
+				}
+				failures[node.NodeName] = append(failures[node.NodeName], entry)
+			}
+		}
+	}
+	if len(failures) != 0 {
+		reporting, scope := desired, "expected"
+		if inventoryIncomplete {
+			reporting, scope = len(nodes), "reporting"
+		}
+		cond.Status, cond.Reason = metav1.ConditionFalse, v1alpha1.ReasonEventSourcesUnavailable
+		cond.Message = fmt.Sprintf("required event sources are unavailable on %d of %d %s daemon node(s): %s", len(failures), reporting, scope, truncatedNodeList(sourceNodeEntries(failures)))
+		return cond, true
+	}
+	if inventoryIncomplete || len(unknown) != 0 || len(nodes) < desired {
+		cond.Status, cond.Reason = metav1.ConditionUnknown, v1alpha1.ReasonEventSourcesUnknown
+		if inventoryIncomplete {
+			cond.Message = "event source status is unknown while daemon membership is incomplete"
+		} else {
+			cond.Message = fmt.Sprintf("required event source status is pending on %d of %d expected daemon node(s): %s", len(unknown), desired, truncatedNodeList(sourceNodeEntries(unknown)))
+		}
+		return cond, true
+	}
+	cond.Status, cond.Reason = metav1.ConditionTrue, v1alpha1.ReasonEventSourcesAvailable
+	cond.Message = fmt.Sprintf("required event sources are available on all %d expected daemon node(s)", desired)
+	return cond, true
+}
+
+func sourceNodeEntries(byNode map[string][]string) []string {
+	names := make([]string, 0, len(byNode))
+	for name := range byNode {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	entries := make([]string, 0, len(names))
+	for _, name := range names {
+		entries = append(entries, name+": "+strings.Join(byNode[name], ", "))
+	}
+	return entries
+}
+
+func sourceStatusFor(statuses []v1alpha1.EventSourceStatus, name string) (v1alpha1.EventSourceStatus, bool) {
+	for _, status := range statuses {
+		if status.Name == name {
+			return status, true
+		}
+	}
+	return v1alpha1.EventSourceStatus{}, false
+}
+
+func (s *StatusWriter) sourceNodes() (ExpectedSourceNodes, bool) {
+	s.mu.Lock()
+	f := s.expectedSourceNodes
+	s.mu.Unlock()
+	if f == nil {
+		return ExpectedSourceNodes{}, false
+	}
+	return f(), true
 }
 
 // aggregateAvailability is all-true across the nodes reporting the value: one

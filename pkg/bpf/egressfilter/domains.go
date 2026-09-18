@@ -30,10 +30,8 @@ type domainKey struct {
 	Name [maxDomainKeyLen]byte
 }
 
-// encodeDomainKey renders name in DNS wire form — every label prefixed by its
-// length, terminated by a zero byte, ASCII-lowercased — zero padded to the key
-// width. The snooper builds the identical bytes from the QNAME it reads off the
-// packet, so a divergence here matches nothing and reports nothing.
+// transform the raw string format of a domain into the value we can eventually handover
+// to the BPF maps
 func encodeDomainKey(name string) (domainKey, error) {
 	name = strings.TrimSuffix(name, ".")
 	if name == "" {
@@ -42,20 +40,25 @@ func encodeDomainKey(name string) (domainKey, error) {
 
 	var key domainKey
 
-	n := 0
+	domainLength := 0
+	// for every part in the domain
 	for _, label := range strings.Split(name, ".") {
 		if label == "" || len(label) > maxLabelLen {
 			return domainKey{}, errDomainMalformed
 		}
-		// +1 for the length prefix, +1 for the terminating zero byte
-		if n+1+len(label)+1 > maxDomainKeyLen {
+		// check if after adding the length prefix for that label,
+		// the length of the label, and the terminating zero byte
+		// we will exceed the max length
+		if domainLength+1+len(label)+1 > maxDomainKeyLen {
 			return domainKey{}, errDomainKeyTooLong
 		}
-		key.Name[n] = byte(len(label))
-		n++
+		// add the length prefix byte
+		key.Name[domainLength] = byte(len(label))
+		domainLength++
+		// then the bytes of the label itself
 		for i := 0; i < len(label); i++ {
-			key.Name[n] = asciiLower(label[i])
-			n++
+			key.Name[domainLength] = asciiLower(label[i])
+			domainLength++
 		}
 	}
 	return key, nil

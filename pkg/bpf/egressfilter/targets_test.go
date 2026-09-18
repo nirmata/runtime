@@ -10,15 +10,15 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// addrStrings renders addresses for comparison: netip.Addr has unexported
+// prefixStrings renders prefixes for comparison: netip.Prefix has unexported
 // fields and no Equal method, so cmp cannot diff it directly.
-func addrStrings(in []netip.Addr) []string {
+func prefixStrings(in []netip.Prefix) []string {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(in))
-	for _, a := range in {
-		out = append(out, a.String())
+	for _, p := range in {
+		out = append(out, p.String())
 	}
 	return out
 }
@@ -27,7 +27,7 @@ func TestParseTargets(t *testing.T) {
 	tests := []struct {
 		name         string
 		values       []string
-		wantAddrs    []string
+		wantPrefixes []string
 		wantHosts    []string
 		wantStar     bool
 		wantRejected []compiler.RejectedTarget
@@ -36,54 +36,49 @@ func TestParseTargets(t *testing.T) {
 			name: "nil input",
 		},
 		{
-			name:      "single IPv4 literal",
-			values:    []string{"10.0.0.1"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "single IPv4 literal becomes a slash 32",
+			values:       []string{"10.0.0.1"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "multiple IPv4 literals keep order",
-			values:    []string{"10.0.0.2", "10.0.0.1", "192.168.1.7"},
-			wantAddrs: []string{"10.0.0.2", "10.0.0.1", "192.168.1.7"},
+			name:         "multiple IPv4 literals keep order",
+			values:       []string{"10.0.0.2", "10.0.0.1", "192.168.1.7"},
+			wantPrefixes: []string{"10.0.0.2/32", "10.0.0.1/32", "192.168.1.7/32"},
 		},
 		{
-			name:      "duplicate literals are collapsed",
-			values:    []string{"10.0.0.1", "10.0.0.1"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "duplicate literals are collapsed",
+			values:       []string{"10.0.0.1", "10.0.0.1"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "slash 32 CIDR yields one address",
-			values:    []string{"10.0.0.1/32"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "a literal and its slash 32 are one prefix",
+			values:       []string{"10.0.0.1", "10.0.0.1/32"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "slash 31 CIDR yields two addresses",
-			values:    []string{"10.0.0.0/31"},
-			wantAddrs: []string{"10.0.0.0", "10.0.0.1"},
+			name:         "CIDR with host bits set is masked",
+			values:       []string{"10.0.0.6/30"},
+			wantPrefixes: []string{"10.0.0.4/30"},
 		},
 		{
-			name:      "slash 30 CIDR includes network and broadcast",
-			values:    []string{"10.0.0.4/30"},
-			wantAddrs: []string{"10.0.0.4", "10.0.0.5", "10.0.0.6", "10.0.0.7"},
+			name:         "prefixes differing only in host bits collapse to one",
+			values:       []string{"10.0.0.1/8", "10.0.0.0/8"},
+			wantPrefixes: []string{"10.0.0.0/8"},
 		},
 		{
-			name:      "CIDR with host bits set is masked first",
-			values:    []string{"10.0.0.6/30"},
-			wantAddrs: []string{"10.0.0.4", "10.0.0.5", "10.0.0.6", "10.0.0.7"},
-		},
-		{
-			name:         "slash 23 CIDR is rejected as too wide",
-			values:       []string{"10.0.0.0/23"},
-			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.0/23", Reason: ReasonCIDRTooWide}},
-		},
-		{
-			name:         "slash 8 CIDR is rejected as too wide",
+			name:         "wide CIDR is kept, not expanded",
 			values:       []string{"10.0.0.0/8"},
-			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.0/8", Reason: ReasonCIDRTooWide}},
+			wantPrefixes: []string{"10.0.0.0/8"},
 		},
 		{
-			name:         "slash 0 CIDR is rejected as too wide, not treated as default deny",
+			name:         "slash 0 is a prefix covering everything, not the default deny sentinel",
 			values:       []string{"0.0.0.0/0"},
-			wantRejected: []compiler.RejectedTarget{{Value: "0.0.0.0/0", Reason: ReasonCIDRTooWide}},
+			wantPrefixes: []string{"0.0.0.0/0"},
+		},
+		{
+			name:         "overlapping prefixes are both kept, the trie resolves them",
+			values:       []string{"10.0.0.0/8", "10.1.0.0/16"},
+			wantPrefixes: []string{"10.0.0.0/8", "10.1.0.0/16"},
 		},
 		{
 			name:         "IPv6 literal is rejected",
@@ -101,14 +96,14 @@ func TestParseTargets(t *testing.T) {
 			wantRejected: []compiler.RejectedTarget{{Value: "::1", Reason: ReasonIPv6}},
 		},
 		{
-			name:      "IPv4-mapped IPv6 literal is unmapped and accepted",
-			values:    []string{"::ffff:10.0.0.1"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "IPv4-mapped IPv6 literal is unmapped and accepted",
+			values:       []string{"::ffff:10.0.0.1"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "IPv4-mapped IPv6 CIDR is unmapped and accepted",
-			values:    []string{"::ffff:10.0.0.0/126"},
-			wantAddrs: []string{"10.0.0.0", "10.0.0.1", "10.0.0.2", "10.0.0.3"},
+			name:         "IPv4-mapped IPv6 CIDR is unmapped and accepted",
+			values:       []string{"::ffff:10.0.0.0/126"},
+			wantPrefixes: []string{"10.0.0.0/30"},
 		},
 		{
 			name:      "hostname yields a host, not an address",
@@ -121,10 +116,10 @@ func TestParseTargets(t *testing.T) {
 			wantHosts: []string{"api.example.com", "cdn.example.com"},
 		},
 		{
-			name:      "addresses and hostnames are returned separately",
-			values:    []string{"10.0.0.1", "api.example.com"},
-			wantAddrs: []string{"10.0.0.1"},
-			wantHosts: []string{"api.example.com"},
+			name:         "prefixes and hostnames are returned separately",
+			values:       []string{"10.0.0.1", "api.example.com"},
+			wantPrefixes: []string{"10.0.0.1/32"},
+			wantHosts:    []string{"api.example.com"},
 		},
 		{
 			name:         "wildcard hostname is rejected",
@@ -134,22 +129,22 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "hostname with a path-like slash is rejected",
 			values:       []string{"api.example.com/v1"},
-			wantRejected: []compiler.RejectedTarget{{Value: "api.example.com/v1", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "api.example.com/v1", Reason: ReasonInvalidEntry}},
 		},
 		{
 			name:         "single-label name is rejected",
 			values:       []string{"localhost"},
-			wantRejected: []compiler.RejectedTarget{{Value: "localhost", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "localhost", Reason: ReasonInvalidEntry}},
 		},
 		{
 			name:         "truncated IPv4 is rejected",
 			values:       []string{"10.0.0."},
-			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.", Reason: ReasonInvalidEntry}},
 		},
 		{
 			name:         "out of range prefix length is rejected",
 			values:       []string{"10.0.0.1/33"},
-			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.1/33", Reason: ReasonNotAnIP}},
+			wantRejected: []compiler.RejectedTarget{{Value: "10.0.0.1/33", Reason: ReasonInvalidEntry}},
 		},
 		{
 			name:         "empty value is rejected, not ignored",
@@ -162,34 +157,34 @@ func TestParseTargets(t *testing.T) {
 			wantRejected: []compiler.RejectedTarget{{Value: "  \t", Reason: ReasonEmpty}},
 		},
 		{
-			name:      "surrounding whitespace is trimmed",
-			values:    []string{"  10.0.0.1\t"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "surrounding whitespace is trimmed",
+			values:       []string{"  10.0.0.1\t"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "surrounding quotes are trimmed",
-			values:    []string{"\"10.0.0.1\"", "'10.0.0.2'"},
-			wantAddrs: []string{"10.0.0.1", "10.0.0.2"},
+			name:         "surrounding quotes are trimmed",
+			values:       []string{"\"10.0.0.1\"", "'10.0.0.2'"},
+			wantPrefixes: []string{"10.0.0.1/32", "10.0.0.2/32"},
 		},
 		{
-			name:      "surrounding brackets are trimmed",
-			values:    []string{"[10.0.0.1]"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "surrounding brackets are trimmed",
+			values:       []string{"[10.0.0.1]"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "newline from a CEL rendered list is trimmed",
-			values:    []string{"10.0.0.1\n"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "newline from a CEL rendered list is trimmed",
+			values:       []string{"10.0.0.1\n"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "carriage return and newline are trimmed",
-			values:    []string{"10.0.0.1\r\n"},
-			wantAddrs: []string{"10.0.0.1"},
+			name:         "carriage return and newline are trimmed",
+			values:       []string{"10.0.0.1\r\n"},
+			wantPrefixes: []string{"10.0.0.1/32"},
 		},
 		{
-			name:      "quoted CIDR is trimmed before expansion",
-			values:    []string{"\"10.0.0.0/31\""},
-			wantAddrs: []string{"10.0.0.0", "10.0.0.1"},
+			name:         "quoted CIDR is trimmed before parsing",
+			values:       []string{"\"10.0.0.0/31\""},
+			wantPrefixes: []string{"10.0.0.0/31"},
 		},
 		{
 			name:         "IPv4-mapped IPv6 CIDR wider than the mapped range stays IPv6",
@@ -197,47 +192,41 @@ func TestParseTargets(t *testing.T) {
 			wantRejected: []compiler.RejectedTarget{{Value: "::ffff:10.0.0.0/64", Reason: ReasonIPv6}},
 		},
 		{
-			name:     "star is the default deny sentinel and yields no address",
+			name:     "star is the default deny sentinel and yields no prefix",
 			values:   []string{"*"},
 			wantStar: true,
 		},
 		{
-			name:      "star mixes with literals",
-			values:    []string{"*", "10.0.0.1"},
-			wantAddrs: []string{"10.0.0.1"},
-			wantStar:  true,
+			name:         "star mixes with literals",
+			values:       []string{"*", "10.0.0.1"},
+			wantPrefixes: []string{"10.0.0.1/32"},
+			wantStar:     true,
 		},
 		{
-			name:      "quoted star still sets the sentinel",
-			values:    []string{"\" * \""},
-			wantAddrs: nil,
-			wantStar:  true,
+			name:         "quoted star still sets the sentinel",
+			values:       []string{"\" * \""},
+			wantPrefixes: nil,
+			wantStar:     true,
 		},
 		{
-			name:      "mixed valid and invalid keeps the valid ones and reports the rest",
-			values:    []string{"10.0.0.1", "2001:db8::1", "10.0.0.0/8", "api.example.com", "10.0.0.2/32", "*", "nope"},
-			wantAddrs: []string{"10.0.0.1", "10.0.0.2"},
-			wantHosts: []string{"api.example.com"},
-			wantStar:  true,
+			name:         "mixed valid and invalid keeps the valid ones and reports the rest",
+			values:       []string{"10.0.0.1", "2001:db8::1", "10.0.0.0/8", "api.example.com", "10.0.0.2/32", "*", "nope"},
+			wantPrefixes: []string{"10.0.0.1/32", "10.0.0.0/8", "10.0.0.2/32"},
+			wantHosts:    []string{"api.example.com"},
+			wantStar:     true,
 			wantRejected: []compiler.RejectedTarget{
 				{Value: "2001:db8::1", Reason: ReasonIPv6},
-				{Value: "10.0.0.0/8", Reason: ReasonCIDRTooWide},
-				{Value: "nope", Reason: ReasonNotAnIP},
+				{Value: "nope", Reason: ReasonInvalidEntry},
 			},
-		},
-		{
-			name:      "overlapping CIDR and literal are deduplicated",
-			values:    []string{"10.0.0.0/30", "10.0.0.2"},
-			wantAddrs: []string{"10.0.0.0", "10.0.0.1", "10.0.0.2", "10.0.0.3"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotAddrs, gotHosts, gotStar, gotRejected := ParseTargets(tc.values)
+			gotPrefixes, gotHosts, gotStar, gotRejected := ParseTargets(tc.values)
 
-			if diff := cmp.Diff(tc.wantAddrs, addrStrings(gotAddrs)); diff != "" {
-				t.Errorf("addrs mismatch (-want +got):\n%s", diff)
+			if diff := cmp.Diff(tc.wantPrefixes, prefixStrings(gotPrefixes)); diff != "" {
+				t.Errorf("prefixes mismatch (-want +got):\n%s", diff)
 			}
 			if diff := cmp.Diff(tc.wantHosts, gotHosts); diff != "" {
 				t.Errorf("hosts mismatch (-want +got):\n%s", diff)
@@ -252,44 +241,6 @@ func TestParseTargets(t *testing.T) {
 	}
 }
 
-func TestParseTargets_ExpandsSlash24ToTheCap(t *testing.T) {
-	got, _, star, rejected := ParseTargets([]string{"192.168.5.0/24"})
-	if star {
-		t.Error("star = true, want false")
-	}
-	if len(rejected) != 0 {
-		t.Errorf("rejected = %v, want none", rejected)
-	}
-	if len(got) != MaxExpandedTargets {
-		t.Fatalf("len(addrs) = %d, want %d", len(got), MaxExpandedTargets)
-	}
-	if want := netip.MustParseAddr("192.168.5.0"); got[0] != want {
-		t.Errorf("first = %s, want %s", got[0], want)
-	}
-	if want := netip.MustParseAddr("192.168.5.255"); got[len(got)-1] != want {
-		t.Errorf("last = %s, want %s", got[len(got)-1], want)
-	}
-
-	seen := make(map[netip.Addr]struct{}, len(got))
-	for _, a := range got {
-		if _, dup := seen[a]; dup {
-			t.Fatalf("duplicate address %s in expansion", a)
-		}
-		seen[a] = struct{}{}
-	}
-}
-
-func TestParseTargets_ExpandsTopOfAddressSpaceWithoutWrapping(t *testing.T) {
-	got, _, _, rejected := ParseTargets([]string{"255.255.255.252/30"})
-	if len(rejected) != 0 {
-		t.Errorf("rejected = %v, want none", rejected)
-	}
-	want := []string{"255.255.255.252", "255.255.255.253", "255.255.255.254", "255.255.255.255"}
-	if diff := cmp.Diff(want, addrStrings(got)); diff != "" {
-		t.Errorf("addrs mismatch (-want +got):\n%s", diff)
-	}
-}
-
 func TestRejectedTarget_StringNamesValueAndReason(t *testing.T) {
 	got := compiler.RejectedTarget{Value: "2001:db8::1", Reason: ReasonIPv6}.String()
 	want := `"2001:db8::1": ` + ReasonIPv6
@@ -298,22 +249,22 @@ func TestRejectedTarget_StringNamesValueAndReason(t *testing.T) {
 	}
 }
 
-func TestAddrKey_RoundTripsThroughTheMapKeyEncoding(t *testing.T) {
-	for _, s := range []string{"0.0.0.0", "1.2.3.4", "10.0.0.1", "192.168.255.254", "255.255.255.255"} {
-		addr := netip.MustParseAddr(s)
-		key, ok := addrKey(addr)
-		if !ok {
-			t.Fatalf("addrKey(%s) not ok", s)
-		}
-		if got := keyAddr(key); got != addr {
-			t.Errorf("keyAddr(addrKey(%s)) = %s, want %s", s, got, addr)
-		}
+// The trie compares Addr most-significant-byte first, so the key must carry
+// the address in wire order on both little- and big-endian hosts.
+func TestPrefixKey_CarriesTheAddressInWireOrder(t *testing.T) {
+	got, ok := prefixKey(netip.MustParsePrefix("1.2.3.4/24"))
+	if !ok {
+		t.Fatal("prefixKey rejected an IPv4 prefix")
+	}
+	want := ipv4LpmKey{Prefixlen: 24, Addr: [4]byte{1, 2, 3, 4}}
+	if got != want {
+		t.Errorf("prefixKey = %+v, want %+v", got, want)
 	}
 }
 
-func TestAddrKey_RejectsIPv6(t *testing.T) {
-	if _, ok := addrKey(netip.MustParseAddr("2001:db8::1")); ok {
-		t.Error("addrKey accepted an IPv6 address")
+func TestPrefixKey_RejectsIPv6(t *testing.T) {
+	if _, ok := prefixKey(netip.MustParsePrefix("2001:db8::/32")); ok {
+		t.Error("prefixKey accepted an IPv6 prefix")
 	}
 }
 
@@ -322,10 +273,10 @@ func TestAddrKey_RejectsIPv6(t *testing.T) {
 func TestParseTargets_RejectsNamesThatOverflowTheDomainKey(t *testing.T) {
 	name := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + ".com"
 
-	addrs, hosts, star, rejected := ParseTargets([]string{name})
+	prefixes, hosts, star, rejected := ParseTargets([]string{name})
 
-	if len(addrs) != 0 || len(hosts) != 0 || star {
-		t.Errorf("got addrs=%v hosts=%v star=%v, want nothing programmed", addrStrings(addrs), hosts, star)
+	if len(prefixes) != 0 || len(hosts) != 0 || star {
+		t.Errorf("got prefixes=%v hosts=%v star=%v, want nothing programmed", prefixStrings(prefixes), hosts, star)
 	}
 	want := []compiler.RejectedTarget{{Value: name, Reason: ReasonDomainTooLong}}
 	if diff := cmp.Diff(want, rejected); diff != "" {

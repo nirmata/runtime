@@ -1,6 +1,7 @@
 package egressfilter
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -9,6 +10,24 @@ import (
 
 	"github.com/cilium/ebpf"
 )
+
+// convert an address to its native endian byte representation only
+// if its ipv4
+func addrKey(addr netip.Addr) (uint32, bool) {
+	addr = addr.Unmap()
+	if !addr.Is4() {
+		return 0, false
+	}
+	b := addr.As4()
+	return binary.NativeEndian.Uint32(b[:]), true
+}
+
+// keyAddr is the inverse of addrKey.
+func keyAddr(key uint32) netip.Addr {
+	var b [4]byte
+	binary.NativeEndian.PutUint32(b[:], key)
+	return netip.AddrFrom4(b)
+}
 
 // SetObserve turns the OBSERVE (LEARNING_MODE) flag bit on or off.
 func (e *EgressFilter) SetObserve(enabled bool) {
@@ -79,21 +98,6 @@ func (e *EgressFilter) lostSince(sum uint64) uint64 {
 		return 0
 	}
 	return sum - last
-}
-
-// SeedIPEvent writes one observation entry through the ip_events map handle. It
-// exists for the kernel smoke test in test/e2e, which pins the key marshaling
-// seam; production counting happens in the BPF program.
-func (e *EgressFilter) SeedIPEvent(addr netip.Addr, decision runtimeevent.KernelDecision, count uint32) error {
-	if e.bpfObjs == nil || e.bpfObjs.IpEvents == nil {
-		return ErrNotLoaded
-	}
-	daddr, ok := addrKey(addr)
-	if !ok {
-		return fmt.Errorf("seeding ip_events: %s is not an IPv4 address", addr)
-	}
-	key := ipEventKernelKey{Daddr: daddr, Decision: uint32(decision)}
-	return e.bpfObjs.IpEvents.Put(&key, &count)
 }
 
 // domainNamer returns the id-to-name lookup used for one read. Interning is the

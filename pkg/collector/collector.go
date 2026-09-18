@@ -59,18 +59,28 @@ type Collector struct {
 	// after is the sleep seam used for restart backoff; tests replace it to
 	// keep restart behavior deterministic. Must be set before Run.
 	after func(time.Duration) <-chan time.Time
+
+	sourceStatus runtimeevent.SourceStatusFunc
+}
+
+// Option configures a Collector.
+type Option func(*Collector)
+
+// WithSourceStatusFunc observes the lifecycle of every registered source.
+func WithSourceStatusFunc(f runtimeevent.SourceStatusFunc) Option {
+	return func(c *Collector) { c.sourceStatus = f }
 }
 
 // New builds a Collector. Sources, stages, and sinks are registered separately
 // so that daemon wiring can be conditional.
-func New(log logr.Logger, bufferSize int, backoff time.Duration, m *metrics.Metrics) *Collector {
+func New(log logr.Logger, bufferSize int, backoff time.Duration, m *metrics.Metrics, opts ...Option) *Collector {
 	if bufferSize <= 0 {
 		bufferSize = DefaultBufferSize
 	}
 	if backoff <= 0 {
 		backoff = DefaultRestartBackoff
 	}
-	return &Collector{
+	c := &Collector{
 		log:        log,
 		metrics:    m,
 		bufferSize: bufferSize,
@@ -78,6 +88,12 @@ func New(log logr.Logger, bufferSize int, backoff time.Duration, m *metrics.Metr
 		events:     make(chan taggedEvent, bufferSize),
 		after:      time.After,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
 }
 
 // AddSource registers an event producer. Nil sources are ignored.
@@ -177,20 +193,28 @@ func (c *Collector) runSource(ctx context.Context, src runtimeevent.Source, out 
 			return
 		}
 
-		// Typically a poll source wrapping a single manager: it ticks on its
-		// own interval, calls that manager's collect function and writes the
-		// events it returns to out.
-		err := utils.Guard("collector: source "+name, func() error {
-			return src.Run(ctx, out)
+		c.recordSourceStatus(name, runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting)
+		var ready sync.Once
+		runCtx := runtimeevent.WithSourceReady(ctx, func() {
+			if ctx.Err() != nil {
+				return
+			}
+			ready.Do(func() {
+				c.recordSourceStatus(name, runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+			})
 		})
+
+		err := src.Run(runCtx, out)
 
 		switch {
 		case ctx.Err() != nil:
 			return
 		case err == nil:
-			c.log.V(2).Info("source finished", "source", name)
-			return
+			c.recordSourceStatus(name, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonUnexpectedExit)
+			c.log.Error(errors.New("source exited without cancellation"), "source failed; restarting after backoff",
+				"source", name, "backoff", c.backoff)
 		default:
+			c.recordSourceStatus(name, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
 			c.log.Error(err, "source failed; restarting after backoff",
 				"source", name, "backoff", c.backoff)
 		}
@@ -200,6 +224,12 @@ func (c *Collector) runSource(ctx context.Context, src runtimeevent.Source, out 
 			return
 		case <-c.after(c.backoff):
 		}
+	}
+}
+
+func (c *Collector) recordSourceStatus(source string, state runtimeevent.SourceState, reason string) {
+	if c.sourceStatus != nil {
+		c.sourceStatus(source, state, reason)
 	}
 }
 

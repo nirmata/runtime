@@ -473,13 +473,14 @@ func TestSourceRestartsWithBackoffAfterError(t *testing.T) {
 	}
 }
 
-func TestSourceReturningNilIsNotRestarted(t *testing.T) {
+func TestSourceReturningNilIsRestarted(t *testing.T) {
 	runs := make(chan int, 8)
+	backoffs := make(chan time.Duration, 8)
+	fire := make(chan time.Time)
 	c := New(logr.Discard(), 4, time.Millisecond, nil)
-	c.after = func(time.Duration) <-chan time.Time {
-		t.Error("backoff scheduled for a source that finished cleanly")
-		ch := make(chan time.Time)
-		return ch
+	c.after = func(d time.Duration) <-chan time.Time {
+		backoffs <- d
+		return fire
 	}
 	attempt := 0
 	c.AddSource(&funcSource{name: "oneshot", run: func(context.Context, chan<- runtimeevent.Event) error {
@@ -498,14 +499,112 @@ func TestSourceReturningNilIsNotRestarted(t *testing.T) {
 	if got := recvInt(t, runs); got != 1 {
 		t.Fatalf("run count = %d, want 1", got)
 	}
+	if got := recvDuration(t, backoffs); got != time.Millisecond {
+		t.Errorf("restart backoff = %v, want 1ms", got)
+	}
+	fire <- time.Now()
+	if got := recvInt(t, runs); got != 2 {
+		t.Fatalf("run count = %d, want 2 after unexpected exit", got)
+	}
 	recvInt(t, blocked)
 	stop()
+}
 
+func TestSourceStatusTracksFailureRecoveryAndNormalShutdown(t *testing.T) {
+	type status struct {
+		State  runtimeevent.SourceState
+		Reason string
+	}
+	statuses := make(chan status, 8)
+	runs := make(chan int, 2)
+	backoff := make(chan time.Duration, 1)
+	fire := make(chan time.Time, 1)
+
+	c := New(logr.Discard(), 4, 42*time.Millisecond, nil,
+		WithSourceStatusFunc(func(_ string, state runtimeevent.SourceState, reason string) {
+			statuses <- status{State: state, Reason: reason}
+		}))
+	c.after = func(d time.Duration) <-chan time.Time {
+		backoff <- d
+		return fire
+	}
+	attempt := 0
+	c.AddSource(&funcSource{name: "flaky", run: func(ctx context.Context, _ chan<- runtimeevent.Event) error {
+		attempt++
+		runs <- attempt
+		if attempt == 1 {
+			return errors.New("reader failed")
+		}
+		runtimeevent.SourceReady(ctx)
+		<-ctx.Done()
+		return nil
+	}})
+
+	_, stop := runCollector(t, c)
+	if got := recvInt(t, runs); got != 1 {
+		t.Fatalf("first run = %d, want 1", got)
+	}
+	if got := recvDuration(t, backoff); got != 42*time.Millisecond {
+		t.Errorf("backoff = %v, want 42ms", got)
+	}
+	fire <- time.Now()
+	if got := recvInt(t, runs); got != 2 {
+		t.Fatalf("second run = %d, want 2", got)
+	}
+	stop()
+
+	var got []status
+	for i := 0; i < 4; i++ {
+		select {
+		case s := <-statuses:
+			got = append(got, s)
+		default:
+			t.Fatalf("status %d missing; got %v", i, got)
+		}
+	}
+	want := []status{
+		{runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting},
+		{runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed},
+		{runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting},
+		{runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("source statuses (-want +got):\n%s", diff)
+	}
 	select {
-	case n := <-runs:
-		t.Fatalf("finished source was restarted (run #%d)", n)
+	case s := <-statuses:
+		t.Errorf("normal shutdown reported unexpected status %+v", s)
 	default:
 	}
+}
+
+func TestQuietSourceRemainsStartingUntilItSignalsReady(t *testing.T) {
+	statuses := make(chan runtimeevent.SourceState, 2)
+	started := make(chan struct{}, 1)
+	c := New(logr.Discard(), 4, DefaultRestartBackoff, nil,
+		WithSourceStatusFunc(func(_ string, state runtimeevent.SourceState, _ string) { statuses <- state }))
+	c.AddSource(&funcSource{name: "quiet", run: func(ctx context.Context, _ chan<- runtimeevent.Event) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		runtimeevent.SourceReady(ctx)
+		return nil
+	}})
+
+	_, stop := runCollector(t, c)
+	select {
+	case <-started:
+	case <-time.After(testTimeout):
+		t.Fatal("source did not start")
+	}
+	if got := <-statuses; got != runtimeevent.SourceStateStarting {
+		t.Errorf("first status = %q, want Starting", got)
+	}
+	select {
+	case got := <-statuses:
+		t.Errorf("quiet source reported %q before readiness", got)
+	default:
+	}
+	stop()
 }
 
 func TestRunReturnsCleanlyOnContextCancel(t *testing.T) {

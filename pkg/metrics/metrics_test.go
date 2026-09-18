@@ -3,6 +3,8 @@ package metrics
 import (
 	"testing"
 
+	"github.com/nirmata/runtime/pkg/runtimeevent"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -25,6 +27,20 @@ func TestNew_CountersIncrement(t *testing.T) {
 			name: "EventsDropped",
 			inc:  func() { m.EventsDropped.WithLabelValues("lsm-observe", "buffer_full").Inc() },
 			coll: m.EventsDropped,
+		},
+		{
+			name: "SourceAvailable",
+			inc: func() {
+				m.RecordSourceStatus("dnsquery", runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+			},
+			coll: m.SourceAvailable,
+		},
+		{
+			name: "SourceFailures",
+			inc: func() {
+				m.RecordSourceStatus("dnsquery", runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
+			},
+			coll: m.SourceFailures,
 		},
 		{
 			name: "FindingsEmitted",
@@ -72,9 +88,11 @@ func TestNew_MetricsAreRegisteredAgainstProvidedRegisterer(t *testing.T) {
 
 	// Nothing registered yet reports zero families with data until a
 	// label combination is observed; force one on every vec plus the
-	// plain counter, then confirm the registry gathers all five.
+	// plain counter, then confirm the registry gathers every family.
 	m.EventsIngested.WithLabelValues("s", "k").Inc()
 	m.EventsDropped.WithLabelValues("s", "buffer_full").Inc()
+	m.RecordSourceStatus("s", runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting)
+	m.RecordSourceStatus("s", runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
 	m.AttributionMisses.Inc()
 	m.FindingsEmitted.WithLabelValues("p", "network").Inc()
 	m.ReportWrites.WithLabelValues("ok").Inc()
@@ -87,6 +105,8 @@ func TestNew_MetricsAreRegisteredAgainstProvidedRegisterer(t *testing.T) {
 	want := map[string]bool{
 		namespace + "_events_ingested_total":    false,
 		namespace + "_events_dropped_total":     false,
+		namespace + "_source_available":         false,
+		namespace + "_source_failures_total":    false,
 		namespace + "_attribution_misses_total": false,
 		namespace + "_findings_emitted_total":   false,
 		namespace + "_report_writes_total":      false,
@@ -100,5 +120,26 @@ func TestNew_MetricsAreRegisteredAgainstProvidedRegisterer(t *testing.T) {
 		if !seen {
 			t.Errorf("expected metric family %q to be registered on reg, not found", name)
 		}
+	}
+}
+
+func TestRecordSourceStatusTracksAvailabilityAndFailures(t *testing.T) {
+	m := New(prometheus.NewRegistry())
+
+	m.RecordSourceStatus("exec-trace", runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting)
+	if got := testutil.ToFloat64(m.SourceAvailable.WithLabelValues("exec-trace")); got != 0 {
+		t.Fatalf("SourceAvailable while starting = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(m.SourceFailures.WithLabelValues("exec-trace", runtimeevent.SourceReasonStarting)); got != 0 {
+		t.Fatalf("SourceFailures while starting = %v, want 0", got)
+	}
+
+	m.RecordSourceStatus("exec-trace", runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady)
+	m.RecordSourceStatus("exec-trace", runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed)
+	if got := testutil.ToFloat64(m.SourceAvailable.WithLabelValues("exec-trace")); got != 0 {
+		t.Errorf("SourceAvailable after failure = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(m.SourceFailures.WithLabelValues("exec-trace", runtimeevent.SourceReasonReaderFailed)); got != 1 {
+		t.Errorf("SourceFailures after failure = %v, want 1", got)
 	}
 }

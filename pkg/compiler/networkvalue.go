@@ -72,10 +72,7 @@ type NetworkValue struct {
 	// Addr is set for a single-address value. It is already Unmap()ed, so an
 	// IPv4-mapped IPv6 literal comes back as its IPv4 form.
 	Addr netip.Addr
-	// Prefix is set for a CIDR value of ANY width, already unmapped and
-	// Masked. Width is deliberately not checked here: ParseNetworkValue
-	// defines what a value IS, and each consumer applies its own width
-	// policy (see egressfilter.ParseTargets, the single narrowing point).
+	// Prefix is set for a CIDR value, already unmapped and Masked.
 	Prefix netip.Prefix
 	// Host is set for a hostname value, lowercased and without the root dot,
 	// so "API.Example.COM." and "api.example.com" are the same value.
@@ -104,7 +101,7 @@ var ClusterDomain = "cluster.local"
 
 // ParseNetworkValue parses one policy-authored network target string. This is
 // the one definition of the egress target value schema: admission validation
-// (validateBehavior), program-time expansion (egressfilter.ParseTargets)
+// (validateBehavior), program-time key building (egressfilter.ParseTargets)
 // and monitor-mode matching (monitor.newNetMatcher) all consume it, so they
 // cannot disagree about what a value is.
 //

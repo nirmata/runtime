@@ -4,7 +4,7 @@ The daemon serves Prometheus metrics on `--metrics-addr` (default `:9090`, set b
 `daemon.metrics.port`). Setting the flag to the empty string disables the endpoint; the counters
 themselves keep working.
 
-## Counters
+## Available metrics
 
 Every metric is prefixed `nirmata_runtime_`.
 
@@ -12,6 +12,8 @@ Every metric is prefixed `nirmata_runtime_`.
 | --- | --- | --- |
 | `nirmata_runtime_events_ingested_total` | `source`, `kind` | Observations ingested by the collector. |
 | `nirmata_runtime_events_dropped_total` | `source`, `reason` | Dropped observations. |
+| `nirmata_runtime_source_available` | `source` | Gauge: `1` after the source is ready to collect, `0` while starting or unavailable. Series exist even when initialization fails. |
+| `nirmata_runtime_source_failures_total` | `source`, `reason` | Source initialization failures and collector restart failures. |
 | `nirmata_runtime_attribution_misses_total` | — | Observations that could not be tied to a pod. |
 | `nirmata_runtime_findings_emitted_total` | `policy`, `behavior` | Findings handed to the reporter. |
 | `nirmata_runtime_monitor_filter_eval_errors_total` | `policy`, `expression` | `spec.monitorFilter` expressions that failed to evaluate. The finding is reported anyway. |
@@ -26,7 +28,7 @@ Label values:
 
 | Label | Values |
 | --- | --- |
-| `source` | `egress-observe`, `lsm-observe` (the two poll sources), `dnsquery` (the DNS question source), `exec-trace` (the streamed exec source), `monitor`, `reporter` |
+| `source` | `egress-observe`, `openexec-observe` (the two poll sources), `dnsquery` (the DNS question source), `exec-trace` (the streamed exec source), `monitor`, `reporter` |
 | `kind` | `net`, `protocol`, `exec`, `open`, `dns` |
 | `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `count_map_full`, `ringbuf_full`, `name_unreadable`, `undecodable`, `queue_full`, `send_failed` |
 | `behavior` | `network`, `protocol`, `exec`, `open`, `dns` |
@@ -47,6 +49,35 @@ The pipeline-wide drop reasons:
   lost. Climbing means one workload is touching more distinct paths or destinations within a
   poll interval than the map holds (2048), so narrow the `podSelector` of the policies
   selecting it, or accept the gap knowingly.
+
+## Source availability
+
+All four collector sources expose `nirmata_runtime_source_available`. A quiet source can be
+healthy: readiness means its collection machinery is usable, independent of event volume.
+A poll source announces readiness after its first successful poll, even if it returns no events.
+The collector's `/healthz` endpoint checks its dispatch loop and policy cache; individual
+source failures do not fail that endpoint.
+
+The `reason` labels on `nirmata_runtime_source_failures_total` are:
+
+| Reason | Meaning |
+| --- | --- |
+| `InitializationFailed` | Kernel resources could not be loaded. Fix the cause in the daemon logs and restart the daemon. |
+| `ReaderFailed` | A source run failed. The collector retries after `--source-restart-backoff`. |
+| `UnexpectedExit` | A source returned while the daemon was still running. The collector retries it. |
+| `DependencyUnavailable` | The exec tracer's open/exec manager could not load, so the tracer's cgroup gate cannot be populated. |
+
+Normal shutdown does not increment failures. A retry restores the availability gauge only
+after the source confirms readiness. Failure series appear when that failure occurs; gauge
+series are initialized before source construction. Availability does not prove lossless
+delivery or detect every kernel-side stall; continue checking the drop counters separately.
+
+Monitor policies expose `EventSourcesAvailable` and per-node `eventSources` for their active
+behaviors in [policy status](runtimepolicy.md#status). Open and exec depend on
+`openexec-observe`, network and protocol depend on `egress-observe`, DNS depends on `dnsquery`,
+and exec additionally depends on `exec-trace`. Losing only `exec-trace` removes argv coverage;
+filename observations can remain available through `openexec-observe`. A failure to initialize
+the open/exec manager removes both forms of exec coverage.
 
 ## DNS question loss
 
@@ -116,7 +147,8 @@ What to look at:
 
 - `nirmata_runtime_findings_emitted_total` staying at zero while a `monitor` policy is applied
   means nothing matched, or the observation path is not producing — check the
-  `ObservationAvailable` condition on the policy.
+  `ObservationAvailable` and `EventSourcesAvailable` conditions on the policy and the
+  source availability gauges.
 - `nirmata_runtime_attribution_misses_total` rising steadily is expected on a busy node: node
   and host-process activity is never attributed to a pod. A step change alongside missing
   findings for a specific workload is not.

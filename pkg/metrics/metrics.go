@@ -4,6 +4,8 @@
 package metrics
 
 import (
+	"github.com/nirmata/runtime/pkg/runtimeevent"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -18,6 +20,10 @@ type Metrics struct {
 	// EventsDropped counts events dropped by the collector, labeled by
 	// source and reason.
 	EventsDropped *prometheus.CounterVec
+	// SourceAvailable reports whether a source has announced readiness.
+	SourceAvailable *prometheus.GaugeVec
+	// SourceFailures counts source lifecycle failures by stable reason.
+	SourceFailures *prometheus.CounterVec
 	// AttributionMisses counts events that could not be attributed to a
 	// pod (see pkg/attribution.Index.Annotate).
 	AttributionMisses prometheus.Counter
@@ -53,6 +59,18 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help:      "Total number of runtime events dropped, by source and reason.",
 		}, []string{"source", "reason"}),
 
+		SourceAvailable: f.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "source_available",
+			Help:      "Whether a runtime event source is available (1) or unavailable (0).",
+		}, []string{"source"}),
+
+		SourceFailures: f.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "source_failures_total",
+			Help:      "Total runtime event source failures, by source and reason.",
+		}, []string{"source", "reason"}),
+
 		AttributionMisses: f.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
 			Name:      "attribution_misses_total",
@@ -76,5 +94,19 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name:      "report_writes_total",
 			Help:      "Total number of OpenReports write attempts, by result (ok|error|skipped).",
 		}, []string{"result"}),
+	}
+}
+
+// RecordSourceStatus updates the source lifecycle metrics. It accepts the
+// source status seam directly so all production lifecycle writes share one
+// path.
+func (m *Metrics) RecordSourceStatus(source string, state runtimeevent.SourceState, reason string) {
+	if state == runtimeevent.SourceStateAvailable {
+		m.SourceAvailable.WithLabelValues(source).Set(1)
+	} else {
+		m.SourceAvailable.WithLabelValues(source).Set(0)
+	}
+	if state == runtimeevent.SourceStateUnavailable {
+		m.SourceFailures.WithLabelValues(source, reason).Inc()
 	}
 }

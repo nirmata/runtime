@@ -86,6 +86,23 @@ make test-e2e-protocol # protocol enforcement behavior
 `make kind-install` rebuilds and reloads the image every time. Running only the Chainsaw suites
 validates whatever image was loaded last.
 
+### Validating event source availability
+
+The chart supplies `POD_NAMESPACE` and `DAEMONSET_NAME` and grants read access to DaemonSets.
+Custom daemon manifests must supply the same identity and permissions for expected-node
+discovery; otherwise relevant monitor policies report `EventSourcesAvailable=Unknown`.
+
+After `make kind-install`, create a monitor policy with exec and DNS behaviors, then inspect
+`status.nodes[*].eventSources`, `EventSourcesAvailable`, and the daemon's
+`nirmata_runtime_source_available` metrics. In an isolated kind cluster, temporarily removing
+the daemon's BPF privileges exercises constructor failures without a production fault flag;
+restore its exact security context and wait for rollout before checking recovery. Constructor
+failures require restarting the daemon, while reader failures are covered by the collector's
+deterministic retry tests. Dependency tests cover every behavior's poll or ring-buffer producer,
+empty rules, expression-backed rules, and internal specs without a defaulted mode. The placement
+tests cover pending target affinity, DaemonSet ownership,
+rollout deduplication, deletion, and unobserved placement generations.
+
 ### Validating the push sink
 
 `hack/pushsink-testcollector` is a dev-only test double for the findings push sink

@@ -29,7 +29,7 @@ func TestPodCreatedProgramsEveryMatchingPolicy(t *testing.T) {
 	if len(f.adds) != 2 {
 		t.Fatalf("AddIps calls: got %d (%v), want 2", len(f.adds), f.adds)
 	}
-	wantLiveIps(t, f, []string{"1.1.1.1", "2.2.2.2"}, []string{"8.8.8.8"})
+	wantLiveIps(t, f, []string{"1.1.1.1/32", "2.2.2.2/32"}, []string{"8.8.8.8/32"})
 	wantAttachedRps(t, e, "pod-web", "rp-1", "rp-2")
 	wantDefaultDeny(t, f, true)
 	wantDefaultDenyOwners(t, e, "pod-web", "rp-1")
@@ -217,7 +217,7 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			policies:        []*compiler.EvaluationResult{rp("rp-1", "enforce", apiLabels, []string{"1.1.1.1"}, []string{"*"})},
 			from:            webLabels,
 			to:              apiLabels,
-			wantAllow:       []string{"1.1.1.1"},
+			wantAllow:       []string{"1.1.1.1/32"},
 			wantDeny:        []string{},
 			wantAttached:    []string{"rp-1"},
 			wantDefaultDeny: []string{"rp-1"},
@@ -232,7 +232,7 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			},
 			from:            webLabels,
 			to:              apiLabels,
-			wantAllow:       []string{"9.9.9.9"},
+			wantAllow:       []string{"9.9.9.9/32"},
 			wantDeny:        []string{},
 			wantAttached:    []string{"rp-2"},
 			wantDefaultDeny: []string{"rp-2"},
@@ -267,7 +267,7 @@ func TestPodUpdatedRefreshesLabelsAndReEvaluatesSelectors(t *testing.T) {
 			policies:        []*compiler.EvaluationResult{rp("rp-1", "enforce", webLabels, []string{"1.1.1.1"}, []string{"*"})},
 			from:            webLabels,
 			to:              map[string]string{"app": "web", "tier": "front"},
-			wantAllow:       []string{"1.1.1.1"},
+			wantAllow:       []string{"1.1.1.1/32"},
 			wantDeny:        []string{},
 			wantAttached:    []string{"rp-1"},
 			wantDefaultDeny: []string{"rp-1"},

@@ -141,6 +141,165 @@ func TestPollSourceReturnsPollError(t *testing.T) {
 	}
 }
 
+// TestPollSourceReadinessFollowsFirstSuccessfulPoll prevents a failed reader
+// retry from claiming recovery before it has read its counter map.
+func TestPollSourceReadinessFollowsFirstSuccessfulPoll(t *testing.T) {
+	cases := []struct {
+		name      string
+		events    []runtimeevent.Event
+		fail      bool
+		wantReady bool
+	}{
+		{name: "first poll error never announces ready", fail: true},
+		{name: "empty first poll announces ready", wantReady: true},
+		{name: "event first poll announces ready", events: []runtimeevent.Event{netEvent("event")}, wantReady: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTicker()
+			polled := make(chan int, 2)
+			sentinel := errors.New("first poll failed")
+			ps := newTestPollSource("egress", time.Second, func(context.Context) ([]runtimeevent.Event, error) {
+				polled <- 1
+				if tc.fail {
+					return nil, sentinel
+				}
+				return tc.events, nil
+			}, f)
+			ready := make(chan struct{}, 2)
+			ctx, cancel := context.WithCancel(runtimeevent.WithSourceReady(context.Background(), func() { ready <- struct{}{} }))
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- ps.Run(ctx, make(chan runtimeevent.Event, len(tc.events))) }()
+
+			recvDuration(t, f.interval)
+			f.c <- time.Now()
+			recvInt(t, polled)
+
+			if !tc.wantReady {
+				select {
+				case err := <-done:
+					if !errors.Is(err, sentinel) {
+						t.Errorf("Run error = %v, want %v", err, sentinel)
+					}
+				case <-time.After(testTimeout):
+					t.Fatal("Run did not return after a failed first poll")
+				}
+				select {
+				case <-ready:
+					t.Error("failed first poll announced readiness")
+				default:
+				}
+				return
+			}
+
+			select {
+			case <-ready:
+			case <-time.After(testTimeout):
+				t.Fatal("successful first poll did not announce readiness")
+			}
+			f.c <- time.Now()
+			recvInt(t, polled)
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("Run after cancellation = %v, want nil", err)
+				}
+			case <-time.After(testTimeout):
+				t.Fatal("Run did not return after cancellation")
+			}
+			select {
+			case <-ready:
+				t.Error("second successful poll announced readiness again")
+			default:
+			}
+		})
+	}
+}
+
+// TestPollSourceRecoveryAnnouncesReadinessForNewRun requires each retry to
+// establish readiness independently after the preceding run failed.
+func TestPollSourceRecoveryAnnouncesReadinessForNewRun(t *testing.T) {
+	tickers := []*fakeTicker{newFakeTicker(), newFakeTicker()}
+	opened := 0
+	ps := &pollSource{
+		name:     "egress",
+		interval: time.Second,
+		ticks: func(d time.Duration) (<-chan time.Time, func()) {
+			f := tickers[opened]
+			opened++
+			return f.ticks(d)
+		},
+	}
+	polls := 0
+	ps.poll = func(context.Context) ([]runtimeevent.Event, error) {
+		polls++
+		if polls == 1 {
+			return nil, errors.New("first reader failure")
+		}
+		return nil, nil
+	}
+
+	type status struct {
+		State  runtimeevent.SourceState
+		Reason string
+	}
+	statuses := make(chan status, 8)
+	backoff := make(chan time.Duration, 1)
+	fire := make(chan time.Time, 1)
+	c := New(logr.Discard(), 1, time.Second, nil,
+		WithSourceStatusFunc(func(_ string, state runtimeevent.SourceState, reason string) {
+			statuses <- status{State: state, Reason: reason}
+		}))
+	c.after = func(d time.Duration) <-chan time.Time {
+		backoff <- d
+		return fire
+	}
+	c.AddSource(ps)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	recvDuration(t, tickers[0].interval)
+	tickers[0].c <- time.Now()
+	recvDuration(t, backoff)
+	fire <- time.Now()
+	recvDuration(t, tickers[1].interval)
+	tickers[1].c <- time.Now()
+
+	want := []status{
+		{runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting},
+		{runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonReaderFailed},
+		{runtimeevent.SourceStateStarting, runtimeevent.SourceReasonStarting},
+		{runtimeevent.SourceStateAvailable, runtimeevent.SourceReasonReady},
+	}
+	var got []status
+	for range want {
+		select {
+		case s := <-statuses:
+			got = append(got, s)
+		case <-time.After(testTimeout):
+			t.Fatalf("missing lifecycle status; got %v", got)
+		}
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("statuses (-want +got):\n%s", diff)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("collector Run = %v, want nil", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("collector did not stop after cancellation")
+	}
+}
+
 func TestNewPollSourceWithNilPollFuncPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {

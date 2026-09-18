@@ -9,17 +9,17 @@ import (
 )
 
 // sideOwners holds, for one side of a pair, the policy uids that asked for each
-// programmed target. Addresses and DNS names live in separate kernel maps and
+// programmed target. Prefixes and DNS names live in separate kernel maps and
 // so are refcounted separately.
 type sideOwners struct {
-	addrs map[netip.Addr]map[string]struct{}
-	hosts map[string]map[string]struct{}
+	prefixes map[netip.Prefix]map[string]struct{}
+	hosts    map[string]map[string]struct{}
 }
 
 func newSideOwners() sideOwners {
 	return sideOwners{
-		addrs: make(map[netip.Addr]map[string]struct{}),
-		hosts: make(map[string]map[string]struct{}),
+		prefixes: make(map[netip.Prefix]map[string]struct{}),
+		hosts:    make(map[string]map[string]struct{}),
 	}
 }
 
@@ -46,30 +46,30 @@ func (pa *podAttachment) release(uid string, pair *compiler.AllowDenyPair) *comp
 	}
 }
 
-// Ownership is keyed on the parsed address and the normalized host rather than
+// Ownership is keyed on the masked prefix and the normalized host rather than
 // the authored string, so that two policies spelling one target differently
 // still refcount as one entry. compiler.StarTarget yields neither and is
 // refcounted separately, by the default-deny uid set.
 func claimSide(owners sideOwners, uid string, values []string) {
-	addrs, hosts, _, _ := egressfilter.ParseTargets(values)
-	claimKeys(owners.addrs, uid, addrs)
+	prefixes, hosts, _, _ := egressfilter.ParseTargets(values)
+	claimKeys(owners.prefixes, uid, prefixes)
 	claimKeys(owners.hosts, uid, hosts)
 }
 
 // releaseSide returns the canonical spelling of each orphaned target, which
 // ParseTargets accepts, so the result feeds straight back into the filter.
 func releaseSide(owners sideOwners, uid string, values []string) []string {
-	addrs, hosts, _, _ := egressfilter.ParseTargets(values)
+	prefixes, hosts, _, _ := egressfilter.ParseTargets(values)
 
-	orphanedAddrs := releaseKeys(owners.addrs, uid, addrs)
+	orphanedPrefixes := releaseKeys(owners.prefixes, uid, prefixes)
 	orphanedHosts := releaseKeys(owners.hosts, uid, hosts)
-	if len(orphanedAddrs)+len(orphanedHosts) == 0 {
+	if len(orphanedPrefixes)+len(orphanedHosts) == 0 {
 		return nil
 	}
 
-	orphaned := make([]string, 0, len(orphanedAddrs)+len(orphanedHosts))
-	for _, addr := range orphanedAddrs {
-		orphaned = append(orphaned, addr.String())
+	orphaned := make([]string, 0, len(orphanedPrefixes)+len(orphanedHosts))
+	for _, prefix := range orphanedPrefixes {
+		orphaned = append(orphaned, prefix.String())
 	}
 	return append(orphaned, orphanedHosts...)
 }
