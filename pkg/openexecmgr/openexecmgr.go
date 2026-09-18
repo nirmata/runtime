@@ -55,6 +55,11 @@ type OpenExecManager struct {
 	programs            map[string]monitoringIface
 
 	lsm bool
+
+	// hookErr is set when no hook type could be attached and shown to execute.
+	// The manager then exists only to put that failure on every policy that
+	// needs an open or exec enforcer.
+	hookErr error
 }
 
 type podRepresentation struct {
@@ -113,7 +118,8 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 
 	hs, lsm, err := selectHooks(logger, lsm, verify, attachDispatchers)
 	if err != nil {
-		return nil, err
+		logger.Error(err, "open and exec policies will report enforcement unavailable on this node")
+		return newUnavailableOpenExecManager(logger, status, onLoss, lsm, err, cgroupSinks...), nil
 	}
 	dispatchers := hs.(dispatcherSet)
 	logger.V(2).Info("selected open/exec enforcement hooks", "hookType", hookTypeName(lsm), "bpfLSM", lsm, "hooks", dispatchers.targets(), "verified", verify)
@@ -136,6 +142,21 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 	}
 
 	return newOpenExecManager(logger, status, onLoss, newEnforcer, programs, lsm, cgroupSinks...), nil
+}
+
+// newUnavailableOpenExecManager builds the manager for a node where no hook
+// type executes: no dispatchers, no observation programs, and an enforcer
+// factory that fails every policy with cause. See unavailableEnforcer.
+func newUnavailableOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, cause error, cgroupSinks ...CgroupSink) *OpenExecManager {
+	l := newOpenExecManager(logger, status, onLoss, unavailableEnforcer(cause), map[string]monitoringIface{}, lsm, cgroupSinks...)
+	l.hookErr = cause
+	return l
+}
+
+// HooksUnavailable returns why no open/exec hook executes on this node, or nil
+// when a verified hook type is attached.
+func (l *OpenExecManager) HooksUnavailable() error {
+	return l.hookErr
 }
 
 func newOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc,
@@ -424,6 +445,9 @@ func (l *OpenExecManager) recordAvailability(rpUID string, observe bool, status 
 // BpfLSMEnabled error means the check itself was inconclusive, so the
 // original error is left as is rather than asserted to be something else.
 func (l *OpenExecManager) diagnoseAttachErr(err error) error {
+	if errors.Is(err, ErrNoHookExecutes) {
+		return err
+	}
 	if enabled, lsmErr := utils.BpfLSMEnabled(); lsmErr == nil && !enabled {
 		return fmt.Errorf("BPF-LSM is not active on this node: %w", err)
 	}

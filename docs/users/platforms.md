@@ -42,7 +42,9 @@ kernel compiled with `CONFIG_BPF_LSM=y` **accepts** the LSM attach even when `bp
 the active LSM list — the link is created and visible to `bpftool` — but the kernel never
 calls the program, so nothing is enforced. The daemon guards against this at startup: after
 attaching, it performs one controlled open and exec and reads the kernel's per-program run
-counter; a hook whose programs never executed is torn down and the other hook type is tried.
+counter; a hook whose programs never executed is torn down and the other hook type is tried. If
+neither executes, `open`/`exec` policies report `EnforcementAvailable=False` on that node. On kernels
+without run statistics (before 5.8) only the hook type this list suggests is attached, unverified.
 Check the active list directly:
 
 ```bash

@@ -291,13 +291,29 @@ both the `open` and the `exec` behavior. On `RuntimePolicyEvent` create, `rpCrea
 observe mode (`compiler.IsObserveMode`), then instantiates **one policy map per behavior type that
 has entries** via `createForProgType`.
 
-Which kernel hooks carry enforcement is decided once, at `NewOpenExecManager`, from
-`utils.BpfLSMEnabled()`:
+Which kernel hooks carry enforcement is decided once, at `NewOpenExecManager`. The active LSM
+list (`utils.BpfLSMEnabled()`) only says which hook type to *try first*; the decision is made by
+verifying that the attached programs actually execute (`selectHooks`, `pkg/openexecmgr/hooks.go`):
 
 | Behavior | BPF-LSM active | BPF-LSM absent |
 | --- | --- | --- |
 | `open` | `BPF_PROG_TYPE_LSM` on `file_open` | `fmod_ret` on `security_file_open` |
 | `exec` | `BPF_PROG_TYPE_LSM` on `bprm_check_security` | the same `security_file_open` program |
+
+**Attach success is not proof that a hook runs.** A kernel built with `CONFIG_BPF_LSM=y` accepts
+an LSM attach even when `bpf` is absent from the active LSM list, and then never calls the program
+(a "ghost attach"). So after attaching a hook type, the manager enables the kernel's per-program run
+counter (`openexec.EnableRunStats`), performs one controlled open and one controlled exec of its
+own binary (`Dispatcher.Canary`), and reads the counter back (`Dispatcher.Executed`). A hook type
+whose programs did not run is detached (`Dispatcher.Close`, `ClearPins`) and the other type is
+tried the same way; the counter is switched off again before the manager returns. If neither type
+executes, `NewOpenExecManager` still returns a manager, but one whose enforcer factory fails every
+policy with `ErrNoHookExecutes`: through the normal attach-failure path each open/exec policy then
+carries `EnforcementAvailable` (or `ObservationAvailable`) `= False`, so `Applied` cannot read
+`Enforcing` on a node that enforces nothing. The daemon also marks the `openexec-observe` and
+`exec-trace` sources unavailable. On kernels without run statistics (before 5.8) only the hook
+type the LSM list suggests is attached, unverified — the pre-verification behavior — and the other
+type is never tried, because accepting it on attach success alone is exactly the ghost-attach trap.
 
 The fallback needs no boot parameter, because `fmod_ret` may attach to any function whose name
 begins with `security_`. It cannot use the exec hook at all: `bpf_d_path` is gated per program

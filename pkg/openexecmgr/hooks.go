@@ -10,6 +10,11 @@ import (
 	"github.com/go-logr/logr"
 )
 
+// ErrNoHookExecutes means neither the BPF-LSM nor the fmod_ret dispatchers
+// could be attached and shown to run, so no open or exec rule can be enforced
+// or observed on this node.
+var ErrNoHookExecutes = errors.New("no open/exec hook executes on this node")
+
 // hookSet is one attached candidate: the dispatchers of either the BPF-LSM
 // targets or the fmod_ret targets.
 type hookSet interface {
@@ -34,12 +39,19 @@ func hookTypeName(lsm bool) string {
 // proven to execute. Attach success alone is not proof: a kernel with
 // CONFIG_BPF_LSM=y accepts an LSM attach without "bpf" in its LSM list and then
 // never runs the program (see openexec.Executed). A set that does not attach,
-// or attaches without executing, is torn down before the other is tried. With
-// verify false — run statistics unavailable — the first set that attaches is
-// accepted, which is the pre-verification behavior.
+// or attaches without executing, is torn down before the other is tried.
+//
+// With verify false — run statistics unavailable — only the set the LSM list
+// suggests is attached, and it is accepted on attach success. That is the
+// pre-verification behavior exactly; the other set is never tried, because
+// accepting it without proof is how a ghost attach would slip through.
 func selectHooks(logger logr.Logger, preferLSM, verify bool, attach attachFunc) (hookSet, bool, error) {
+	candidates := []bool{preferLSM, !preferLSM}
+	if !verify {
+		candidates = candidates[:1]
+	}
 	var errs []error
-	for _, lsm := range []bool{preferLSM, !preferLSM} {
+	for _, lsm := range candidates {
 		hs, err := attach(lsm)
 		if err != nil {
 			logger.V(1).Info("open/exec hooks did not attach", "hookType", hookTypeName(lsm), "reason", err.Error())
@@ -47,7 +59,8 @@ func selectHooks(logger logr.Logger, preferLSM, verify bool, attach attachFunc) 
 			continue
 		}
 		if !verify {
-			logger.Info("open/exec hooks attached but not verified: bpf run statistics unavailable", "hookType", hookTypeName(lsm))
+			logger.Info("open/exec hooks attached but not verified: bpf run statistics unavailable, so the other hook type is not tried",
+				"hookType", hookTypeName(lsm))
 			return hs, lsm, nil
 		}
 		ran, err := hs.Executed()
@@ -63,7 +76,18 @@ func selectHooks(logger logr.Logger, preferLSM, verify bool, attach attachFunc) 
 		}
 		return hs, lsm, nil
 	}
-	return nil, false, fmt.Errorf("no open/exec hook executes on this node: %w", errors.Join(errs...))
+	return nil, false, fmt.Errorf("%w: %w", ErrNoHookExecutes, errors.Join(errs...))
+}
+
+// unavailableEnforcer is the enforcer factory of a manager with no working
+// hooks. Every policy that needs an open or exec enforcer fails to create it
+// with cause, which the existing attach-failure path turns into an
+// EnforcementAvailable / ObservationAvailable = False condition on that
+// policy, so a node that can enforce nothing does not read as Enforcing.
+func unavailableEnforcer(cause error) enforcerFactory {
+	return func(_ *logr.Logger, target string) (openExecMap, error) {
+		return nil, fmt.Errorf("no enforcer for %s: %w", target, cause)
+	}
 }
 
 // dispatcherSet is the hookSet of real kernel dispatchers, keyed by target.

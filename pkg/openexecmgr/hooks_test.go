@@ -2,9 +2,17 @@ package openexecmgr
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/nirmata/runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/pkg/compiler"
+	"github.com/nirmata/runtime/pkg/events"
+
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 type fakeHooks struct {
@@ -48,9 +56,9 @@ func TestSelectHooksKeepsPreferredSetWhenItExecutes(t *testing.T) {
 	}
 }
 
-// TestSelectHooksFallsBackWhenPreferredSetNeverExecutes pins #230's ghost
-// attach: the BPF-LSM programs attach without error but never run, so the set
-// must be torn down and fmod_ret selected instead.
+// TestSelectHooksFallsBackWhenPreferredSetNeverExecutes pins the invariant
+// that attach success is not selection: a set whose programs attach without
+// error but never run must be torn down and the other set selected instead.
 func TestSelectHooksFallsBackWhenPreferredSetNeverExecutes(t *testing.T) {
 	ghost := &fakeHooks{lsm: true, ran: false}
 	a := &fakeAttach{sets: map[bool]*fakeHooks{true: ghost, false: {ran: true}}}
@@ -104,14 +112,66 @@ func TestSelectHooksTreatsCanaryErrorLikeAttachFailure(t *testing.T) {
 	}
 }
 
-func TestSelectHooksWithoutVerificationAcceptsFirstAttach(t *testing.T) {
-	ghost := &fakeHooks{lsm: true}
-	a := &fakeAttach{sets: map[bool]*fakeHooks{true: ghost, false: {ran: true}}}
+// Without run statistics nothing can be verified, so selection must fall back
+// to exactly the pre-verification behavior: attach what the LSM list suggests
+// and accept it. It must not try the other hook type, because accepting that
+// one on attach success alone is how a ghost attach would be selected.
+func TestSelectHooksWithoutVerificationOnlyTriesPreferredSet(t *testing.T) {
+	preferred := &fakeHooks{lsm: true}
+	a := &fakeAttach{sets: map[bool]*fakeHooks{true: preferred, false: {ran: true}}}
 	_, lsm, err := selectHooks(logr.Discard(), true, false, a.attach)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !lsm || ghost.executed {
-		t.Fatalf("lsm=%t executed=%t, want the first attach kept without a canary", lsm, ghost.executed)
+	if !lsm || preferred.executed {
+		t.Fatalf("lsm=%t executed=%t, want the preferred attach kept without a canary", lsm, preferred.executed)
+	}
+	if len(a.tried) != 1 {
+		t.Fatalf("tried %v, want only the preferred type", a.tried)
+	}
+}
+
+func TestSelectHooksWithoutVerificationDoesNotFallBack(t *testing.T) {
+	a := &fakeAttach{sets: map[bool]*fakeHooks{true: {lsm: true, ran: true}}}
+	_, _, err := selectHooks(logr.Discard(), false, false, a.attach)
+	if !errors.Is(err, ErrNoHookExecutes) {
+		t.Fatalf("err = %v, want ErrNoHookExecutes: the unverifiable alternative must not be selected", err)
+	}
+	if len(a.tried) != 1 {
+		t.Fatalf("tried %v, want only the preferred type", a.tried)
+	}
+}
+
+// A node with no executing hook type must not read as Enforcing: the manager
+// still handles policy events, and every policy that needs an open or exec
+// enforcer gets EnforcementAvailable (or ObservationAvailable) = False naming
+// the cause.
+func TestUnavailableHooksPutEnforcementUnavailableOnPolicies(t *testing.T) {
+	cause := fmt.Errorf("%w: bpf-lsm: programs attached but never executed", ErrNoHookExecutes)
+	for _, tt := range []struct {
+		mode string
+		want string
+	}{
+		{compiler.ModeEnforce, v1alpha1.ConditionEnforcementAvailable},
+		{compiler.ModeMonitor, v1alpha1.ConditionObservationAvailable},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			status := newFakeStatus()
+			l := newUnavailableOpenExecManager(logr.Discard(), status, nil, false, cause)
+			if l.HooksUnavailable() != cause {
+				t.Fatal("HooksUnavailable did not return the cause")
+			}
+			rp := result("rp1", tt.mode, labels.Everything(), pair(nil, []string{"/etc/shadow"}), nil)
+			if err := l.RuntimePolicyEvent(rp, events.EventTypeCreate); err == nil {
+				t.Fatal("expected the failure to propagate so the event is requeued")
+			}
+			got := condOfType(t, status, "rp1", tt.want)
+			if got.Status != metav1.ConditionFalse {
+				t.Fatalf("%s = %v, want False", tt.want, got.Status)
+			}
+			if !strings.Contains(got.Message, ErrNoHookExecutes.Error()) {
+				t.Fatalf("message %q does not name the cause", got.Message)
+			}
+		})
 	}
 }

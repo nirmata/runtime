@@ -40,10 +40,11 @@ func TestCanariesRun(t *testing.T) {
 }
 
 // TestExecutedMatchesActiveLSMList attaches the real file_open dispatchers and
-// checks the run counter against the kernel's own answer: the BPF-LSM
-// dispatcher must execute exactly when "bpf" is in the active LSM list — on a
-// CONFIG_BPF_LSM=y kernel without it the attach succeeds and the program never
-// runs (#230) — and the fmod_ret dispatcher must always execute.
+// checks the run counter against the kernel's own answer. The invariant: a
+// BPF-LSM program executes exactly when "bpf" is in the active LSM list. A
+// CONFIG_BPF_LSM=y kernel booted without it still accepts the attach, so
+// attach success must never be read as proof; the fmod_ret dispatcher, which
+// has no such gate, must always execute.
 func TestExecutedMatchesActiveLSMList(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to load BPF programs")
