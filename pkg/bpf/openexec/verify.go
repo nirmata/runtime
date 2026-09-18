@@ -85,14 +85,18 @@ func (d *Dispatcher) Executed(trigger func() error) (bool, error) {
 // executed is Executed with its kernel and time dependencies injected: read
 // the counter, run the trigger, then poll the counter until it moves or the
 // deadline passes.
+//
+// A trigger that fails is not evidence of a ghost: another LSM or a permission
+// check may reject the canary's open or exec after this program already ran
+// for it, so the counter is polled regardless. It decides when it moves; when
+// it does not, the trigger error is returned rather than a ghost verdict,
+// because nothing is known about a hook whose canary never happened.
 func executed(name string, readCount func() (uint64, error), trigger func() error, clk runClock) (bool, error) {
 	before, err := readCount()
 	if err != nil {
 		return false, err
 	}
-	if err := trigger(); err != nil {
-		return false, fmt.Errorf("canary for %s: %w", name, err)
-	}
+	triggerErr := trigger()
 	deadline := clk.now().Add(executedWait)
 	for {
 		after, err := readCount()
@@ -103,6 +107,9 @@ func executed(name string, readCount func() (uint64, error), trigger func() erro
 			return true, nil
 		}
 		if clk.now().After(deadline) {
+			if triggerErr != nil {
+				return false, fmt.Errorf("canary for %s: %w", name, triggerErr)
+			}
 			return false, nil
 		}
 		clk.sleep(executedPoll)
@@ -117,14 +124,20 @@ const selfExe = "/proc/self/exe"
 // changes nothing on the node. The target defaults to the running binary;
 // tests point canaryTarget at a fixture instead of the real procfs.
 func (d *Dispatcher) Canary() func() error {
-	target := d.canaryTarget
-	if target == "" {
-		target = selfExe
-	}
+	target := d.canaryPath()
 	if d.dispatcherType == PROG_TYPE_LSM_EXEC {
 		return func() error { return canaryExec(target) }
 	}
 	return func() error { return canaryOpen(target) }
+}
+
+// canaryPath is the file the canary acts on: canaryTarget when set, else the
+// running binary.
+func (d *Dispatcher) canaryPath() string {
+	if d.canaryTarget != "" {
+		return d.canaryTarget
+	}
+	return selfExe
 }
 
 // canaryOpen opens path read-only: every open passes security_file_open.

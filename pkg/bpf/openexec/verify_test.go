@@ -4,7 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,13 +60,14 @@ func TestCanariesRun(t *testing.T) {
 	}
 }
 
-func TestCanaryDefaultsToRunningBinary(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("/proc/self/exe is Linux only")
+// The default target is the running binary; resolved without opening it, so
+// the test never touches the real procfs.
+func TestCanaryPathDefaultsToRunningBinary(t *testing.T) {
+	if got := (&Dispatcher{dispatcherType: PROG_TYPE_LSM_OPEN}).canaryPath(); got != selfExe {
+		t.Fatalf("canaryPath() = %q, want %q", got, selfExe)
 	}
-	d := &Dispatcher{dispatcherType: PROG_TYPE_LSM_OPEN}
-	if err := d.Canary()(); err != nil {
-		t.Fatalf("default open canary: %v", err)
+	if got := (&Dispatcher{canaryTarget: "/x"}).canaryPath(); got != "/x" {
+		t.Fatalf("canaryPath() = %q, want the injected target", got)
 	}
 }
 
@@ -186,11 +187,30 @@ func TestExecutedCountsOnlyRunsAfterTheBaseline(t *testing.T) {
 	}
 }
 
-func TestExecutedPropagatesTriggerAndReadErrors(t *testing.T) {
+// A failed canary is not a ghost verdict. If the counter still moved, the hook
+// ran for the rejected open and is live; if it did not, the trigger error is
+// what the caller gets, never a bare false.
+func TestExecutedTriggerErrorDefersToTheCounter(t *testing.T) {
+	denied := func() error { return errors.New("open: EACCES") }
+
 	c := &fakeClock{}
-	if _, err := executed("file_open", counter(1), func() error { return errors.New("open: EACCES") }, c.clock()); err == nil {
-		t.Fatal("trigger error was swallowed")
+	ran, err := executed("file_open", counter(7, 7, 8), denied, c.clock())
+	if err != nil || !ran {
+		t.Fatalf("ran=%t err=%v, want live: the counter moved even though the canary was denied", ran, err)
 	}
+
+	c = &fakeClock{}
+	ran, err = executed("file_open", counter(7), denied, c.clock())
+	if ran || err == nil || !strings.Contains(err.Error(), "EACCES") {
+		t.Fatalf("ran=%t err=%v, want the trigger error after the full wait", ran, err)
+	}
+	if want := int(executedWait/executedPoll) + 1; c.sleeps != want {
+		t.Fatalf("polled %d times, want %d: the counter must still be given the whole window", c.sleeps, want)
+	}
+}
+
+func TestExecutedPropagatesReadErrors(t *testing.T) {
+	c := &fakeClock{}
 	reads := 0
 	readErr := func() (uint64, error) {
 		reads++
