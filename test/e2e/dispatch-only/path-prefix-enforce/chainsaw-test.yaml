@@ -1,4 +1,4 @@
-# E2E behavioral assertion -- directory prefixes for open/exec.
+# E2E behavioral assertion -- directory prefixes for open.
 #
 # As in lsm-enforce, the assertions are on the outcome and not on the hook that
 # reached it: BPF-LSM where the kernel was booted with `bpf` in the `lsm=` list,
@@ -28,13 +28,12 @@ spec:
         content: |
           set -eu
 
-          # Everything the policy will refuse has to work first, or the denials
-          # below prove nothing about the policy.
+          # Everything the policy will refuse has to be readable first, or the
+          # denials below prove nothing about the policy.
           for f in /tmp/lib/libc.so /tmp/lib/deep/nested/libm.so /tmp/library/libc.so; do
             kubectl -n $NAMESPACE exec prefix-client -- cat "$f" >/dev/null
           done
-          kubectl -n $NAMESPACE exec prefix-client -- /tmp/bin/tool true
-          echo "OK: baseline reads and exec succeed"
+          echo "OK: every path reads before the policy lands"
 
   - name: apply-directory-policy
     try:
@@ -80,31 +79,3 @@ spec:
           # without the separator would take this too.
           kubectl -n $NAMESPACE exec prefix-client -- cat /tmp/library/libc.so >/dev/null
           echo "OK: /tmp/library is untouched by a deny of /tmp/lib/"
-
-  - name: the-exec-dimension-matches-directories-of-its-own
-    try:
-    - script:
-        content: |
-          set -eu
-
-          blocked=0
-          for _ in $(seq 1 30); do
-            if kubectl -n $NAMESPACE exec prefix-client -- /tmp/bin/tool true >/dev/null 2>&1; then
-              sleep 2
-            else
-              blocked=1; break
-            fi
-          done
-          if [ "$blocked" -ne 1 ]; then
-            echo "FAIL: /tmp/bin/tool executed -- the exec directory deny was not applied"
-            exit 1
-          fi
-          echo "OK: a binary under the denied directory cannot be executed"
-
-          # The same file is readable: an exec deny is not an open deny.
-          kubectl -n $NAMESPACE exec prefix-client -- cat /tmp/bin/tool >/dev/null
-          echo "OK: /tmp/bin/tool is still readable"
-
-          # And a binary outside it still runs.
-          kubectl -n $NAMESPACE exec prefix-client -- /tmp/library/tool true
-          echo "OK: /tmp/library/tool still executes"

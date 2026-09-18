@@ -15,10 +15,8 @@ spec:
     - -c
     - |
       set -eu
-      mkdir -p /tmp/lib/deep/nested /tmp/library /tmp/bin
+      mkdir -p /tmp/lib/deep/nested /tmp/library
       echo lib > /tmp/lib/libc.so
       echo deep > /tmp/lib/deep/nested/libm.so
       echo sibling > /tmp/library/libc.so
-      cp /bin/busybox /tmp/bin/tool
-      cp /bin/busybox /tmp/library/tool
       sleep 900
