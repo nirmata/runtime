@@ -1,7 +1,6 @@
 package openexec
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -10,28 +9,26 @@ import (
 )
 
 // pinDir is the bpffs directory holding the maps shared across collections:
-// the prog arrays, prog counts and chain context are pinned by name so the
-// dispatchers and every enforcer loaded later resolve to the same kernel maps.
+// the prog arrays and chain context are pinned by name so the dispatchers and
+// the executor loaded later resolve to the same kernel maps.
 const pinDir = "/sys/fs/bpf/kyverno-runtime"
 
 // A Dispatcher owns one hook: it is the only program attached to the kernel,
-// and it tail-calls the executor that walks the policy maps registered in its
-// prog array. Policy maps come and go with policies; the dispatcher stays for
-// the process lifetime. Callers serialize access (OpenExecManager holds its
-// lock across every AddPolicy/DeleteProgram).
+// and it tail-calls the executor that evaluates its entries map. Every policy
+// of the hook writes into that one map under its own slot bit; the dispatcher
+// hands out the slots and stays for the process lifetime. Callers serialize
+// access (OpenExecManager holds its lock across every PolicyMap call), which
+// is what makes the read-modify-write of a shared entry safe.
 type Dispatcher struct {
 	prog *ebpf.Program
 
-	// progArray holds this hook's policy maps; enforcerArray holds the single
-	// executor it tail-calls to walk them.
-	progArray     *ebpf.Map
+	// entries is this hook's policy keyspace; enforcerArray holds the single
+	// executor it tail-calls to evaluate it.
+	entries       *ebpf.Map
 	enforcerArray *ebpf.Map
-	progCount     *ebpf.Map
 
-	// progCountKey is this hook's slot in the shared prog_count array.
-	progCountKey uint32
-	// progIdx maps an enforcer program fd to its prog array slot.
-	progIdx map[int]uint32
+	// slots has bit i set while policy slot i is in use.
+	slots uint64
 
 	link link.Link
 
@@ -40,7 +37,7 @@ type Dispatcher struct {
 
 // ClearPins wipes the pin directory at startup. The pinned maps outlive the
 // process, so a restart would otherwise inherit prog arrays holding fds of
-// programs this process never loaded and a prog_count covering them
+// programs this process never loaded.
 func ClearPins() error {
 	if err := os.RemoveAll(pinDir); err != nil {
 		return fmt.Errorf("removing bpf pin directory: %w", err)
@@ -49,16 +46,11 @@ func ClearPins() error {
 }
 
 func NewDispatcherForTarget(target string) (*Dispatcher, error) {
-	key, err := progCountKey(target)
-	if err != nil {
+	if err := checkTarget(target); err != nil {
 		return nil, err
 	}
 
-	d := &Dispatcher{
-		dispatcherType: target,
-		progCountKey:   key,
-		progIdx:        make(map[int]uint32),
-	}
+	d := &Dispatcher{dispatcherType: target}
 
 	if err := os.MkdirAll(pinDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating bpf pin directory: %w", err)
@@ -73,10 +65,6 @@ func NewDispatcherForTarget(target string) (*Dispatcher, error) {
 		if err := d.initializeForTracepoint(target); err != nil {
 			return nil, err
 		}
-	}
-
-	if err := d.reset(); err != nil {
-		return nil, err
 	}
 
 	return d, nil
@@ -100,8 +88,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		}
 
 		d.prog = objs.GenericLsmHandler
-		d.progCount = objs.ProgCount
-		d.progArray = objs.OpenPolicies
+		d.entries = objs.OpenEntries
 		d.enforcerArray = objs.OpenProg
 
 	case PROG_TYPE_LSM_EXEC:
@@ -118,8 +105,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		}
 
 		d.prog = objs.GenericLsmHandler
-		d.progCount = objs.ProgCount
-		d.progArray = objs.ExecPolicies
+		d.entries = objs.ExecEntries
 		d.enforcerArray = objs.ExecProg
 	}
 
@@ -141,8 +127,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		}
 
 		d.prog = objs.GenericTracepointHandler
-		d.progCount = objs.ProgCount
-		d.progArray = objs.OpenPolicies
+		d.entries = objs.OpenEntries
 		d.enforcerArray = objs.OpenProg
 
 	case PROG_TYPE_TRACE_EXEC:
@@ -160,26 +145,10 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 			return err
 		}
 
-		d.progCount = maps.ProgCount
-		d.progArray = maps.ExecPolicies
+		d.entries = maps.ExecEntries
 		d.enforcerArray = maps.ExecProg
 	}
 
-	return nil
-}
-
-// zero out the maps to prevent the dispatcher inheriting programs that previously existed
-// on the system
-func (d *Dispatcher) reset() error {
-	zero := uint8(0)
-	if err := d.progCount.Update(&d.progCountKey, &zero, ebpf.UpdateAny); err != nil {
-		return err
-	}
-	for i := uint32(0); i < d.progArray.MaxEntries(); i++ {
-		if err := d.progArray.Delete(&i); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -210,78 +179,23 @@ func (d *Dispatcher) Attach() error {
 	return nil
 }
 
-// AddProgram publishes an enforcer in the prog array before bumping the count
-// the kernel chain terminates on, so the chain never waits for a program that
-// is not yet callable.
-func (d *Dispatcher) AddPolicy(progFd int) error {
-	idx, err := d.freeSlot()
-	if err != nil {
-		return err
-	}
-
-	fd := uint32(progFd)
-	if err := d.progArray.Update(&idx, &fd, ebpf.UpdateAny); err != nil {
-		return err
-	}
-	if err := d.bumpCount(1); err != nil {
-		_ = d.progArray.Delete(&idx)
-		return err
-	}
-	d.progIdx[progFd] = idx
-
-	return nil
-}
-
-// DeleteProgram drops the count before clearing the slot, mirroring
-// AddProgram's ordering: the kernel treats a populated slot past the count as
-// unreachable and a missing slot as skipped, never as a chain that hangs.
-func (d *Dispatcher) DeleteProgram(progFd int) error {
-	idx, ok := d.progIdx[progFd]
-	if !ok {
-		return fmt.Errorf("program fd %d is not in the %s prog array", progFd, d.dispatcherType)
-	}
-
-	if err := d.progArray.Delete(&idx); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return err
-	}
-
-	if err := d.bumpCount(-1); err != nil {
-		return err
-	}
-	delete(d.progIdx, progFd)
-
-	return nil
-}
-
-// freeSlot returns the first array index no live entry occupies. progIdx is
-// keyed by fd and holds the slot as its value, so the occupied set is its
-// values: probing it by index instead answers whether some fd happens to equal
-// that index, which for fds starting at 3 is never true of 0.
-func (d *Dispatcher) freeSlot() (uint32, error) {
-	taken := make(map[uint32]struct{}, len(d.progIdx))
-	// for prog idx, add all the taken "values", indices
-	for _, idx := range d.progIdx {
-		taken[idx] = struct{}{}
-	}
-
-	for i := uint32(0); i < d.progArray.MaxEntries(); i++ {
-		if _, ok := taken[i]; !ok {
-			return i, nil
+// AddPolicy reserves the lowest free policy slot of this hook and returns it.
+func (d *Dispatcher) AddPolicy() (uint32, error) {
+	for slot := uint32(0); slot < maxPolicies; slot++ {
+		// as soon as you find a clear bit in d.slots. indicated by ANDing with 1<<slot
+		if d.slots&(1<<slot) == 0 {
+			// set that slot to 1 (booked) and return it
+			d.slots |= 1 << slot
+			return slot, nil
 		}
 	}
-
-	return 0, fmt.Errorf("the %s prog array is full", d.dispatcherType)
+	return 0, fmt.Errorf("all %d %s policy slots are in use", maxPolicies, d.dispatcherType)
 }
 
-func (d *Dispatcher) bumpCount(delta int) error {
-	var pc uint8
-	if err := d.progCount.Lookup(&d.progCountKey, &pc); err != nil {
-		return err
+func (d *Dispatcher) RemovePolicy(slot uint32) error {
+	if slot >= maxPolicies || d.slots&(1<<slot) == 0 {
+		return fmt.Errorf("policy slot %d is not in use for %s", slot, d.dispatcherType)
 	}
-	next := int(pc) + delta
-	if next < 0 || next > int(d.progArray.MaxEntries()) {
-		return fmt.Errorf("prog_count out of range for %s: %d", d.dispatcherType, next)
-	}
-	pc = uint8(next)
-	return d.progCount.Update(&d.progCountKey, &pc, ebpf.UpdateAny)
+	d.slots &^= 1 << slot
+	return nil
 }

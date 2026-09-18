@@ -46,6 +46,8 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
         prog_ctx->prog_type = PROG_TYPE_EXEC;
     #endif
 
+    scan_separators(prog_ctx);
+
     /* jump to the policy enforcer */
     bpf_tail_call(ctx, target_map, 0 );
 

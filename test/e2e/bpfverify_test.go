@@ -117,11 +117,11 @@ var bpfObjects = []bpfObjectSpec{
 			attachTo:   "security_file_open",
 			loadType:   ebpf.Tracing,
 			loadAttach: ebpf.AttachModifyReturn,
-			// The MAX_PROG_COUNT policy loop dominates and scales with that
-			// bound, and the same object processes more on a newer verifier
-			// than an older one, so this guards the kernel's own 1M ceiling
-			// rather than pinning a measured count.
-			insnBudget: 400000,
+			// One lookup per entry type plus a MAX_PREFIX_DEPTH walk, with no
+			// loop over policies; the same object processes more on a newer
+			// verifier than an older one, so this leaves headroom over the
+			// measured count rather than pinning it.
+			insnBudget: 20000,
 		}},
 	},
 	{

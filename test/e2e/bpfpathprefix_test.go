@@ -118,6 +118,50 @@ func TestBPFDirectoryPrefixDeniesInKernel(t *testing.T) {
 		})
 	}
 
+	// a second policy on the same cgroup: its allow cannot lift the first
+	// policy's directory deny, and its default deny is lifted by the first
+	// policy's allow of a path under the sibling directory
+	other, err := openexec.NewPolicyMap(d, &logger)
+	if err != nil {
+		t.Fatalf("creating a second policy map for %q: %+v", target, err)
+	}
+	t.Cleanup(func() {
+		if err := other.Close(); err != nil {
+			t.Errorf("closing the second policy map: %v", err)
+		}
+	})
+	if _, err := other.AddTargets(&compiler.AllowDenyPair{Allow: []string{denied}}); err != nil {
+		t.Fatalf("programming the second policy's targets: %v", err)
+	}
+	if err := other.SetDefaultDeny(true); err != nil {
+		t.Fatalf("setting the second policy's default deny: %v", err)
+	}
+	if _, err := enf.AddTargets(&compiler.AllowDenyPair{Allow: []string{allowed}}); err != nil {
+		t.Fatalf("programming the first policy's allow: %v", err)
+	}
+	if err := other.AddCgids([]uint64{cgid}); err != nil {
+		t.Fatalf("attaching cgroup %d to the second policy: %v", cgid, err)
+	}
+
+	t.Run("another policy's allow does not lift a directory deny", func(t *testing.T) {
+		if err := openFor(denied); !errors.Is(err, unix.EPERM) {
+			t.Errorf("open(%q) = %v, want EPERM", denied, err)
+		}
+	})
+	t.Run("another policy's allow lifts a default deny", func(t *testing.T) {
+		if err := openFor(allowed); err != nil {
+			t.Errorf("open(%q) = %v, want success", allowed, err)
+		}
+	})
+	t.Run("default deny bites a path no policy allows", func(t *testing.T) {
+		if err := openFor(deniedDeep); !errors.Is(err, unix.EPERM) {
+			t.Errorf("open(%q) = %v, want EPERM", deniedDeep, err)
+		}
+	})
+
+	if err := other.Close(); err != nil {
+		t.Fatalf("closing the second policy map: %v", err)
+	}
 	if _, err := enf.DeleteTargets(pair); err != nil {
 		t.Fatalf("removing targets: %v", err)
 	}

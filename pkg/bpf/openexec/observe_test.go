@@ -202,6 +202,22 @@ func TestMaxPathLenMatchesKernelDefine(t *testing.T) {
 	}
 }
 
+// TestMaxPoliciesMatchesKernelDefine guards the Go slot-mask width against the
+// committed BPF program, which cannot be regenerated on this host.
+func TestMaxPoliciesMatchesKernelDefine(t *testing.T) {
+	data, err := os.ReadFile("_cprog/maps.h")
+	if err != nil {
+		t.Fatalf("reading _cprog/maps.h: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^#define\s+MAX_POLICIES\s+(\d+)\s*$`).FindSubmatch(data)
+	if m == nil {
+		t.Fatal("#define MAX_POLICIES not found in _cprog/maps.h")
+	}
+	if got, want := string(m[1]), strconv.Itoa(maxPolicies); got != want {
+		t.Errorf("#define MAX_POLICIES = %s, Go maxPolicies = %s", got, want)
+	}
+}
+
 func TestReadEventsLostReportsDeltaNotTotal(t *testing.T) {
 	var l Prog
 
