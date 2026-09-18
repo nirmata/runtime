@@ -191,18 +191,26 @@ func (d *Dispatcher) Attach() error {
 
 // Close detaches the dispatcher and releases every object it loaded. The maps
 // stay pinned on bpffs until ClearPins, so a caller replacing this dispatcher
-// with one of the other hook type clears the pins in between.
+// with one of the other hook type clears the pins in between. A handle whose
+// close fails is kept, so the dispatcher still owns it and a retry of Close
+// can release it; only what was released is forgotten.
 func (d *Dispatcher) Close() error {
 	var errs []error
 	if d.link != nil {
-		errs = append(errs, d.link.Close())
-		d.link = nil
+		if err := d.link.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("detaching %s: %w", d.dispatcherType, err))
+		} else {
+			d.link = nil
+		}
 	}
 	if d.objs != nil {
-		errs = append(errs, d.objs.Close())
-		d.objs = nil
+		if err := d.objs.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("releasing %s objects: %w", d.dispatcherType, err))
+		} else {
+			d.objs = nil
+			d.prog, d.entries, d.enforcerArray = nil, nil, nil
+		}
 	}
-	d.prog, d.entries, d.enforcerArray = nil, nil, nil
 	return errors.Join(errs...)
 }
 

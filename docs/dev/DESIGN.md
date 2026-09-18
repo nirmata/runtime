@@ -95,7 +95,11 @@ monitor.New(log, reporter, metrics)
 podHandlers    = [em, attrIdx]              (+ execMgr, dm when each loads)
 policyHandlers = [em, statusWriter, monitor]        (+ execMgr, dm when each loads)
 openexecmgr.NewOpenExecManager(log, statusWriter, onLoss, BpfLSMEnabled())
-    -- on error: logged, and open/exec enforcement is simply not wired
+    -- attaches the suggested hook type, verifies it executes, else the other
+    -- no hook type executes: returns a manager anyway, registered as a handler,
+       whose enforcer factory fails every open/exec policy -> EnforcementAvailable/
+       ObservationAvailable=False; the daemon marks openexec-observe and exec-trace unavailable
+    -- constructor error (pins, executor build): logged, open/exec not wired, sources unavailable
 dnsquery.New() -> dnsmgr.New(dm) + dnsquery.NewSource(WithLossFunc -> EventsDropped)
 collector: PollSource(egress-observe, 10s) + PollSource(openexec-observe, 10s)
            + Source(dnsquery, ring buffer)

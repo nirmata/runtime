@@ -1,9 +1,11 @@
 package openexec
 
 import (
+	"errors"
 	"os"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/nirmata/runtime/pkg/utils"
 )
@@ -96,3 +98,81 @@ func TestExecutedMatchesActiveLSMList(t *testing.T) {
 		})
 	}
 }
+
+// fakeClock advances only when executed sleeps, so the deadline path runs in
+// no real time and the number of polls is exact.
+type fakeClock struct {
+	t      time.Time
+	sleeps int
+}
+
+func (c *fakeClock) clock() runClock {
+	return runClock{
+		now:   func() time.Time { return c.t },
+		sleep: func(d time.Duration) { c.t = c.t.Add(d); c.sleeps++ },
+	}
+}
+
+func counter(values ...uint64) func() (uint64, error) {
+	i := 0
+	return func() (uint64, error) {
+		v := values[min(i, len(values)-1)]
+		i++
+		return v, nil
+	}
+}
+
+func TestExecutedReportsGhostWhenCounterNeverMoves(t *testing.T) {
+	c := &fakeClock{}
+	triggered := false
+	ran, err := executed("file_open", counter(7), func() error { triggered = true; return nil }, c.clock())
+	if err != nil || ran {
+		t.Fatalf("ran=%t err=%v, want false: the counter never moved", ran, err)
+	}
+	if !triggered {
+		t.Fatal("the canary was not run")
+	}
+	if want := int(executedWait/executedPoll) + 1; c.sleeps != want {
+		t.Fatalf("polled %d times, want %d: the whole deadline must be waited out before declaring a ghost", c.sleeps, want)
+	}
+}
+
+func TestExecutedReportsLiveOnceCounterMoves(t *testing.T) {
+	c := &fakeClock{}
+	ran, err := executed("file_open", counter(7, 7, 7, 9), nil2, c.clock())
+	if err != nil || !ran {
+		t.Fatalf("ran=%t err=%v, want true", ran, err)
+	}
+	if c.sleeps != 2 {
+		t.Fatalf("polled %d times, want 2: return as soon as the counter moves", c.sleeps)
+	}
+}
+
+func TestExecutedCountsOnlyRunsAfterTheBaseline(t *testing.T) {
+	// a counter already high before the canary is not evidence: only growth is
+	c := &fakeClock{}
+	ran, _ := executed("file_open", counter(1000), nil2, c.clock())
+	if ran {
+		t.Fatal("a large but unchanging counter was read as executed")
+	}
+}
+
+func TestExecutedPropagatesTriggerAndReadErrors(t *testing.T) {
+	c := &fakeClock{}
+	if _, err := executed("file_open", counter(1), func() error { return errors.New("open: EACCES") }, c.clock()); err == nil {
+		t.Fatal("trigger error was swallowed")
+	}
+	reads := 0
+	readErr := func() (uint64, error) {
+		reads++
+		if reads == 2 {
+			return 0, errors.New("stats: EPERM")
+		}
+		return 1, nil
+	}
+	if _, err := executed("file_open", readErr, nil2, c.clock()); err == nil {
+		t.Fatal("counter read error was swallowed")
+	}
+}
+
+func nil2() error { return nil }

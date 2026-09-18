@@ -42,6 +42,18 @@ func EnableRunStats() (io.Closer, error) {
 	return c, nil
 }
 
+// runClock is the time source executed polls with. Tests replace it so the
+// deadline path runs without waiting.
+type runClock struct {
+	now   func() time.Time
+	sleep func(time.Duration)
+}
+
+var realClock = runClock{now: time.Now, sleep: time.Sleep}
+
+// executedPoll is how often the counter is re-read before the deadline.
+const executedPoll = 10 * time.Millisecond
+
 // Executed reports whether the dispatcher's program ran at least once between a
 // run-count read and the completion of trigger. Run statistics must be enabled
 // while it runs, or the counter never moves and a live hook reads as dead. A
@@ -51,26 +63,40 @@ func (d *Dispatcher) Executed(trigger func() error) (bool, error) {
 	if d.prog == nil {
 		return true, nil
 	}
-	before, err := d.prog.Stats()
+	readCount := func() (uint64, error) {
+		s, err := d.prog.Stats()
+		if err != nil {
+			return 0, fmt.Errorf("reading %s run count: %w", d.dispatcherType, err)
+		}
+		return s.RunCount, nil
+	}
+	return executed(d.dispatcherType, readCount, trigger, realClock)
+}
+
+// executed is Executed with its kernel and time dependencies injected: read
+// the counter, run the trigger, then poll the counter until it moves or the
+// deadline passes.
+func executed(name string, readCount func() (uint64, error), trigger func() error, clk runClock) (bool, error) {
+	before, err := readCount()
 	if err != nil {
-		return false, fmt.Errorf("reading %s run count: %w", d.dispatcherType, err)
+		return false, err
 	}
 	if err := trigger(); err != nil {
-		return false, fmt.Errorf("canary for %s: %w", d.dispatcherType, err)
+		return false, fmt.Errorf("canary for %s: %w", name, err)
 	}
-	deadline := time.Now().Add(executedWait)
+	deadline := clk.now().Add(executedWait)
 	for {
-		after, err := d.prog.Stats()
+		after, err := readCount()
 		if err != nil {
-			return false, fmt.Errorf("reading %s run count: %w", d.dispatcherType, err)
+			return false, err
 		}
-		if after.RunCount > before.RunCount {
+		if after > before {
 			return true, nil
 		}
-		if time.Now().After(deadline) {
+		if clk.now().After(deadline) {
 			return false, nil
 		}
-		time.Sleep(10 * time.Millisecond)
+		clk.sleep(executedPoll)
 	}
 }
 
