@@ -83,8 +83,12 @@ spec:
   A `tls/` prefix means the classifier saw a TLS record layer on the wire. Its absence says
   nothing about whether the traffic is encrypted: `ssh` and `quic` both carry their own
   encryption, they just do not use TLS records.
-- `exec`: command names/paths.
-- `open`: file paths.
+- `exec`: absolute binary paths.
+- `open`: absolute file paths.
+- An `exec` or `open` value ending in `/*` is a **directory**: `/usr/lib/*` covers everything
+  under `/usr/lib` at any depth, and covers neither `/usr/library` nor the directory
+  `/usr/lib` itself. A `*` anywhere else in a value is rejected, and so is a value ending in
+  a bare `/`. See [Limits of monitor mode](#limits-of-monitor-mode) for the depth bound.
 - `network`: IPv4 addresses, IPv4 CIDRs of `/24` or narrower, cluster Service DNS names,
   and fully qualified domain names for egress. The filter reads IPv4 packets only, which
   on a dual-stack cluster is a real boundary — see
@@ -883,10 +887,10 @@ spec:
       expression: 'has(event.open) && event.open.path.matches("(?i)mcp")'
 ```
 
-This is the thing a `deny` list cannot express. `open` and `exec` values are absolute literal
-paths compared whole, with no substring, prefix, basename, or regex form, so an operator whose
-target is a *shape* of path rather than a list of them had only two options: enumerate every
-path in advance, or turn on `deny: ["*"]` and drown. A default deny plus a filter is the third.
+This is the thing a `deny` list cannot express. An `open` or `exec` value is a whole path or a
+whole directory, with no substring, basename, or regex form, so an operator whose target is a
+*shape* of path rather than a place in the tree still has only two options: enumerate the paths
+in advance, or turn on `deny: ["*"]` and drown. A default deny plus a filter is the third.
 
 | `spec.monitorFilter` | What is reported |
 | --- | --- |
@@ -1029,12 +1033,22 @@ exception in shape — a program of its own, streamed rather than counted — an
   through `TargetsValid=False`. A CIDR of `/24` or narrower is expanded into individual
   addresses. An IPv6 literal is refused earlier, by the schema, so as a literal value it
   fails the policy to compile instead.
-- **`open` and `exec` values are absolute literal paths, bounded at 127 bytes.** They are never
-  split into tokens and never treated as globs; only the whole value `"*"` is the default-deny
-  sentinel, and it must be written exactly — `" * "` is rejected, not treated as the wildcard. A
-  longer value, an empty one, one carrying a NUL byte, or a relative one is rejected
-  at admission and reported through `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives
-  from an `expression`.
+- **`open` and `exec` values are absolute paths or directories, bounded at 127 bytes.** A value
+  is a whole path compared byte for byte, or — ending in `/*` — a directory covering everything
+  below it. Only the whole value `"*"` is the default-deny sentinel, and it must be written
+  exactly: `" * "` is rejected, not treated as the wildcard. A `*` in any other position is
+  rejected too, `/usr/lib/**` included; there is no one-level form, because `/usr/lib/*` already
+  reaches every depth. A longer value, an empty one, one carrying a NUL byte, one ending in a
+  bare `/`, or a relative one is rejected at admission and reported through
+  `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives from an `expression`.
+- **A directory matches within the first 16 separators of a path, the leading `/` included.**
+  The kernel walks an observed path's parent directories against the programmed ones, and that
+  walk is bounded for the verifier. A directory rule is therefore honoured up to 15 named
+  components: `/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/*` matches, and a rule one component deeper never
+  matches. Nothing shallower is affected.
+- **A deny outranks an allow, whichever form either takes.** `deny: ["/etc/*"]` alongside
+  `allow: ["/etc/hosts"]` denies `/etc/hosts`: a directory cannot have exceptions carved out of
+  it. An allow in any policy still outranks every policy's default deny, unchanged.
 - **`exec` selects a binary, never a command.** The key is the resolved program path, so allowing
   `/usr/bin/kubectl` allows every subcommand it has; arguments are not part of the key and cannot
   be enforced on. `kubectl` and `kubectl delete` are both rejected rather than accepted and then

@@ -30,6 +30,8 @@ type runtimePolicyPolicyCtx struct {
 	ProgType uint8
 	Reason   uint8
 	Path     [128]int8
+	Nslash   uint8
+	Slash    [16]uint8
 }
 
 // Names of all BPF objects in the ELF.
@@ -38,13 +40,11 @@ type runtimePolicyPolicyCtx struct {
 const (
 	runtimePolicyMapCtxMap                 = "ctx_map"
 	runtimePolicyMapEventsMap              = "events_map"
-	runtimePolicyMapExecPolicies           = "exec_policies"
+	runtimePolicyMapExecEntries            = "exec_entries"
 	runtimePolicyMapExecProg               = "exec_prog"
 	runtimePolicyMapInnerEvents            = "inner_events"
-	runtimePolicyMapInnerPolicyMap         = "inner_policy_map"
-	runtimePolicyMapOpenPolicies           = "open_policies"
+	runtimePolicyMapOpenEntries            = "open_entries"
 	runtimePolicyMapOpenProg               = "open_prog"
-	runtimePolicyMapProgCount              = "prog_count"
 	runtimePolicyMapStats                  = "stats"
 	runtimePolicyProgRuntimePolicyExecutor = "runtime_policy_executor"
 )
@@ -98,16 +98,14 @@ type runtimePolicyProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type runtimePolicyMapSpecs struct {
-	CtxMap         *ebpf.MapSpec `ebpf:"ctx_map"`
-	EventsMap      *ebpf.MapSpec `ebpf:"events_map"`
-	ExecPolicies   *ebpf.MapSpec `ebpf:"exec_policies"`
-	ExecProg       *ebpf.MapSpec `ebpf:"exec_prog"`
-	InnerEvents    *ebpf.MapSpec `ebpf:"inner_events"`
-	InnerPolicyMap *ebpf.MapSpec `ebpf:"inner_policy_map"`
-	OpenPolicies   *ebpf.MapSpec `ebpf:"open_policies"`
-	OpenProg       *ebpf.MapSpec `ebpf:"open_prog"`
-	ProgCount      *ebpf.MapSpec `ebpf:"prog_count"`
-	Stats          *ebpf.MapSpec `ebpf:"stats"`
+	CtxMap      *ebpf.MapSpec `ebpf:"ctx_map"`
+	EventsMap   *ebpf.MapSpec `ebpf:"events_map"`
+	ExecEntries *ebpf.MapSpec `ebpf:"exec_entries"`
+	ExecProg    *ebpf.MapSpec `ebpf:"exec_prog"`
+	InnerEvents *ebpf.MapSpec `ebpf:"inner_events"`
+	OpenEntries *ebpf.MapSpec `ebpf:"open_entries"`
+	OpenProg    *ebpf.MapSpec `ebpf:"open_prog"`
+	Stats       *ebpf.MapSpec `ebpf:"stats"`
 }
 
 // runtimePolicyVariableSpecs contains global variables before they are loaded into the kernel.
@@ -136,29 +134,25 @@ func (o *runtimePolicyObjects) Close() error {
 //
 // It can be passed to loadRuntimePolicyObjects or ebpf.CollectionSpec.LoadAndAssign.
 type runtimePolicyMaps struct {
-	CtxMap         *ebpf.Map `ebpf:"ctx_map"`
-	EventsMap      *ebpf.Map `ebpf:"events_map"`
-	ExecPolicies   *ebpf.Map `ebpf:"exec_policies"`
-	ExecProg       *ebpf.Map `ebpf:"exec_prog"`
-	InnerEvents    *ebpf.Map `ebpf:"inner_events"`
-	InnerPolicyMap *ebpf.Map `ebpf:"inner_policy_map"`
-	OpenPolicies   *ebpf.Map `ebpf:"open_policies"`
-	OpenProg       *ebpf.Map `ebpf:"open_prog"`
-	ProgCount      *ebpf.Map `ebpf:"prog_count"`
-	Stats          *ebpf.Map `ebpf:"stats"`
+	CtxMap      *ebpf.Map `ebpf:"ctx_map"`
+	EventsMap   *ebpf.Map `ebpf:"events_map"`
+	ExecEntries *ebpf.Map `ebpf:"exec_entries"`
+	ExecProg    *ebpf.Map `ebpf:"exec_prog"`
+	InnerEvents *ebpf.Map `ebpf:"inner_events"`
+	OpenEntries *ebpf.Map `ebpf:"open_entries"`
+	OpenProg    *ebpf.Map `ebpf:"open_prog"`
+	Stats       *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *runtimePolicyMaps) Close() error {
 	return _RuntimePolicyClose(
 		m.CtxMap,
 		m.EventsMap,
-		m.ExecPolicies,
+		m.ExecEntries,
 		m.ExecProg,
 		m.InnerEvents,
-		m.InnerPolicyMap,
-		m.OpenPolicies,
+		m.OpenEntries,
 		m.OpenProg,
-		m.ProgCount,
 		m.Stats,
 	)
 }

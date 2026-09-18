@@ -5,36 +5,9 @@
 #include <bpf/bpf_helpers.h>
 #include "maps.h"
 
-static __always_inline void path_decision(struct policy_entry_map *pm, struct policy_ctx *ctx, struct entry *key) {
-    key->data_type = FLAGS;
-    __builtin_memset(key->data, 0, sizeof(key->data));
-
-    __u8 *dd = bpf_map_lookup_elem(pm, key);
-
-    /* a 128-byte __builtin_memcpy is past clang's inline-expansion limit and
-     * becomes a memcpy call the BPF backend cannot emit */
-    bpf_probe_read_kernel(key->data, sizeof(key->data), ctx->path);
-
-    /* try to check if its in the deny entries*/
-    key->data_type = DENY_ENTRY;
-
-    if (bpf_map_lookup_elem(pm, key) != NULL) {
-        ctx->reason = EXPLICIT_DENY;
-        return;
-    }
-
-    key->data_type = ALLOW_ENTRY;
-
-    if (bpf_map_lookup_elem(pm, key) != NULL) {
-        ctx->reason = EXPLICIT_ALLOW;
-        return;
-    }
-
-    /* a default deny only bites while nothing has explicitly allowed the path:
-     * an allow in any policy outranks every other policy's default deny */
-    if (dd && ctx->reason != EXPLICIT_ALLOW) {
-        ctx->reason = IMPLICIT_DENY;
-    }
+static __always_inline __u64 mask_of(void *entries, struct entry *key) {
+    __u64 *v = bpf_map_lookup_elem(entries, key);
+    return v ? *v : 0;
 }
 
 static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN], enum decision_reason des) {
@@ -69,13 +42,6 @@ static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN
     }
 }
 
-static __always_inline struct policy_entry_map *policy_map_for(__u8 prog_type, int i) {
-    if (prog_type == PROG_TYPE_OPEN) {
-        return bpf_map_lookup_elem(&open_policies, &i);
-    }
-    return bpf_map_lookup_elem(&exec_policies, &i);
-}
-
 SEC("runtime_policy")
 int runtime_policy_executor(void *ctx)
 {
@@ -85,37 +51,51 @@ int runtime_policy_executor(void *ctx)
         return 0;
     }
 
-    /* no policies, do nothing */
-    __u32 prog_key = prog_ctx->prog_type;
-    __u8 *pc = bpf_map_lookup_elem(&prog_count, &prog_key);
-    if (!pc || *pc == 0) {
-        return 0;
-    } 
+    void *entries = prog_ctx->prog_type == PROG_TYPE_OPEN ? (void *)&open_entries : (void *)&exec_entries;
 
+    struct entry key = { .data_type = CGID };
     __u64 cgid = bpf_get_current_cgroup_id();
-    for (int i = 0; i < MAX_PROG_COUNT; i++) {
-        struct policy_entry_map *pm = policy_map_for(prog_ctx->prog_type, i);
-        if (!pm) {
-            continue;
-        };
+    __builtin_memcpy(key.data, &cgid, sizeof(cgid));
+    /* read the bitmap that contains which policies target this cgid */
+    __u64 cg = mask_of(entries, &key);
 
-        struct entry *k = &(struct entry) {
-            .data_type = CGID,   
-        };
+    if (cg) {
+        __builtin_memset(key.data, 0, sizeof(key.data));
+        key.data_type = FLAGS;
+        /* check if there is a default deny set by ANY policy */
+        __u64 dd = mask_of(entries, &key); 
 
-        __builtin_memcpy(k->data, &cgid, sizeof(cgid));
-        __u8 *exists = bpf_map_lookup_elem(pm, k);
-        if (!exists) {
-            continue;
+        bpf_probe_read_kernel(key.data, sizeof(key.data), prog_ctx->path);
+        /* read the policy bitmaps for that path. if this path is specified by multiple
+         * policies, every bit corresponding to a policy index will be 1 */
+        key.data_type = DENY_ENTRY;
+        __u64 deny = mask_of(entries, &key);
+        key.data_type = ALLOW_ENTRY;
+        __u64 allow = mask_of(entries, &key);
+
+        for (int d = 0; d < MAX_PREFIX_DEPTH; d++) {
+            if (d >= prog_ctx->nslash) {
+                break;
+            }
+            /* read the length of that path part, stored in prog_ctx->slash[d].
+             * then ensure it doesn't exceed MAX_PATH_LEN */
+            __u32 len = (prog_ctx->slash[d] & (MAX_PATH_LEN - 1)) + 1;
+            __builtin_memset(key.data, 0, sizeof(key.data));
+            bpf_probe_read_kernel(key.data, len, prog_ctx->path);
+            key.data_type = DENY_PREFIX_ENTRY;
+            deny |= mask_of(entries, &key);
+            key.data_type = ALLOW_PREFIX_ENTRY;
+            allow |= mask_of(entries, &key);
         }
 
-        path_decision(pm, prog_ctx, k);
-        if (prog_ctx->reason == EXPLICIT_DENY) {
-            goto end;
-        }
-    };
+        /* every mask covers all policies holding the entry; masking with the
+         * policies that select this cgroup is what scopes them to it */
+        deny &= cg;
+        allow &= cg;
+        dd &= cg;
+        prog_ctx->reason = deny ? EXPLICIT_DENY : allow ? EXPLICIT_ALLOW : dd ? IMPLICIT_DENY : IMPLICIT_ALLOW;
+    }
 
-end:
     record_path_event(&cgid, prog_ctx->path, prog_ctx->reason);
     if (prog_ctx->reason == IMPLICIT_DENY || prog_ctx->reason == EXPLICIT_DENY) {
         return -EPERM;

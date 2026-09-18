@@ -2,24 +2,34 @@ package compiler
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
 
 func TestParsePathValue(t *testing.T) {
 	tests := []struct {
-		name     string
-		in       string
-		wantStar bool
-		wantPath string
-		wantErr  error
+		name       string
+		in         string
+		wantStar   bool
+		wantPath   string
+		wantPrefix string
+		wantErr    error
 	}{
 		{name: "absolute path", in: "/usr/bin/curl", wantPath: "/usr/bin/curl"},
 		{name: "bare program name rejected", in: "kubectl", wantErr: ErrRelativePathValue},
 		{name: "path with spaces inside", in: "/opt/my app/run", wantPath: "/opt/my app/run"},
 		{name: "path with brackets", in: "/tmp/[cache]/bin", wantPath: "/tmp/[cache]/bin"},
 		{name: "path with quotes", in: `/tmp/"odd"/bin`, wantPath: `/tmp/"odd"/bin`},
-		{name: "interior star is a literal, not a glob", in: "/usr/bin/*", wantPath: "/usr/bin/*"},
+		{name: "directory prefix", in: "/usr/lib/*", wantPrefix: "/usr/lib/"},
+		{name: "root prefix", in: "/*", wantPrefix: "/"},
+		{name: "prefix with surrounding whitespace trimmed", in: " /usr/lib/*\n", wantPrefix: "/usr/lib/"},
+		{name: "interior star rejected", in: "/usr/*/bin", wantErr: ErrStarInPathValue},
+		{name: "double star rejected", in: "/usr/lib/**", wantErr: ErrStarInPathValue},
+		{name: "star without a separator rejected", in: "/usr/lib*", wantErr: ErrStarInPathValue},
+		{name: "star in the prefix body rejected", in: "/usr/*/lib/*", wantErr: ErrStarInPathValue},
+		{name: "trailing separator rejected", in: "/usr/lib/", wantErr: ErrTrailingSlashPathValue},
+		{name: "root alone rejected", in: "/", wantErr: ErrTrailingSlashPathValue},
 		{name: "argv-looking value rejected, and would be one literal path anyway", in: "kubectl delete", wantErr: ErrRelativePathValue},
 		{name: "dot-relative rejected", in: "./relative", wantErr: ErrRelativePathValue},
 		{name: "parent-relative rejected", in: "../up", wantErr: ErrRelativePathValue},
@@ -57,6 +67,9 @@ func TestParsePathValue(t *testing.T) {
 			if got.Path != tt.wantPath {
 				t.Errorf("Path = %q, want %q", got.Path, tt.wantPath)
 			}
+			if got.Prefix != tt.wantPrefix {
+				t.Errorf("Prefix = %q, want %q", got.Prefix, tt.wantPrefix)
+			}
 		})
 	}
 }
@@ -73,7 +86,6 @@ func TestPathValuePreservesLiteralPaths(t *testing.T) {
 		"/opt/app/bin/my-binary",
 		"/opt/my app/run",
 		`/tmp/"odd"/[dir]/bin`,
-		"/usr/bin/*",
 		"/tmp/x'y",
 
 		"/" + strings.Repeat("a", MaxPathValueLen-1),
@@ -93,5 +105,62 @@ func TestPathValuePreservesLiteralPaths(t *testing.T) {
 				t.Errorf("ParsePathValue(%q).Path = %q, want the value unchanged", p, got.Path)
 			}
 		})
+	}
+}
+
+func TestParsePathList(t *testing.T) {
+	values := []string{
+		"/bin/sh",
+		"/usr/lib/*",
+		" /bin/sh ",
+		"/usr/lib/*",
+		StarTarget,
+		"kubectl",
+	}
+
+	paths, prefixes, star, rejected := ParsePathList(values)
+
+	if want := []string{"/bin/sh"}; !slices.Equal(paths, want) {
+		t.Errorf("paths = %q, want %q", paths, want)
+	}
+	if want := []string{"/usr/lib/"}; !slices.Equal(prefixes, want) {
+		t.Errorf("prefixes = %q, want %q", prefixes, want)
+	}
+	if !star {
+		t.Error("star = false, want true")
+	}
+	if len(rejected) != 1 || rejected[0].Value != "kubectl" {
+		t.Errorf("rejected = %+v, want only kubectl", rejected)
+	}
+}
+
+func TestAncestorDirs(t *testing.T) {
+	deep := "/" + strings.Repeat("a/", MaxPrefixDepth+4) + "file"
+
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{name: "root", in: "/bin", want: []string{"/"}},
+		{name: "nested", in: "/usr/lib/libc.so", want: []string{"/", "/usr/", "/usr/lib/"}},
+		{name: "relative never yields the root", in: "bin/sh", want: []string{"bin/"}},
+		{name: "empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AncestorDirs(tt.in); !slices.Equal(got, tt.want) {
+				t.Errorf("AncestorDirs(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	got := AncestorDirs(deep)
+	if len(got) != MaxPrefixDepth {
+		t.Fatalf("AncestorDirs on a %d-component path returned %d dirs, want the %d-deep bound", MaxPrefixDepth+4, len(got), MaxPrefixDepth)
+	}
+	if last := got[len(got)-1]; strings.Count(last, "/") != MaxPrefixDepth {
+		t.Errorf("deepest dir %q does not sit at the bound", last)
 	}
 }

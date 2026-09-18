@@ -324,28 +324,40 @@ resolved path, the running `reason`, and which dimension this event belongs to),
 attached to a hook itself. `NewOpenExecManager` wipes the pin directory (`openexec.ClearPins`)
 before loading, since a pin surviving from a previous process is a stale map spec.
 
-Policies are map entries, not programs. Each dimension owns an `ARRAY_OF_MAPS`
-(`open_policies` / `exec_policies`, `MAX_PROG_COUNT` slots), and each occupied slot holds one
-policy's inner hash. That inner map is a single keyspace discriminated by `struct entry.data_type`:
+Policies are map entries, not programs. Each dimension owns one hash map (`open_entries` /
+`exec_entries`), a single keyspace discriminated by `struct entry.data_type`. The value of every
+entry is a `u64` mask with one bit per policy slot (`MAX_POLICIES`): bit `i` is set while the
+policy in slot `i` holds that entry. Two policies that program the same path share one entry.
 
 | `data_type` | key payload | written by |
 | --- | --- | --- |
 | `CGID` | the cgroup id, 8 bytes little-endian | `AddCgids` / `DeleteCgids` |
 | `DENY_ENTRY` | a NUL-padded path | `AddTargets` |
 | `ALLOW_ENTRY` | a NUL-padded path | `AddTargets` |
-| `FLAGS` | all zeroes; presence is the default-deny flag | `SetDefaultDeny` |
+| `DENY_PREFIX_ENTRY` | a NUL-padded directory, trailing separator included | `AddTargets` |
+| `ALLOW_PREFIX_ENTRY` | a NUL-padded directory, trailing separator included | `AddTargets` |
+| `FLAGS` | all zeroes; the mask is the set of policies in default deny | `SetDefaultDeny` |
 
-`openexec.NewPolicyMap` creates the inner map and registers it in the dispatcher's array via
-`Dispatcher.AddPolicy`, which takes the first slot no live entry occupies and bumps the shared
-`prog_count` for that dimension. The executor returns immediately when `prog_count` for the event's
-dimension is zero, so a node with no policies of that kind pays one array lookup per operation.
+`openexec.NewPolicyMap` takes a slot from `Dispatcher.AddPolicy` and programs its entries with a
+read-modify-write of that slot's bit: set ORs the bit in, clear removes it and deletes the entry
+once no bit is left. The manager's lock serializes every writer of a dimension. `Close` clears the
+policy's cgid entries first, so it stops selecting anything before its rules go, then the rest.
 
-The executor walks the slots for its dimension, skips any policy whose inner map does not hold the
-current cgroup id, and evaluates the rest against the resolved path. The verdict accumulates across
-policies in the precedence **explicit deny > explicit allow > default deny > default allow**: only
-an explicit deny short-circuits the walk, and a policy's default deny is skipped once anything has
-explicitly allowed the path. That is order-independent, and it is what makes separate policies union
-rather than intersect — one policy's `allow` lifts another policy's `deny: ["*"]` for that path,
+The executor never iterates policies. It looks up the cgroup id once and gets the mask of policies
+that select it; a zero mask ends evaluation with the dispatcher's `IMPLICIT_ALLOW`. Otherwise it
+looks up the whole path against the literal entries and each parent directory against the prefix
+entries, ORing the masks it gets back into a `deny` mask and an `allow` mask, and the `FLAGS` mask
+into `dd`. ANDing each with the cgroup's mask scopes them to the policies that apply, and the
+verdict falls out of the three: `deny` non-zero is an explicit deny, else `allow` non-zero is an
+explicit allow, else `dd` non-zero is a default deny, else allow. The separator the schema keeps
+on a directory key is what stops `/usr/lib/` matching `/usr/library`, and `compiler.AncestorDirs`
+is the one definition of that walk — monitor mode reaches for it directly, and
+`runtime_policy_executor` reproduces it from the separator offsets it scans out of the path once
+per event. The walk is bounded at `MAX_PREFIX_DEPTH` for the verifier, which is the
+depth limit the user reference states. Within a policy a deny in either form beats an allow in
+either form. The verdict across policies follows the precedence **explicit deny > explicit
+allow > default deny > default allow**, computed from the three masks after the walk. That is
+order-independent, and it is what makes separate policies union rather than intersect — one policy's `allow` lifts another policy's `deny: ["*"]` for that path,
 while an explicit `deny` anywhere beats every allow.
 
 Per policy map, `createForProgType` populates the deny/allow entries from that behavior's

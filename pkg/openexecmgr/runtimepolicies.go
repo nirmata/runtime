@@ -379,7 +379,7 @@ func denyHasStar(pair *compiler.AllowDenyPair) bool {
 	if pair == nil {
 		return false
 	}
-	_, star, _ := compiler.ParsePathList(pair.Deny)
+	_, _, star, _ := compiler.ParsePathList(pair.Deny)
 	return star
 }
 

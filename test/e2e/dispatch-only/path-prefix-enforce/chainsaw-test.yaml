@@ -1,0 +1,81 @@
+# E2E behavioral assertion -- directory prefixes for open.
+#
+# As in lsm-enforce, the assertions are on the outcome and not on the hook that
+# reached it: BPF-LSM where the kernel was booted with `bpf` in the `lsm=` list,
+# tracepoints where it was not.
+#
+# The policy lands on a pod that is already running, so nothing here depends on
+# a container starting under enforcement.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: path-prefix-enforce
+spec:
+  steps:
+  - name: start-client-and-take-a-baseline
+    try:
+    - apply:
+        file: client.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: prefix-client
+          status:
+            phase: Running
+    - script:
+        content: |
+          set -eu
+
+          # Everything the policy will refuse has to be readable first, or the
+          # denials below prove nothing about the policy.
+          for f in /tmp/lib/libc.so /tmp/lib/deep/nested/libm.so /tmp/library/libc.so; do
+            kubectl -n $NAMESPACE exec prefix-client -- cat "$f" >/dev/null
+          done
+          echo "OK: every path reads before the policy lands"
+
+  - name: apply-directory-policy
+    try:
+    - apply:
+        file: policy.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-path-prefix-enforce
+
+  - name: a-directory-covers-every-depth-and-stops-at-the-separator
+    try:
+    - script:
+        content: |
+          set -eu
+
+          # Programming is asynchronous, so the first denial is polled for; the
+          # rest are checked once the policy is demonstrably live.
+          blocked=0
+          for _ in $(seq 1 30); do
+            if kubectl -n $NAMESPACE exec prefix-client -- cat /tmp/lib/libc.so >/dev/null 2>&1; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          if [ "$blocked" -ne 1 ]; then
+            echo "FAIL: /tmp/lib/libc.so was readable -- the directory deny was not applied,"
+            echo "      or an allow of a file inside it carved an exception out of it"
+            exit 1
+          fi
+          echo "OK: a file directly under the denied directory is blocked, and the allow did not rescue it"
+
+          if kubectl -n $NAMESPACE exec prefix-client -- cat /tmp/lib/deep/nested/libm.so >/dev/null 2>&1; then
+            echo "FAIL: /tmp/lib/deep/nested/libm.so was readable -- a directory must cover every depth"
+            exit 1
+          fi
+          echo "OK: a file below the denied directory is blocked at depth"
+
+          # /tmp/library shares the denied directory's leading bytes. Matching
+          # without the separator would take this too.
+          kubectl -n $NAMESPACE exec prefix-client -- cat /tmp/library/libc.so >/dev/null
+          echo "OK: /tmp/library is untouched by a deny of /tmp/lib/"

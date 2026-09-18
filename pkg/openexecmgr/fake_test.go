@@ -142,9 +142,9 @@ func (f *fakeEnforcer) DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.
 }
 
 func parseFakePair(paths *compiler.AllowDenyPair) (allow, deny []string, rejected []compiler.RejectedTarget) {
-	allow, _, allowRejected := compiler.ParsePathList(paths.Allow)
-	deny, _, denyRejected := compiler.ParsePathList(paths.Deny)
-	return allow, deny, append(denyRejected, allowRejected...)
+	allow, allowPrefixes, _, allowRejected := compiler.ParsePathList(paths.Allow)
+	deny, denyPrefixes, _, denyRejected := compiler.ParsePathList(paths.Deny)
+	return append(allow, allowPrefixes...), append(deny, denyPrefixes...), append(denyRejected, allowRejected...)
 }
 
 func (f *fakeEnforcer) SetDefaultDeny(val bool) error {

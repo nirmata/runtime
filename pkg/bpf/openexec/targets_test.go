@@ -9,8 +9,11 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func allowEntry(path string) *runtimePolicyEntry { return entryFor(path, 0) }
-func denyEntry(path string) *runtimePolicyEntry  { return entryFor(path, 1) }
+func allowEntry(path string) *runtimePolicyEntry { return entryFor(path, dataTypeAllow) }
+func denyEntry(path string) *runtimePolicyEntry  { return entryFor(path, dataTypeDeny) }
+
+func allowPrefixEntry(dir string) *runtimePolicyEntry { return entryFor(dir, dataTypeAllowPrefix) }
+func denyPrefixEntry(dir string) *runtimePolicyEntry  { return entryFor(dir, dataTypeDenyPrefix) }
 
 func entryFor(path string, dataType uint32) *runtimePolicyEntry {
 	e := &runtimePolicyEntry{DataType: dataType}
@@ -53,6 +56,25 @@ func TestPathKeys(t *testing.T) {
 			values:   []string{"/bin/sh"},
 			allow:    false,
 			wantKeys: []*runtimePolicyEntry{denyEntry("/bin/sh")},
+		},
+		{
+			name:     "a directory keeps its separator and keys under its own discriminant",
+			values:   []string{"/usr/lib/*", "/bin/sh"},
+			allow:    true,
+			wantKeys: []*runtimePolicyEntry{allowEntry("/bin/sh"), allowPrefixEntry("/usr/lib/")},
+		},
+		{
+			name:     "a deny directory keys under the deny discriminant",
+			values:   []string{"/etc/*"},
+			allow:    false,
+			wantKeys: []*runtimePolicyEntry{denyPrefixEntry("/etc/")},
+		},
+		{
+			name:         "an unsupported star spelling is rejected, not keyed",
+			values:       []string{"/usr/lib/**", "/bin/sh"},
+			allow:        true,
+			wantKeys:     []*runtimePolicyEntry{allowEntry("/bin/sh")},
+			wantRejected: []compiler.RejectedTarget{{Value: "/usr/lib/**", Reason: compiler.ErrStarInPathValue.Error()}},
 		},
 		{
 			name:     "star is the default deny sentinel, not a key",

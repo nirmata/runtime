@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: prefix-client
+  labels:
+    app: prefix-client
+spec:
+  containers:
+  - name: client
+    image: busybox:1.36
+    # The tree is built before any policy lands, so the writes that create it
+    # are never the thing under test.
+    command:
+    - sh
+    - -c
+    - |
+      set -eu
+      mkdir -p /tmp/lib/deep/nested /tmp/library
+      echo lib > /tmp/lib/libc.so
+      echo deep > /tmp/lib/deep/nested/libm.so
+      echo sibling > /tmp/library/libc.so
+      sleep 900
