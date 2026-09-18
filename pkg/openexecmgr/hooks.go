@@ -148,15 +148,20 @@ func (s dispatcherSet) Executed() (bool, error) {
 	return true, nil
 }
 
-// Close releases every dispatcher and the pins they shared, so the next hook
-// type starts from empty maps rather than inheriting this one's.
+// Close releases every dispatcher and then the pins they shared, so the next
+// hook type starts from empty maps rather than inheriting this one's. The pins
+// are cleared only once every dispatcher is closed: a dispatcher that kept a
+// handle after a failed close still owns maps behind those pins, and a retry
+// of Close needs them in place.
 func (s dispatcherSet) Close() error {
 	errs := make([]error, 0, len(s)+1)
 	for _, d := range s {
 		errs = append(errs, d.Close())
 	}
-	errs = append(errs, openexec.ClearPins())
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	return openexec.ClearPins()
 }
 
 func (s dispatcherSet) targets() []string {
