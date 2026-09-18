@@ -37,9 +37,13 @@ cat /sys/kernel/security/lsm          # 'bpf' present -> LSM path
 sysctl net.core.bpf_jit_enable        # non-zero -> trampolines available
 ```
 
-Whether BPF-LSM is active is a boot-time decision, not a runtime capability check — a
-kernel compiled with `CONFIG_BPF_LSM=y` still refuses the LSM attach if `bpf` is not also
-in the active LSM list. Check the active list directly:
+Whether BPF-LSM is active is a boot-time decision, not a runtime capability check. A
+kernel compiled with `CONFIG_BPF_LSM=y` **accepts** the LSM attach even when `bpf` is not in
+the active LSM list — the link is created and visible to `bpftool` — but the kernel never
+calls the program, so nothing is enforced. The daemon guards against this at startup: after
+attaching, it performs one controlled open and exec and reads the kernel's per-program run
+counter; a hook whose programs never executed is torn down and the other hook type is tried.
+Check the active list directly:
 
 ```bash
 cat /sys/kernel/security/lsm

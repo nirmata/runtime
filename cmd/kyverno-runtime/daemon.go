@@ -327,7 +327,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	lsmEnabled, err := utils.BpfLSMEnabled()
 	if err != nil {
-		logger.Error(err, "could not determine BPF-LSM availability; falling back to raw tracepoints")
+		logger.Error(err, "could not determine BPF-LSM availability; trying fmod_ret first")
 		lsmEnabled = false
 	}
 

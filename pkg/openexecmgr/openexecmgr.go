@@ -88,38 +88,42 @@ type openExecAttachment struct {
 	badProgs map[string]string
 }
 
-// NewOpenExecManager loads and attaches the dispatcher for each hook the
-// manager enforces through, along with the executor each one tail-calls. Policies
-// are later represented as maps that those executors scan during events.
+// NewOpenExecManager attaches the dispatchers of one hook type — BPF-LSM or
+// fmod_ret, whichever is proven to execute on this node — along with the
+// executor each one tail-calls. Policies are later represented as maps that
+// those executors scan during events. lsm is the active LSM list's answer and
+// only decides which hook type is tried first.
 func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, cgroupSinks ...CgroupSink) (*OpenExecManager, error) {
 	if err := openexec.ClearPins(); err != nil {
 		return nil, err
 	}
 
-	progArrayType := []string{openexec.PROG_TYPE_TRACE_OPEN, openexec.PROG_TYPE_TRACE_EXEC}
-	if lsm {
-		progArrayType = []string{openexec.PROG_TYPE_LSM_OPEN, openexec.PROG_TYPE_LSM_EXEC}
+	verify := true
+	stats, err := openexec.EnableRunStats()
+	if err != nil {
+		logger.Error(err, "cannot verify that open/exec hooks execute; trusting attach results")
+		verify = false
+	} else {
+		defer func() {
+			if err := stats.Close(); err != nil {
+				logger.Error(err, "failed to disable bpf run statistics")
+			}
+		}()
 	}
-	logger.V(2).Info("selected open/exec enforcement hooks", "bpfLSM", lsm, "hooks", progArrayType)
 
-	dispatchers := make(map[string]*openexec.Dispatcher, 2)
-	programs := make(map[string]monitoringIface, 2)
+	hs, lsm, err := selectHooks(logger, lsm, verify, attachDispatchers)
+	if err != nil {
+		return nil, err
+	}
+	dispatchers := hs.(dispatcherSet)
+	logger.V(2).Info("selected open/exec enforcement hooks", "hookType", hookTypeName(lsm), "bpfLSM", lsm, "hooks", dispatchers.targets(), "verified", verify)
 
-	for _, target := range progArrayType {
-		d, err := openexec.NewDispatcherForTarget(target)
-		if err != nil {
-			return nil, fmt.Errorf("loading the %s dispatcher: %w", target, err)
-		}
-		if err := d.Attach(); err != nil {
-			return nil, fmt.Errorf("attaching the %s dispatcher: %w", target, err)
-		}
-		dispatchers[target] = d
-
+	programs := make(map[string]monitoringIface, len(dispatchers))
+	for target, d := range dispatchers {
 		p, err := openexec.NewProgram(d)
 		if err != nil {
 			return nil, fmt.Errorf("creating the %s enforcer program: %w", target, err)
 		}
-
 		programs[target] = p
 	}
 
