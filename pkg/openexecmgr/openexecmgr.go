@@ -128,7 +128,14 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 	for target, d := range dispatchers {
 		p, err := openexec.NewProgram(d)
 		if err != nil {
-			return nil, fmt.Errorf("creating the %s enforcer program: %w", target, err)
+			// nothing has a handle on the selected set yet, so release it here
+			// rather than leave attached programs behind with no owner
+			errs := []error{fmt.Errorf("creating the %s enforcer program: %w", target, err)}
+			for _, created := range programs {
+				errs = append(errs, created.(*openexec.Prog).Close())
+			}
+			errs = append(errs, dispatchers.Close())
+			return nil, errors.Join(errs...)
 		}
 		programs[target] = p
 	}

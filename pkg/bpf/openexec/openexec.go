@@ -181,6 +181,30 @@ func NewProgram(d *Dispatcher) (*Prog, error) {
 	}, nil
 }
 
+// Close releases the executor and its maps. The dispatcher's prog array still
+// holds the executor until the dispatcher itself is closed and the pins are
+// cleared, so callers close the dispatcher afterwards.
+func (p *Prog) Close() error {
+	p.observeMu.Lock()
+	defer p.observeMu.Unlock()
+	var errs []error
+	for cgid, m := range p.observed {
+		errs = append(errs, m.Close())
+		delete(p.observed, cgid)
+	}
+	if p.prog != nil {
+		errs = append(errs, p.prog.Close())
+	}
+	if p.eventsMap != nil {
+		errs = append(errs, p.eventsMap.Close())
+	}
+	if p.stats != nil {
+		errs = append(errs, p.stats.Close())
+	}
+	p.prog, p.eventsMap, p.stats = nil, nil, nil
+	return errors.Join(errs...)
+}
+
 // prepareOpenEvents returns a copy of the events_map inner-map template.
 // nil means observation is unavailable for this program.
 func prepareOpenEvents(spec *ebpf.CollectionSpec) *ebpf.MapSpec {

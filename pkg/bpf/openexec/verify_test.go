@@ -39,7 +39,9 @@ func TestCanariesRun(t *testing.T) {
 	}
 }
 
-// TestExecutedMatchesActiveLSMList attaches the real file_open dispatchers and
+// TestExecutedMatchesActiveLSMList attaches the real dispatchers of both hook
+// types — the two BPF-LSM programs with their open and exec canaries, and the
+// fmod_ret file_open program — and
 // checks the run counter against the kernel's own answer. The invariant: a
 // BPF-LSM program executes exactly when "bpf" is in the active LSM list. A
 // CONFIG_BPF_LSM=y kernel booted without it still accepts the attach, so
@@ -64,6 +66,7 @@ func TestExecutedMatchesActiveLSMList(t *testing.T) {
 		want   bool
 	}{
 		{PROG_TYPE_LSM_OPEN, wantLSM},
+		{PROG_TYPE_LSM_EXEC, wantLSM},
 		{PROG_TYPE_TRACE_OPEN, true},
 	} {
 		t.Run(tt.target, func(t *testing.T) {

@@ -19,22 +19,27 @@ type fakeHooks struct {
 	lsm      bool
 	ran      bool
 	ranErr   error
+	closeErr error
 	closed   bool
 	executed bool
 }
 
 func (f *fakeHooks) Executed() (bool, error) { f.executed = true; return f.ran, f.ranErr }
-func (f *fakeHooks) Close() error            { f.closed = true; return nil }
+func (f *fakeHooks) Close() error            { f.closed = true; return f.closeErr }
 
 // fakeAttach hands out one fakeHooks per hook type and records the order the
 // types were tried in. A nil entry means that type fails to attach.
 type fakeAttach struct {
-	sets  map[bool]*fakeHooks
-	tried []bool
+	sets      map[bool]*fakeHooks
+	attachErr map[bool]error
+	tried     []bool
 }
 
 func (a *fakeAttach) attach(lsm bool) (hookSet, error) {
 	a.tried = append(a.tried, lsm)
+	if err := a.attachErr[lsm]; err != nil {
+		return nil, err
+	}
 	hs := a.sets[lsm]
 	if hs == nil {
 		return nil, errors.New("attach refused")
@@ -173,5 +178,31 @@ func TestUnavailableHooksPutEnforcementUnavailableOnPolicies(t *testing.T) {
 				t.Fatalf("message %q does not name the cause", got.Message)
 			}
 		})
+	}
+}
+
+// A rejected set that cannot be confirmed detached ends selection: attaching
+// the other set next to the remains of the first would leave two dispatchers
+// on one hook with cleared pins, which is worse than reporting no enforcement.
+func TestSelectHooksStopsWhenTeardownOfRejectedSetFails(t *testing.T) {
+	ghost := &fakeHooks{lsm: true, closeErr: errors.New("link close: EBUSY")}
+	a := &fakeAttach{sets: map[bool]*fakeHooks{true: ghost, false: {ran: true}}}
+	_, _, err := selectHooks(logr.Discard(), true, true, a.attach)
+	if !errors.Is(err, ErrNoHookExecutes) || !errors.Is(err, errTeardown) {
+		t.Fatalf("err = %v, want ErrNoHookExecutes wrapping errTeardown", err)
+	}
+	if len(a.tried) != 1 {
+		t.Fatalf("tried %v, want no attempt at the other set after a failed teardown", a.tried)
+	}
+}
+
+func TestSelectHooksStopsWhenPartialAttachCannotBeTornDown(t *testing.T) {
+	a := &fakeAttach{sets: map[bool]*fakeHooks{false: {ran: true}}, attachErr: map[bool]error{true: fmt.Errorf("%w: unlink", errTeardown)}}
+	_, _, err := selectHooks(logr.Discard(), true, true, a.attach)
+	if !errors.Is(err, errTeardown) {
+		t.Fatalf("err = %v, want errTeardown to end selection", err)
+	}
+	if len(a.tried) != 1 {
+		t.Fatalf("tried %v, want no fallback after a failed partial teardown", a.tried)
 	}
 }

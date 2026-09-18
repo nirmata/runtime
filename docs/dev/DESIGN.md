@@ -311,9 +311,11 @@ executes, `NewOpenExecManager` still returns a manager, but one whose enforcer f
 policy with `ErrNoHookExecutes`: through the normal attach-failure path each open/exec policy then
 carries `EnforcementAvailable` (or `ObservationAvailable`) `= False`, so `Applied` cannot read
 `Enforcing` on a node that enforces nothing. The daemon also marks the `openexec-observe` and
-`exec-trace` sources unavailable. On kernels without run statistics (before 5.8) only the hook
-type the LSM list suggests is attached, unverified — the pre-verification behavior — and the other
-type is never tried, because accepting it on attach success alone is exactly the ghost-attach trap.
+`exec-trace` sources unavailable. When run statistics cannot be enabled — the kernel predates 5.8, or
+the daemon lacks `CAP_SYS_ADMIN` — only the hook type the LSM list suggests is attached, accepted on
+attach success without any execution check, and the other type is never tried, because accepting
+it on attach success alone is exactly the ghost-attach trap. A rejected set that cannot be confirmed
+detached ends selection with an error rather than attaching the other set beside it.
 
 The fallback needs no boot parameter, because `fmod_ret` may attach to any function whose name
 begins with `security_`. It cannot use the exec hook at all: `bpf_d_path` is gated per program

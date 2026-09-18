@@ -15,6 +15,11 @@ import (
 // or observed on this node.
 var ErrNoHookExecutes = errors.New("no open/exec hook executes on this node")
 
+// errTeardown marks a hook set that was rejected but could not be confirmed
+// detached. Selection stops on it rather than attaching a second set next to
+// the remains of the first.
+var errTeardown = errors.New("teardown of a rejected open/exec hook set failed")
+
 // hookSet is one attached candidate: the dispatchers of either the BPF-LSM
 // targets or the fmod_ret targets.
 type hookSet interface {
@@ -41,10 +46,15 @@ func hookTypeName(lsm bool) string {
 // never runs the program (see openexec.Executed). A set that does not attach,
 // or attaches without executing, is torn down before the other is tried.
 //
-// With verify false — run statistics unavailable — only the set the LSM list
-// suggests is attached, and it is accepted on attach success. That is the
-// pre-verification behavior exactly; the other set is never tried, because
-// accepting it without proof is how a ghost attach would slip through.
+// With verify false — run statistics unavailable, because the kernel predates
+// 5.8 or the daemon lacks CAP_SYS_ADMIN — only the set the LSM list suggests
+// is attached, and it is accepted on attach success without any execution
+// check. The other set is never tried: accepting it without proof is how a
+// ghost attach would slip through.
+//
+// A rejected set must be confirmed gone before the other is tried; a teardown
+// failure ends selection with the error, since two dispatchers on one hook
+// with cleared pins is worse than no enforcement.
 func selectHooks(logger logr.Logger, preferLSM, verify bool, attach attachFunc) (hookSet, bool, error) {
 	candidates := []bool{preferLSM, !preferLSM}
 	if !verify {
@@ -54,6 +64,9 @@ func selectHooks(logger logr.Logger, preferLSM, verify bool, attach attachFunc) 
 	for _, lsm := range candidates {
 		hs, err := attach(lsm)
 		if err != nil {
+			if errors.Is(err, errTeardown) {
+				return nil, false, fmt.Errorf("%w: %w", ErrNoHookExecutes, errors.Join(append(errs, err)...))
+			}
 			logger.V(1).Info("open/exec hooks did not attach", "hookType", hookTypeName(lsm), "reason", err.Error())
 			errs = append(errs, err)
 			continue
@@ -64,17 +77,19 @@ func selectHooks(logger logr.Logger, preferLSM, verify bool, attach attachFunc) 
 			return hs, lsm, nil
 		}
 		ran, err := hs.Executed()
-		if err != nil {
-			errs = append(errs, err, hs.Close())
-			continue
+		if err == nil && ran {
+			return hs, lsm, nil
 		}
-		if !ran {
+		if err == nil {
 			logger.Info("open/exec hooks attached but never executed: the kernel accepted the attach without wiring the hook",
 				"hookType", hookTypeName(lsm))
-			errs = append(errs, fmt.Errorf("%s: programs attached but never executed", hookTypeName(lsm)), hs.Close())
-			continue
+			err = fmt.Errorf("%s: programs attached but never executed", hookTypeName(lsm))
 		}
-		return hs, lsm, nil
+		errs = append(errs, err)
+		if cerr := hs.Close(); cerr != nil {
+			errs = append(errs, fmt.Errorf("%w: %w", errTeardown, cerr))
+			return nil, false, fmt.Errorf("%w: %w", ErrNoHookExecutes, errors.Join(errs...))
+		}
 	}
 	return nil, false, fmt.Errorf("%w: %w", ErrNoHookExecutes, errors.Join(errs...))
 }
@@ -104,14 +119,23 @@ func attachDispatchers(lsm bool) (hookSet, error) {
 	for _, target := range targets {
 		d, err := openexec.NewDispatcherForTarget(target)
 		if err != nil {
-			return nil, errors.Join(fmt.Errorf("loading the %s dispatcher: %w", target, err), set.Close())
+			return nil, set.abandon(fmt.Errorf("loading the %s dispatcher: %w", target, err))
 		}
 		set[target] = d
 		if err := d.Attach(); err != nil {
-			return nil, errors.Join(fmt.Errorf("attaching the %s dispatcher: %w", target, err), set.Close())
+			return nil, set.abandon(fmt.Errorf("attaching the %s dispatcher: %w", target, err))
 		}
 	}
 	return set, nil
+}
+
+// abandon releases a partially attached set after cause. A teardown failure is
+// reported as errTeardown so selection stops instead of trying the other set.
+func (s dispatcherSet) abandon(cause error) error {
+	if cerr := s.Close(); cerr != nil {
+		return fmt.Errorf("%w: %w (after: %v)", errTeardown, cerr, cause)
+	}
+	return cause
 }
 
 func (s dispatcherSet) Executed() (bool, error) {
