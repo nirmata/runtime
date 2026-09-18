@@ -59,6 +59,15 @@ const executedPoll = 10 * time.Millisecond
 // while it runs, or the counter never moves and a live hook reads as dead. A
 // target that carries no program of its own (the fmod_ret exec target) is
 // covered by the file_open dispatcher and reports true.
+//
+// The counter is the kernel's per-program total, so it does not say which
+// event caused an increment — and it does not need to. The question is whether
+// the kernel calls this program at all: a ghost attach is never invoked, by
+// anything, so its counter cannot move however busy the node is; a program that
+// ran for some other process's open runs for the workload's too, since it is
+// the same hook. Unrelated traffic can only make a live verdict arrive sooner.
+// The trigger exists so a live program on an idle node is not misread as a
+// ghost for want of any event in the window.
 func (d *Dispatcher) Executed(trigger func() error) (bool, error) {
 	if d.prog == nil {
 		return true, nil
@@ -100,30 +109,38 @@ func executed(name string, readCount func() (uint64, error), trigger func() erro
 	}
 }
 
+// selfExe is the default canary target: the running binary always exists, needs
+// neither write access nor a temp directory, and is executable.
+const selfExe = "/proc/self/exe"
+
 // Canary returns an action that passes through this dispatcher's hook and
-// changes nothing on the node.
+// changes nothing on the node. The target defaults to the running binary;
+// tests point canaryTarget at a fixture instead of the real procfs.
 func (d *Dispatcher) Canary() func() error {
-	if d.dispatcherType == PROG_TYPE_LSM_EXEC {
-		return canaryExec
+	target := d.canaryTarget
+	if target == "" {
+		target = selfExe
 	}
-	return canaryOpen
+	if d.dispatcherType == PROG_TYPE_LSM_EXEC {
+		return func() error { return canaryExec(target) }
+	}
+	return func() error { return canaryOpen(target) }
 }
 
-// canaryOpen opens the running binary itself: it always exists, needs neither
-// write access nor a temp directory, and every open passes security_file_open.
-func canaryOpen() error {
-	f, err := os.Open("/proc/self/exe")
+// canaryOpen opens path read-only: every open passes security_file_open.
+func canaryOpen(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	return f.Close()
 }
 
-// canaryExec executes the running binary with --help, which exits at once.
+// canaryExec executes path with --help, which for the daemon exits at once.
 // Every execve passes bprm_check_security, so the exit status is irrelevant:
 // a non-zero exit still means the exec happened.
-func canaryExec() error {
-	cmd := exec.Command("/proc/self/exe", "--help")
+func canaryExec(path string) error {
+	cmd := exec.Command(path, "--help")
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	err := cmd.Run()
 	var exit *exec.ExitError

@@ -3,6 +3,7 @@ package openexec
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -29,15 +30,43 @@ func TestCloseOnUnloadedDispatcherIsNil(t *testing.T) {
 	}
 }
 
+// TestCanariesRun drives both canaries against fixtures, not the real procfs:
+// a temp file for the open canary and the test binary itself for the exec
+// canary, whose --help exits non-zero and must still count as an exec.
 func TestCanariesRun(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "canary")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		target string
+		path   string
+	}{
+		{PROG_TYPE_LSM_OPEN, file},
+		{PROG_TYPE_TRACE_OPEN, file},
+		{PROG_TYPE_LSM_EXEC, exe},
+	} {
+		d := &Dispatcher{dispatcherType: tt.target, canaryTarget: tt.path}
+		if err := d.Canary()(); err != nil {
+			t.Fatalf("%s canary: %v", tt.target, err)
+		}
+	}
+	if err := canaryOpen(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("a canary that could not open its target reported success")
+	}
+}
+
+func TestCanaryDefaultsToRunningBinary(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("/proc/self/exe is Linux only")
 	}
-	if err := canaryOpen(); err != nil {
-		t.Fatal("open:", err)
-	}
-	if err := canaryExec(); err != nil {
-		t.Fatal("exec:", err)
+	d := &Dispatcher{dispatcherType: PROG_TYPE_LSM_OPEN}
+	if err := d.Canary()(); err != nil {
+		t.Fatalf("default open canary: %v", err)
 	}
 }
 

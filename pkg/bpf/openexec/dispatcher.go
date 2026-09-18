@@ -39,6 +39,10 @@ type Dispatcher struct {
 	objs io.Closer
 
 	dispatcherType string
+
+	// canaryTarget is the file Canary opens or executes; empty means the
+	// running binary. Tests set it to a fixture.
+	canaryTarget string
 }
 
 // ClearPins wipes the pin directory at startup. The pinned maps outlive the

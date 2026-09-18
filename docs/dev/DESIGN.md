@@ -308,7 +308,10 @@ verifying that the attached programs actually execute (`selectHooks`, `pkg/opene
 an LSM attach even when `bpf` is absent from the active LSM list, and then never calls the program
 (a "ghost attach"). So after attaching a hook type, the manager enables the kernel's per-program run
 counter (`openexec.EnableRunStats`), performs one controlled open and one controlled exec of its
-own binary (`Dispatcher.Canary`), and reads the counter back (`Dispatcher.Executed`). A hook type
+own binary (`Dispatcher.Canary`), and reads the counter back (`Dispatcher.Executed`). The counter is
+the kernel's per-program total, not tied to the canary, and that is enough: a ghost is never invoked by
+anything, so no amount of unrelated traffic can move its counter, while a program that ran for any
+process's open runs for the workload's too; the canary only guarantees one event on an idle node. A hook type
 whose programs did not run is detached (`Dispatcher.Close`, `ClearPins`) and the other type is
 tried the same way; the counter is switched off again before the manager returns. If neither type
 executes, `NewOpenExecManager` still returns a manager, but one whose enforcer factory fails every
