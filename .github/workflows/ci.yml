@@ -20,7 +20,8 @@
 #     parameter.
 #   * the same behavior through the BPF_PROG_TYPE_LSM hooks file_open /
 #     bprm_check_security: NOT COVERED on a hosted runner, and this is measured
-#     rather than assumed. Such a program is refused at load unless `bpf` is in
+#     rather than assumed. Such a program loads and attaches on any
+#     CONFIG_BPF_LSM=y kernel, but the kernel only *calls* it when `bpf` is in
 #     /sys/kernel/security/lsm, which comes from the `lsm=` boot parameter; no
 #     job, container or kind node can change it. On ubuntu-latest that list
 #     reads:

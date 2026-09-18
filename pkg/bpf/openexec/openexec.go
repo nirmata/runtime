@@ -3,6 +3,7 @@ package openexec
 import (
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/nirmata/runtime/pkg/compiler"
@@ -102,6 +103,11 @@ type Prog struct {
 	// statLast is the cumulative kernel total at the previous ReadEventsLost.
 	statLast uint64
 
+	// objs is the whole loaded collection, including the maps the executor
+	// resolved by pin or replacement (its own clones), so Close releases every
+	// file descriptor this program opened and none the dispatcher owns.
+	objs io.Closer
+
 	// observeMu guards observed, the inner maps this program created per cgid.
 	observeMu sync.RWMutex
 	observed  map[uint64]*ebpf.Map
@@ -177,8 +183,35 @@ func NewProgram(d *Dispatcher) (*Prog, error) {
 		eventsMap: objs.EventsMap,
 		innerSpec: innerSpec,
 		stats:     objs.Stats,
+		objs:      objs,
 		observed:  make(map[uint64]*ebpf.Map),
 	}, nil
+}
+
+// Close releases the inner observation maps this program created and every
+// object its collection loaded. The dispatcher's prog array still holds the
+// executor until the dispatcher itself is closed and the pins are cleared, so
+// callers close the dispatcher afterwards. Handles whose close fails are kept.
+func (p *Prog) Close() error {
+	p.observeMu.Lock()
+	defer p.observeMu.Unlock()
+	var errs []error
+	for cgid, m := range p.observed {
+		if err := m.Close(); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		delete(p.observed, cgid)
+	}
+	if p.objs != nil {
+		if err := p.objs.Close(); err != nil {
+			errs = append(errs, err)
+		} else {
+			p.objs = nil
+			p.prog, p.eventsMap, p.stats = nil, nil, nil
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // prepareOpenEvents returns a copy of the events_map inner-map template.

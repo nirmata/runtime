@@ -1,7 +1,9 @@
 package openexec
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/cilium/ebpf"
@@ -32,7 +34,15 @@ type Dispatcher struct {
 
 	link link.Link
 
+	// objs holds every object the collection loaded, including maps the
+	// dispatcher does not reference itself, so Close releases all of them.
+	objs io.Closer
+
 	dispatcherType string
+
+	// canaryTarget is the file Canary opens or executes; empty means the
+	// running binary. Tests set it to a fixture.
+	canaryTarget string
 }
 
 // ClearPins wipes the pin directory at startup. The pinned maps outlive the
@@ -90,6 +100,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		d.prog = objs.GenericLsmHandler
 		d.entries = objs.OpenEntries
 		d.enforcerArray = objs.OpenProg
+		d.objs = objs
 
 	case PROG_TYPE_LSM_EXEC:
 		spec, err := loadLsmDispatcherExecCheck()
@@ -107,6 +118,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		d.prog = objs.GenericLsmHandler
 		d.entries = objs.ExecEntries
 		d.enforcerArray = objs.ExecProg
+		d.objs = objs
 	}
 
 	return nil
@@ -129,6 +141,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		d.prog = objs.GenericTracepointHandler
 		d.entries = objs.OpenEntries
 		d.enforcerArray = objs.OpenProg
+		d.objs = objs
 
 	case PROG_TYPE_TRACE_EXEC:
 		// security_bprm_check is not in the fmod_ret d_path allowlist, so exec
@@ -147,6 +160,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 
 		d.entries = maps.ExecEntries
 		d.enforcerArray = maps.ExecProg
+		d.objs = maps
 	}
 
 	return nil
@@ -177,6 +191,31 @@ func (d *Dispatcher) Attach() error {
 
 	d.link = l
 	return nil
+}
+
+// Close detaches the dispatcher and releases every object it loaded. The maps
+// stay pinned on bpffs until ClearPins, so a caller replacing this dispatcher
+// with one of the other hook type clears the pins in between. A handle whose
+// close fails is kept, so the dispatcher still owns it and a retry of Close
+// can release it; only what was released is forgotten.
+func (d *Dispatcher) Close() error {
+	var errs []error
+	if d.link != nil {
+		if err := d.link.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("detaching %s: %w", d.dispatcherType, err))
+		} else {
+			d.link = nil
+		}
+	}
+	if d.objs != nil {
+		if err := d.objs.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("releasing %s objects: %w", d.dispatcherType, err))
+		} else {
+			d.objs = nil
+			d.prog, d.entries, d.enforcerArray = nil, nil, nil
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // AddPolicy reserves the lowest free policy slot of this hook and returns it.
