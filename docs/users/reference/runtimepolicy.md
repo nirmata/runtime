@@ -1006,10 +1006,11 @@ exception in shape — a program of its own, streamed rather than counted — an
   reaches every depth. A longer value, an empty one, one carrying a NUL byte, one ending in a
   bare `/`, or a relative one is rejected at admission and reported through
   `ExecRulesValid=False` / `OpenRulesValid=False` if it arrives from an `expression`.
-- **A directory matches within the first 16 path components.** The kernel walks an observed
-  path's parent directories against the programmed ones, and that walk is bounded for the
-  verifier, so a rule covering a directory deeper than 16 components never matches. Nothing
-  below that bound is affected.
+- **A directory matches within the first 16 separators of a path, the leading `/` included.**
+  The kernel walks an observed path's parent directories against the programmed ones, and that
+  walk is bounded for the verifier. A directory rule is therefore honoured up to 15 named
+  components: `/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/*` matches, and a rule one component deeper never
+  matches. Nothing shallower is affected.
 - **A deny outranks an allow, whichever form either takes.** `deny: ["/etc/*"]` alongside
   `allow: ["/etc/hosts"]` denies `/etc/hosts`: a directory cannot have exceptions carved out of
   it. An allow in any policy still outranks every policy's default deny, unchanged.
