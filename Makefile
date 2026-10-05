@@ -525,6 +525,7 @@ test-bpf-verify:
 # deliberately does not do. Needs Linux + root; skips elsewhere.
 test-bpf-smoke:
 	go test -count=1 -v ./test/e2e/ -run 'TestBPFEgress|TestBPFLsm|TestBPFExecTrace'
+	go test -count=1 -v ./pkg/bpf/egressfilter/
 
 smoke-quickstart: test-e2e-gate
 
