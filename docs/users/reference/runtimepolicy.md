@@ -85,6 +85,9 @@ spec:
   encryption, they just do not use TLS records.
 - `exec`: absolute binary paths.
 - `open`: absolute file paths.
+- An `open` or `exec` value may use `*` as the numeric PID segment immediately below
+  `/proc`, for example `/proc/*/setgroups`. This is an explicit any-PID wildcard, not an
+  alias for `/proc/self`.
 - An `exec` or `open` value ending in `/*` is a **directory**: `/usr/lib/*` covers everything
   under `/usr/lib` at any depth, and covers neither `/usr/library` nor the directory
   `/usr/lib` itself. A `*` anywhere else in a value is rejected, and so is a value ending in
@@ -1046,6 +1049,12 @@ exception in shape — a program of its own, streamed rather than counted — an
   walk is bounded for the verifier. A directory rule is therefore honoured up to 15 named
   components: `/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/*` matches, and a rule one component deeper never
   matches. Nothing shallower is affected.
+- **`/proc/*/...` matches any numeric PID.** The wildcard is accepted only as the segment
+  immediately below `/proc`; stars elsewhere remain invalid. The kernel recognizes both
+  `/proc/<pid>/...` and proc-mount-relative `/<pid>/...` resolved paths while reports keep
+  the actual numeric path. A trailing directory form is valid too: `/proc/*/fd/*` covers
+  every entry below every process's `fd` directory. This is deliberately broader than
+  `/proc/self`: `/proc/*/setgroups` also allows another process's `setgroups` file.
 - **A deny outranks an allow, whichever form either takes.** `deny: ["/etc/*"]` alongside
   `allow: ["/etc/hosts"]` denies `/etc/hosts`: a directory cannot have exceptions carved out of
   it. An allow in any policy still outranks every policy's default deny, unchanged.

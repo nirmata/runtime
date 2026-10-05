@@ -33,8 +33,8 @@ var (
 	// default deny, so a near-miss is corrected by the author, not normalized.
 	ErrPaddedStarValue = errors.New(`the default-deny wildcard must be written exactly as "*"`)
 	// ErrStarInPathValue reports a "*" anywhere other than the whole value or
-	// the end of a directory prefix.
-	ErrStarInPathValue = errors.New(`a "*" is only accepted as the whole value or as a trailing "/*": write a directory as "/usr/lib/*"`)
+	// the end of a directory prefix, except for the procfs PID segment.
+	ErrStarInPathValue = errors.New(`a "*" is only accepted as the whole value, as a trailing "/*", or as the PID in "/proc/*/..."`)
 	// ErrTrailingSlashPathValue reports a literal ending in "/". bpf_d_path
 	// never yields one, so such a value matches nothing.
 	ErrTrailingSlashPathValue = errors.New(`a path must not end in "/": to cover a directory write "/usr/lib/*"`)
@@ -74,6 +74,7 @@ type PathValue struct {
 //     depth
 //   - anything else yields Path, a literal never split into tokens and never
 //     interpreted as a glob
+//   - "/proc/*/..." accepts one wildcard in the numeric PID segment
 //   - an empty, NUL-bearing, over-long or relative value is an error, and so is
 //     a "*" in any other position
 func ParsePathValue(raw string) (PathValue, error) {
@@ -98,15 +99,21 @@ func ParsePathValue(raw string) (PathValue, error) {
 	case cleaned[0] != '/':
 		return PathValue{}, ErrRelativePathValue
 
+	case cleaned == "/proc/*":
+		return PathValue{}, ErrStarInPathValue
+
 	case strings.HasSuffix(cleaned, "/*"):
 		prefix := strings.TrimSuffix(cleaned, StarTarget)
-		if strings.ContainsRune(prefix, '*') {
+		if strings.ContainsRune(prefix, '*') && !isProcPIDWildcard(prefix) {
 			return PathValue{}, ErrStarInPathValue
 		}
 		return PathValue{Prefix: prefix}, nil
 
 	case strings.ContainsRune(cleaned, '*'):
-		return PathValue{}, ErrStarInPathValue
+		if !isProcPIDWildcard(cleaned) {
+			return PathValue{}, ErrStarInPathValue
+		}
+		return PathValue{Path: cleaned}, nil
 
 	case strings.HasSuffix(cleaned, "/"):
 		return PathValue{}, ErrTrailingSlashPathValue
@@ -114,6 +121,10 @@ func ParsePathValue(raw string) (PathValue, error) {
 	default:
 		return PathValue{Path: cleaned}, nil
 	}
+}
+
+func isProcPIDWildcard(path string) bool {
+	return strings.HasPrefix(path, "/proc/*/") && strings.Count(path, StarTarget) == 1
 }
 
 // AncestorDirs returns the directory prefixes a path is covered by, each

@@ -15,10 +15,11 @@ import (
 // observationKey is the identity of one observed kernel operation: everything a
 // count is attributed to, independent of which program counted it.
 type observationKey struct {
-	cgid     uint64
-	progType string
-	path     string
-	decision runtimeevent.KernelDecision
+	cgid       uint64
+	progType   string
+	path       string
+	policyPath string
+	decision   runtimeevent.KernelDecision
 }
 
 // CollectObservations drains the per-cgroup path counters of every enforcer from open/exec.
@@ -59,7 +60,7 @@ func (l *OpenExecManager) CollectObservations(ctx context.Context) ([]runtimeeve
 				// the kernel merges every policy's decision before recording, so a
 				// count is already cgid-and-path-wide; the program type is the one
 				// dimension only this loop knows
-				k := observationKey{cgid: cgid, progType: progType, path: path,
+				k := observationKey{cgid: cgid, progType: progType, path: path, policyPath: key.PolicyPathString(),
 					decision: runtimeevent.KernelDecision(key.Decision)}
 				merged[k] = count
 			}
@@ -126,10 +127,10 @@ func newObservation(now time.Time, k observationKey, podUID string, count uint32
 	switch k.progType {
 	case openexec.PROG_TYPE_LSM_EXEC, openexec.PROG_TYPE_TRACE_EXEC:
 		ev.Kind = runtimeevent.KindExec
-		ev.Exec = &runtimeevent.ExecFacts{Filename: k.path}
+		ev.Exec = &runtimeevent.ExecFacts{Filename: k.path, PolicyPath: k.policyPath}
 	default:
 		ev.Kind = runtimeevent.KindOpen
-		ev.Open = &runtimeevent.OpenFacts{Path: k.path}
+		ev.Open = &runtimeevent.OpenFacts{Path: k.path, PolicyPath: k.policyPath}
 	}
 	return ev
 }

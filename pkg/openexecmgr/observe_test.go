@@ -58,6 +58,31 @@ func TestCollectObservations_EmitsOpenAndExecEvents(t *testing.T) {
 	}
 }
 
+func TestCollectObservationsPreservesResolvedAndPolicyPaths(t *testing.T) {
+	h := newHarness(t)
+	if err := h.l.PodEvent(testPod("podA", map[string]string{"app": "web"}), nil, cgs(11), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.l.RuntimePolicyEvent(result("rp1", compiler.ModeMonitor, selFor(map[string]string{"app": "web"}),
+		pair(nil, []string{"/proc/*/setgroups"}), nil), events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	h.prog(open).seedDecision(11, obsKeyWithPolicyPath("/proc/42/setgroups", "/proc/*/setgroups", runtimeevent.DecisionAllow), 1)
+
+	got, err := h.l.CollectObservations(context.Background())
+	if err != nil {
+		t.Fatalf("CollectObservations returned %v", err)
+	}
+	want := []runtimeevent.Event{{
+		Kind: runtimeevent.KindOpen, Time: fixedTime, CgroupID: 11, Count: 1,
+		Open: &runtimeevent.OpenFacts{Path: "/proc/42/setgroups", PolicyPath: "/proc/*/setgroups"},
+		Pod:  runtimeevent.PodIdentity{UID: "podA"},
+	}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("events (-want +got):\n%s", diff)
+	}
+}
+
 // one path counted under both decisions yields two events, the deny one sorted
 // after the allow one. the counter key carries the decision, so a Count never
 // mixes the two.

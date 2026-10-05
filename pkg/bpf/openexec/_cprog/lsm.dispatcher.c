@@ -39,7 +39,8 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
         prog_ctx->prog_type = PROG_TYPE_OPEN; /* we set this because we wanna look up the policy count */
     #elif defined(LSM_EXEC_CHECK)
         struct linux_binprm *bprm = (struct linux_binprm *)args[0];
-        bpf_d_path(&bprm->file->f_path, buf, sizeof(buf));
+        struct file *f = bprm->file;
+        bpf_d_path(&f->f_path, buf, sizeof(buf));
         bpf_probe_read_kernel_str(prog_ctx->path, sizeof(prog_ctx->path), buf);
 
         target_map = &exec_prog;
@@ -47,6 +48,7 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     #endif
 
     scan_separators(prog_ctx);
+    set_proc_wildcard_policy_path(prog_ctx, f);
 
     /* jump to the policy enforcer */
     bpf_tail_call(ctx, target_map, 0 );

@@ -1,0 +1,53 @@
+# E2E behavioral assertion for the explicit procfs PID wildcard used by
+# container-runtime exec setup.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: proc-pid-wildcard-enforce
+spec:
+  steps:
+  - name: start-client
+    try:
+    - apply:
+        file: client.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: proc-self-client
+          status:
+            phase: Running
+
+  - name: apply-default-deny-with-proc-pid-wildcard
+    try:
+    - apply:
+        file: policy.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-proc-pid-wildcard-enforce
+
+  - name: numeric-pid-wildcard-matches-procfs-paths
+    try:
+    - script:
+        content: |
+          set -eu
+
+          ok=0
+          for _ in $(seq 1 45); do
+            logs=$(kubectl -n $NAMESPACE logs proc-self-client)
+            if echo "$logs" | grep -Eq 'SELF_FAILED|OTHER_BLOCKED'; then
+              echo "FAIL: /proc/*/setgroups did not cover a numeric procfs path"
+              exit 1
+            fi
+            if echo "$logs" | grep -q SELF_OK && echo "$logs" | grep -q OTHER_ALLOWED; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "FAIL: expected both numeric procfs paths to be allowed"; exit 1; }
+          echo "OK: /proc/* matched numeric procfs paths"

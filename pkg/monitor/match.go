@@ -251,14 +251,15 @@ func (b *netBehavior) eval(addr netip.Addr, domain string) decision {
 
 // eval is the open/exec form of netBehavior.eval, over the path (or exec
 // filename) instead of the destination address.
-func (b *pathBehavior) eval(path string) decision {
+func (b *pathBehavior) eval(path, alias string) decision {
 	if b == nil || path == "" {
 		return decision{}
 	}
-	if b.deny.matches(path) {
+	if b.deny.matches(path) || (alias != "" && b.deny.matches(alias)) {
 		return decision{violation: true}
 	}
-	if b.deny.star && !b.allow.matches(path) {
+	allowed := b.allow.matches(path) || (alias != "" && b.allow.matches(alias))
+	if b.deny.star && !allowed {
 		return decision{violation: true, defaultDeny: true}
 	}
 	return decision{}

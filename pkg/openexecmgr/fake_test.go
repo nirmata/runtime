@@ -35,6 +35,12 @@ func obsKey(path string, d runtimeevent.KernelDecision) openexec.PathEventKey {
 	return k
 }
 
+func obsKeyWithPolicyPath(path, policyPath string, d runtimeevent.KernelDecision) openexec.PathEventKey {
+	k := obsKey(path, d)
+	copy(k.PolicyPath[:], policyPath)
+	return k
+}
+
 // fakeEnforcer records every call the manager makes on one policy map and also
 // maintains the effective state those calls would produce in the bpf map (cgid
 // set, allow/deny path sets, default deny). tests assert on both: the exact

@@ -59,7 +59,21 @@ struct bpf_raw_tracepoint_args {
 	__u64 args[0];
 };
 
-struct dentry;
+struct super_block;
+
+struct dentry {
+	struct super_block *d_sb;
+} __attribute__((preserve_access_index));
+
+struct file_system_type {
+	const char *name;
+} __attribute__((preserve_access_index));
+
+struct super_block {
+	void *s_fs_info;
+	struct file_system_type *s_type;
+} __attribute__((preserve_access_index));
+
 struct vfsmount;
 
 struct path {

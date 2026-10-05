@@ -345,7 +345,12 @@ returns early for it, since linking a second program to `security_file_open` wou
 twice per open.
 
 The dispatcher resolves the path into the per-CPU pinned `ctx_map` (`struct policy_ctx`: the
-resolved path, the running `reason`, and which dimension this event belongs to), then
+resolved path, an optional policy-match path, the running `reason`, and which dimension this event
+belongs to). For a numeric procfs path, it derives the explicit `/proc/*/...` policy spelling after
+confirming the file belongs to procfs; this handles both `/proc/<pid>/...` and the mount-relative
+`/<pid>/...` form returned by some kernels. The resolved numeric path remains the observation
+target, so reports retain the path the kernel opened.
+It then
 `bpf_tail_call`s through a bpffs-pinned one-slot prog array — `open_prog` or `exec_prog` — into the
 **executor** (`_cprog/runtimepolicy.bpf.c`). There is one executor per dimension, and it is never
 attached to a hook itself. `NewOpenExecManager` wipes the pin directory (`openexec.ClearPins`)
@@ -374,7 +379,10 @@ The executor never iterates policies. It looks up the cgroup id once and gets th
 that select it; a zero mask ends evaluation with the dispatcher's `IMPLICIT_ALLOW`. Otherwise it
 looks up the whole path against the literal entries and each parent directory against the prefix
 entries, ORing the masks it gets back into a `deny` mask and an `allow` mask, and the `FLAGS` mask
-into `dd`. ANDing each with the cgroup's mask scopes them to the policies that apply, and the
+into `dd`. For a numeric procfs path it repeats those lookups with the `/proc/*` policy path;
+explicit results from either spelling join the same masks. The observation counter carries
+both spellings so monitor mode performs the same lookups while reporting the resolved numeric path.
+ANDing each with the cgroup's mask scopes them to the policies that apply, and the
 verdict falls out of the three: `deny` non-zero is an explicit deny, else `allow` non-zero is an
 explicit allow, else `dd` non-zero is a default deny, else allow. The separator the schema keeps
 on a directory key is what stops `/usr/lib/` matching `/usr/library`, and `compiler.AncestorDirs`

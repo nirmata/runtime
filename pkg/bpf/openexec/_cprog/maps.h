@@ -58,6 +58,7 @@ struct policy_entries exec_entries SEC(".maps");
  * uninitialized byte would split one logical key across separate entries. */
 struct path_event_key {
     char path[MAX_PATH_LEN];
+    char policy_path[MAX_PATH_LEN];
     __u32 decision;
 };
 
@@ -65,11 +66,14 @@ struct policy_ctx {
     __u8 prog_type;
     __u8 reason;
     char path[MAX_PATH_LEN];
+    char policy_path[MAX_PATH_LEN];
     /* nslash: count of path separators in that path
      * slash: the length of every path part after the separator
      */
     __u8 nslash;
     __u8 slash[MAX_PREFIX_DEPTH];
+    __u8 policy_nslash;
+    __u8 policy_slash[MAX_PREFIX_DEPTH];
 };
 
 /* records the offset of every separator in ctx->path, up to MAX_PREFIX_DEPTH.
@@ -95,6 +99,97 @@ static __always_inline void scan_separators(struct policy_ctx *ctx) {
         ctx->slash[n] = i;
         ctx->nslash = n + 1;
     }
+}
+
+static __always_inline void scan_policy_separators(struct policy_ctx *ctx) {
+    ctx->policy_nslash = 0;
+#pragma clang loop unroll(full)
+    for (int i = 0; i < MAX_PATH_LEN; i++) {
+        char c = ctx->policy_path[i];
+        if (c == '\0') {
+            break;
+        }
+        if (c != '/') {
+            continue;
+        }
+        __u8 n = *(volatile __u8 *)&ctx->policy_nslash;
+        if (n >= MAX_PREFIX_DEPTH) {
+            break;
+        }
+        ctx->policy_slash[n] = i;
+        ctx->policy_nslash = n + 1;
+    }
+}
+
+static __always_inline int is_procfs(struct file *file) {
+    struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+    struct super_block *sb = BPF_CORE_READ(dentry, d_sb);
+    struct file_system_type *fs_type = BPF_CORE_READ(sb, s_type);
+    const char *fs_name = BPF_CORE_READ(fs_type, name);
+    char name[5] = {};
+    bpf_probe_read_kernel_str(name, sizeof(name), fs_name);
+    if (name[0] != 'p' || name[1] != 'r' || name[2] != 'o' || name[3] != 'c' || name[4] != '\0') {
+        return 0;
+    }
+    return 1;
+}
+
+/* bpf_d_path resolves procfs links before the hook sees them and may return a
+ * path relative to the proc mount. Retain that path for reporting and derive
+ * the policy's explicit numeric-PID wildcard spelling for lookup. */
+static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx, struct file *file) {
+    __builtin_memset(ctx->policy_path, 0, sizeof(ctx->policy_path));
+    if (!is_procfs(file)) {
+        return;
+    }
+
+    const char prefix[] = "/proc/";
+    int digit_start = 1;
+#pragma clang loop unroll(full)
+    for (int i = 0; i < sizeof(prefix) - 1; i++) {
+        if (ctx->path[i] != prefix[i]) {
+            digit_start = 1;
+            break;
+        }
+        digit_start = sizeof(prefix) - 1;
+    }
+    if (digit_start == 1 && ctx->path[0] != '/') {
+        return;
+    }
+
+    int suffix = 0;
+#pragma clang loop unroll(full)
+    for (int i = 1; i < MAX_PATH_LEN; i++) {
+        if (i < digit_start) {
+            continue;
+        }
+        char c = ctx->path[i];
+        if (c == '/') {
+            suffix = i;
+            break;
+        }
+        if (c < '0' || c > '9') {
+            return;
+        }
+    }
+    if (!suffix) {
+        return;
+    }
+
+    const char wildcard[] = "/proc/*";
+#pragma clang loop unroll(full)
+    for (int i = 0; i < sizeof(wildcard) - 1; i++) {
+        ctx->policy_path[i] = wildcard[i];
+    }
+#pragma clang loop unroll(full)
+    for (int i = 0; i < MAX_PATH_LEN - (sizeof(wildcard) - 1); i++) {
+        char c = ctx->path[(suffix + i) & (MAX_PATH_LEN - 1)];
+        ctx->policy_path[sizeof(wildcard) - 1 + i] = c;
+        if (c == '\0') {
+            break;
+        }
+    }
+    scan_policy_separators(ctx);
 }
 
 /* 2048: the decision dimension can double the number of distinct keys. */

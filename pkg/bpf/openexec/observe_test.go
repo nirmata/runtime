@@ -129,6 +129,17 @@ func TestPathString(t *testing.T) {
 	}
 }
 
+func TestPolicyPathString(t *testing.T) {
+	k := pk("/proc/42/setgroups")
+	copy(k.PolicyPath[:], "/proc/*/setgroups")
+	if got := k.PolicyPathString(); got != "/proc/*/setgroups" {
+		t.Errorf("PolicyPathString() = %q, want /proc/*/setgroups", got)
+	}
+	if got := pk("/etc/hosts").PolicyPathString(); got != "" {
+		t.Errorf("PolicyPathString() = %q, want empty", got)
+	}
+}
+
 // A zero-value program has no maps: the observation API must report that as an
 // error and never dereference a nil map.
 func TestObservationWithoutMapsReportsUnavailable(t *testing.T) {
@@ -170,11 +181,11 @@ func TestClose_ZeroValuePolicyMapIsSafe(t *testing.T) {
 
 // TestPathEventKeyLayout pins the iteration key against the bpf2go-generated
 // struct for the C's `struct path_event_key` and against the documented
-// 132-byte no-padding layout. A drift here is exactly the kind of BTF key-size
+// 260-byte no-padding layout. A drift here is exactly the kind of BTF key-size
 // mismatch cilium/ebpf rejects at runtime on Linux; this makes it fail in the
 // unit suite on any host.
 func TestPathEventKeyLayout(t *testing.T) {
-	const want = maxPathLen + 4 // char[128] + __u32, no padding
+	const want = 2*maxPathLen + 4 // two char[128] paths + __u32, no padding
 	if got := int(unsafe.Sizeof(PathEventKey{})); got != want {
 		t.Errorf("sizeof(PathEventKey) = %d, want %d", got, want)
 	}

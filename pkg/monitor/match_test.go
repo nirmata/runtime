@@ -172,7 +172,7 @@ func TestBehaviorsWithoutEntriesAreAbsent(t *testing.T) {
 		if pb != nil {
 			t.Errorf("path behavior for %+v = %+v, want nil", p, pb)
 		}
-		if pb.eval("/etc/shadow").violation {
+		if pb.eval("/etc/shadow", "").violation {
 			t.Errorf("absent path behavior for %+v reported a violation", p)
 		}
 		mb := compileNameBehavior(p)
@@ -245,6 +245,7 @@ func TestPathBehaviorEval(t *testing.T) {
 		name            string
 		allow, deny     []string
 		path            string
+		alias           string
 		wantViolation   bool
 		wantDefaultDeny bool
 	}{
@@ -254,13 +255,17 @@ func TestPathBehaviorEval(t *testing.T) {
 			path: "/etc/shadow", wantViolation: true, wantDefaultDeny: true,
 		},
 		{name: "default deny allowed", allow: []string{"/etc/shadow"}, deny: []string{compiler.StarTarget}, path: "/etc/shadow"},
+		{name: "proc PID wildcard allowed", allow: []string{"/proc/*/setgroups"}, deny: []string{compiler.StarTarget}, path: "/proc/42/setgroups", alias: "/proc/*/setgroups"},
+		{name: "proc PID wildcard prefix allowed", allow: []string{"/proc/*/fd/*"}, deny: []string{compiler.StarTarget}, path: "/proc/42/fd/1", alias: "/proc/*/fd/1"},
+		{name: "proc PID wildcard needs kernel alias", allow: []string{"/proc/*/setgroups"}, deny: []string{compiler.StarTarget}, path: "/tmp/42/setgroups", wantViolation: true, wantDefaultDeny: true},
+		{name: "explicit numeric deny beats proc wildcard allow", allow: []string{"/proc/*/setgroups"}, deny: []string{"/proc/42/setgroups", compiler.StarTarget}, path: "/proc/42/setgroups", alias: "/proc/*/setgroups", wantViolation: true},
 		{name: "allow only, no deny", allow: []string{"/etc/hosts"}, path: "/etc/shadow"},
 		{name: "empty path", deny: []string{compiler.StarTarget}, path: ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b := compilePathBehavior(&compiler.AllowDenyPair{Allow: tc.allow, Deny: tc.deny})
-			got := b.eval(tc.path)
+			got := b.eval(tc.path, tc.alias)
 			if got.violation != tc.wantViolation || got.defaultDeny != tc.wantDefaultDeny {
 				t.Errorf("eval(%q) = %+v, want {violation:%v defaultDeny:%v}",
 					tc.path, got, tc.wantViolation, tc.wantDefaultDeny)

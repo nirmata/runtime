@@ -311,9 +311,9 @@ func (tp *trackedPolicy) eval(behavior string, ev runtimeevent.Event) decision {
 	case BehaviorNetwork:
 		return tp.net.eval(ev.Net.DestIP, ev.Net.Domain)
 	case BehaviorOpen:
-		return tp.open.eval(ev.Open.Path)
+		return tp.open.eval(ev.Open.Path, ev.Open.PolicyPath)
 	case BehaviorExec:
-		return tp.exec.eval(ev.Exec.Filename)
+		return tp.exec.eval(ev.Exec.Filename, ev.Exec.PolicyPath)
 	case BehaviorProtocol:
 		return tp.protocol.eval(ev.Protocol.Protocol, ev.Protocol.ALPN)
 	case BehaviorDNS:
