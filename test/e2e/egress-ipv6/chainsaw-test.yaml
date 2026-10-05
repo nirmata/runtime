@@ -82,6 +82,12 @@ spec:
           kubectl -n "$NAMESPACE" exec ipv6-client -- \
             wget -q -T 3 -O /dev/null "http://${v4}:8080/" \
             || { echo "FAIL: denying $v6 blocked $v4"; exit 1; }
+          # Re-check the denied address so a transient failure above cannot
+          # be mistaken for enforcement.
+          if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+               wget -q -T 3 -O /dev/null "http://[${v6}]:8080/" 2>/dev/null; then
+            echo "FAIL: $v6 became reachable again"; exit 1
+          fi
           echo "OK: $v6 blocked, $v4 reachable"
 
   - name: removing-the-deny-gives-ipv6-back
@@ -131,6 +137,10 @@ spec:
           kubectl -n "$NAMESPACE" exec ipv6-client -- \
             wget -q -T 3 -O /dev/null "http://${v4}:8080/" \
             || { echo "FAIL: ::/0 deny blocked $v4"; exit 1; }
+          if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+               wget -q -T 3 -O /dev/null "http://[${v6}]:8080/" 2>/dev/null; then
+            echo "FAIL: $v6 became reachable again"; exit 1
+          fi
           echo "OK: ::/0 blocks $v6 and leaves $v4 alone"
     finally:
     - delete:
@@ -164,6 +174,10 @@ spec:
           kubectl -n "$NAMESPACE" exec ipv6-client -- \
             wget -q -T 3 -O /dev/null "http://[${v6}]:8080/" \
             || { echo "FAIL: 0.0.0.0/0 deny blocked $v6"; exit 1; }
+          if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+               wget -q -T 3 -O /dev/null "http://${v4}:8080/" 2>/dev/null; then
+            echo "FAIL: $v4 became reachable again"; exit 1
+          fi
           echo "OK: 0.0.0.0/0 blocks $v4 and leaves $v6 alone"
     finally:
     - delete:

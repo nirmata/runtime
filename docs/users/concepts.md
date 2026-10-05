@@ -12,7 +12,7 @@ enforced or observed: file `open`, process `exec`, `network` egress, and the app
 Network egress is enforced by a `cgroup_skb` eBPF program attached to the matched pod's
 cgroup: on every outbound IPv4 or IPv6 packet it looks up the destination address in an
 allow/deny map programmed for that pod and drops the packet if the lookup says to.
-Packets that are neither pass through it unexamined.
+Packets that are neither IPv4 nor IPv6 pass through it unexamined.
 
 Application `protocol` is enforced by a second program on the same cgroup that
 classifies each flow — IPv4 and IPv6 both — from the first data segment it carries, and
