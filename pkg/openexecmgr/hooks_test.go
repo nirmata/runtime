@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/nirmata/runtime/api/v1alpha1"
+	"github.com/nirmata/runtime/pkg/bpf/openexec"
 	"github.com/nirmata/runtime/pkg/compiler"
 	"github.com/nirmata/runtime/pkg/events"
 
@@ -147,37 +149,46 @@ func TestSelectHooksWithoutVerificationDoesNotFallBack(t *testing.T) {
 	}
 }
 
-// A node with no executing hook type must not read as Enforcing: the manager
-// still handles policy events, and every policy that needs an open or exec
-// enforcer gets EnforcementAvailable (or ObservationAvailable) = False naming
-// the cause.
-func TestUnavailableHooksPutEnforcementUnavailableOnPolicies(t *testing.T) {
-	cause := fmt.Errorf("%w: bpf-lsm: programs attached but never executed", ErrNoHookExecutes)
-	for _, tt := range []struct {
-		mode string
-		want string
-	}{
-		{compiler.ModeEnforce, v1alpha1.ConditionEnforcementAvailable},
-		{compiler.ModeMonitor, v1alpha1.ConditionObservationAvailable},
+// A node whose hooks cannot be set up must not read as Enforcing, whatever
+// step failed: the manager still handles policy events, and every policy that
+// needs an open or exec enforcer gets EnforcementAvailable (or
+// ObservationAvailable) = False naming the cause.
+func TestFailedHookSetupPutsEnforcementUnavailableOnPolicies(t *testing.T) {
+	for _, cause := range []error{
+		openexec.ErrBPFFSNotMounted,
+		fmt.Errorf("removing bpf pin directory: %w", syscall.EROFS),
+		fmt.Errorf("%w: bpf-lsm: programs attached but never executed", ErrNoHookExecutes),
+		errors.New("creating the lsm/file_open enforcer program: verifier rejected"),
 	} {
-		t.Run(tt.mode, func(t *testing.T) {
-			status := newFakeStatus()
-			l := newUnavailableOpenExecManager(logr.Discard(), status, nil, false, cause)
-			if l.HooksUnavailable() != cause {
-				t.Fatal("HooksUnavailable did not return the cause")
-			}
-			rp := result("rp1", tt.mode, labels.Everything(), pair(nil, []string{"/etc/shadow"}), nil)
-			if err := l.RuntimePolicyEvent(rp, events.EventTypeCreate); err == nil {
-				t.Fatal("expected the failure to propagate so the event is requeued")
-			}
-			got := condOfType(t, status, "rp1", tt.want)
-			if got.Status != metav1.ConditionFalse {
-				t.Fatalf("%s = %v, want False", tt.want, got.Status)
-			}
-			if !strings.Contains(got.Message, ErrNoHookExecutes.Error()) {
-				t.Fatalf("message %q does not name the cause", got.Message)
-			}
-		})
+		for _, tt := range []struct {
+			mode string
+			want string
+		}{
+			{compiler.ModeEnforce, v1alpha1.ConditionEnforcementAvailable},
+			{compiler.ModeMonitor, v1alpha1.ConditionObservationAvailable},
+		} {
+			t.Run(tt.mode+"/"+cause.Error(), func(t *testing.T) {
+				status := newFakeStatus()
+				setup := func(logr.Logger, bool) (enforcerFactory, map[string]monitoringIface, bool, error) {
+					return nil, nil, false, cause
+				}
+				l := buildOpenExecManager(logr.Discard(), status, nil, false, setup)
+				if l.HooksUnavailable() != cause {
+					t.Fatal("HooksUnavailable did not return the cause")
+				}
+				rp := result("rp1", tt.mode, labels.Everything(), pair(nil, []string{"/etc/shadow"}), nil)
+				if err := l.RuntimePolicyEvent(rp, events.EventTypeCreate); err == nil {
+					t.Fatal("expected the failure to propagate so the event is requeued")
+				}
+				got := condOfType(t, status, "rp1", tt.want)
+				if got.Status != metav1.ConditionFalse {
+					t.Fatalf("%s = %v, want False", tt.want, got.Status)
+				}
+				if !strings.Contains(got.Message, cause.Error()) {
+					t.Fatalf("message %q does not name the cause", got.Message)
+				}
+			})
+		}
 	}
 }
 

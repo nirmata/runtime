@@ -1,6 +1,21 @@
 package openexec
 
-import "testing"
+import (
+	"errors"
+	"path/filepath"
+	"testing"
+)
+
+// A kind node without a bpffs mount leaves /sys/fs/bpf on sysfs, where the pin
+// directory cannot be created.
+func TestCheckPinFSRejectsNonBPFFS(t *testing.T) {
+	if err := checkPinFS(t.TempDir()); !errors.Is(err, ErrBPFFSNotMounted) {
+		t.Fatalf("err = %v, want ErrBPFFSNotMounted", err)
+	}
+	if err := checkPinFS(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, ErrBPFFSNotMounted) {
+		t.Fatalf("err = %v, want ErrBPFFSNotMounted", err)
+	}
+}
 
 func TestAddPolicyAssignsDistinctSlots(t *testing.T) {
 	d := &Dispatcher{dispatcherType: PROG_TYPE_LSM_OPEN}

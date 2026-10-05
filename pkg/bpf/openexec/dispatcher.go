@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 )
 
 // pinDir is the bpffs directory holding the maps shared across collections:
@@ -51,6 +53,29 @@ type Dispatcher struct {
 func ClearPins() error {
 	if err := os.RemoveAll(pinDir); err != nil {
 		return fmt.Errorf("removing bpf pin directory: %w", err)
+	}
+	return nil
+}
+
+// ErrBPFFSNotMounted means the pin directory's parent is not a bpffs mount, so
+// nothing can be pinned and no open or exec hook can be attached.
+var ErrBPFFSNotMounted = errors.New("bpffs is not mounted at /sys/fs/bpf on this node; mount it (mount -t bpf bpf /sys/fs/bpf) and restart the daemon")
+
+const bpfFSMagic = 0xcafe4a11
+
+// CheckPinFS returns ErrBPFFSNotMounted unless the pin directory's parent is a
+// bpffs mount.
+func CheckPinFS() error {
+	return checkPinFS(filepath.Dir(pinDir))
+}
+
+func checkPinFS(dir string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return fmt.Errorf("%w: %w", ErrBPFFSNotMounted, err)
+	}
+	if int64(st.Type) != bpfFSMagic {
+		return ErrBPFFSNotMounted
 	}
 	return nil
 }
