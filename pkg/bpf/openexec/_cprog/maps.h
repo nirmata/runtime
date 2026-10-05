@@ -145,15 +145,10 @@ static __always_inline void set_proc_wildcard_policy_suffix(struct policy_ctx *c
         return;
     }
 
-#pragma clang loop unroll(full)
-    for (int i = 0; i < 7; i++) {
-        if (digit_start + i >= suffix) {
-            break;
-        }
-        char c = ctx->path[digit_start + i];
-        if (c < '0' || c > '9') {
-            return;
-        }
+    long pid = 0;
+    int pid_len = suffix - digit_start;
+    if (bpf_strtol(ctx->path + digit_start, pid_len, 10, &pid) != pid_len || pid < 0) {
+        return;
     }
     if (!is_procfs(file)) {
         return;
