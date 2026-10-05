@@ -74,7 +74,7 @@ func checkPinFS(dir string) error {
 	if err := unix.Statfs(dir, &st); err != nil {
 		return fmt.Errorf("%w: %w", ErrBPFFSNotMounted, err)
 	}
-	if int64(st.Type) != bpfFSMagic {
+	if st.Type != bpfFSMagic {
 		return ErrBPFFSNotMounted
 	}
 	return nil
