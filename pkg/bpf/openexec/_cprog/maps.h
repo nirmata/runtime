@@ -101,26 +101,6 @@ static __always_inline void scan_separators(struct policy_ctx *ctx) {
     }
 }
 
-static __always_inline void scan_policy_separators(struct policy_ctx *ctx) {
-    ctx->policy_nslash = 0;
-#pragma clang loop unroll(full)
-    for (int i = 0; i < MAX_PATH_LEN; i++) {
-        char c = ctx->policy_path[i];
-        if (c == '\0') {
-            break;
-        }
-        if (c != '/') {
-            continue;
-        }
-        __u8 n = *(volatile __u8 *)&ctx->policy_nslash;
-        if (n >= MAX_PREFIX_DEPTH) {
-            break;
-        }
-        ctx->policy_slash[n] = i;
-        ctx->policy_nslash = n + 1;
-    }
-}
-
 static __always_inline int is_procfs(struct file *file) {
     struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
     struct super_block *sb = BPF_CORE_READ(dentry, d_sb);
@@ -181,15 +161,34 @@ static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx
     for (int i = 0; i < sizeof(wildcard) - 1; i++) {
         ctx->policy_path[i] = wildcard[i];
     }
+    bpf_probe_read_kernel_str(ctx->policy_path + sizeof(wildcard) - 1,
+                              MAX_PATH_LEN - (sizeof(wildcard) - 1),
+                              ctx->path + (suffix & (MAX_PATH_LEN - 1)));
+
+    /* The canonical prefix contributes separators at 0 and 5, and the copied
+     * suffix starts with the separator at 7. Translate later separators from
+     * the already-scanned concrete path instead of scanning another 128 bytes;
+     * this keeps the fmod_ret dispatcher inside older kernels' verifier budget. */
+    ctx->policy_slash[0] = 0;
+    ctx->policy_slash[1] = 5;
+    ctx->policy_slash[2] = 7;
+    ctx->policy_nslash = 3;
 #pragma clang loop unroll(full)
-    for (int i = 0; i < MAX_PATH_LEN - (sizeof(wildcard) - 1); i++) {
-        char c = ctx->path[(suffix + i) & (MAX_PATH_LEN - 1)];
-        ctx->policy_path[sizeof(wildcard) - 1 + i] = c;
-        if (c == '\0') {
+    for (int i = 0; i < MAX_PREFIX_DEPTH; i++) {
+        if (i >= ctx->nslash) {
             break;
         }
+        __u8 slash = ctx->slash[i];
+        if (slash <= suffix) {
+            continue;
+        }
+        __u8 n = *(volatile __u8 *)&ctx->policy_nslash;
+        if (n >= MAX_PREFIX_DEPTH) {
+            break;
+        }
+        ctx->policy_slash[n] = slash - suffix + 7;
+        ctx->policy_nslash = n + 1;
     }
-    scan_policy_separators(ctx);
 }
 
 /* 2048: the decision dimension can double the number of distinct keys. */
