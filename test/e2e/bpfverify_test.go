@@ -100,10 +100,12 @@ var bpfObjects = []bpfObjectSpec{
 	{
 		object: "pkg/bpf/openexec/rawtpdispatcherfileopen_bpfel.o",
 		progs: []progCheck{{
-			name:       "generic_tracepoint_handler",
-			typ:        ebpf.Tracing,
-			attach:     ebpf.AttachModifyReturn,
-			insnBudget: 5000,
+			name:   "generic_tracepoint_handler",
+			typ:    ebpf.Tracing,
+			attach: ebpf.AttachModifyReturn,
+			// Includes the procfs candidate and superblock-magic gate; keep a
+			// narrow ceiling above the 5,520 instructions verified on CI.
+			insnBudget: 6000,
 		}},
 	},
 	{
