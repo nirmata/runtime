@@ -7,6 +7,7 @@
 
 #define DECISION_ALLOW 0
 #define DECISION_DENY 1
+#define PROC_SUPER_MAGIC 0x9fa0
 
 /* width of the policy-slot mask every entry carries as its value */
 #define MAX_POLICIES 64
@@ -106,14 +107,7 @@ static __always_inline void scan_separators(struct policy_ctx *ctx) {
 static __always_inline int is_procfs(struct file *file) {
     struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
     struct super_block *sb = BPF_CORE_READ(dentry, d_sb);
-    struct file_system_type *fs_type = BPF_CORE_READ(sb, s_type);
-    const char *fs_name = BPF_CORE_READ(fs_type, name);
-    char name[5] = {};
-    bpf_probe_read_kernel_str(name, sizeof(name), fs_name);
-    if (name[0] != 'p' || name[1] != 'r' || name[2] != 'o' || name[3] != 'c' || name[4] != '\0') {
-        return 0;
-    }
-    return 1;
+    return BPF_CORE_READ(sb, s_magic) == PROC_SUPER_MAGIC;
 }
 
 /* bpf_d_path resolves procfs links before the hook sees them and may return a
@@ -146,12 +140,13 @@ static __always_inline void set_proc_wildcard_policy_suffix(struct policy_ctx *c
         }
         suffix = ctx->slash[1];
     }
-    if (suffix <= digit_start || suffix - digit_start > 20) {
+    /* Linux caps pid_max at 2^22, so every valid decimal PID fits in 7 bytes. */
+    if (suffix <= digit_start || suffix - digit_start > 7) {
         return;
     }
 
 #pragma clang loop unroll(full)
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 7; i++) {
         if (digit_start + i >= suffix) {
             break;
         }
