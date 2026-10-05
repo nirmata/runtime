@@ -12,7 +12,10 @@ spec:
     - sh
     - -c
     - |
-      sleep 20
+      until ! cat /etc/hostname >/dev/null 2>&1; do
+        sleep 1
+      done
+      echo POLICY_ACTIVE
       if cat /proc/self/setgroups >/dev/null; then
         echo SELF_OK
       else

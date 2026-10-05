@@ -131,9 +131,14 @@ func TestPathString(t *testing.T) {
 
 func TestPolicyPathString(t *testing.T) {
 	k := pk("/proc/42/setgroups")
-	copy(k.PolicyPath[:], "/proc/*/setgroups")
+	k.PolicySuffix = 8
 	if got := k.PolicyPathString(); got != "/proc/*/setgroups" {
 		t.Errorf("PolicyPathString() = %q, want /proc/*/setgroups", got)
+	}
+	relative := pk("/42/setgroups")
+	relative.PolicySuffix = 3
+	if got := relative.PolicyPathString(); got != "/proc/*/setgroups" {
+		t.Errorf("relative PolicyPathString() = %q, want /proc/*/setgroups", got)
 	}
 	if got := pk("/etc/hosts").PolicyPathString(); got != "" {
 		t.Errorf("PolicyPathString() = %q, want empty", got)
@@ -181,11 +186,11 @@ func TestClose_ZeroValuePolicyMapIsSafe(t *testing.T) {
 
 // TestPathEventKeyLayout pins the iteration key against the bpf2go-generated
 // struct for the C's `struct path_event_key` and against the documented
-// 260-byte no-padding layout. A drift here is exactly the kind of BTF key-size
+// compact 136-byte layout. A drift here is exactly the kind of BTF key-size
 // mismatch cilium/ebpf rejects at runtime on Linux; this makes it fail in the
 // unit suite on any host.
 func TestPathEventKeyLayout(t *testing.T) {
-	const want = 2*maxPathLen + 4 // two char[128] paths + __u32, no padding
+	const want = maxPathLen + 4 + 1 + 3 // path, decision, suffix offset, explicit padding
 	if got := int(unsafe.Sizeof(PathEventKey{})); got != want {
 		t.Errorf("sizeof(PathEventKey) = %d, want %d", got, want)
 	}

@@ -20,10 +20,11 @@ type runtimePolicyEntry struct {
 }
 
 type runtimePolicyPathEventKey struct {
-	_          structs.HostLayout
-	Path       [128]int8
-	PolicyPath [128]int8
-	Decision   uint32
+	_            structs.HostLayout
+	Path         [128]int8
+	Decision     uint32
+	PolicySuffix uint8
+	Padding      [3]uint8
 }
 
 type runtimePolicyPolicyCtx struct {
@@ -36,6 +37,7 @@ type runtimePolicyPolicyCtx struct {
 	Slash        [16]uint8
 	PolicyNslash uint8
 	PolicySlash  [16]uint8
+	PolicySuffix uint8
 }
 
 // Names of all BPF objects in the ELF.

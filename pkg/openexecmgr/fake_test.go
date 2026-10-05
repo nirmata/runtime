@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,7 +38,9 @@ func obsKey(path string, d runtimeevent.KernelDecision) openexec.PathEventKey {
 
 func obsKeyWithPolicyPath(path, policyPath string, d runtimeevent.KernelDecision) openexec.PathEventKey {
 	k := obsKey(path, d)
-	copy(k.PolicyPath[:], policyPath)
+	if policyPath != "" {
+		k.PolicySuffix = uint8(len(path) - len(strings.TrimPrefix(policyPath, "/proc/*")))
+	}
 	return k
 }
 

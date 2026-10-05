@@ -31,6 +31,8 @@ func TestParsePathValue(t *testing.T) {
 		{name: "star without a separator rejected", in: "/usr/lib*", wantErr: ErrStarInPathValue},
 		{name: "star in the prefix body rejected", in: "/usr/*/lib/*", wantErr: ErrStarInPathValue},
 		{name: "proc wildcard requires a suffix", in: "/proc/*", wantErr: ErrStarInPathValue},
+		{name: "proc wildcard bare directory rejected", in: "/proc/*/", wantErr: ErrTrailingSlashPathValue},
+		{name: "proc wildcard literal trailing separator rejected", in: "/proc/*/fd/", wantErr: ErrTrailingSlashPathValue},
 		{name: "second proc wildcard rejected", in: "/proc/*/task/*/status", wantErr: ErrStarInPathValue},
 		{name: "trailing separator rejected", in: "/usr/lib/", wantErr: ErrTrailingSlashPathValue},
 		{name: "root alone rejected", in: "/", wantErr: ErrTrailingSlashPathValue},

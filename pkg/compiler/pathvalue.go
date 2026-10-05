@@ -102,6 +102,9 @@ func ParsePathValue(raw string) (PathValue, error) {
 	case cleaned == "/proc/*":
 		return PathValue{}, ErrStarInPathValue
 
+	case strings.HasSuffix(cleaned, "/"):
+		return PathValue{}, ErrTrailingSlashPathValue
+
 	case strings.HasSuffix(cleaned, "/*"):
 		prefix := strings.TrimSuffix(cleaned, StarTarget)
 		if strings.ContainsRune(prefix, '*') && !isProcPIDWildcard(prefix) {
@@ -114,9 +117,6 @@ func ParsePathValue(raw string) (PathValue, error) {
 			return PathValue{}, ErrStarInPathValue
 		}
 		return PathValue{Path: cleaned}, nil
-
-	case strings.HasSuffix(cleaned, "/"):
-		return PathValue{}, ErrTrailingSlashPathValue
 
 	default:
 		return PathValue{Path: cleaned}, nil

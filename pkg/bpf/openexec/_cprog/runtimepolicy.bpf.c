@@ -22,7 +22,7 @@ static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN
     __u32 ctx_key = 0;
     struct policy_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &ctx_key);
     if (prog_ctx) {
-        bpf_probe_read_kernel(k.policy_path, sizeof(k.policy_path), prog_ctx->policy_path);
+        k.policy_suffix = prog_ctx->policy_suffix;
     }
     k.decision = (des == EXPLICIT_DENY || des == IMPLICIT_DENY) ? DECISION_DENY : DECISION_ALLOW;
 

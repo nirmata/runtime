@@ -58,8 +58,9 @@ struct policy_entries exec_entries SEC(".maps");
  * uninitialized byte would split one logical key across separate entries. */
 struct path_event_key {
     char path[MAX_PATH_LEN];
-    char policy_path[MAX_PATH_LEN];
     __u32 decision;
+    __u8 policy_suffix;
+    __u8 padding[3];
 };
 
 struct policy_ctx {
@@ -74,6 +75,7 @@ struct policy_ctx {
     __u8 slash[MAX_PREFIX_DEPTH];
     __u8 policy_nslash;
     __u8 policy_slash[MAX_PREFIX_DEPTH];
+    __u8 policy_suffix;
 };
 
 /* records the offset of every separator in ctx->path, up to MAX_PREFIX_DEPTH.
@@ -119,9 +121,7 @@ static __always_inline int is_procfs(struct file *file) {
  * the policy's explicit numeric-PID wildcard spelling for lookup. */
 static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx, struct file *file) {
     __builtin_memset(ctx->policy_path, 0, sizeof(ctx->policy_path));
-    if (!is_procfs(file)) {
-        return;
-    }
+    ctx->policy_suffix = 0;
 
     const char prefix[] = "/proc/";
     __u8 digit_start = 1;
@@ -159,6 +159,9 @@ static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx
             return;
         }
     }
+    if (!is_procfs(file)) {
+        return;
+    }
 
     const char wildcard[] = "/proc/*";
 #pragma clang loop unroll(full)
@@ -177,6 +180,7 @@ static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx
     ctx->policy_slash[1] = 5;
     ctx->policy_slash[2] = 7;
     ctx->policy_nslash = 3;
+    ctx->policy_suffix = suffix;
 #pragma clang loop unroll(full)
     for (int i = 0; i < MAX_PREFIX_DEPTH; i++) {
         if (i >= ctx->nslash) {
