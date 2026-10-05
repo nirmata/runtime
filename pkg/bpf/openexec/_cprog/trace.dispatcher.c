@@ -38,8 +38,8 @@ int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
         prog_ctx->prog_type = PROG_TYPE_OPEN;
     };
 
-    scan_separators(prog_ctx);
     set_proc_wildcard_policy_suffix(prog_ctx, f);
+    scan_separators(prog_ctx);
 
     /* jump to the policy enforcer */
     bpf_tail_call(ctx, target_map, 0);
