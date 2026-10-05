@@ -94,8 +94,8 @@ func selectHooks(logger logr.Logger, preferLSM, verify bool, attach attachFunc) 
 	return nil, false, fmt.Errorf("%w: %w", ErrNoHookExecutes, errors.Join(errs...))
 }
 
-// unavailableEnforcer is the enforcer factory of a manager with no working
-// hooks. Every policy that needs an open or exec enforcer fails to create it
+// unavailableEnforcer is the enforcer factory of a manager whose hooks could
+// not be set up. Every policy that needs an open or exec enforcer fails to create it
 // with cause, which the existing attach-failure path turns into an
 // EnforcementAvailable / ObservationAvailable = False condition on that
 // policy, so a node that can enforce nothing does not read as Enforcing.

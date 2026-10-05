@@ -331,23 +331,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		lsmEnabled = false
 	}
 
-	execMgr, err := openexecmgr.NewOpenExecManager(logger, sw, func(reason string, delta uint64) {
+	execMgr := openexecmgr.NewOpenExecManager(logger, sw, func(reason string, delta uint64) {
 		m.EventsDropped.WithLabelValues(openExecSource, reason).Add(float64(delta))
 	}, lsmEnabled, execSinks...)
-	// A manager whose hooks do not execute is still a handler: it puts
-	// EnforcementAvailable=False on every open/exec policy, where a missing
-	// handler would have left them reading as Enforcing.
-	openExecOK := err == nil && execMgr.HooksUnavailable() == nil
-	switch {
-	case err != nil:
-		logger.Error(err, "failed to create openexec manager, exec and open enforcement won't work")
-	case !openExecOK:
-		logger.Error(execMgr.HooksUnavailable(), "exec and open enforcement won't work on this node")
-	}
-	if execMgr != nil {
-		podHandlers = append(podHandlers, execMgr)
-		policyHandlers = append(policyHandlers, execMgr)
-	}
+	podHandlers = append(podHandlers, execMgr)
+	policyHandlers = append(policyHandlers, execMgr)
+	openExecOK := execMgr.HooksUnavailable() == nil
 	if openExecOK {
 		col.AddSource(collector.NewPollSource(openExecSource, observeInterval, execMgr.CollectObservations))
 	} else {

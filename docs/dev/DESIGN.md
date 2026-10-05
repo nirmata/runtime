@@ -92,14 +92,15 @@ reporter.New(controller-runtime client)     -> Run in errgroup
 controller.NewStatusWriter(nodeName, 30s)   -> Run in errgroup
 egressmgr.NewEgressManager(log, statusWriter, onLoss -> EventsDropped)
 monitor.New(log, reporter, metrics)
-podHandlers    = [em, attrIdx]              (+ execMgr, dm when each loads)
-policyHandlers = [em, statusWriter, monitor]        (+ execMgr, dm when each loads)
+podHandlers    = [em, attrIdx, execMgr]     (+ dm when it loads)
+policyHandlers = [em, statusWriter, monitor, execMgr]   (+ dm when it loads)
 openexecmgr.NewOpenExecManager(log, statusWriter, onLoss, BpfLSMEnabled())
-    -- attaches the suggested hook type, verifies it executes, else the other
-    -- no hook type executes: returns a manager anyway, registered as a handler,
-       whose enforcer factory fails every open/exec policy -> EnforcementAvailable/
-       ObservationAvailable=False; the daemon marks openexec-observe and exec-trace unavailable
-    -- constructor error (pins, executor build): logged, open/exec not wired, sources unavailable
+    -- checks bpffs at /sys/fs/bpf, clears pins, attaches the suggested hook type,
+       verifies it executes, else the other, then builds the executors
+    -- any setup failure: returns a manager anyway, registered as a handler,
+       whose enforcer factory fails every open/exec policy with the cause ->
+       EnforcementAvailable/ObservationAvailable=False; the daemon marks
+       openexec-observe and exec-trace unavailable
 dnsquery.New() -> dnsmgr.New(dm) + dnsquery.NewSource(WithLossFunc -> EventsDropped)
 collector: PollSource(egress-observe, 10s) + PollSource(openexec-observe, 10s)
            + Source(dnsquery, ring buffer)
@@ -314,8 +315,9 @@ anything, so no amount of unrelated traffic can move its counter, while a progra
 process's open runs for the workload's too; the canary only guarantees one event on an idle node. A hook type
 whose programs did not run is detached (`Dispatcher.Close`, `ClearPins`) and the other type is
 tried the same way; the counter is switched off again before the manager returns. If neither type
-executes, `NewOpenExecManager` still returns a manager, but one whose enforcer factory fails every
-policy with `ErrNoHookExecutes`: through the normal attach-failure path each open/exec policy then
+executes, or any other setup step fails — bpffs not mounted at `/sys/fs/bpf`
+(`openexec.ErrBPFFSNotMounted`), clearing the pins, building the executors — `NewOpenExecManager`
+still returns a manager, but one whose enforcer factory fails every policy with the cause: through the normal attach-failure path each open/exec policy then
 carries `EnforcementAvailable` (or `ObservationAvailable`) `= False`, so `Applied` cannot read
 `Enforcing` on a node that enforces nothing. The daemon also marks the `openexec-observe` and
 `exec-trace` sources unavailable. When run statistics cannot be enabled — the kernel predates 5.8, or

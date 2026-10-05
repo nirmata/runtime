@@ -56,8 +56,8 @@ type OpenExecManager struct {
 
 	lsm bool
 
-	// hookErr is set when no hook type could be attached and shown to execute.
-	// The manager then exists only to put that failure on every policy that
+	// hookErr is set when the hooks could not be set up, or no hook type could
+	// be attached and shown to execute. The manager then exists only to put that failure on every policy that
 	// needs an open or exec enforcer.
 	hookErr error
 }
@@ -93,14 +93,39 @@ type openExecAttachment struct {
 	badProgs map[string]string
 }
 
-// NewOpenExecManager attaches the dispatchers of one hook type — BPF-LSM or
-// fmod_ret, whichever is proven to execute on this node — along with the
-// executor each one tail-calls. Policies are later represented as maps that
-// those executors scan during events. lsm is the active LSM list's answer and
-// only decides which hook type is tried first.
-func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, cgroupSinks ...CgroupSink) (*OpenExecManager, error) {
+// NewOpenExecManager returns a manager even when the hooks cannot be set up:
+// that manager fails every open and exec policy with the cause, so a node that
+// can enforce nothing reports it on each policy instead of reading as
+// Enforcing. lsm is the active LSM list's answer and only decides which hook
+// type is tried first.
+func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, cgroupSinks ...CgroupSink) *OpenExecManager {
+	return buildOpenExecManager(logger, status, onLoss, lsm, attachHooks, cgroupSinks...)
+}
+
+// hookSetup attaches the hooks and returns what a working manager is built
+// from: the enforcer factory, the observation program of each target, and the
+// hook type that was selected.
+type hookSetup func(logger logr.Logger, preferLSM bool) (enforcerFactory, map[string]monitoringIface, bool, error)
+
+func buildOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, setup hookSetup, cgroupSinks ...CgroupSink) *OpenExecManager {
+	newEnforcer, programs, lsm, err := setup(logger, lsm)
+	if err != nil {
+		logger.Error(err, "open and exec policies will report enforcement unavailable on this node")
+		return newUnavailableOpenExecManager(logger, status, onLoss, lsm, err, cgroupSinks...)
+	}
+	return newOpenExecManager(logger, status, onLoss, newEnforcer, programs, lsm, cgroupSinks...)
+}
+
+// attachHooks attaches the dispatchers of one hook type — BPF-LSM or fmod_ret,
+// whichever is proven to execute on this node — along with the executor each
+// one tail-calls. Policies are later represented as maps that those executors
+// scan during events.
+func attachHooks(logger logr.Logger, preferLSM bool) (enforcerFactory, map[string]monitoringIface, bool, error) {
+	if err := openexec.CheckPinFS(); err != nil {
+		return nil, nil, preferLSM, err
+	}
 	if err := openexec.ClearPins(); err != nil {
-		return nil, err
+		return nil, nil, preferLSM, err
 	}
 
 	verify := true
@@ -116,10 +141,9 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 		}()
 	}
 
-	hs, lsm, err := selectHooks(logger, lsm, verify, attachDispatchers)
+	hs, lsm, err := selectHooks(logger, preferLSM, verify, attachDispatchers)
 	if err != nil {
-		logger.Error(err, "open and exec policies will report enforcement unavailable on this node")
-		return newUnavailableOpenExecManager(logger, status, onLoss, lsm, err, cgroupSinks...), nil
+		return nil, nil, preferLSM, err
 	}
 	dispatchers := hs.(dispatcherSet)
 	logger.V(2).Info("selected open/exec enforcement hooks", "hookType", hookTypeName(lsm), "bpfLSM", lsm, "hooks", dispatchers.targets(), "verified", verify)
@@ -135,7 +159,7 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 				errs = append(errs, created.(*openexec.Prog).Close())
 			}
 			errs = append(errs, dispatchers.Close())
-			return nil, errors.Join(errs...)
+			return nil, nil, lsm, errors.Join(errs...)
 		}
 		programs[target] = p
 	}
@@ -147,12 +171,11 @@ func NewOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 		}
 		return openexec.NewPolicyMap(d, logger)
 	}
-
-	return newOpenExecManager(logger, status, onLoss, newEnforcer, programs, lsm, cgroupSinks...), nil
+	return newEnforcer, programs, lsm, nil
 }
 
-// newUnavailableOpenExecManager builds the manager for a node where no hook
-// type executes: no dispatchers, no observation programs, and an enforcer
+// newUnavailableOpenExecManager builds the manager for a node where the hooks
+// could not be set up: no dispatchers, no observation programs, and an enforcer
 // factory that fails every policy with cause. See unavailableEnforcer.
 func newUnavailableOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusRecorder, onLoss runtimeevent.LossFunc, lsm bool, cause error, cgroupSinks ...CgroupSink) *OpenExecManager {
 	l := newOpenExecManager(logger, status, onLoss, unavailableEnforcer(cause), map[string]monitoringIface{}, lsm, cgroupSinks...)
