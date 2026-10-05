@@ -56,6 +56,7 @@ int runtime_policy_executor(void *ctx)
     if (!prog_ctx) {
         return 0;
     }
+    build_proc_wildcard_policy_path(prog_ctx);
 
     void *entries = prog_ctx->prog_type == PROG_TYPE_OPEN ? (void *)&open_entries : (void *)&exec_entries;
 

@@ -119,9 +119,10 @@ static __always_inline int is_procfs(struct file *file) {
 /* bpf_d_path resolves procfs links before the hook sees them and may return a
  * path relative to the proc mount. Retain that path for reporting and derive
  * the policy's explicit numeric-PID wildcard spelling for lookup. */
-static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx, struct file *file) {
+static __always_inline void set_proc_wildcard_policy_suffix(struct policy_ctx *ctx, struct file *file) {
     __builtin_memset(ctx->policy_path, 0, sizeof(ctx->policy_path));
     ctx->policy_suffix = 0;
+    ctx->policy_nslash = 0;
 
     const char prefix[] = "/proc/";
     __u8 digit_start = 1;
@@ -163,6 +164,15 @@ static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx
         return;
     }
 
+    ctx->policy_suffix = suffix;
+}
+
+static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *ctx) {
+    __u8 suffix = ctx->policy_suffix;
+    if (!suffix) {
+        return;
+    }
+
     const char wildcard[] = "/proc/*";
 #pragma clang loop unroll(full)
     for (int i = 0; i < sizeof(wildcard) - 1; i++) {
@@ -180,7 +190,6 @@ static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx
     ctx->policy_slash[1] = 5;
     ctx->policy_slash[2] = 7;
     ctx->policy_nslash = 3;
-    ctx->policy_suffix = suffix;
 #pragma clang loop unroll(full)
     for (int i = 0; i < MAX_PREFIX_DEPTH; i++) {
         if (i >= ctx->nslash) {

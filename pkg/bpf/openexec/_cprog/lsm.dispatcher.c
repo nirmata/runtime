@@ -48,7 +48,7 @@ int generic_lsm_handler(struct bpf_raw_tracepoint_args *ctx)
     #endif
 
     scan_separators(prog_ctx);
-    set_proc_wildcard_policy_path(prog_ctx, f);
+    set_proc_wildcard_policy_suffix(prog_ctx, f);
 
     /* jump to the policy enforcer */
     bpf_tail_call(ctx, target_map, 0 );
