@@ -327,28 +327,28 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	lsmEnabled, err := utils.BpfLSMEnabled()
 	if err != nil {
-		logger.Error(err, "could not determine BPF-LSM availability; falling back to raw tracepoints")
+		logger.Error(err, "could not determine BPF-LSM availability; trying fmod_ret first")
 		lsmEnabled = false
 	}
 
-	execMgr, err := openexecmgr.NewOpenExecManager(logger, sw, func(reason string, delta uint64) {
+	execMgr := openexecmgr.NewOpenExecManager(logger, sw, func(reason string, delta uint64) {
 		m.EventsDropped.WithLabelValues(openExecSource, reason).Add(float64(delta))
 	}, lsmEnabled, execSinks...)
-	if err != nil {
-		logger.Error(err, "failed to create openexec manager, exec and open enforcement won't work")
+	podHandlers = append(podHandlers, execMgr)
+	policyHandlers = append(policyHandlers, execMgr)
+	openExecOK := execMgr.HooksUnavailable() == nil
+	if openExecOK {
+		col.AddSource(collector.NewPollSource(openExecSource, observeInterval, execMgr.CollectObservations))
+	} else {
 		recordSourceStatus(openExecSource, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonInitializationFailed)
 		if execSrc != nil {
 			recordSourceStatus(exectrace.SourceName, runtimeevent.SourceStateUnavailable, runtimeevent.SourceReasonDependencyUnavailable)
 		}
-	} else {
-		podHandlers = append(podHandlers, execMgr)
-		policyHandlers = append(policyHandlers, execMgr)
-		col.AddSource(collector.NewPollSource(openExecSource, observeInterval, execMgr.CollectObservations))
 	}
 
 	// A typed nil in the Source interface is not nil, so the check is here
 	// rather than left to AddSource.
-	if execSrc != nil && execMgr != nil {
+	if execSrc != nil && openExecOK {
 		col.AddSource(execSrc)
 	}
 	col.AddStage(attrIdx)

@@ -1,11 +1,15 @@
 package openexec
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 )
 
 // pinDir is the bpffs directory holding the maps shared across collections:
@@ -32,7 +36,15 @@ type Dispatcher struct {
 
 	link link.Link
 
+	// objs holds every object the collection loaded, including maps the
+	// dispatcher does not reference itself, so Close releases all of them.
+	objs io.Closer
+
 	dispatcherType string
+
+	// canaryTarget is the file Canary opens or executes; empty means the
+	// running binary. Tests set it to a fixture.
+	canaryTarget string
 }
 
 // ClearPins wipes the pin directory at startup. The pinned maps outlive the
@@ -41,6 +53,29 @@ type Dispatcher struct {
 func ClearPins() error {
 	if err := os.RemoveAll(pinDir); err != nil {
 		return fmt.Errorf("removing bpf pin directory: %w", err)
+	}
+	return nil
+}
+
+// ErrBPFFSNotMounted means the pin directory's parent is not a bpffs mount, so
+// nothing can be pinned and no open or exec hook can be attached.
+var ErrBPFFSNotMounted = errors.New("bpffs is not mounted at /sys/fs/bpf on this node; mount it (mount -t bpf bpf /sys/fs/bpf) and restart the daemon")
+
+const bpfFSMagic = 0xcafe4a11
+
+// CheckPinFS returns ErrBPFFSNotMounted unless the pin directory's parent is a
+// bpffs mount.
+func CheckPinFS() error {
+	return checkPinFS(filepath.Dir(pinDir))
+}
+
+func checkPinFS(dir string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return fmt.Errorf("%w: %w", ErrBPFFSNotMounted, err)
+	}
+	if st.Type != bpfFSMagic {
+		return ErrBPFFSNotMounted
 	}
 	return nil
 }
@@ -90,6 +125,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		d.prog = objs.GenericLsmHandler
 		d.entries = objs.OpenEntries
 		d.enforcerArray = objs.OpenProg
+		d.objs = objs
 
 	case PROG_TYPE_LSM_EXEC:
 		spec, err := loadLsmDispatcherExecCheck()
@@ -107,6 +143,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		d.prog = objs.GenericLsmHandler
 		d.entries = objs.ExecEntries
 		d.enforcerArray = objs.ExecProg
+		d.objs = objs
 	}
 
 	return nil
@@ -129,6 +166,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 		d.prog = objs.GenericTracepointHandler
 		d.entries = objs.OpenEntries
 		d.enforcerArray = objs.OpenProg
+		d.objs = objs
 
 	case PROG_TYPE_TRACE_EXEC:
 		// security_bprm_check is not in the fmod_ret d_path allowlist, so exec
@@ -147,6 +185,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 
 		d.entries = maps.ExecEntries
 		d.enforcerArray = maps.ExecProg
+		d.objs = maps
 	}
 
 	return nil
@@ -177,6 +216,31 @@ func (d *Dispatcher) Attach() error {
 
 	d.link = l
 	return nil
+}
+
+// Close detaches the dispatcher and releases every object it loaded. The maps
+// stay pinned on bpffs until ClearPins, so a caller replacing this dispatcher
+// with one of the other hook type clears the pins in between. A handle whose
+// close fails is kept, so the dispatcher still owns it and a retry of Close
+// can release it; only what was released is forgotten.
+func (d *Dispatcher) Close() error {
+	var errs []error
+	if d.link != nil {
+		if err := d.link.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("detaching %s: %w", d.dispatcherType, err))
+		} else {
+			d.link = nil
+		}
+	}
+	if d.objs != nil {
+		if err := d.objs.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("releasing %s objects: %w", d.dispatcherType, err))
+		} else {
+			d.objs = nil
+			d.prog, d.entries, d.enforcerArray = nil, nil, nil
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // AddPolicy reserves the lowest free policy slot of this hook and returns it.
