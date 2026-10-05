@@ -179,12 +179,17 @@ cluster shape it expects is `test/e2e/kind-config.yaml`.
 
 `open` and `exec` enforce on any host that can load the programs: through the BPF-LSM hooks
 where `bpf` appears in `/sys/kernel/security/lsm`, and through `fmod_ret` on
-`security_file_open` otherwise. GitHub-hosted `ubuntu-latest` reports
-`lockdown,capability,landlock,yama,apparmor,ima,evm` — no `bpf` — so hosted lanes exercise the
-fallback. The two do not enforce identically: an exec is matched against both rule sets on
-BPF-LSM and against `exec` alone on the fallback, so the BPF-LSM hooks stay uncovered on a
-hosted runner. Docker Desktop's LinuxKit VM does boot with BPF-LSM, so a developer machine
-covers them.
+`security_file_open` otherwise. The daemon does not take either from the file alone: at startup
+it attaches the suggested hook type, performs one controlled open and exec, and keeps the type
+only if the kernel's run counter shows its programs executed, falling back to the other otherwise
+(`docs/dev/DESIGN.md`, "Attach success is not proof"). GitHub-hosted `ubuntu-latest` reports
+`lockdown,capability,landlock,yama,apparmor,ima,evm` — no `bpf` — so hosted lanes enforce through
+the fallback. Such a kernel still *accepts* a BPF-LSM attach and never calls the program;
+`TestExecutedMatchesActiveLSMList` (`pkg/bpf/openexec`, root) attaches both hook types there and
+asserts exactly that: the BPF-LSM programs do not execute, the `fmod_ret` one does. What hosted
+lanes cannot cover is BPF-LSM *enforcing*: an exec is matched against both rule sets on BPF-LSM and
+against `exec` alone on the fallback. Docker Desktop's LinuxKit VM does boot with BPF-LSM, so a
+developer machine covers that, and the same test expects both hook types to execute there.
 
 Network egress enforcement and observation require only a cgroup v2 host and BPF support; a
 stock kind cluster on a Linux host qualifies.

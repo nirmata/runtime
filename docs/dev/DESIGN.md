@@ -95,7 +95,11 @@ monitor.New(log, reporter, metrics)
 podHandlers    = [em, attrIdx]              (+ execMgr, dm when each loads)
 policyHandlers = [em, statusWriter, monitor]        (+ execMgr, dm when each loads)
 openexecmgr.NewOpenExecManager(log, statusWriter, onLoss, BpfLSMEnabled())
-    -- on error: logged, and open/exec enforcement is simply not wired
+    -- attaches the suggested hook type, verifies it executes, else the other
+    -- no hook type executes: returns a manager anyway, registered as a handler,
+       whose enforcer factory fails every open/exec policy -> EnforcementAvailable/
+       ObservationAvailable=False; the daemon marks openexec-observe and exec-trace unavailable
+    -- constructor error (pins, executor build): logged, open/exec not wired, sources unavailable
 dnsquery.New() -> dnsmgr.New(dm) + dnsquery.NewSource(WithLossFunc -> EventsDropped)
 collector: PollSource(egress-observe, 10s) + PollSource(openexec-observe, 10s)
            + Source(dnsquery, ring buffer)
@@ -291,13 +295,34 @@ both the `open` and the `exec` behavior. On `RuntimePolicyEvent` create, `rpCrea
 observe mode (`compiler.IsObserveMode`), then instantiates **one policy map per behavior type that
 has entries** via `createForProgType`.
 
-Which kernel hooks carry enforcement is decided once, at `NewOpenExecManager`, from
-`utils.BpfLSMEnabled()`:
+Which kernel hooks carry enforcement is decided once, at `NewOpenExecManager`. The active LSM
+list (`utils.BpfLSMEnabled()`) only says which hook type to *try first*; the decision is made by
+verifying that the attached programs actually execute (`selectHooks`, `pkg/openexecmgr/hooks.go`):
 
 | Behavior | BPF-LSM active | BPF-LSM absent |
 | --- | --- | --- |
 | `open` | `BPF_PROG_TYPE_LSM` on `file_open` | `fmod_ret` on `security_file_open` |
 | `exec` | `BPF_PROG_TYPE_LSM` on `bprm_check_security` | the same `security_file_open` program |
+
+**Attach success is not proof that a hook runs.** A kernel built with `CONFIG_BPF_LSM=y` accepts
+an LSM attach even when `bpf` is absent from the active LSM list, and then never calls the program
+(a "ghost attach"). So after attaching a hook type, the manager enables the kernel's per-program run
+counter (`openexec.EnableRunStats`), performs one controlled open and one controlled exec of its
+own binary (`Dispatcher.Canary`), and reads the counter back (`Dispatcher.Executed`). The counter is
+the kernel's per-program total, not tied to the canary, and that is enough: a ghost is never invoked by
+anything, so no amount of unrelated traffic can move its counter, while a program that ran for any
+process's open runs for the workload's too; the canary only guarantees one event on an idle node. A hook type
+whose programs did not run is detached (`Dispatcher.Close`, `ClearPins`) and the other type is
+tried the same way; the counter is switched off again before the manager returns. If neither type
+executes, `NewOpenExecManager` still returns a manager, but one whose enforcer factory fails every
+policy with `ErrNoHookExecutes`: through the normal attach-failure path each open/exec policy then
+carries `EnforcementAvailable` (or `ObservationAvailable`) `= False`, so `Applied` cannot read
+`Enforcing` on a node that enforces nothing. The daemon also marks the `openexec-observe` and
+`exec-trace` sources unavailable. When run statistics cannot be enabled — the kernel predates 5.8, or
+the daemon lacks `CAP_SYS_ADMIN` — only the hook type the LSM list suggests is attached, accepted on
+attach success without any execution check, and the other type is never tried, because accepting
+it on attach success alone is exactly the ghost-attach trap. A rejected set that cannot be confirmed
+detached ends selection with an error rather than attaching the other set beside it.
 
 The fallback needs no boot parameter, because `fmod_ret` may attach to any function whose name
 begins with `security_`. It cannot use the exec hook at all: `bpf_d_path` is gated per program
