@@ -1,0 +1,177 @@
+# One target pod with an address in each family. Every deny is checked in both
+# families: a filter that ignores the family matches ::/0 against every IPv4
+# address and still passes a test that only checks IPv6 is blocked.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: egress-ipv6
+spec:
+  steps:
+  - name: start-the-target-and-the-client
+    try:
+    - apply:
+        file: target.yaml
+    - apply:
+        file: client.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ipv6-target
+          status:
+            phase: Running
+            (conditions[?type == 'Ready'].status | [0]): "True"
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ipv6-client
+          status:
+            phase: Running
+
+  - name: baseline-both-families-reachable
+    try:
+    - script:
+        content: |
+          set -eu
+          ips=$(kubectl -n "$NAMESPACE" get pod ipv6-target -o jsonpath='{.status.podIPs[*].ip}')
+          v4=$(echo "$ips" | tr ' ' '\n' | grep -v : || true)
+          v6=$(echo "$ips" | tr ' ' '\n' | grep : || true)
+          [ -n "$v4" ] && [ -n "$v6" ] || { echo "FAIL: target pod IPs are '$ips'; the cluster is not dual-stack"; exit 1; }
+          for url in "http://${v4}:8080/" "http://[${v6}]:8080/"; do
+            ok=0
+            for _ in $(seq 1 15); do
+              if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+                   wget -q -T 3 -O /dev/null "$url" 2>/dev/null; then
+                ok=1; break
+              fi
+              sleep 2
+            done
+            [ "$ok" -eq 1 ] || { echo "FAIL: baseline $url unreachable with no policy applied"; exit 1; }
+          done
+          echo "OK: baseline -- $v4 and $v6 reachable"
+
+  - name: deny-the-target-ipv6-address
+    try:
+    - script:
+        content: |
+          set -eu
+          ips=$(kubectl -n "$NAMESPACE" get pod ipv6-target -o jsonpath='{.status.podIPs[*].ip}')
+          v6=$(echo "$ips" | tr ' ' '\n' | grep :)
+          sed "s/DENIED/${v6}/" policy.tmpl.yaml | kubectl apply -f -
+    - script:
+        content: |
+          set -eu
+          ips=$(kubectl -n "$NAMESPACE" get pod ipv6-target -o jsonpath='{.status.podIPs[*].ip}')
+          v4=$(echo "$ips" | tr ' ' '\n' | grep -v :)
+          v6=$(echo "$ips" | tr ' ' '\n' | grep :)
+          # The daemon programs maps on its own schedule, so poll rather than
+          # sleep.
+          blocked=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+                 wget -q -T 3 -O /dev/null "http://[${v6}]:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          [ "$blocked" -eq 1 ] || { echo "FAIL: $v6 still reachable with it denied"; exit 1; }
+          kubectl -n "$NAMESPACE" exec ipv6-client -- \
+            wget -q -T 3 -O /dev/null "http://${v4}:8080/" \
+            || { echo "FAIL: denying $v6 blocked $v4"; exit 1; }
+          echo "OK: $v6 blocked, $v4 reachable"
+
+  - name: removing-the-deny-gives-ipv6-back
+    try:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-ipv6
+    - script:
+        content: |
+          set -eu
+          ips=$(kubectl -n "$NAMESPACE" get pod ipv6-target -o jsonpath='{.status.podIPs[*].ip}')
+          v6=$(echo "$ips" | tr ' ' '\n' | grep :)
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+                 wget -q -T 3 -O /dev/null "http://[${v6}]:8080/" 2>/dev/null; then
+              echo "OK: $v6 reachable again"; exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: $v6 still blocked after the policy was deleted"
+          exit 1
+
+  - name: deny-all-ipv6-leaves-ipv4
+    try:
+    - script:
+        content: |
+          set -eu
+          sed "s|DENIED|::/0|" policy.tmpl.yaml | kubectl apply -f -
+    - script:
+        content: |
+          set -eu
+          ips=$(kubectl -n "$NAMESPACE" get pod ipv6-target -o jsonpath='{.status.podIPs[*].ip}')
+          v4=$(echo "$ips" | tr ' ' '\n' | grep -v :)
+          v6=$(echo "$ips" | tr ' ' '\n' | grep :)
+          blocked=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+                 wget -q -T 3 -O /dev/null "http://[${v6}]:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          [ "$blocked" -eq 1 ] || { echo "FAIL: $v6 still reachable with ::/0 denied"; exit 1; }
+          kubectl -n "$NAMESPACE" exec ipv6-client -- \
+            wget -q -T 3 -O /dev/null "http://${v4}:8080/" \
+            || { echo "FAIL: ::/0 deny blocked $v4"; exit 1; }
+          echo "OK: ::/0 blocks $v6 and leaves $v4 alone"
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-ipv6
+
+  - name: deny-all-ipv4-leaves-ipv6
+    try:
+    - script:
+        content: |
+          set -eu
+          sed "s|DENIED|0.0.0.0/0|" policy.tmpl.yaml | kubectl apply -f -
+    - script:
+        content: |
+          set -eu
+          ips=$(kubectl -n "$NAMESPACE" get pod ipv6-target -o jsonpath='{.status.podIPs[*].ip}')
+          v4=$(echo "$ips" | tr ' ' '\n' | grep -v :)
+          v6=$(echo "$ips" | tr ' ' '\n' | grep :)
+          blocked=0
+          for _ in $(seq 1 45); do
+            if kubectl -n "$NAMESPACE" exec ipv6-client -- \
+                 wget -q -T 3 -O /dev/null "http://${v4}:8080/" 2>/dev/null; then
+              sleep 2
+            else
+              blocked=1; break
+            fi
+          done
+          [ "$blocked" -eq 1 ] || { echo "FAIL: $v4 still reachable with 0.0.0.0/0 denied"; exit 1; }
+          kubectl -n "$NAMESPACE" exec ipv6-client -- \
+            wget -q -T 3 -O /dev/null "http://[${v6}]:8080/" \
+            || { echo "FAIL: 0.0.0.0/0 deny blocked $v6"; exit 1; }
+          echo "OK: 0.0.0.0/0 blocks $v4 and leaves $v6 alone"
+    finally:
+    - delete:
+        ref:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          name: e2e-egress-ipv6
+    - script:
+        content: |
+          kubectl -n kyverno-runtime logs -l app.kubernetes.io/name=kyverno-runtime \
+            --all-containers --tail=100 || true

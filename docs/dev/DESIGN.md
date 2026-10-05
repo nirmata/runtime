@@ -135,7 +135,7 @@ two (`pkg/compiler/compiler.go: compileBehavior`, `pkg/compiler/policy.go: evalC
 
 Semantics (see `docs/users/reference/runtimepolicy.md` for the full reference with examples):
 
-- `network` values are IPv4 addresses, CIDRs, cluster Service DNS names and external domain names
+- `network` values are IPv4 and IPv6 addresses, CIDRs, cluster Service DNS names and external domain names
   (egress), `exec` values are command names/paths, `open` values are file paths, `dns` values are
   hostnames or left-wildcards.
 - `protocol` values are application-protocol tokens for egress flows, classified from the first
@@ -391,8 +391,8 @@ behavior. Where `OpenExecManager` keys its BPF state by policy, `EgressManager` 
 matched pod gets one `egressfilter.EgressFilter` (`pkg/bpf/egressfilter/egressfilter.go`), a
 `cgroup/skb egress` BPF program (`pkg/bpf/egressfilter/_cprog/probe.c`) attached per-container
 cgroup path via `link.AttachCgroup(..., Attach: ebpf.AttachCGroupInetEgress)`. `AddIps`/`DeleteIps`
-populate that pod's `AllowedIps`/`BannedIps` maps (parsed by `egressfilter.ParseTargets`, which
-expands `/24`-or-narrower CIDRs and returns IPv6/wider-CIDR/hostname values as typed
+populate that pod's `AllowedIps`/`BannedIps` maps (parsed by `egressfilter.ParseTargets` into longest-prefix-match keys led by the address family,
+so a prefix never matches across families; values it cannot program come back as typed
 `RejectedTarget`s), and `SetFlagIdx(egressfilter.DEFAULT_DENY, ...)` toggles default-deny
 for that pod's filter. `rpCreated`/`rpUpdated`/`rpDeleted` (`pkg/egressmgr/runtimepolicies.go`)
 implement the default-deny-union-across-policies bookkeeping described above, per pod
@@ -410,7 +410,7 @@ pods pointing at stale IP data.
 The `protocol` behavior is enforced by a second `cgroup_skb/egress` program,
 `pkg/bpf/protofilter/_cprog/probe.c`, attached by `EgressManager` to the same per-container cgroup
 paths as the IP filter (both programs run on every egress packet; the effective verdict is the AND
-of their return values). Where the IP filter decides at `connect` time from `ip->daddr`, the
+of their return values). Where the IP filter decides at `connect` time from the destination address, the
 classifier's verdict is deferred to the **first data segment** of a flow, which is where the
 protocol evidence lives:
 
@@ -943,8 +943,8 @@ same time. The one direct exception to the derivation is `reportCompileFailure`,
 evaluation result to derive anything from, since nothing compiled.
 
 This is the mechanism behind
-the "fail loud, not silent" rule: a network target the runtime cannot program (IPv6, a CIDR wider
-than `/24`, a hostname) is reported as a typed `egressfilter.RejectedTarget`, logged at `V(0)`,
+the "fail loud, not silent" rule: a network target the runtime cannot program (a wildcard, a domain
+too long for its map key) is reported as a typed `egressfilter.RejectedTarget`, logged at `V(0)`,
 **and** surfaced as `TargetsValid=False` with the per-value reason; an open or exec path that
 cannot become a `char[128]` map key does the same through `lsm.RejectedTarget`. Silently skipping
 it is the forbidden failure mode.
@@ -1033,7 +1033,7 @@ future `PLAN.md`.
   - The per-cgroup `events_map` inner map holds 2048 `(path, decision)` keys; a workload touching
     more than that within one interval loses the excess (read-and-reset mitigates, does not
     eliminate).
-  - Network observation is destination-IPv4 only: no port, no protocol, no IPv6.
+  - Network observation is by destination address only: no port, no protocol.
   - A DNS question is one record delivered as it happens, so ordering and per-occurrence timing do
     survive there — at the cost of a bounded buffer. It holds roughly 450 records, and a reader
     that falls behind loses questions to `ringbuf_full` rather than merging them into a count.
@@ -1062,12 +1062,10 @@ future `PLAN.md`.
   container. The failure is now logged rather than silent, but there is no positive confirmation
   that a pod is covered — and it is never retried, since the same OS/runtime facts that produced
   the miss are still there on the next attempt.
-- **Unsupported network targets are rejected, not programmed.** The egress maps are IPv4 `/32`
-  hashes by construction (`u32` key, `ip->daddr` only, no L4 parsing). `egressfilter.ParseTargets`
-  expands CIDRs of `/24` or narrower and rejects IPv6, wider CIDRs, and hostnames as typed
-  `RejectedTarget` values that reach a `V(0)` log and a `TargetsValid=False` condition. They are no
-  longer dropped silently, but they are still not enforceable. An LPM-trie/IPv6 map redesign is the
-  follow-up (#41).
+- **Domain targets cover IPv4 only.** The DNS snooper reads A records from answers carried over
+  IPv4, so a domain is programmed with its IPv4 addresses alone and an IPv6 destination is never
+  attributed to one. Under default-deny such a connection is dropped unless an IPv6 address or CIDR
+  allows it; under a deny on the domain it is allowed.
 - **Enforcement findings are counter-grained.** The observation maps count `(target, decision)`
   pairs, so an enforce-mode deny surfaces as a finding with `enforced=true` — but only counts
   survive, not per-occurrence ordering, PIDs, or timing, and only for pods some policy has in

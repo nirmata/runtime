@@ -4,7 +4,7 @@
 
 The workload may reach cluster DNS and an egress gateway, and nothing else. The allow list
 holds no addresses at all: it names `kube-dns.kube-system.svc.cluster.local` and the
-gateway's own cluster DNS name, and the daemon resolves each to its ClusterIP plus the
+gateway's own cluster DNS name, and the daemon resolves each to its ClusterIPs plus the
 addresses of its ready endpoints from Service and EndpointSlice informers. Scaling, rolling
 or replacing the gateway's backends re-programs the maps with no policy edit and no
 `evaluationInterval` — the informers drive it.

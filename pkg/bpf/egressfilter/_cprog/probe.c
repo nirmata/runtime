@@ -6,6 +6,7 @@
 #include "maps.h"
 
 #define ETH_P_IP 0x0800
+#define ETH_P_IPV6 0x86DD
 
 struct iphdr {
     __u8  ihl_version;
@@ -20,6 +21,16 @@ struct iphdr {
     __be32 daddr;
 };
 
+struct ipv6hdr {
+    __u8 priority_version;
+    __u8 flow_lbl[3];
+    __be16 payload_len;
+    __u8 nexthdr;
+    __u8 hop_limit;
+    __u8 saddr[16];
+    __u8 daddr[16];
+};
+
 // One translation unit, not a second bpf2go object: the snooper writes
 // ip_domain and the egress program below reads it, and two objects would each
 // get their own copy of every map.
@@ -27,10 +38,11 @@ struct iphdr {
 
 // The counter is __u32: a narrower lookup would only bump its low byte on
 // little-endian and wrap at 255.
-static __always_inline void record_ip_event(__u32 daddr, __u32 decision, __u32 domain_id)
+static __always_inline void record_ip_event(const struct lpm_key *dst, __u32 decision, __u32 domain_id)
 {
     struct ip_event_key key = {};
-    key.daddr = daddr;
+    key.family = dst->family;
+    __builtin_memcpy(key.daddr, dst->addr, sizeof(key.daddr));
     key.decision = decision;
     key.domain_id = domain_id;
 
@@ -61,40 +73,52 @@ static __always_inline void record_ip_event(__u32 daddr, __u32 decision, __u32 d
 SEC("cgroup_skb/egress")
 int cgroup_egress(struct __sk_buff *skb)
 {
-    // we currently only support ipv4
-    if (skb->protocol != bpf_htons(ETH_P_IP))
-        return 1;
-
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
-    struct iphdr *ip = data;
-    if ((void *)(ip + 1) > data_end)
+    // a full-length probe: the trie resolves it against whatever prefix covers it
+    struct lpm_key k = {};
+    // 0 means the address never appeared in a snooped A record, so no domain
+    // verdict applies and the id is never looked up.
+    __u32 domain_id = 0;
+
+    if (skb->protocol == bpf_htons(ETH_P_IP)) {
+        struct iphdr *ip = data;
+        if ((void *)(ip + 1) > data_end)
+            return 1;
+
+        __u32 daddr = ip->daddr;
+        /* shorter prefixes will still match, but we must do this to check if there is an entry for the exact address */
+        k.prefixlen = 32 + 32; 
+        k.family = FAMILY_IPV4;
+        __builtin_memcpy(k.addr, &daddr, sizeof(daddr));
+
+        __u32 *id = bpf_map_lookup_elem(&ip_domain, &daddr);
+        if (id) {
+            domain_id = *id;
+        }
+    } else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
+        struct ipv6hdr *ip6 = data;
+        if ((void *)(ip6 + 1) > data_end)
+            return 1;
+
+        k.prefixlen = 32 + 128;
+        k.family = FAMILY_IPV6;
+        __builtin_memcpy(k.addr, ip6->daddr, sizeof(k.addr));
+    } else {
         return 1;
+    }
 
     // read the flags
     __u32 zero_key = 0;
     __u8 *f = bpf_map_lookup_elem(&flags, &zero_key);
-    __u32 daddr = ip->daddr;
 
     // invalid state. it should always be present
     if (f == NULL) {
         return 3;
     };
 
-    // 0 means the address never appeared in a snooped A record, so no domain
-    // verdict applies and the id is never looked up.
-    __u32 domain_id = 0;
-    __u32 *id = bpf_map_lookup_elem(&ip_domain, &daddr);
-    if (id) {
-        domain_id = *id;
-    }
-
     __u32 decision = DECISION_ALLOW;
-
-    // a /32 probe: the trie resolves it against whatever prefix covers it
-    struct ipv4_lpm_key k = { .prefixlen = 32 };
-    __builtin_memcpy(k.addr, &ip->daddr, sizeof(k.addr));
 
     // if there's an explicit deny
     if (bpf_map_lookup_elem(&banned_ips, &k) != NULL || (domain_id && 
@@ -111,7 +135,7 @@ int cgroup_egress(struct __sk_buff *skb)
     }
 
     if (*f & (1 << LEARNING_MODE)) {
-        record_ip_event(daddr, decision, domain_id);
+        record_ip_event(&k, decision, domain_id);
     }
 
     // 1 = pass, 0 = drop

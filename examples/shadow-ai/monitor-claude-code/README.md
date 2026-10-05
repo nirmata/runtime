@@ -3,7 +3,7 @@
 ## What this shows
 
 This example runs the real Claude Code CLI in a Kubernetes pod and uses one monitor-mode
-`RuntimePolicy` to report the pod's process execution, file opens, IPv4 destinations,
+`RuntimePolicy` to report the pod's process execution, file opens, destination addresses,
 classified egress protocols, and DNS questions. Nothing is blocked.
 
 The image is built before the pod starts, so package installation does not fill the report.
@@ -75,7 +75,7 @@ Expect findings in these categories:
 
 - `exec`: the Claude launcher, Node runtime, and commands Claude chose to execute;
 - `open`: Claude's runtime files, `/etc/os-release`, configuration, and workspace files;
-- `network`: destination IPv4 addresses contacted by the CLI;
+- `network`: destination addresses contacted by the CLI;
 - `protocol`: classified TLS traffic;
 - `dns`: names such as the Anthropic API endpoint and cluster resolver queries.
 
@@ -85,8 +85,8 @@ operation untouched. `enforced: "false"` on each result confirms that distinctio
 ## What this does not capture
 
 This is runtime activity monitoring, not full syscall or packet capture. It does not expose
-prompts, responses, HTTP paths, request bodies, TLS contents, file contents, IPv6 destinations,
-or exact ordering within a polling window. Network findings have no port dimension. DNS covers
+prompts, responses, HTTP paths, request bodies, TLS contents, file contents, or
+exact ordering within a polling window. Network findings have no port dimension. DNS covers
 UDP/53 questions, not DNS over HTTPS or TLS.
 
 Open and exec observations use bounded maps, and Reports hold at most 500 results. Claude and

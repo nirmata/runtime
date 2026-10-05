@@ -16,7 +16,7 @@ spec:
       allow:
         values:
         # The Service the agent is allowed to reach, resolved from the Service
-        # and EndpointSlice informers to its ClusterIP plus the ready endpoint
+        # and EndpointSlice informers to its ClusterIPs plus the ready endpoint
         # addresses. Swap in your own gateway Service; the name must be the
         # full <name>.<namespace>.svc.cluster.local form.
         - kubernetes.default.svc.cluster.local

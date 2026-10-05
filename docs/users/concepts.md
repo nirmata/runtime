@@ -10,11 +10,9 @@ enforced or observed: file `open`, process `exec`, `network` egress, and the app
 ## How enforcement works
 
 Network egress is enforced by a `cgroup_skb` eBPF program attached to the matched pod's
-cgroup: on every outbound packet it looks up the destination IPv4 address in an
+cgroup: on every outbound IPv4 or IPv6 packet it looks up the destination address in an
 allow/deny map programmed for that pod and drops the packet if the lookup says to.
-Packets that are not IPv4 pass through it unexamined, so on a dual-stack cluster IPv6
-egress is neither denied nor observed — see
-[limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
+Packets that are neither pass through it unexamined.
 
 Application `protocol` is enforced by a second program on the same cgroup that
 classifies each flow — IPv4 and IPv6 both — from the first data segment it carries, and
@@ -44,12 +42,11 @@ on the first. See [platform support](platforms.md).
 
 Each behavior in `spec.behaviors` takes an optional `allow` and/or `deny`, each a
 `values` list and/or a CEL `expression` returning `list(string)` (unioned with
-`values`). A `network` value may be an IPv4 address, an IPv4 CIDR of `/24` or narrower
-(expanded into its individual addresses when programmed; wider prefixes are rejected),
-or a name; a name in the form
+`values`). A `network` value may be an IPv4 or IPv6 address, a CIDR of any width (a prefix
+never matches across families: `::/0` covers no IPv4 address), or a name; a name in the form
 `<service>.<namespace>.svc.cluster.local` is an in-cluster Service, which the daemon
-resolves to its ClusterIP and ready endpoint addresses from Service and EndpointSlice
-informers; prefixing one more label,
+resolves to its ClusterIPs and ready endpoint addresses, in both families, from
+Service and EndpointSlice informers; prefixing one more label,
 `<hostname>.<service>.<namespace>.svc.cluster.local`, names a single endpoint of it. Any
 other fully qualified domain name is external. Setting
 `deny.values: ["*"]` on a behavior is a default-deny
@@ -130,7 +127,7 @@ policy attachments without recreating the pod.
   reporter's 10-second flush applies to it.
 - Only counts are kept per poll window, not the ordering or timing of individual
   occurrences.
-- Network observation is IPv4 only, with no ports, protocols, or TLS/HTTP visibility. A
+- Network observation is by destination address, with no ports, protocols, or TLS/HTTP visibility. A
   destination is reported by address, plus the domain it was answered for when the DNS
   snooper learned it from a name some policy already names.
 - `dns` observation reads the question name out of UDP/53 queries and nothing else: no
@@ -159,6 +156,7 @@ for the authoritative list.
 
 A boundary worth reading twice before relying on enforcement:
 
-- The egress filter reads IPv4 packets only, so on a dual-stack cluster a default-deny
-  `network` behavior neither blocks nor observes IPv6 connections. See
-  [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
+- A domain name is matched against the IPv4 addresses its A records return and nothing
+  else. A connection to the same destination over IPv6 is not attributed to the domain: a
+  default deny blocks it, and a deny on the domain does not. See
+  [limits of domain names](reference/runtimepolicy.md#limits-of-domain-names).

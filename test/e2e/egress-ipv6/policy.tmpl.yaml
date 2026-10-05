@@ -1,0 +1,15 @@
+# DENIED is substituted by the script step that applies it.
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-egress-ipv6
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: ipv6-client
+  behaviors:
+  - network:
+      deny:
+        values:
+        - "DENIED"

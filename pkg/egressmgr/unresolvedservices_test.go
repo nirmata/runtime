@@ -41,10 +41,10 @@ func TestTargetsConditionReportsUnresolvedServices(t *testing.T) {
 		},
 		{
 			name:       "an unresolved service and a rejected literal are both reported",
-			res:        rpWithUnresolved("rp-1", []string{"2001:db8::1"}, nil, "api.prod.svc.cluster.local"),
+			res:        rpWithUnresolved("rp-1", []string{"fe80::1%eth0"}, nil, "api.prod.svc.cluster.local"),
 			wantStatus: metav1.ConditionFalse,
 			wantReason: v1alpha1.ReasonUnresolvedServices,
-			wantIn:     []string{"api.prod.svc.cluster.local", "2001:db8::1"},
+			wantIn:     []string{"api.prod.svc.cluster.local", "fe80::1%eth0"},
 		},
 		{
 			name:       "an unresolved service is not reported as an absence of targets",

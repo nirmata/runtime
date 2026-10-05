@@ -20,15 +20,17 @@ type egressBlockDomainKey struct {
 
 type egressBlockIpEventKey struct {
 	_        structs.HostLayout
-	Daddr    uint32
+	Family   uint32
+	Daddr    [16]uint8
 	Decision uint32
 	DomainId uint32
 }
 
-type egressBlockIpv4LpmKey struct {
+type egressBlockLpmKey struct {
 	_         structs.HostLayout
 	Prefixlen uint32
-	Addr      [4]uint8
+	Family    uint32
+	Addr      [16]uint8
 }
 
 // Names of all BPF objects in the ELF.

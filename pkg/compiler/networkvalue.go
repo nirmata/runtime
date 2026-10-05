@@ -30,16 +30,14 @@ func IsStarTarget(raw string) bool {
 var (
 	// ErrEmptyNetworkValue reports a value that is empty after trimming.
 	ErrEmptyNetworkValue = errors.New("empty network target")
-	// ErrIPv6NetworkValue reports an IPv6 literal or CIDR (IPv4-mapped IPv6
-	// forms are unmapped and accepted, not reported).
-	ErrIPv6NetworkValue = errors.New("IPv6 addresses and CIDRs are not supported")
 	// ErrWildcardNetworkValue reports a wildcard such as "*.example.com",
 	// distinct from the bare "*" sentinel.
 	ErrWildcardNetworkValue = errors.New(`wildcards are not supported: list each address or fully qualified hostname, or use "*" to match everything`)
 	// ErrNotAnIPNetworkValue reports anything else: URLs, truncated
-	// addresses, and strings that are not a usable hostname either (a single
-	// label, an over-long or malformed label, a numeric last label).
-	ErrNotAnIPNetworkValue = errors.New(`not an IPv4 address, IPv4 CIDR, hostname or "*"`)
+	// addresses, scoped IPv6 addresses, and strings that are not a usable
+	// hostname either (a single label, an over-long or malformed label, a
+	// numeric last label).
+	ErrNotAnIPNetworkValue = errors.New(`not an IP address, CIDR, hostname or "*"`)
 	// ErrServiceFormNetworkValue reports a name in the cluster DNS domain that
 	// names neither a Service nor one of its endpoints: a pod A record, or an
 	// incomplete name. Such a name is rejected instead of falling through to
@@ -109,16 +107,17 @@ var ClusterDomain = "cluster.local"
 // (CEL list rendering and hand-written YAML both leak those). Then:
 //
 //   - StarTarget ("*") yields Star
-//   - an IPv4 literal (or IPv4-mapped IPv6 literal) yields Addr, unmapped
-//   - an IPv4 CIDR (or IPv4-mapped IPv6 CIDR) of any width yields Prefix,
-//     unmapped and masked
+//   - an IPv4 or IPv6 literal yields Addr; an IPv4-mapped IPv6 literal is
+//     unmapped to its IPv4 form
+//   - an IPv4 or IPv6 CIDR of any width yields Prefix, masked; an
+//     IPv4-mapped IPv6 CIDR is unmapped to its IPv4 form
 //   - "<service>.<namespace>.svc.<ClusterDomain>" yields Service
 //   - "<hostname>.<service>.<namespace>.svc.<ClusterDomain>" yields Service
 //     with Hostname set, naming one endpoint of it
 //   - any other multi-label DNS name yields Host, lowercased and stripped of
 //     its root dot
 //   - everything else is an error: ErrEmptyNetworkValue,
-//     ErrIPv6NetworkValue, ErrWildcardNetworkValue,
+//     ErrWildcardNetworkValue,
 //     ErrServiceFormNetworkValue, ErrServiceShortFormNetworkValue,
 //     ErrServiceLabelNetworkValue, or ErrNotAnIPNetworkValue
 func ParseNetworkValue(raw string) (NetworkValue, error) {
@@ -139,20 +138,16 @@ func ParseNetworkValue(raw string) (NetworkValue, error) {
 		if err != nil {
 			return NetworkValue{}, ErrNotAnIPNetworkValue
 		}
-		// Unmap first so ::ffff:10.0.0.0/120 is not mistaken for IPv6.
-		prefix = unmapPrefix(prefix)
-		if !prefix.Addr().Is4() {
-			return NetworkValue{}, ErrIPv6NetworkValue
-		}
-		return NetworkValue{Prefix: prefix.Masked()}, nil
+		return NetworkValue{Prefix: unmapPrefix(prefix).Masked()}, nil
 
 	default:
 		if addr, err := netip.ParseAddr(cleaned); err == nil {
-			addr = addr.Unmap()
-			if !addr.Is4() {
-				return NetworkValue{}, ErrIPv6NetworkValue
+			// a zone names an interface on one node, and the kernel keys
+			// carry none
+			if addr.Zone() != "" {
+				return NetworkValue{}, ErrNotAnIPNetworkValue
 			}
-			return NetworkValue{Addr: addr}, nil
+			return NetworkValue{Addr: addr.Unmap()}, nil
 		}
 		name := normalizeName(cleaned)
 		if svc, isServiceName, err := parseClusterService(name); isServiceName {
@@ -270,7 +265,7 @@ func validLabel(label string) bool {
 
 // unmapPrefix converts an IPv4-mapped IPv6 prefix (::ffff:a.b.c.d/N, N >= 96)
 // into its IPv4 form. Anything else is returned unchanged, so a prefix wider
-// than the v4-mapped range stays IPv6 and is rejected as such.
+// than the v4-mapped range stays IPv6 and never matches IPv4 traffic.
 func unmapPrefix(p netip.Prefix) netip.Prefix {
 	addr := p.Addr()
 	if !addr.Is4In6() {

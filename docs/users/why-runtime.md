@@ -30,7 +30,7 @@ report.
 | TLS-intercepting proxy | content of any intercepted HTTPS, including calls that skip the gateway | anything that does not route through it or does not trust its CA |
 | Admission control | what may be created; injects env and CA | whether the process honors either |
 | CNI NetworkPolicy | who may reach whom, L3/L4 and FQDN | attempts, process identity, its own enforcement status |
-| Nirmata Runtime | per-pod facts decided in the kernel: destination of every IPv4 flow, protocol of every flow, file and exec enforcement, and the attempts as findings | content, which requires the client's cooperation; IPv6 destinations |
+| Nirmata Runtime | per-pod facts decided in the kernel: destination of every IP flow, protocol of every flow, file and exec enforcement, and the attempts as findings | content, which requires the client's cooperation; the IPv6 addresses of a destination named by domain |
 
 The mechanism — eBPF at `cgroup_skb` and BPF-LSM — is shared with other runtime tools. What
 differs is the altitude: an admission-validated CRD, per-node status conditions, findings
@@ -62,11 +62,6 @@ workload for anything.
 | `quic` denied | HTTP/3 is opaque to a proxy, and no provider SDK speaks it, so denying it costs little and forces the workload into a lane something can observe |
 | `exec` default deny | The pod runs its own binaries and no others, enforced at `bprm_check_security` |
 | `open` deny | Named credential paths are unreadable regardless of which process asks |
-
-On a dual-stack cluster the `network` row is weaker than it reads: the egress filter is
-IPv4-only, so a destination reachable over IPv6 is reachable under a `network` default
-deny. The `protocol` rows hold for IPv6 flows as well. See
-[limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
 
 ### What is recorded
 

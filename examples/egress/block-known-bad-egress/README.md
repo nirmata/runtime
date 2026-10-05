@@ -3,7 +3,7 @@
 ## What this shows
 
 A single denied destination address. The policy selects the `egress-client` pod by label
-and denies its egress to one IPv4 address in `enforce` mode. Every other destination the
+and denies its egress to one address in `enforce` mode. Every other destination the
 pod uses is untouched, so the block is visible as one command that stops working while a
 second, near-identical command keeps working.
 
@@ -12,7 +12,7 @@ policy this is where a threat-intel address goes; here it is an in-cluster HTTP 
 that both the before state and the after state are unambiguous. `egress-target-allowed`
 serves the same content from a different address and is never denied — it is the control.
 
-Because egress matching is by destination IPv4 address, the address is only known once the
+Because egress matching is by destination address, the address is only known once the
 target pod is running, so the policy ships as `policy.tmpl.yaml` and one `sed` fills the
 address in.
 

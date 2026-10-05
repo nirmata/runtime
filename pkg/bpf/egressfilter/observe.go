@@ -1,7 +1,6 @@
 package egressfilter
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -10,24 +9,6 @@ import (
 
 	"github.com/cilium/ebpf"
 )
-
-// convert an address to its native endian byte representation only
-// if its ipv4
-func addrKey(addr netip.Addr) (uint32, bool) {
-	addr = addr.Unmap()
-	if !addr.Is4() {
-		return 0, false
-	}
-	b := addr.As4()
-	return binary.NativeEndian.Uint32(b[:]), true
-}
-
-// keyAddr is the inverse of addrKey.
-func keyAddr(key uint32) netip.Addr {
-	var b [4]byte
-	binary.NativeEndian.PutUint32(b[:], key)
-	return netip.AddrFrom4(b)
-}
 
 // SetObserve turns the OBSERVE (LEARNING_MODE) flag bit on or off.
 func (e *EgressFilter) SetObserve(enabled bool) {
@@ -48,7 +29,8 @@ type IPEventKey struct {
 // ipEventKernelKey mirrors `struct ip_event_key` in _cprog/maps.h. cilium/ebpf
 // rejects a key whose Go layout does not match the loaded map's BTF key.
 type ipEventKernelKey struct {
-	Daddr    uint32
+	Family   uint32
+	Daddr    [16]byte
 	Decision uint32
 	DomainId uint32
 }
@@ -152,7 +134,7 @@ func readAndResetIPEvents(m *ebpf.Map, domainOf func(uint32) string) (map[IPEven
 
 	for i := range keys {
 		if err := m.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			errs = append(errs, fmt.Errorf("resetting ip_events entry %s: %w", keyAddr(keys[i].Daddr), err))
+			errs = append(errs, fmt.Errorf("resetting ip_events entry %s: %w", keyAddr(keys[i].Family, keys[i].Daddr), err))
 		}
 	}
 
@@ -161,7 +143,7 @@ func readAndResetIPEvents(m *ebpf.Map, domainOf func(uint32) string) (map[IPEven
 
 func eventKey(k ipEventKernelKey, domainOf func(uint32) string) IPEventKey {
 	return IPEventKey{
-		Addr:     keyAddr(k.Daddr),
+		Addr:     keyAddr(k.Family, k.Daddr),
 		Decision: runtimeevent.KernelDecision(k.Decision),
 		Domain:   domainOf(k.DomainId),
 	}

@@ -159,10 +159,7 @@ func putPrefixes(m *ebpf.Map, name string, prefixes []netip.Prefix) error {
 
 	var errs []error
 	for _, prefix := range prefixes {
-		key, ok := prefixKey(prefix)
-		if !ok {
-			continue
-		}
+		key := prefixKey(prefix)
 		if err := m.Put(&key, uint8(0)); err != nil {
 			errs = append(errs, fmt.Errorf("writing %s: %w", name, err))
 		}
@@ -180,10 +177,7 @@ func deletePrefixes(m *ebpf.Map, name string, prefixes []netip.Prefix) error {
 
 	var errs []error
 	for _, prefix := range prefixes {
-		key, ok := prefixKey(prefix)
-		if !ok {
-			continue
-		}
+		key := prefixKey(prefix)
 		if err := m.Delete(&key); err != nil {
 			errs = append(errs, fmt.Errorf("deleting from %s: %w", name, err))
 		}

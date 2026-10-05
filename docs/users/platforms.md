@@ -146,9 +146,7 @@ produce no findings. It doesn't help in `enforce` mode.
 
 Given that, the practical check is still the kernel file above, done once per node image
 if you depend on the BPF-LSM interaction, plus the symptoms in
-[Troubleshooting](troubleshooting.md#the-policy-is-applied-but-nothing-is-blocked). IPv6
-and dual-stack clusters carry a separate, `network`-specific enforcement gap — see
-[limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
+[Troubleshooting](troubleshooting.md#the-policy-is-applied-but-nothing-is-blocked).
 
 ## BTF and CO-RE
 

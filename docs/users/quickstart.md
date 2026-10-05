@@ -64,7 +64,7 @@ Both print `ok`.
 ## 3. Apply the policy
 
 `policy.tmpl.yaml` denies egress to one address, for pods carrying the label the client pod
-has, in `enforce` mode. Egress matches on destination IPv4 address, and a pod's address is
+has, in `enforce` mode. Egress matches on destination address, and a pod's address is
 only known once it is running, so one `sed` fills it in:
 
 ```bash

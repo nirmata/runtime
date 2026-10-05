@@ -89,9 +89,9 @@ spec:
   under `/usr/lib` at any depth, and covers neither `/usr/library` nor the directory
   `/usr/lib` itself. A `*` anywhere else in a value is rejected, and so is a value ending in
   a bare `/`. See [Limits of monitor mode](#limits-of-monitor-mode) for the depth bound.
-- `network`: IPv4 addresses, IPv4 CIDRs of `/24` or narrower, cluster Service DNS names,
-  and fully qualified domain names for egress. The filter reads IPv4 packets only, which
-  on a dual-stack cluster is a real boundary — see
+- `network`: IPv4 and IPv6 addresses, CIDRs of any width, cluster Service DNS names, and
+  fully qualified domain names for egress. Domain names are matched against IPv4 addresses
+  only — see [Limits of domain names](#limits-of-domain-names) and
   [Limits of network enforcement](#limits-of-network-enforcement).
 - `dns`: the DNS names a workload is expected to resolve. Observation only, and its allow
   list is inverted relative to the other behaviors — see [DNS reporting](#dns-reporting).
@@ -279,10 +279,10 @@ StatefulSet replica is addressed:
 
 What a Service name resolves to:
 
-- the Service's ClusterIP, when it has one, plus the addresses of its **ready**
-  endpoints. A headless Service therefore resolves to its endpoints alone; a Service
-  scaled to zero resolves to its ClusterIP alone.
-- IPv4 only. IPv6 endpoint addresses are skipped, as everywhere else in `network`.
+- every ClusterIP the Service has (both families on a dual-stack Service), plus the
+  addresses of its **ready** endpoints from its IPv4 and IPv6 EndpointSlices. A headless
+  Service therefore resolves to its endpoints alone; a Service scaled to zero resolves to
+  its ClusterIPs alone.
 - re-resolved whenever the Service or one of its EndpointSlices changes, so scaling,
   rolling, or replacing the backends updates the programmed addresses without touching
   the policy. No `evaluationInterval` is needed for this; the informers drive it.
@@ -368,7 +368,7 @@ These are real, current limits:
   For an external destination, name it as a domain instead — a different mechanism with
   [different limits](#limits-of-domain-names).
 - **No port or protocol granularity.** Allowing a Service allows *every* port on the
-  addresses it resolves to, because the egress maps are keyed on a `u32` IPv4 address
+  addresses it resolves to, because the egress maps are keyed on the destination address
   and nothing else. Naming a Service that exposes port 443 does not restrict the
   workload to port 443 on that address.
 - **Both the ClusterIP and the endpoint addresses are programmed, and both are needed.**
@@ -401,7 +401,10 @@ A `network` value that is a fully qualified domain name outside the cluster doma
 external destination, and nothing about it is resolved when the policy is written: the
 daemon attaches a second eBPF program to the matched pod's cgroup that reads the pod's own
 DNS answers, and an A record for a name the policy mentions makes that address allowed (or
-denied) for that pod. The pod learns the address the same moment the kernel does.
+denied) for that pod. The pod learns the address the same moment the kernel does. Only A
+records are read, so a domain covers the IPv4 addresses it resolves to and none of its IPv6
+ones — see [Limits of domain names](#limits-of-domain-names) before relying on a domain on a
+dual-stack cluster.
 
 The resolver has to stay reachable for any of this to happen, which is why cluster DNS is
 allowed alongside the name — under default-deny a workload that cannot reach its resolver
@@ -461,31 +464,27 @@ current limits:
   distinct domains rejects the excess with `TargetsValid=False`. A name that resolves to
   more addresses than the map holds loses the oldest of them to eviction. A name is also
   rejected if its DNS wire encoding exceeds 128 bytes.
-- **IPv4 only, on both sides.** Only A records are read, and only from answers carried
-  over IPv4, matching the IPv4-only egress maps.
+- **IPv4 only.** Only A records are read, and only from answers carried over IPv4, so a
+  domain is enforced against its IPv4 addresses alone. A connection to an address the name
+  resolves to over AAAA is not attributed to the domain: under default-deny it is blocked
+  unless an IPv6 address or CIDR allows it, and under a deny list it is allowed — a real
+  bypass for any destination reachable over IPv6. To deny such a destination, name its IPv6
+  addresses or prefix as well.
 
 ## Limits of network enforcement
 
-The egress filter reads IPv4 packets and nothing else. That is a security boundary an
-operator has to know about, not a missing convenience:
+The egress filter reads the destination address of IPv4 and IPv6 packets; any other packet
+passes unexamined.
 
-- **IPv6 traffic is not filtered.** The egress program passes any packet that is not
-  IPv4 without looking at it, so on a dual-stack cluster a default-deny `network`
-  behavior does not deny IPv6 connections: a destination reachable over IPv6 is
-  reachable whatever the policy says, and nothing observes or reports the connection.
-  A workload that must be contained by `network` rules needs to run without IPv6
-  connectivity — a single-stack IPv4 cluster, or pods with no IPv6 address. A
-  `protocol` behavior does classify and enforce IPv6 flows, so a protocol default deny
-  still constrains what an IPv6 connection may carry, but never where it goes.
-- **IPv6 literals are rejected as values**, at compile time when written literally and
-  through `TargetsValid=False` when produced by an `expression`, so a policy cannot
-  appear to cover a family the filter does not read.
-- **A CIDR is expanded into addresses, not stored as a prefix.** The maps hold
-  individual IPv4 addresses, so a CIDR of `/24` or narrower is expanded into its
-  addresses — at most 256 per value — and a wider one is rejected with
-  `TargetsValid=False` rather than partially covered. The per-pod allow and deny maps
-  hold 1024 addresses each; a set of policies whose expansions exceed that fails to
-  program and is surfaced through the policy's status conditions.
+- **A prefix never matches across families.** `::/0` covers every IPv6 destination and no
+  IPv4 one, and `0.0.0.0/0` the reverse. An IPv4-mapped IPv6 value such as
+  `::ffff:192.0.2.10` is unmapped and matches the IPv4 address. A scoped IPv6 literal
+  such as `fe80::1%eth0` is rejected by the schema.
+- **Domain names cover IPv4 only.** See [Limits of domain names](#limits-of-domain-names).
+- **Bounded per pod: 1024 prefixes per list.** A CIDR is stored as one longest-prefix-match
+  entry whatever its width. The per-pod allow and deny tries hold 1024 prefixes each; a set
+  of policies that exceeds that fails to program and is surfaced through the policy's
+  status conditions.
 - **No port granularity.** An address allows or denies every port on it; no policy
   value carries a port.
 
@@ -719,7 +718,7 @@ In `monitor` mode the same eBPF programs are attached to the same matched pods, 
 the programs do is *count* what the workload touched:
 
 - the LSM programs count every `file_open` / `bprm_check_security` path per cgroup;
-- the egress program counts every destination IPv4 address per pod;
+- the egress program counts every destination IPv4 and IPv6 address per pod;
 - the protocol classifier counts every classified `(protocol, decision)` per pod, once per flow.
 
 The daemon polls those counters every 10 seconds, attributes each observation to a pod (via the
@@ -766,7 +765,7 @@ status:
   - type: TargetsValid
     status: "False"
     reason: UnsupportedTargets
-    message: '2 egress target(s) are not enforced: "example.com": not an IPv4 ...'
+    message: '2 egress target(s) are not enforced: "example.com": not an IP address ...'
 ```
 
 Conditions:
@@ -1020,19 +1019,15 @@ exception in shape — a program of its own, streamed rather than counted — an
 - **Open/exec path counters cap per cgroup.** The per-cgroup path map holds 2048 distinct
   `(path, decision)` keys; a workload touching more than that within one poll interval loses
   the excess. The read-and-reset drain mitigates this but does not eliminate it.
-- **Network observation is IPv4 only**, with no port or protocol, because the egress maps are
-  keyed on a `u32` IPv4 address. An IPv6 connection is not observed at all — see
-  [Limits of network enforcement](#limits-of-network-enforcement).
+- **Network observation carries no port or protocol**, because the egress maps are keyed on
+  the destination address alone.
 - **A destination is named only when the snooper learned it.** An observation carries a
   domain when the address came from a DNS answer for a name some policy already names
   (see [Limits of domain names](#limits-of-domain-names)); every other destination is
   reported by address alone.
-- **Unsupported `network` targets are rejected, not skipped.** A CIDR wider than `/24`, a
-  name whose wire encoding exceeds 128 bytes, and a pod's 257th distinct domain are all
-  accepted by the schema and refused when programmed, so they are reported per value
-  through `TargetsValid=False`. A CIDR of `/24` or narrower is expanded into individual
-  addresses. An IPv6 literal is refused earlier, by the schema, so as a literal value it
-  fails the policy to compile instead.
+- **Unsupported `network` targets are rejected, not skipped.** A name whose wire encoding
+  exceeds 128 bytes and a pod's 257th distinct domain are accepted by the schema and refused
+  when programmed, so they are reported per value through `TargetsValid=False`.
 - **`open` and `exec` values are absolute paths or directories, bounded at 127 bytes.** A value
   is a whole path compared byte for byte, or — ending in `/*` — a directory covering everything
   below it. Only the whole value `"*"` is the default-deny sentinel, and it must be written

@@ -137,9 +137,11 @@ func TestResolveServiceUnionsSlicesAndClusterIP(t *testing.T) {
 	}
 }
 
-func TestResolveServiceSkipsNonIPv4(t *testing.T) {
+func TestResolveServiceCoversBothFamilies(t *testing.T) {
+	dualStack := service("default", "api", "10.96.5.5")
+	dualStack.Spec.ClusterIPs = []string{"10.96.5.5", "fd00:96::5"}
 	r := started(t,
-		service("default", "api", "10.96.5.5"),
+		dualStack,
 		slice("default", "api-v6", "api", discoveryv1.AddressTypeIPv6, endpoint(ptr(true), "fd00::1")),
 		slice("default", "api-fqdn", "api", discoveryv1.AddressTypeFQDN, endpoint(ptr(true), "api.default.svc")),
 		slice("default", "api-v4", "api", discoveryv1.AddressTypeIPv4, endpoint(ptr(true), "10.244.3.3", "fd00::2")),
@@ -149,7 +151,7 @@ func TestResolveServiceSkipsNonIPv4(t *testing.T) {
 	if !found {
 		t.Fatal("expected the Service to be found")
 	}
-	if want := []string{"10.244.3.3", "10.96.5.5"}; !reflect.DeepEqual(addrs, want) {
+	if want := []string{"10.244.3.3", "10.96.5.5", "fd00:96::5", "fd00::1", "fd00::2"}; !reflect.DeepEqual(addrs, want) {
 		t.Fatalf("got %v, want %v", addrs, want)
 	}
 }

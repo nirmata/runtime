@@ -9,7 +9,7 @@ CEL appears in three places in a `RuntimePolicy`:
   whether it becomes a finding.
 
 The first two are evaluated when the policy is evaluated against a matched pod, not once per
-kernel event. The kernel sees only the resulting flat lists of IPv4 addresses, command paths,
+kernel event. The kernel sees only the resulting flat lists of addresses and prefixes, command paths,
 or file paths. An expression that reads external state therefore returns a snapshot;
 `spec.evaluationInterval` is the knob that refreshes it.
 

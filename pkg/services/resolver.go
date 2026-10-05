@@ -116,8 +116,10 @@ func (r *Resolver) ResolveService(namespace, name string) ([]string, bool) {
 	}
 
 	set := make(map[string]struct{})
-	if ip := svc.Spec.ClusterIP; ip != "" && ip != corev1.ClusterIPNone {
-		r.addIPv4(set, ip)
+	for _, ip := range clusterIPs(svc) {
+		if ip != "" && ip != corev1.ClusterIPNone {
+			r.addAddr(set, ip)
+		}
 	}
 
 	key := namespace + "/" + name
@@ -127,7 +129,7 @@ func (r *Resolver) ResolveService(namespace, name string) ([]string, bool) {
 	}
 	for _, obj := range objs {
 		slice, ok := obj.(*discoveryv1.EndpointSlice)
-		if !ok || slice.AddressType != discoveryv1.AddressTypeIPv4 {
+		if !ok || slice.AddressType == discoveryv1.AddressTypeFQDN {
 			continue
 		}
 		for _, endpoint := range slice.Endpoints {
@@ -137,7 +139,7 @@ func (r *Resolver) ResolveService(namespace, name string) ([]string, bool) {
 				continue
 			}
 			for _, addr := range endpoint.Addresses {
-				r.addIPv4(set, addr)
+				r.addAddr(set, addr)
 			}
 		}
 	}
@@ -166,7 +168,7 @@ func (r *Resolver) ResolveEndpoint(namespace, service, hostname string) ([]strin
 	found := false
 	for _, obj := range objs {
 		slice, ok := obj.(*discoveryv1.EndpointSlice)
-		if !ok || slice.AddressType != discoveryv1.AddressTypeIPv4 {
+		if !ok || slice.AddressType == discoveryv1.AddressTypeFQDN {
 			continue
 		}
 		for _, endpoint := range slice.Endpoints {
@@ -181,7 +183,7 @@ func (r *Resolver) ResolveEndpoint(namespace, service, hostname string) ([]strin
 				continue
 			}
 			for _, addr := range endpoint.Addresses {
-				r.addIPv4(set, addr)
+				r.addAddr(set, addr)
 			}
 		}
 	}
@@ -197,15 +199,22 @@ func (r *Resolver) ResolveEndpoint(namespace, service, hostname string) ([]strin
 	return addrs, true
 }
 
-func (r *Resolver) addIPv4(set map[string]struct{}, raw string) {
+// ClusterIPs holds every family of a dual-stack Service; a Service the API
+// server has not defaulted carries only ClusterIP.
+func clusterIPs(svc *corev1.Service) []string {
+	if len(svc.Spec.ClusterIPs) > 0 {
+		return svc.Spec.ClusterIPs
+	}
+	return []string{svc.Spec.ClusterIP}
+}
+
+func (r *Resolver) addAddr(set map[string]struct{}, raw string) {
 	addr, err := netip.ParseAddr(raw)
 	if err != nil {
 		r.log.V(2).Info("skipping an address that is not a valid IP", "address", raw)
 		return
 	}
-	if addr = addr.Unmap(); addr.Is4() {
-		set[addr.String()] = struct{}{}
-	}
+	set[addr.Unmap().String()] = struct{}{}
 }
 
 func (r *Resolver) serviceChanged(obj interface{}) {

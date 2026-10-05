@@ -32,6 +32,13 @@ func TestParseNetworkValue(t *testing.T) {
 		{name: "quoted padded sentinel", in: "\" * \"", wantStar: true},
 		{name: "IPv4-mapped IPv6 literal is unmapped", in: "::ffff:1.2.3.4", wantAddr: "1.2.3.4"},
 		{name: "IPv4-mapped IPv6 CIDR is unmapped", in: "::ffff:10.0.0.0/126", wantPrefix: "10.0.0.0/30"},
+		{name: "IPv6 literal", in: "2001:db8::1", wantAddr: "2001:db8::1"},
+		{name: "IPv6 literal is canonicalized", in: "2001:DB8:0:0::1", wantAddr: "2001:db8::1"},
+		{name: "bracketed IPv6 literal", in: "[2001:db8::1]", wantAddr: "2001:db8::1"},
+		{name: "IPv6 loopback", in: "::1", wantAddr: "::1"},
+		{name: "IPv6 CIDR", in: "2001:db8::/32", wantPrefix: "2001:db8::/32"},
+		{name: "IPv6 CIDR with host bits set is masked", in: "2001:db8::7/126", wantPrefix: "2001:db8::4/126"},
+		{name: "4-in-6 CIDR wider than the mapped range stays IPv6", in: "::ffff:10.0.0.0/64", wantPrefix: "::/64"},
 
 		{name: "hostname", in: "api.openai.com", wantHost: "api.openai.com"},
 		{name: "two label hostname", in: "example.com", wantHost: "example.com"},
@@ -88,10 +95,8 @@ func TestParseNetworkValue(t *testing.T) {
 		{name: "wildcard address rejected", in: "10.0.*.1", wantErr: ErrWildcardNetworkValue},
 		{name: "wildcard CIDR rejected", in: "10.0.*.0/24", wantErr: ErrWildcardNetworkValue},
 
-		{name: "IPv6 literal rejected", in: "2001:db8::1", wantErr: ErrIPv6NetworkValue},
-		{name: "IPv6 CIDR rejected", in: "2001:db8::/32", wantErr: ErrIPv6NetworkValue},
-		{name: "IPv6 loopback rejected", in: "::1", wantErr: ErrIPv6NetworkValue},
-		{name: "4-in-6 CIDR wider than the mapped range stays IPv6", in: "::ffff:10.0.0.0/64", wantErr: ErrIPv6NetworkValue},
+		{name: "scoped IPv6 literal rejected", in: "fe80::1%eth0", wantErr: ErrNotAnIPNetworkValue},
+		{name: "scoped IPv6 CIDR rejected", in: "fe80::1%eth0/64", wantErr: ErrNotAnIPNetworkValue},
 		{name: "url rejected", in: "https://api.openai.com/v1", wantErr: ErrNotAnIPNetworkValue},
 		{name: "empty string rejected", in: "", wantErr: ErrEmptyNetworkValue},
 		{name: "whitespace only rejected", in: "   ", wantErr: ErrEmptyNetworkValue},
@@ -118,8 +123,8 @@ func TestParseNetworkValue(t *testing.T) {
 				if !got.Addr.IsValid() || got.Addr.String() != tt.wantAddr {
 					t.Errorf("Addr = %v, want %s", got.Addr, tt.wantAddr)
 				}
-				if !got.Addr.Is4() {
-					t.Errorf("Addr = %v, want an unmapped IPv4 address", got.Addr)
+				if got.Addr.Is4In6() {
+					t.Errorf("Addr = %v, want it unmapped", got.Addr)
 				}
 			} else if got.Addr.IsValid() {
 				t.Errorf("Addr = %v, want unset", got.Addr)
@@ -128,8 +133,8 @@ func TestParseNetworkValue(t *testing.T) {
 				if !got.Prefix.IsValid() || got.Prefix.String() != tt.wantPrefix {
 					t.Errorf("Prefix = %v, want %s", got.Prefix, tt.wantPrefix)
 				}
-				if !got.Prefix.Addr().Is4() {
-					t.Errorf("Prefix = %v, want an unmapped IPv4 prefix", got.Prefix)
+				if got.Prefix.Addr().Is4In6() {
+					t.Errorf("Prefix = %v, want it unmapped", got.Prefix)
 				}
 			} else if got.Prefix.IsValid() {
 				t.Errorf("Prefix = %v, want unset", got.Prefix)
