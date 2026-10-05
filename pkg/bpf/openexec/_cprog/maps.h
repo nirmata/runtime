@@ -119,6 +119,32 @@ static __always_inline void set_proc_wildcard_policy_suffix(struct policy_ctx *c
     ctx->policy_nslash = 0;
 
     const char prefix[] = "/proc/";
+    int candidate = 1;
+#pragma clang loop unroll(full)
+    for (int i = 0; i < sizeof(prefix) - 1; i++) {
+        if (ctx->path[i] != prefix[i]) {
+            candidate = 0;
+            break;
+        }
+    }
+    if (!candidate && (ctx->path[0] != '/' || ctx->path[1] < '0' || ctx->path[1] > '9')) {
+        return;
+    }
+    if (!is_procfs(file)) {
+        return;
+    }
+
+    /* Detailed numeric validation and suffix discovery run in the tail-called
+     * executor, keeping this file-open dispatcher within its verifier budget. */
+    ctx->policy_suffix = 0xff;
+}
+
+static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *ctx) {
+    if (ctx->policy_suffix != 0xff) {
+        return;
+    }
+
+    const char prefix[] = "/proc/";
     __u8 digit_start = 1;
     __u8 suffix = 0;
 #pragma clang loop unroll(full)
@@ -131,37 +157,33 @@ static __always_inline void set_proc_wildcard_policy_suffix(struct policy_ctx *c
     }
     if (digit_start == sizeof(prefix) - 1) {
         if (ctx->nslash < 3) {
+            ctx->policy_suffix = 0;
             return;
         }
         suffix = ctx->slash[2];
     } else {
-        if (ctx->path[0] != '/' || ctx->nslash < 2) {
+        if (ctx->nslash < 2) {
+            ctx->policy_suffix = 0;
             return;
         }
         suffix = ctx->slash[1];
     }
-    /* Linux caps pid_max at 2^22, so every valid decimal PID fits in 7 bytes. */
     if (suffix <= digit_start || suffix - digit_start > 7) {
+        ctx->policy_suffix = 0;
         return;
     }
-
-    long pid = 0;
-    int pid_len = suffix - digit_start;
-    if (bpf_strtol(ctx->path + digit_start, pid_len, 10, &pid) != pid_len || pid < 0) {
-        return;
+#pragma clang loop unroll(full)
+    for (int i = 0; i < 7; i++) {
+        if (digit_start + i >= suffix) {
+            break;
+        }
+        char c = ctx->path[digit_start + i];
+        if (c < '0' || c > '9') {
+            ctx->policy_suffix = 0;
+            return;
+        }
     }
-    if (!is_procfs(file)) {
-        return;
-    }
-
     ctx->policy_suffix = suffix;
-}
-
-static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *ctx) {
-    __u8 suffix = ctx->policy_suffix;
-    if (!suffix) {
-        return;
-    }
 
     const char wildcard[] = "/proc/*";
 #pragma clang loop unroll(full)
