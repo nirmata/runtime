@@ -35,24 +35,26 @@ spec:
   # CEL rule on the CRD. Behaviors evaluate independently and AND together: a connection
   # must pass every behavior that applies to it.
   behaviors:
-  # network: IPv4 destinations for egress.
+  # network: IPv4 and IPv6 destinations for egress.
   - network:
       # allow and deny each accept values and expression, unioned -- they are
       # additive sources for one list, not alternatives.
       allow:
         # A value is one of:
         #   192.0.2.10                  IPv4 literal
-        #   192.0.2.0/24                IPv4 CIDR, /24 or narrower (expanded to
-        #                               individual addresses; wider is rejected)
+        #   2001:db8::10                IPv6 literal
+        #   192.0.2.0/24                CIDR of any width, either family; a
+        #                               prefix never matches the other family
         #   api.example.com             fully qualified domain name, matched
-        #                               against the question the pod asked
+        #                               against the question the pod asked and
+        #                               the IPv4 addresses (A records) answered
         #   "*"                         the sentinel -- see deny below
-        # Not supported: IPv6 literals and CIDRs, wildcards like *.example.com
+        # Not supported: wildcards like *.example.com
         # (rejected at compile time, and the whole policy then enforces nothing).
         values:
         - combined-allowed.default.svc.cluster.local
         # A cluster Service DNS name is resolved from the Service and
-        # EndpointSlice informers to the ClusterIP plus the ready endpoint
+        # EndpointSlice informers to its ClusterIPs plus the ready endpoint
         # addresses, not from the pod's DNS answers. It must be the full
         # <name>.<namespace>.svc.cluster.local form: a shorter one is treated as
         # an ordinary domain and never matches what the hook observes. A name

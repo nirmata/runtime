@@ -29,7 +29,9 @@ does not want to be contained. The snooper reads unencrypted UDP/53 answers, so 
 reached over TCP/53, DNS over TLS or DNS over HTTPS is invisible to it, and so is a client
 that skips resolution and connects to a hardcoded address. Under default deny those cases
 are blocked rather than allowed, but a deny list built from names is bypassable outright.
-There are no wildcards, and learned addresses expire by LRU eviction rather than by TTL.
+Only A records are read, so a destination reached over IPv6 is never attributed to its
+name: blocked under default deny, allowed past a deny on the name. There are no wildcards,
+and learned addresses expire by LRU eviction rather than by TTL.
 
 Read [limits of domain names](../../../docs/users/reference/runtimepolicy.md#limits-of-domain-names)
 before relying on this. A workload that must be contained needs its destinations named as

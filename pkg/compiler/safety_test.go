@@ -52,9 +52,9 @@ func TestCompile_RejectsBadNetworkValuesWithFieldPath(t *testing.T) {
 		wantPaths []string
 	}{
 		{
-			name: "IPv6 in network deny values",
+			name: "scoped IPv6 in network deny values",
 			behaviors: []v1alpha1.PolicyBehavior{
-				{Network: &v1alpha1.Behavior{Deny: behaviorRule([]string{"1.2.3.4", "2001:db8::1"}, "")}},
+				{Network: &v1alpha1.Behavior{Deny: behaviorRule([]string{"1.2.3.4", "fe80::1%eth0"}, "")}},
 			},
 			wantPaths: []string{"spec.behaviors[0].network.deny.values[1]"},
 		},

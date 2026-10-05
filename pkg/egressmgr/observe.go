@@ -12,7 +12,7 @@ import (
 	"github.com/nirmata/runtime/pkg/runtimeevent"
 )
 
-// CollectObservations drains the IPv4 and protocol observation counters of
+// CollectObservations drains the address and protocol observation counters of
 // every pod with an attached policy and turns them into one event per
 // (destination, decision) and (protocol, decision).
 // Reads are destructive, so Count is the delta since the previous call.

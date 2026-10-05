@@ -94,8 +94,11 @@ filing:
   address can stay allowed well past the record's TTL on a quiet pod. See
   the same [Limits of domain names](docs/users/reference/runtimepolicy.md#limits-of-domain-names)
   section.
-- **Egress is IPv4-only.** IPv6 destinations are neither enforced nor
-  observed; this is a stated limitation, not a filter bypass.
+- **Domain names match IPv4 only.** Only A records are read, so a destination
+  named by domain and reached over IPv6 is not attributed to the domain: a deny
+  on the domain does not block it. See the same
+  [Limits of domain names](docs/users/reference/runtimepolicy.md#limits-of-domain-names)
+  section.
 - **`open` and `exec` enforcement require a BPF-LSM kernel.** A node not
   booted with `bpf` in `/sys/kernel/security/lsm` cannot enforce those two
   behaviors, and a policy still reports `Applied=True` on such a node — a

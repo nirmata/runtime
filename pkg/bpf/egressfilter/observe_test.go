@@ -23,7 +23,7 @@ import (
 // reads and writes the wrong bytes.
 func TestIPEventKernelKeyMirrorsTheCStruct(t *testing.T) {
 	cFields := cStructFields(t, "ip_event_key")
-	if diff := cmp.Diff([]string{"daddr", "decision", "domain_id"}, cFields); diff != "" {
+	if diff := cmp.Diff([]string{"family", "daddr[16]", "decision", "domain_id"}, cFields); diff != "" {
 		t.Fatalf("_cprog/maps.h struct ip_event_key fields changed (-want +got):\n%s", diff)
 	}
 
@@ -31,20 +31,24 @@ func TestIPEventKernelKeyMirrorsTheCStruct(t *testing.T) {
 	if typ.NumField() != len(cFields) {
 		t.Fatalf("ipEventKernelKey has %d fields, struct ip_event_key has %d", typ.NumField(), len(cFields))
 	}
+	wantTypes := []reflect.Type{
+		reflect.TypeOf(uint32(0)), reflect.TypeOf([16]byte{}), reflect.TypeOf(uint32(0)), reflect.TypeOf(uint32(0)),
+	}
+	wantOffsets := []uintptr{0, 4, 20, 24}
 	for i, cName := range cFields {
 		f := typ.Field(i)
-		if want := goFieldName(cName); f.Name != want {
+		if want := goFieldName(strings.TrimSuffix(cName, "[16]")); f.Name != want {
 			t.Errorf("field %d is %s, want %s (C field %s)", i, f.Name, want, cName)
 		}
-		if f.Type.Kind() != reflect.Uint32 {
-			t.Errorf("field %s is %s, want uint32 (C field %s is __u32)", f.Name, f.Type, cName)
+		if f.Type != wantTypes[i] {
+			t.Errorf("field %s is %s, want %s (C field %s)", f.Name, f.Type, wantTypes[i], cName)
 		}
-		if want := uintptr(4 * i); f.Offset != want {
-			t.Errorf("field %s is at offset %d, want %d", f.Name, f.Offset, want)
+		if f.Offset != wantOffsets[i] {
+			t.Errorf("field %s is at offset %d, want %d", f.Name, f.Offset, wantOffsets[i])
 		}
 	}
-	if got := unsafe.Sizeof(ipEventKernelKey{}); got != 12 {
-		t.Errorf("sizeof(ipEventKernelKey) = %d, want 12 (three __u32, no padding)", got)
+	if got := unsafe.Sizeof(ipEventKernelKey{}); got != 28 {
+		t.Errorf("sizeof(ipEventKernelKey) = %d, want 28 (no padding)", got)
 	}
 }
 
@@ -148,10 +152,7 @@ func TestEventKeyCarriesTheResolvedDomain(t *testing.T) {
 	id, _ := e.reserveDomainID("api.example.com")
 	namer := e.domainNamer()
 
-	daddr, ok := addrKey(netip.MustParseAddr("192.0.2.55"))
-	if !ok {
-		t.Fatal("addrKey rejected an IPv4 literal")
-	}
+	family, daddr := familyAddr(netip.MustParseAddr("192.0.2.55"))
 
 	tests := []struct {
 		name     string
@@ -179,7 +180,7 @@ func TestEventKeyCarriesTheResolvedDomain(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			k := ipEventKernelKey{Daddr: daddr, Decision: uint32(runtimeevent.DecisionDeny), DomainId: tc.domainID}
+			k := ipEventKernelKey{Family: family, Daddr: daddr, Decision: uint32(runtimeevent.DecisionDeny), DomainId: tc.domainID}
 			if diff := cmp.Diff(tc.want, eventKey(k, namer), cmp.Comparer(func(a, b netip.Addr) bool { return a == b })); diff != "" {
 				t.Errorf("eventKey mismatch (-want +got):\n%s", diff)
 			}

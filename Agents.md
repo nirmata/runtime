@@ -96,7 +96,7 @@ is the one-line-per-package index.
 | `pkg/utils` | `Guard(op, fn)` — the panic barrier used at handler fan-out boundaries so one bad handler cannot take out its siblings. |
 | `pkg/controller` | `RuntimePolicy` and `Pod` informers (typed queue keys, lister-fetch-at-process, deletes keyed by UID), `StatusWriter`, and `DaemonPlacement` for expected event-source nodes. |
 | `pkg/containers` | Resolves a pod's container cgroup paths/IDs across containerd/CRI-O/Docker and systemd/cgroupfs layouts. |
-| `pkg/bpf/openexec`, `pkg/bpf/egressfilter` | The enforcing eBPF programs: an open/exec dispatcher plus a tail-called policy executor, and a `cgroup_skb/egress` IPv4 filter. Open/exec attaches as BPF-LSM on `file_open`/`bprm_check_security` where the kernel allows it and as `fmod_ret` on `security_file_open` otherwise. Policies are map entries, not programs. Both map-driven, plus per-cgroup observation counters. |
+| `pkg/bpf/openexec`, `pkg/bpf/egressfilter` | The enforcing eBPF programs: an open/exec dispatcher plus a tail-called policy executor, and a `cgroup_skb/egress` IPv4/IPv6 filter. Open/exec attaches as BPF-LSM on `file_open`/`bprm_check_security` where the kernel allows it and as `fmod_ret` on `security_file_open` otherwise. Policies are map entries, not programs. Both map-driven, plus per-cgroup observation counters. |
 | `pkg/bpf/exectrace` | Observation-only `raw_tp/sched_process_exec` program streaming per-exec events with argv over a ring buffer; a `runtimeevent.Source`. |
 | `pkg/bpf/dnsquery` | The observation-only `cgroup_skb/egress` program that reads the QNAME out of UDP/53 questions from gated cgroups, plus its ring buffer reader, decoder, and per-CPU loss counters. One loaded instance per daemon, so N attachments share one buffer and one reader. |
 | `pkg/bpf/include` | The shared, hand-maintained `vmlinux.h` every `_cprog` compiles against. Committed, minimal, add only what a program reads. |
@@ -140,7 +140,7 @@ The filtering rules that apply to that pipeline:
   is usable. Poll and ring-buffer source failures reach metrics and relevant policies' node-sharded
   `EventSourcesAvailable`; a missing expected daemon report is unknown, never healthy.
 - `open`/`exec` observations are kept even when metadata is sparse, so long as the pod is known.
-- Egress observation is destination-IPv4 only. It does see flows a default-deny drops: the BPF
+- Egress observation is by destination address only, IPv4 and IPv6. It does see flows a default-deny drops: the BPF
   program computes its decision, records it, and only then returns, and the decision is part of the
   observation counter key. Never move an enforcement return ahead of the counting branch.
 - DNS questions are observed only for pods a `dns` behavior selects, gated by cgroup id in the

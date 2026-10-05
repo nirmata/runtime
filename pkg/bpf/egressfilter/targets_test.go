@@ -81,19 +81,19 @@ func TestParseTargets(t *testing.T) {
 			wantPrefixes: []string{"10.0.0.0/8", "10.1.0.0/16"},
 		},
 		{
-			name:         "IPv6 literal is rejected",
+			name:         "IPv6 literal becomes a slash 128",
 			values:       []string{"2001:db8::1"},
-			wantRejected: []compiler.RejectedTarget{{Value: "2001:db8::1", Reason: ReasonIPv6}},
+			wantPrefixes: []string{"2001:db8::1/128"},
 		},
 		{
-			name:         "IPv6 CIDR is rejected",
-			values:       []string{"2001:db8::/126"},
-			wantRejected: []compiler.RejectedTarget{{Value: "2001:db8::/126", Reason: ReasonIPv6}},
+			name:         "IPv6 CIDR is masked",
+			values:       []string{"2001:db8::7/126"},
+			wantPrefixes: []string{"2001:db8::4/126"},
 		},
 		{
-			name:         "IPv6 loopback is rejected",
-			values:       []string{"::1"},
-			wantRejected: []compiler.RejectedTarget{{Value: "::1", Reason: ReasonIPv6}},
+			name:         "scoped IPv6 literal is rejected",
+			values:       []string{"fe80::1%eth0"},
+			wantRejected: []compiler.RejectedTarget{{Value: "fe80::1%eth0", Reason: ReasonInvalidEntry}},
 		},
 		{
 			name:         "IPv4-mapped IPv6 literal is unmapped and accepted",
@@ -189,7 +189,7 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "IPv4-mapped IPv6 CIDR wider than the mapped range stays IPv6",
 			values:       []string{"::ffff:10.0.0.0/64"},
-			wantRejected: []compiler.RejectedTarget{{Value: "::ffff:10.0.0.0/64", Reason: ReasonIPv6}},
+			wantPrefixes: []string{"::/64"},
 		},
 		{
 			name:     "star is the default deny sentinel and yields no prefix",
@@ -211,11 +211,10 @@ func TestParseTargets(t *testing.T) {
 		{
 			name:         "mixed valid and invalid keeps the valid ones and reports the rest",
 			values:       []string{"10.0.0.1", "2001:db8::1", "10.0.0.0/8", "api.example.com", "10.0.0.2/32", "*", "nope"},
-			wantPrefixes: []string{"10.0.0.1/32", "10.0.0.0/8", "10.0.0.2/32"},
+			wantPrefixes: []string{"10.0.0.1/32", "2001:db8::1/128", "10.0.0.0/8", "10.0.0.2/32"},
 			wantHosts:    []string{"api.example.com"},
 			wantStar:     true,
 			wantRejected: []compiler.RejectedTarget{
-				{Value: "2001:db8::1", Reason: ReasonIPv6},
 				{Value: "nope", Reason: ReasonInvalidEntry},
 			},
 		},
@@ -242,29 +241,46 @@ func TestParseTargets(t *testing.T) {
 }
 
 func TestRejectedTarget_StringNamesValueAndReason(t *testing.T) {
-	got := compiler.RejectedTarget{Value: "2001:db8::1", Reason: ReasonIPv6}.String()
-	want := `"2001:db8::1": ` + ReasonIPv6
+	got := compiler.RejectedTarget{Value: "*.example.com", Reason: ReasonWildcard}.String()
+	want := `"*.example.com": ` + ReasonWildcard
 	if got != want {
 		t.Errorf("String() = %q, want %q", got, want)
 	}
 }
 
 // The trie compares Addr most-significant-byte first, so the key must carry
-// the address in wire order on both little- and big-endian hosts.
-func TestPrefixKey_CarriesTheAddressInWireOrder(t *testing.T) {
-	got, ok := prefixKey(netip.MustParsePrefix("1.2.3.4/24"))
-	if !ok {
-		t.Fatal("prefixKey rejected an IPv4 prefix")
-	}
-	want := ipv4LpmKey{Prefixlen: 24, Addr: [4]byte{1, 2, 3, 4}}
-	if got != want {
-		t.Errorf("prefixKey = %+v, want %+v", got, want)
+// the address in wire order on both little- and big-endian hosts, and count
+// the Family word in Prefixlen so no prefix matches across families.
+func TestPrefixKey_CarriesFamilyAndWireOrder(t *testing.T) {
+	for _, tc := range []struct {
+		prefix string
+		want   lpmKey
+	}{
+		{
+			prefix: "1.2.3.4/24",
+			want:   lpmKey{Prefixlen: 32 + 24, Family: familyIPv4, Addr: [16]byte{1, 2, 3, 4}},
+		},
+		{
+			prefix: "2001:db8::/32",
+			want:   lpmKey{Prefixlen: 32 + 32, Family: familyIPv6, Addr: [16]byte{0x20, 0x01, 0x0d, 0xb8}},
+		},
+		{
+			prefix: "::/0",
+			want:   lpmKey{Prefixlen: 32, Family: familyIPv6},
+		},
+	} {
+		if got := prefixKey(netip.MustParsePrefix(tc.prefix)); got != tc.want {
+			t.Errorf("prefixKey(%s) = %+v, want %+v", tc.prefix, got, tc.want)
+		}
 	}
 }
 
-func TestPrefixKey_RejectsIPv6(t *testing.T) {
-	if _, ok := prefixKey(netip.MustParsePrefix("2001:db8::/32")); ok {
-		t.Error("prefixKey accepted an IPv6 prefix")
+func TestKeyAddrInvertsFamilyAddr(t *testing.T) {
+	for _, s := range []string{"192.0.2.55", "2001:db8::1", "::1", "::ffff:192.0.2.55"} {
+		addr := netip.MustParseAddr(s)
+		if got := keyAddr(familyAddr(addr)); got != addr.Unmap() {
+			t.Errorf("keyAddr(familyAddr(%s)) = %s, want %s", s, got, addr.Unmap())
+		}
 	}
 }
 

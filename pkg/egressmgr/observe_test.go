@@ -306,11 +306,10 @@ func TestUnsupportedTargetsAreReportedOnPolicyStatus(t *testing.T) {
 			wantReason: v1alpha1.ReasonNoTargets,
 		},
 		{
-			name:       "ipv6 target",
-			deny:       []string{"2001:db8::1"},
-			wantStatus: metav1.ConditionFalse,
-			wantReason: v1alpha1.ReasonUnsupportedTargets,
-			wantIn:     []string{"2001:db8::1", egressfilter.ReasonIPv6},
+			name:       "ipv6 target is supported",
+			deny:       []string{"2001:db8::1", "2001:db8::/32"},
+			wantStatus: metav1.ConditionTrue,
+			wantReason: v1alpha1.ReasonAllTargetsSupported,
 		},
 		{
 			name:       "cidr of any width is a supported target",

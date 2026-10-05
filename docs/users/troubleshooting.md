@@ -46,10 +46,11 @@ Work through these in order.
 
    Expect `cgroup2fs`.
 
-4. **For `network` policies: is the traffic IPv4?** The egress filter reads IPv4
-   packets only, so on a dual-stack cluster a connection made over IPv6 is neither
-   blocked nor observed, whatever the policy says. See
-   [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
+4. **For a domain in `network` deny values: is the traffic IPv6?** A domain is matched
+   against the IPv4 addresses its A records return, so a connection to the same
+   destination over IPv6 is not attributed to it and is not blocked. Deny its IPv6
+   addresses or prefix as well. See
+   [limits of domain names](reference/runtimepolicy.md#limits-of-domain-names).
 
 5. **Does the selector match any pod on this node?** A `podSelector` /
    `namespaceSelector` that is well-formed but selects nothing looks identical to a
@@ -164,11 +165,10 @@ kubectl get rpol <name> -o yaml
 ```
 
 `UnsupportedTargets` means one or more `network` targets could not be programmed into the
-kernel maps. CIDRs wider than `/24` and domain names whose DNS wire encoding exceeds 128
-bytes are rejected rather than silently skipped; a CIDR of `/24` or narrower is expanded
-into individual addresses. A value the schema refuses outright — a malformed Service name,
-an IPv6 literal, a wildcard — does not reach this condition when it is written as a
-literal: it fails the policy to compile, and appears under `Applied` instead. See
+kernel maps. Domain names whose DNS wire encoding exceeds 128 bytes are rejected rather
+than silently skipped. A value the schema refuses outright — a malformed Service name, a
+scoped IPv6 literal such as `fe80::1%eth0`, a wildcard — does not reach this condition
+when it is written as a literal: it fails the policy to compile, and appears under `Applied` instead. See
 [Applied is False](#applied-is-false).
 
 `UnresolvedServices` means a value named a cluster Service that is not in the daemon's
@@ -204,8 +204,8 @@ the field path, the value and the reason, so it points at one entry in one behav
 kubectl get rpol <name> -o jsonpath='{.status.conditions[?(@.type=="Applied")].message}'
 ```
 
-Causes are a value the schema refuses (a malformed cluster Service name, an IPv6 literal, a
-wildcard such as `*.example.com`), an `expression` that does not compile, or one that returns
+Causes are a value the schema refuses (a malformed cluster Service name, a scoped IPv6
+literal, a wildcard such as `*.example.com`), an `expression` that does not compile, or one that returns
 something other than `list(string)`. Correcting the spec applies immediately; there is
 nothing to restart.
 

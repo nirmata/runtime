@@ -98,11 +98,11 @@ func TestAddIps_ReturnsRejectedTargetsAsTypedValues(t *testing.T) {
 			name: "rejections from both lists are reported, allow first",
 			pair: &compiler.AllowDenyPair{
 				Allow: []string{"10.0.0.1", "*.example.com"},
-				Deny:  []string{"2001:db8::1", "not an address"},
+				Deny:  []string{"fe80::1%eth0", "not an address"},
 			},
 			wantRejected: []compiler.RejectedTarget{
 				{Value: "*.example.com", Reason: ReasonWildcard},
-				{Value: "2001:db8::1", Reason: ReasonIPv6},
+				{Value: "fe80::1%eth0", Reason: ReasonInvalidEntry},
 				{Value: "not an address", Reason: ReasonInvalidEntry},
 			},
 		},
@@ -150,7 +150,7 @@ func TestAddIps_NilPairIsANoOp(t *testing.T) {
 func TestAddIps_AllTargetsRejectedYieldsNoMapError(t *testing.T) {
 	e := newUnloadedFilter()
 
-	rejected, err := e.AddIps(&compiler.AllowDenyPair{Deny: []string{"2001:db8::1"}})
+	rejected, err := e.AddIps(&compiler.AllowDenyPair{Deny: []string{"fe80::1%eth0"}})
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
 	}

@@ -410,7 +410,7 @@ spec:
 
 A cluster Service has to be named in full. The short form `llm-gateway.ai-gateway` is read as
 an external domain and never matches anything the egress hook observes; the full name
-resolves from the Service and EndpointSlice informers — the ClusterIP plus the ready endpoint
+resolves from the Service and EndpointSlice informers — its ClusterIPs plus the ready endpoint
 addresses — so it holds whether or not the pod ever queries for it.
 
 `allow: ["tls", "dns"]` is deliberately narrow. `quic` is excluded, so an HTTP/3 client is
@@ -559,10 +559,10 @@ Runnable: [blocklist-from-http](../../examples/dynamic-lists/blocklist-from-http
   asked at all. A resolution is also not a connection.
 - **A destination named by domain is enforced from the pod's own DNS answers.** A workload
   that connects to a literal address it never resolved is matched by address only.
-- **The egress filter is IPv4-only.** On a dual-stack cluster a `network` default deny
-  neither blocks nor observes an IPv6 connection, so a provider reachable over IPv6 is
-  reachable. A `protocol` behavior does classify and enforce IPv6 flows — see
-  [limits of network enforcement](reference/runtimepolicy.md#limits-of-network-enforcement).
+- **A domain covers its IPv4 addresses only.** Only A records are read, so a provider
+  reached over IPv6 is not attributed to its domain: under a `network` default deny it is
+  blocked, and a deny on the provider's domain does not block it — see
+  [limits of domain names](reference/runtimepolicy.md#limits-of-domain-names).
 - **No policy value has a port.** A local model on `11434` and a vLLM server on `8000` are
   reachable as destinations, never as ports, so a cleartext in-cluster inference endpoint is
   constrained by address or Service name or not at all.

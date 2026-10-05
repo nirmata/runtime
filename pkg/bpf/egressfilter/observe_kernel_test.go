@@ -28,32 +28,33 @@ func TestReadIPEventsRoundTripsTheKernelKey(t *testing.T) {
 
 	f.SetObserve(true)
 
-	addr := netip.MustParseAddr("192.0.2.55")
-	daddr, ok := addrKey(addr)
-	if !ok {
-		t.Fatalf("addrKey(%s) rejected an IPv4 address", addr)
-	}
-	seeded := ipEventKernelKey{Daddr: daddr, Decision: uint32(runtimeevent.DecisionDeny)}
+	addrs := []netip.Addr{netip.MustParseAddr("192.0.2.55"), netip.MustParseAddr("2001:db8::55")}
 	count := uint32(4)
-	if err := f.bpfObjs.IpEvents.Put(&seeded, &count); err != nil {
-		t.Fatalf("seeding a synthetic deny observation: %v", err)
+	for _, addr := range addrs {
+		family, daddr := familyAddr(addr)
+		seeded := ipEventKernelKey{Family: family, Daddr: daddr, Decision: uint32(runtimeevent.DecisionDeny)}
+		if err := f.bpfObjs.IpEvents.Put(&seeded, &count); err != nil {
+			t.Fatalf("seeding a synthetic deny observation for %s: %v", addr, err)
+		}
 	}
 
 	events, err := f.ReadIPEvents()
 	if err != nil {
-		t.Fatalf("reading back the seeded observation: %v", err)
+		t.Fatalf("reading back the seeded observations: %v", err)
 	}
-	key := IPEventKey{Addr: addr, Decision: runtimeevent.DecisionDeny}
-	if got := events[key]; got != count {
-		t.Errorf("ReadIPEvents()[%v] = %d, want %d (full map: %v)", key, got, count, events)
+	for _, addr := range addrs {
+		key := IPEventKey{Addr: addr, Decision: runtimeevent.DecisionDeny}
+		if got := events[key]; got != count {
+			t.Errorf("ReadIPEvents()[%v] = %d, want %d (full map: %v)", key, got, count, events)
+		}
 	}
 
-	// the read resets: the entry must not be reported twice
+	// the read resets: the entries must not be reported twice
 	again, err := f.ReadIPEvents()
 	if err != nil {
 		t.Fatalf("second ReadIPEvents: %v", err)
 	}
-	if got, ok := again[key]; ok {
-		t.Errorf("seeded entry survived the destructive read with count %d", got)
+	if len(again) != 0 {
+		t.Errorf("seeded entries survived the destructive read: %v", again)
 	}
 }

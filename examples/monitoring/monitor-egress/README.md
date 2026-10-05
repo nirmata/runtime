@@ -75,7 +75,7 @@ Two things have to be true: the connection succeeded, and it was still reported.
   curl -s localhost:9090/metrics | grep nirmata_runtime_findings_emitted_total
   ```
 
-Monitor mode reports destination IPv4 addresses only — no ports, no protocols, no DNS
+Monitor mode reports destination addresses only — no ports, no protocols, no DNS
 names or TLS server names. See
 [limits of monitor mode](../../../docs/users/reference/runtimepolicy.md#limits-of-monitor-mode).
 

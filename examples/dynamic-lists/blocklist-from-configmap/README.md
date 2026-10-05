@@ -12,10 +12,9 @@ cadence, and the resulting deny list is diffed into the kernel maps. Without it 
 would only be re-evaluated when the policy or a matched pod changes, and a ConfigMap edit
 would go unnoticed.
 
-Every value the expression returns must be programmable — an IPv4 address, an IPv4 CIDR of
-`/24` or narrower, a fully qualified domain name, or the `"*"` default-deny sentinel. An
-IPv6 literal, or a CIDR wider than `/24`, is rejected and surfaces as a
-`TargetsValid=False` condition naming the value.
+Every value the expression returns must be programmable — an IPv4 or IPv6 address, a CIDR,
+a fully qualified domain name, or the `"*"` default-deny sentinel. A value that is none of these is
+rejected and surfaces as a `TargetsValid=False` condition naming the value.
 
 ## Requires
 

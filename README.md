@@ -69,7 +69,7 @@ As applications become AI-enabled, there is an immediate need to easily monitor 
 
 🚨 **WARNING**: This project is pre-1.0 and the API is `v1alpha1`. Here are some known limitations:
 
-- Egress is keyed on IPv4 destination addresses. A domain name or cluster Service name is accepted as a value and resolved to addresses; an IPv6 literal is not.
+- Egress is keyed on IPv4 and IPv6 destination addresses, but a domain name is resolved from A records only, so it covers IPv4 addresses alone: a deny on a domain does not block that destination over IPv6.
 - File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are typically not booted with it.
 - `network`, `protocol`, `open`, and `exec` observations come from eBPF counters that the daemon drains on a poll interval rather than from a stream of events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
 - Exceptions are not yet supported.

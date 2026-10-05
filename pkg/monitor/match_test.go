@@ -30,7 +30,9 @@ func TestNetMatcher(t *testing.T) {
 		{name: "crlf from a CEL rendered list is trimmed", values: []string{"10.0.0.5\r\n"}, addr: "10.0.0.5", want: true},
 		{name: "empty value never matches", values: []string{"", "  "}, addr: "10.0.0.5"},
 		{name: "unparseable value is skipped", values: []string{"10.0.0.0/notacidr"}, addr: "10.0.0.5"},
-		{name: "ipv6 value is skipped", values: []string{"2001:db8::/32", "10.0.0.5"}, addr: "10.0.0.5", want: true},
+		{name: "exact ipv6", values: []string{"2001:db8::5"}, addr: "2001:db8::5", want: true},
+		{name: "ipv6 cidr contains", values: []string{"2001:db8::/32"}, addr: "2001:db8:1::7", want: true},
+		{name: "ipv6 cidr never matches ipv4", values: []string{"::/0"}, addr: "10.0.0.5"},
 		{name: "no values", values: nil, addr: "10.0.0.5"},
 
 		{

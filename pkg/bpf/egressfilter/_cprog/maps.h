@@ -10,25 +10,31 @@
 
 #include <dnsname.h>
 
+#define FAMILY_IPV4 4
+#define FAMILY_IPV6 6
+
+/* In practice, prefix length is at minimum 32 because its what controls
+ * how many bits of an entry get read until it matches. And we always would
+ * want to read the `family` field, which is 32 bits hence the 32 */
+struct lpm_key {
+    __u32 prefixlen;
+    __u32 family;
+    __u8 addr[16];
+};
+
 /* Padding-free by construction: a hash key is compared as raw bytes.
  * domain_id is 0 when the address was never seen in a snooped DNS answer. */
 struct ip_event_key {
-    __u32 daddr;
+    __u32 family;
+    __u8 daddr[16];
     __u32 decision;
     __u32 domain_id;
-};
-
-/* addr is compared most-significant-byte first, which is the order daddr
- * already arrives in off the wire. */
-struct ipv4_lpm_key {
-    __u32 prefixlen;
-    __u8 addr[4];
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 1024);
-    __type(key, struct ipv4_lpm_key);
+    __type(key, struct lpm_key);
     __type(value, __u8);
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } banned_ips SEC(".maps");
@@ -36,7 +42,7 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 1024);
-    __type(key, struct ipv4_lpm_key);
+    __type(key, struct lpm_key);
     __type(value, __u8);
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } allowed_ips SEC(".maps");
