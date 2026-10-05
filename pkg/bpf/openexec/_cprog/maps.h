@@ -118,16 +118,8 @@ static __always_inline void set_proc_wildcard_policy_suffix(struct policy_ctx *c
     ctx->policy_suffix = 0;
     ctx->policy_nslash = 0;
 
-    const char prefix[] = "/proc/";
-    int candidate = 1;
-#pragma clang loop unroll(full)
-    for (int i = 0; i < sizeof(prefix) - 1; i++) {
-        if (ctx->path[i] != prefix[i]) {
-            candidate = 0;
-            break;
-        }
-    }
-    if (!candidate && (ctx->path[0] != '/' || ctx->path[1] < '0' || ctx->path[1] > '9')) {
+    char second = ctx->path[1];
+    if (ctx->path[0] != '/' || (second != 'p' && (second < '0' || second > '9'))) {
         return;
     }
     if (!is_procfs(file)) {
