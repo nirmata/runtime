@@ -124,7 +124,8 @@ static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx
     }
 
     const char prefix[] = "/proc/";
-    int digit_start = 1;
+    __u8 digit_start = 1;
+    __u8 suffix = 0;
 #pragma clang loop unroll(full)
     for (int i = 0; i < sizeof(prefix) - 1; i++) {
         if (ctx->path[i] != prefix[i]) {
@@ -133,27 +134,30 @@ static __always_inline void set_proc_wildcard_policy_path(struct policy_ctx *ctx
         }
         digit_start = sizeof(prefix) - 1;
     }
-    if (digit_start == 1 && ctx->path[0] != '/') {
+    if (digit_start == sizeof(prefix) - 1) {
+        if (ctx->nslash < 3) {
+            return;
+        }
+        suffix = ctx->slash[2];
+    } else {
+        if (ctx->path[0] != '/' || ctx->nslash < 2) {
+            return;
+        }
+        suffix = ctx->slash[1];
+    }
+    if (suffix <= digit_start || suffix - digit_start > 20) {
         return;
     }
 
-    int suffix = 0;
 #pragma clang loop unroll(full)
-    for (int i = 1; i < MAX_PATH_LEN; i++) {
-        if (i < digit_start) {
-            continue;
-        }
-        char c = ctx->path[i];
-        if (c == '/') {
-            suffix = i;
+    for (int i = 0; i < 20; i++) {
+        if (digit_start + i >= suffix) {
             break;
         }
+        char c = ctx->path[digit_start + i];
         if (c < '0' || c > '9') {
             return;
         }
-    }
-    if (!suffix) {
-        return;
     }
 
     const char wildcard[] = "/proc/*";
