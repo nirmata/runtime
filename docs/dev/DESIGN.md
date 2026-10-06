@@ -346,9 +346,10 @@ twice per open.
 
 The dispatcher resolves the path into the per-CPU pinned `ctx_map` (`struct policy_ctx`: the
 resolved path, an optional policy-match path, the running `reason`, and which dimension this event
-belongs to). For a numeric procfs path, it derives the explicit `/proc/*/...` policy spelling after
-confirming the file belongs to procfs; this handles both `/proc/<pid>/...` and the mount-relative
-`/<pid>/...` form returned by some kernels. The resolved numeric path remains the observation
+belongs to). The tail-called executor checks for a complete numeric PID path shape before reading
+procfs superblock metadata, then derives the explicit `/proc/*/...` policy spelling. This handles
+both `/proc/<pid>/...` and the mount-relative `/<pid>/...` form returned by
+some kernels. The resolved numeric path remains the observation
 target, so reports retain the path the kernel opened.
 It then
 `bpf_tail_call`s through a bpffs-pinned one-slot prog array — `open_prog` or `exec_prog` — into the

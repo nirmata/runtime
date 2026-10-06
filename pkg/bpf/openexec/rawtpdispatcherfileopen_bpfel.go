@@ -30,6 +30,7 @@ type rawTpDispatcherFileOpenPathEventKey struct {
 type rawTpDispatcherFileOpenPolicyCtx struct {
 	_            structs.HostLayout
 	ProgType     uint8
+	HookType     uint8
 	Reason       uint8
 	Path         [128]int8
 	PolicyPath   [128]int8

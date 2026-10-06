@@ -56,7 +56,13 @@ int runtime_policy_executor(void *ctx)
     if (!prog_ctx) {
         return 0;
     }
-    build_proc_wildcard_policy_path(prog_ctx);
+    struct bpf_raw_tracepoint_args *args = ctx;
+    struct file *file = (struct file *)args->args[0];
+    if (prog_ctx->hook_type == HOOK_EXEC_CHECK) {
+        struct linux_binprm *bprm = (struct linux_binprm *)args->args[0];
+        file = BPF_CORE_READ(bprm, file);
+    }
+    build_proc_wildcard_policy_path(prog_ctx, file);
 
     void *entries = prog_ctx->prog_type == PROG_TYPE_OPEN ? (void *)&open_entries : (void *)&exec_entries;
 

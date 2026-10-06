@@ -14,6 +14,8 @@
 
 #define	PROG_TYPE_OPEN 0
 #define	PROG_TYPE_EXEC 1
+#define HOOK_FILE_OPEN 0
+#define HOOK_EXEC_CHECK 1
 
 enum data_type {
     ALLOW_ENTRY,
@@ -66,6 +68,7 @@ struct path_event_key {
 
 struct policy_ctx {
     __u8 prog_type;
+    __u8 hook_type;
     __u8 reason;
     char path[MAX_PATH_LEN];
     char policy_path[MAX_PATH_LEN];
@@ -110,31 +113,12 @@ static __always_inline int is_procfs(struct file *file) {
     return BPF_CORE_READ(sb, s_magic) == PROC_SUPER_MAGIC;
 }
 
-/* bpf_d_path resolves procfs links before the hook sees them and may return a
- * path relative to the proc mount. Retain that path for reporting and derive
- * the policy's explicit numeric-PID wildcard spelling for lookup. */
-static __always_inline void set_proc_wildcard_policy_suffix(struct policy_ctx *ctx, struct file *file) {
+/* bpf_d_path may return a proc-mount-relative path. Validate the complete
+ * numeric shape before reading filesystem metadata, then derive the alias. */
+static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *ctx, struct file *file) {
     __builtin_memset(ctx->policy_path, 0, sizeof(ctx->policy_path));
     ctx->policy_suffix = 0;
     ctx->policy_nslash = 0;
-
-    char second = ctx->path[1];
-    if (ctx->path[0] != '/' || (second != 'p' && (second < '0' || second > '9'))) {
-        return;
-    }
-    if (!is_procfs(file)) {
-        return;
-    }
-
-    /* Detailed numeric validation and suffix discovery run in the tail-called
-     * executor, keeping this file-open dispatcher within its verifier budget. */
-    ctx->policy_suffix = 0xff;
-}
-
-static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *ctx) {
-    if (ctx->policy_suffix != 0xff) {
-        return;
-    }
 
     const char prefix[] = "/proc/";
     __u8 digit_start = 1;
@@ -149,19 +133,16 @@ static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *c
     }
     if (digit_start == sizeof(prefix) - 1) {
         if (ctx->nslash < 3) {
-            ctx->policy_suffix = 0;
             return;
         }
         suffix = ctx->slash[2];
     } else {
         if (ctx->nslash < 2) {
-            ctx->policy_suffix = 0;
             return;
         }
         suffix = ctx->slash[1];
     }
     if (suffix <= digit_start || suffix - digit_start > 7) {
-        ctx->policy_suffix = 0;
         return;
     }
 #pragma clang loop unroll(full)
@@ -171,9 +152,11 @@ static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *c
         }
         char c = ctx->path[digit_start + i];
         if (c < '0' || c > '9') {
-            ctx->policy_suffix = 0;
             return;
         }
+    }
+    if (!is_procfs(file)) {
+        return;
     }
     ctx->policy_suffix = suffix;
 
