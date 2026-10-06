@@ -102,6 +102,9 @@ type DNSFacts struct {
 // ExecFacts describes a process execution.
 type ExecFacts struct {
 	Filename string `json:"filename"`
+	// PolicyPath is an internal canonical alias used for matching while
+	// Filename remains the resolved value shown to operators.
+	PolicyPath string `json:"-"`
 
 	// Argv is empty for sources that observe the exec without its arguments.
 	// It is attacker-controlled text and can carry credentials passed as
@@ -113,6 +116,8 @@ type ExecFacts struct {
 // OpenFacts describes a file open.
 type OpenFacts struct {
 	Path string `json:"path"`
+	// PolicyPath has the same internal matching role as ExecFacts.PolicyPath.
+	PolicyPath string `json:"-"`
 }
 
 // ProtocolFacts describes the application protocol classified from the first

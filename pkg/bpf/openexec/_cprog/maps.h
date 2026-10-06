@@ -7,12 +7,15 @@
 
 #define DECISION_ALLOW 0
 #define DECISION_DENY 1
+#define PROC_SUPER_MAGIC 0x9fa0
 
 /* width of the policy-slot mask every entry carries as its value */
 #define MAX_POLICIES 64
 
 #define	PROG_TYPE_OPEN 0
 #define	PROG_TYPE_EXEC 1
+#define HOOK_FILE_OPEN 0
+#define HOOK_EXEC_CHECK 1
 
 enum data_type {
     ALLOW_ENTRY,
@@ -59,17 +62,24 @@ struct policy_entries exec_entries SEC(".maps");
 struct path_event_key {
     char path[MAX_PATH_LEN];
     __u32 decision;
+    __u8 policy_suffix;
+    __u8 padding[3];
 };
 
 struct policy_ctx {
     __u8 prog_type;
+    __u8 hook_type;
     __u8 reason;
     char path[MAX_PATH_LEN];
+    char policy_path[MAX_PATH_LEN];
     /* nslash: count of path separators in that path
      * slash: the length of every path part after the separator
      */
     __u8 nslash;
     __u8 slash[MAX_PREFIX_DEPTH];
+    __u8 policy_nslash;
+    __u8 policy_slash[MAX_PREFIX_DEPTH];
+    __u8 policy_suffix;
 };
 
 /* records the offset of every separator in ctx->path, up to MAX_PREFIX_DEPTH.
@@ -94,6 +104,94 @@ static __always_inline void scan_separators(struct policy_ctx *ctx) {
         }
         ctx->slash[n] = i;
         ctx->nslash = n + 1;
+    }
+}
+
+static __always_inline int is_procfs(struct file *file) {
+    struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+    struct super_block *sb = BPF_CORE_READ(dentry, d_sb);
+    return BPF_CORE_READ(sb, s_magic) == PROC_SUPER_MAGIC;
+}
+
+/* bpf_d_path may return a proc-mount-relative path. Validate the complete
+ * numeric shape before reading filesystem metadata, then derive the alias. */
+static __always_inline void build_proc_wildcard_policy_path(struct policy_ctx *ctx, struct file *file) {
+    __builtin_memset(ctx->policy_path, 0, sizeof(ctx->policy_path));
+    ctx->policy_suffix = 0;
+    ctx->policy_nslash = 0;
+
+    const char prefix[] = "/proc/";
+    __u8 digit_start = 1;
+    __u8 suffix = 0;
+#pragma clang loop unroll(full)
+    for (int i = 0; i < sizeof(prefix) - 1; i++) {
+        if (ctx->path[i] != prefix[i]) {
+            digit_start = 1;
+            break;
+        }
+        digit_start = sizeof(prefix) - 1;
+    }
+    if (digit_start == sizeof(prefix) - 1) {
+        if (ctx->nslash < 3) {
+            return;
+        }
+        suffix = ctx->slash[2];
+    } else {
+        if (ctx->nslash < 2) {
+            return;
+        }
+        suffix = ctx->slash[1];
+    }
+    if (suffix <= digit_start || suffix - digit_start > 7) {
+        return;
+    }
+#pragma clang loop unroll(full)
+    for (int i = 0; i < 7; i++) {
+        if (digit_start + i >= suffix) {
+            break;
+        }
+        char c = ctx->path[digit_start + i];
+        if (c < '0' || c > '9') {
+            return;
+        }
+    }
+    if (!is_procfs(file)) {
+        return;
+    }
+    ctx->policy_suffix = suffix;
+
+    const char wildcard[] = "/proc/*";
+#pragma clang loop unroll(full)
+    for (int i = 0; i < sizeof(wildcard) - 1; i++) {
+        ctx->policy_path[i] = wildcard[i];
+    }
+    bpf_probe_read_kernel_str(ctx->policy_path + sizeof(wildcard) - 1,
+                              MAX_PATH_LEN - (sizeof(wildcard) - 1),
+                              ctx->path + (suffix & (MAX_PATH_LEN - 1)));
+
+    /* The canonical prefix contributes separators at 0 and 5, and the copied
+     * suffix starts with the separator at 7. Translate later separators from
+     * the already-scanned concrete path instead of scanning another 128 bytes;
+     * this keeps the fmod_ret dispatcher inside older kernels' verifier budget. */
+    ctx->policy_slash[0] = 0;
+    ctx->policy_slash[1] = 5;
+    ctx->policy_slash[2] = 7;
+    ctx->policy_nslash = 3;
+#pragma clang loop unroll(full)
+    for (int i = 0; i < MAX_PREFIX_DEPTH; i++) {
+        if (i >= ctx->nslash) {
+            break;
+        }
+        __u8 slash = ctx->slash[i];
+        if (slash <= suffix) {
+            continue;
+        }
+        __u8 n = *(volatile __u8 *)&ctx->policy_nslash;
+        if (n >= MAX_PREFIX_DEPTH) {
+            break;
+        }
+        ctx->policy_slash[n] = slash - suffix + 7;
+        ctx->policy_nslash = n + 1;
     }
 }
 

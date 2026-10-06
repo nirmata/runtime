@@ -38,6 +38,7 @@ int generic_tracepoint_handler(struct bpf_raw_tracepoint_args *ctx)
         prog_ctx->prog_type = PROG_TYPE_OPEN;
     };
 
+    prog_ctx->hook_type = HOOK_FILE_OPEN;
     scan_separators(prog_ctx);
 
     /* jump to the policy enforcer */

@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: proc-self-client
+  labels:
+    app: proc-self-client
+spec:
+  containers:
+  - name: client
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      until ! cat /etc/hostname >/dev/null 2>&1; do
+        sleep 1
+      done
+      echo POLICY_ACTIVE
+      if cat /proc/self/setgroups >/dev/null; then
+        echo SELF_OK
+      else
+        echo SELF_FAILED
+      fi
+      if cat /proc/1/setgroups >/dev/null; then
+        echo OTHER_ALLOWED
+      else
+        echo OTHER_BLOCKED
+      fi
+      sleep 900

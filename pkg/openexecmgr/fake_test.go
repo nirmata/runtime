@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +33,14 @@ var fixedTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 func obsKey(path string, d runtimeevent.KernelDecision) openexec.PathEventKey {
 	k := openexec.PathEventKey{Decision: uint32(d)}
 	copy(k.Path[:], path)
+	return k
+}
+
+func obsKeyWithPolicyPath(path, policyPath string, d runtimeevent.KernelDecision) openexec.PathEventKey {
+	k := obsKey(path, d)
+	if policyPath != "" {
+		k.PolicySuffix = uint8(len(path) - len(strings.TrimPrefix(policyPath, "/proc/*")))
+	}
 	return k
 }
 

@@ -1,0 +1,24 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-proc-pid-wildcard-enforce
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: proc-self-client
+  behaviors:
+  - open:
+      deny:
+        values:
+        - "*"
+      allow:
+        values:
+        - /bin/busybox
+        - /bin/cat
+        - /dev/null
+        - /etc/group
+        - /etc/passwd
+        - /lib/*
+        - /proc/*/setgroups
+        - /usr/lib/*

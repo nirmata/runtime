@@ -18,8 +18,10 @@ var ErrObservationUnavailable = errors.New("lsm: observation maps unavailable")
 // the map key cilium/ebpf marshals directly, and a layout drift from the BTF
 // key is rejected at runtime.
 type PathEventKey struct {
-	Path     [maxPathLen]byte
-	Decision uint32
+	Path         [maxPathLen]byte
+	Decision     uint32
+	PolicySuffix uint8
+	Padding      [3]uint8
 }
 
 // PathString returns the path without the NUL padding the kernel key carries.
@@ -30,6 +32,17 @@ func (k PathEventKey) PathString() string {
 		}
 	}
 	return string(k.Path[:])
+}
+
+// PolicyPathString returns the canonical path used for additional policy
+// lookups, or an empty string when the resolved path has no alias.
+func (k PathEventKey) PolicyPathString() string {
+	path := k.PathString()
+	suffix := int(k.PolicySuffix)
+	if suffix == 0 || suffix >= len(path) || path[suffix] != '/' {
+		return ""
+	}
+	return "/proc/*" + path[suffix:]
 }
 
 // EnableObservation creates (or reuses) an inner hash map in events_map for

@@ -17,7 +17,13 @@ static __always_inline void record_path_event(__u64 *cgid, char buf[MAX_PATH_LEN
     }
 
     struct path_event_key k;
+    __builtin_memset(&k, 0, sizeof(k));
     bpf_probe_read_kernel(k.path, sizeof(k.path), buf);
+    __u32 ctx_key = 0;
+    struct policy_ctx *prog_ctx = bpf_map_lookup_elem(&ctx_map, &ctx_key);
+    if (prog_ctx) {
+        k.policy_suffix = prog_ctx->policy_suffix;
+    }
     k.decision = (des == EXPLICIT_DENY || des == IMPLICIT_DENY) ? DECISION_DENY : DECISION_ALLOW;
 
     __u32 *count = bpf_map_lookup_elem(count_map, &k);
@@ -50,6 +56,13 @@ int runtime_policy_executor(void *ctx)
     if (!prog_ctx) {
         return 0;
     }
+    struct bpf_raw_tracepoint_args *args = ctx;
+    struct file *file = (struct file *)args->args[0];
+    if (prog_ctx->hook_type == HOOK_EXEC_CHECK) {
+        struct linux_binprm *bprm = (struct linux_binprm *)args->args[0];
+        file = BPF_CORE_READ(bprm, file);
+    }
+    build_proc_wildcard_policy_path(prog_ctx, file);
 
     void *entries = prog_ctx->prog_type == PROG_TYPE_OPEN ? (void *)&open_entries : (void *)&exec_entries;
 
@@ -86,6 +99,28 @@ int runtime_policy_executor(void *ctx)
             deny |= mask_of(entries, &key);
             key.data_type = ALLOW_PREFIX_ENTRY;
             allow |= mask_of(entries, &key);
+        }
+
+        if (prog_ctx->policy_path[0]) {
+            __builtin_memset(key.data, 0, sizeof(key.data));
+            bpf_probe_read_kernel(key.data, sizeof(key.data), prog_ctx->policy_path);
+            key.data_type = DENY_ENTRY;
+            deny |= mask_of(entries, &key);
+            key.data_type = ALLOW_ENTRY;
+            allow |= mask_of(entries, &key);
+
+            for (int d = 0; d < MAX_PREFIX_DEPTH; d++) {
+                if (d >= prog_ctx->policy_nslash) {
+                    break;
+                }
+                __u32 len = (prog_ctx->policy_slash[d] & (MAX_PATH_LEN - 1)) + 1;
+                __builtin_memset(key.data, 0, sizeof(key.data));
+                bpf_probe_read_kernel(key.data, len, prog_ctx->policy_path);
+                key.data_type = DENY_PREFIX_ENTRY;
+                deny |= mask_of(entries, &key);
+                key.data_type = ALLOW_PREFIX_ENTRY;
+                allow |= mask_of(entries, &key);
+            }
         }
 
         /* every mask covers all policies holding the entry; masking with the

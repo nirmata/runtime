@@ -20,18 +20,25 @@ type lsmDispatcherExecCheckEntry struct {
 }
 
 type lsmDispatcherExecCheckPathEventKey struct {
-	_        structs.HostLayout
-	Path     [128]int8
-	Decision uint32
+	_            structs.HostLayout
+	Path         [128]int8
+	Decision     uint32
+	PolicySuffix uint8
+	Padding      [3]uint8
 }
 
 type lsmDispatcherExecCheckPolicyCtx struct {
-	_        structs.HostLayout
-	ProgType uint8
-	Reason   uint8
-	Path     [128]int8
-	Nslash   uint8
-	Slash    [16]uint8
+	_            structs.HostLayout
+	ProgType     uint8
+	HookType     uint8
+	Reason       uint8
+	Path         [128]int8
+	PolicyPath   [128]int8
+	Nslash       uint8
+	Slash        [16]uint8
+	PolicyNslash uint8
+	PolicySlash  [16]uint8
+	PolicySuffix uint8
 }
 
 // Names of all BPF objects in the ELF.
