@@ -1,4 +1,4 @@
-# Nirmata Runtime For Kyverno
+# Runtime For Kyverno
 
 **🎉 Kyverno-style CEL policies for eBPF runtime enforcement.**
 
@@ -7,7 +7,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## 🚀 What is Nirmata Runtime?
+## 🚀 What is Runtime For Kyverno?
 
 **Nirmata Runtime** monitors and enforces runtime behaviors with Kyverno-style CEL policies using eBPF. It provides a per-node DaemonSet that attaches eBPF programs to the pods selected by a cluster-scoped `RuntimePolicy`.
 
@@ -21,19 +21,19 @@ The `RuntimePolicy` governs five kinds of workload behavior:
 
 Decisions are made in the kernel, so a denied operation never completes.
 
-Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are custom resources defined in this project and support CEL (Common Expressions Language); findings are written as [OpenReports](https://openreports.io) `Report` objects in the offending pod's namespace, per-node state and conditions live in the policy's `status`, and counters are exposed to Prometheus.
+Like Kyverno, everything in Runtime is Kubernetes-native: policies are custom resources defined in this project and support CEL (Common Expressions Language); findings are written as [OpenReports](https://openreports.io) `Report` objects in the offending pod's namespace, per-node state and conditions live in the policy's `status`, and counters are exposed to Prometheus.
 
-## 🔥 Why Nirmata Runtime?
+## 🔥 Why Runtime for Kyverno?
 
 As applications become AI-enabled, there is an immediate need to easily monitor and enforce runtime behaviors. Nirmata Runtime complements admission controllers, native RBAC and network policies, and AI gateways by providing an easy to use runtime tool to restrict AI workloads to a bounded set of behaviors and detect rogue agents.
 
-- **Admission Controllers checks the spec; Runtime checks the behavior.** Kyverno at admission validates what a pod *declares* before it starts. Nirmata Runtime enforces what the running process actually *does* — the files it opens, the binaries it execs, the addresses it contacts — after admission has already said yes.
+- **Admission Controllers checks the spec; Runtime checks the behavior.** Kyverno at admission validates what a pod *declares* before it starts. Runtime enforces what the running process actually *does* — the files it opens, the binaries it execs, the addresses it contacts — after admission has already said yes.
 
 - **What your CNI can't tell you.** NetworkPolicy decides who may reach whom; it does not know that `port: 443` might carry SSH, an h2c tunnel, or a custom protocol instead of TLS. `protocol` classifies each flow from its first data segment, independent of the declared port, and joins `exec`, `open`, and `network` in one policy object evaluated by one daemon — a cross-domain assertion no CNI expresses, with each finding attributed to the pod and container it came from, including the process for `exec`/`open` findings. Connectivity, identity-based policy, FQDN egress, ingress, and encryption stay with the CNI; see [why a runtime layer](docs/users/why-runtime.md) for the full split.
 
 - **Blocks, not just alerts.** Runtime detection tells you a sensitive file was read. `mode: enforce` returns `-EPERM` from a BPF-LSM hook, so the read never happens. `mode: monitor` gives you the detection workflow first, with the same policy object.
 
-- **One small CRD, Kyverno CEL, deliberately narrow.** Nirmata Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
+- **One small CRD, Kyverno CEL, deliberately narrow.** Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
 
 ## ✨ Key Features
 
@@ -288,7 +288,7 @@ process in **[SECURITY.md](SECURITY.md)**.
 
 ## 📄 License
 
-Nirmata Runtime is licensed under the [Apache License 2.0](LICENSE).
+Runtime is licensed under the [Apache License 2.0](LICENSE).
 
 ## 🔗 References
 
