@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 
 	"github.com/nirmata/runtime/pkg/compiler"
@@ -77,8 +78,9 @@ type PolicyMap struct {
 
 	// dispatcher owns the hook whose executor evaluates entries; the policy
 	// takes a slot from it on creation and returns the slot on Close.
-	dispatcher *Dispatcher
-	entries    *ebpf.Map
+	dispatcher  *Dispatcher
+	entries     *ebpf.Map
+	execRecords *ebpf.Map
 
 	slot uint32
 	bit  uint64
@@ -124,12 +126,13 @@ func NewPolicyMap(d *Dispatcher, logger *logr.Logger) (*PolicyMap, error) {
 	}
 
 	return &PolicyMap{
-		logger:     logger,
-		dispatcher: d,
-		entries:    d.entries,
-		slot:       slot,
-		bit:        1 << slot,
-		keys:       make(map[runtimePolicyEntry]struct{}),
+		logger:      logger,
+		dispatcher:  d,
+		entries:     d.entries,
+		execRecords: d.execRecords,
+		slot:        slot,
+		bit:         1 << slot,
+		keys:        make(map[runtimePolicyEntry]struct{}),
 	}, nil
 }
 
@@ -167,6 +170,9 @@ func NewProgram(d *Dispatcher) (*Prog, error) {
 		// the executor has to read the same entries map the policies write to;
 		// the collection's own copy would stay empty forever
 		MapReplacements: map[string]*ebpf.Map{entriesMapName(d.dispatcherType): d.entries},
+	}
+	if d.execRecords != nil {
+		opts.MapReplacements["exec_records"] = d.execRecords
 	}
 	if err := spec.LoadAndAssign(objs, opts); err != nil {
 		return nil, err
@@ -253,17 +259,19 @@ func (m *PolicyMap) Close() error {
 	return errors.Join(errs...)
 }
 
-// store that policy's bit in the value corresonding to `key`
-func (m *PolicyMap) set(key *runtimePolicyEntry) error {
+// store that policy's bit in the value corresonding to `key`, returning the
+// value written
+func (m *PolicyMap) set(key *runtimePolicyEntry) (uint64, error) {
 	var v uint64
 	if err := m.entries.Lookup(key, &v); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return err
+		return 0, err
 	}
-	if err := m.entries.Put(key, v|m.bit); err != nil {
-		return err
+	v |= m.bit
+	if err := m.entries.Put(key, v); err != nil {
+		return 0, err
 	}
 	m.keys[*key] = struct{}{}
-	return nil
+	return v, nil
 }
 
 // clear removes this policy's bit from key's value and drops the entry once no
@@ -304,14 +312,59 @@ func cgidEntry(cgid uint64) *runtimePolicyEntry {
 	return e
 }
 
-func (l *PolicyMap) AddCgids(cgids []uint64) error {
+// AddCgids selects cgids for this policy and returns those that, before being
+// selected, executed a binary their selection now denies.
+func (l *PolicyMap) AddCgids(cgids []uint64) ([]uint64, error) {
 	var errs []error
+	selection := make(map[uint64]uint64, len(cgids))
 	for _, cgid := range cgids {
-		if err := l.set(cgidEntry(cgid)); err != nil {
+		cg, err := l.set(cgidEntry(cgid))
+		if err != nil {
 			errs = append(errs, err)
+			continue
 		}
+		selection[cgid] = cg
 	}
-	return errors.Join(errs...)
+	denied, err := l.deniedExecs(selection)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return denied, errors.Join(errs...)
+}
+
+// deniedExecs replays the executor's verdict over the exec records of each
+// cgid, against the selection it was just given. Records are left to the LRU:
+// a policy that selects the cgid later needs them too.
+func (l *PolicyMap) deniedExecs(selection map[uint64]uint64) ([]uint64, error) {
+	if l.execRecords == nil || len(selection) == 0 {
+		return nil, nil
+	}
+	var (
+		r      runtimePolicyExecRecord
+		seen   uint8
+		denied []uint64
+	)
+	it := l.execRecords.Iterate()
+	for it.Next(&r, &seen) {
+		cg, ok := selection[r.Cgid]
+		if !ok || !execDenied(r, cg) || slices.Contains(denied, r.Cgid) {
+			continue
+		}
+		denied = append(denied, r.Cgid)
+	}
+	return denied, it.Err()
+}
+
+// the executor's verdict expression in runtimepolicy.bpf.c
+func execDenied(r runtimePolicyExecRecord, cg uint64) bool {
+	switch {
+	case r.Deny&cg != 0:
+		return true
+	case r.Allow&cg != 0:
+		return false
+	default:
+		return r.Dd&cg != 0
+	}
 }
 
 func (l *PolicyMap) DeleteCgids(cgids []uint64) error {
@@ -330,13 +383,13 @@ func (l *PolicyMap) AddTargets(paths *compiler.AllowDenyPair) ([]compiler.Reject
 	deny, allow, rejected := parsePair(paths)
 
 	for _, key := range deny {
-		if err := l.set(key); err != nil {
+		if _, err := l.set(key); err != nil {
 			return rejected, err
 		}
 	}
 
 	for _, key := range allow {
-		if err := l.set(key); err != nil {
+		if _, err := l.set(key); err != nil {
 			return rejected, err
 		}
 	}
@@ -376,7 +429,8 @@ func (l *PolicyMap) SetDefaultDeny(val bool) error {
 	k := runtimePolicyEntry{DataType: dataTypeFlags}
 
 	if val {
-		return l.set(&k)
+		_, err := l.set(&k)
+		return err
 	}
 	return l.clear(&k)
 }

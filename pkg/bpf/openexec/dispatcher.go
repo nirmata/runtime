@@ -31,6 +31,9 @@ type Dispatcher struct {
 	entries       *ebpf.Map
 	enforcerArray *ebpf.Map
 
+	// execRecords is set on exec hooks only.
+	execRecords *ebpf.Map
+
 	// slots has bit i set while policy slot i is in use.
 	slots uint64
 
@@ -143,6 +146,7 @@ func (d *Dispatcher) initializeForLsm(target string) error {
 		d.prog = objs.GenericLsmHandler
 		d.entries = objs.ExecEntries
 		d.enforcerArray = objs.ExecProg
+		d.execRecords = objs.ExecRecords
 		d.objs = objs
 	}
 
@@ -185,6 +189,7 @@ func (d *Dispatcher) initializeForTracepoint(target string) error {
 
 		d.entries = maps.ExecEntries
 		d.enforcerArray = maps.ExecProg
+		d.execRecords = maps.ExecRecords
 		d.objs = maps
 	}
 
@@ -237,7 +242,7 @@ func (d *Dispatcher) Close() error {
 			errs = append(errs, fmt.Errorf("releasing %s objects: %w", d.dispatcherType, err))
 		} else {
 			d.objs = nil
-			d.prog, d.entries, d.enforcerArray = nil, nil, nil
+			d.prog, d.entries, d.enforcerArray, d.execRecords = nil, nil, nil, nil
 		}
 	}
 	return errors.Join(errs...)

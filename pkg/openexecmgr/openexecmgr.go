@@ -3,6 +3,8 @@ package openexecmgr
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -52,7 +54,9 @@ type OpenExecManager struct {
 	// one more centralized dependency to consult on every read
 	pods                map[string]*podRepresentation
 	openExecAttachments map[string]*openExecAttachment
-	programs            map[string]monitoringIface
+	// cgroupPaths holds the cgroup directory of every tracked pod's cgids.
+	cgroupPaths map[uint64]string
+	programs    map[string]monitoringIface
 
 	lsm bool
 
@@ -202,6 +206,7 @@ func newOpenExecManager(logger logr.Logger, status runtimeevent.PolicyStatusReco
 		lsm:                 lsm,
 		pods:                make(map[string]*podRepresentation),
 		openExecAttachments: make(map[string]*openExecAttachment),
+		cgroupPaths:         make(map[uint64]string),
 	}
 }
 
@@ -248,19 +253,38 @@ func (l *OpenExecManager) addPodCgids(rpUID, progType string, prog *progState, c
 	if len(cgids) == 0 {
 		return
 	}
-	if err := prog.enf.AddCgids(cgids); err != nil {
+	denied, err := prog.enf.AddCgids(cgids)
+	if err != nil {
 		if observe {
 			l.observationUnavailable(rpUID, progType, "failed to add cgids to enforcer", err)
 		} else {
 			l.enforcementUnavailable(rpUID, progType, "failed to add cgids to enforcer", err)
 		}
 	}
+	l.killCgroups(rpUID, denied)
 	if p, ok := l.programs[progType]; ok {
 		if err := p.EnableObservation(cgids); err != nil {
 			l.observationUnavailable(rpUID, progType, "failed to enable observation", err)
 		}
 	}
 	l.mirrorCgids(rpUID, progType, cgids, true)
+}
+
+// killCgroups kills every process in cgroups that executed a denied binary
+// before they were selected, so the kernel never saw a verdict to enforce.
+func (l *OpenExecManager) killCgroups(rpUID string, cgids []uint64) {
+	for _, cgid := range cgids {
+		path, ok := l.cgroupPaths[cgid]
+		if !ok {
+			l.logger.Error(nil, "cgroup executed a denied binary before enforcement but its path is unknown, not killed", "uid", rpUID, "cgid", cgid)
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(path, "cgroup.kill"), []byte("1"), 0); err != nil {
+			l.logger.Error(err, "failed to kill cgroup that executed a denied binary before enforcement", "uid", rpUID, "cgid", cgid, "path", path)
+			continue
+		}
+		l.logger.Info("killed cgroup that executed a denied binary before enforcement", "uid", rpUID, "cgid", cgid, "path", path)
+	}
 }
 
 // disableObservation stops the per-cgid path counting on one program type.

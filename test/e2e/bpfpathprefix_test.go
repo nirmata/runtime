@@ -92,7 +92,7 @@ func TestBPFDirectoryPrefixDeniesInKernel(t *testing.T) {
 	}
 
 	cgid := selfCgroupID(t)
-	if err := enf.AddCgids([]uint64{cgid}); err != nil {
+	if _, err := enf.AddCgids([]uint64{cgid}); err != nil {
 		t.Fatalf("attaching cgroup %d: %v", cgid, err)
 	}
 
@@ -139,7 +139,7 @@ func TestBPFDirectoryPrefixDeniesInKernel(t *testing.T) {
 	if _, err := enf.AddTargets(&compiler.AllowDenyPair{Allow: []string{allowed}}); err != nil {
 		t.Fatalf("programming the first policy's allow: %v", err)
 	}
-	if err := other.AddCgids([]uint64{cgid}); err != nil {
+	if _, err := other.AddCgids([]uint64{cgid}); err != nil {
 		t.Fatalf("attaching cgroup %d to the second policy: %v", cgid, err)
 	}
 

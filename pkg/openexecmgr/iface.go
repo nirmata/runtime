@@ -16,7 +16,7 @@ type CgroupSink interface {
 // be exercised without loading bpf programs.
 type openExecMap interface {
 	Close() error
-	AddCgids(cgids []uint64) error
+	AddCgids(cgids []uint64) ([]uint64, error)
 	DeleteCgids(cgids []uint64) error
 	AddTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error)
 	DeleteTargets(paths *compiler.AllowDenyPair) ([]compiler.RejectedTarget, error)

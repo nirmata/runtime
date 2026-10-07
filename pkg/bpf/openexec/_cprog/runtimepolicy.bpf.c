@@ -72,7 +72,7 @@ int runtime_policy_executor(void *ctx)
     /* read the bitmap that contains which policies target this cgid */
     __u64 cg = mask_of(entries, &key);
 
-    if (cg) {
+    if (cg || prog_ctx->prog_type == PROG_TYPE_EXEC) {
         __builtin_memset(key.data, 0, sizeof(key.data));
         key.data_type = FLAGS;
         /* check if there is a default deny set by ANY policy */
@@ -123,12 +123,21 @@ int runtime_policy_executor(void *ctx)
             }
         }
 
-        /* every mask covers all policies holding the entry; masking with the
-         * policies that select this cgroup is what scopes them to it */
-        deny &= cg;
-        allow &= cg;
-        dd &= cg;
-        prog_ctx->reason = deny ? EXPLICIT_DENY : allow ? EXPLICIT_ALLOW : dd ? IMPLICIT_DENY : IMPLICIT_ALLOW;
+        if (!cg) {
+            /* only deny and dd can turn into a kill */
+            if (deny | dd) {
+                struct exec_record r = { .cgid = cgid, .deny = deny, .allow = allow, .dd = dd };
+                __u8 seen = 1;
+                bpf_map_update_elem(&exec_records, &r, &seen, BPF_ANY);
+            }
+        } else {
+            /* every mask covers all policies holding the entry; masking with the
+             * policies that select this cgroup is what scopes them to it */
+            deny &= cg;
+            allow &= cg;
+            dd &= cg;
+            prog_ctx->reason = deny ? EXPLICIT_DENY : allow ? EXPLICIT_ALLOW : dd ? IMPLICIT_DENY : IMPLICIT_ALLOW;
+        }
     }
 
     record_path_event(&cgid, prog_ctx->path, prog_ctx->reason);

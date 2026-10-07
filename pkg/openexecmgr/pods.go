@@ -19,6 +19,7 @@ func (l *OpenExecManager) podCreated(pod corev1.Pod, nsLabels map[string]string,
 		cgids:             containers.ExtractCgids(cgInfos),
 		attachedOpenExecs: make(map[string]*openExecAttachment),
 	}
+	l.trackCgroupPaths(cgInfos, nil)
 	for rpUid, la := range l.openExecAttachments {
 		if la.target.Matches(nsLabels, pod.Labels) {
 			l.logger.V(2).Info("new pod matches existing runtime policy", "podUid", pod.UID, "rpUid", rpUid, "cgids", pr.cgids)
@@ -61,6 +62,7 @@ func (l *OpenExecManager) podUpdated(pod corev1.Pod, nsLabels map[string]string,
 
 	// the labels have to land before syncPodAttachment below, which matches
 	// against them
+	l.trackCgroupPaths(cgInfos, toRemove)
 	pr.cgids = cgids
 	pr.labels = pod.Labels
 	pr.nsLabels = nsLabels
@@ -96,6 +98,9 @@ func (l *OpenExecManager) podDeleted(podUid string) {
 	l.logger.V(2).Info("pod deleted", "podUid", podUid)
 	pr, tracked := l.pods[podUid]
 	delete(l.pods, podUid)
+	if tracked {
+		l.trackCgroupPaths(nil, pr.cgids)
+	}
 	for rpUid, la := range l.openExecAttachments {
 		podAttachment, ok := la.attachedPods[podUid]
 		if !ok {
@@ -112,6 +117,17 @@ func (l *OpenExecManager) podDeleted(podUid string) {
 	if tracked {
 		for progType := range l.programs {
 			l.disableObservation(progType, pr.cgids)
+		}
+	}
+}
+
+func (l *OpenExecManager) trackCgroupPaths(add []*containers.ContainerCgroupInfo, remove []uint64) {
+	for _, cgid := range remove {
+		delete(l.cgroupPaths, cgid)
+	}
+	for _, info := range add {
+		if info != nil {
+			l.cgroupPaths[info.ID] = info.Path
 		}
 	}
 }

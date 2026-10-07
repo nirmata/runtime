@@ -19,6 +19,14 @@ type lsmDispatcherExecCheckEntry struct {
 	Data     [128]int8
 }
 
+type lsmDispatcherExecCheckExecRecord struct {
+	_     structs.HostLayout
+	Cgid  uint64
+	Deny  uint64
+	Allow uint64
+	Dd    uint64
+}
+
 type lsmDispatcherExecCheckPathEventKey struct {
 	_            structs.HostLayout
 	Path         [128]int8
@@ -49,6 +57,7 @@ const (
 	lsmDispatcherExecCheckMapEventsMap          = "events_map"
 	lsmDispatcherExecCheckMapExecEntries        = "exec_entries"
 	lsmDispatcherExecCheckMapExecProg           = "exec_prog"
+	lsmDispatcherExecCheckMapExecRecords        = "exec_records"
 	lsmDispatcherExecCheckMapInnerEvents        = "inner_events"
 	lsmDispatcherExecCheckMapOpenEntries        = "open_entries"
 	lsmDispatcherExecCheckMapOpenProg           = "open_prog"
@@ -109,6 +118,7 @@ type lsmDispatcherExecCheckMapSpecs struct {
 	EventsMap   *ebpf.MapSpec `ebpf:"events_map"`
 	ExecEntries *ebpf.MapSpec `ebpf:"exec_entries"`
 	ExecProg    *ebpf.MapSpec `ebpf:"exec_prog"`
+	ExecRecords *ebpf.MapSpec `ebpf:"exec_records"`
 	InnerEvents *ebpf.MapSpec `ebpf:"inner_events"`
 	OpenEntries *ebpf.MapSpec `ebpf:"open_entries"`
 	OpenProg    *ebpf.MapSpec `ebpf:"open_prog"`
@@ -145,6 +155,7 @@ type lsmDispatcherExecCheckMaps struct {
 	EventsMap   *ebpf.Map `ebpf:"events_map"`
 	ExecEntries *ebpf.Map `ebpf:"exec_entries"`
 	ExecProg    *ebpf.Map `ebpf:"exec_prog"`
+	ExecRecords *ebpf.Map `ebpf:"exec_records"`
 	InnerEvents *ebpf.Map `ebpf:"inner_events"`
 	OpenEntries *ebpf.Map `ebpf:"open_entries"`
 	OpenProg    *ebpf.Map `ebpf:"open_prog"`
@@ -157,6 +168,7 @@ func (m *lsmDispatcherExecCheckMaps) Close() error {
 		m.EventsMap,
 		m.ExecEntries,
 		m.ExecProg,
+		m.ExecRecords,
 		m.InnerEvents,
 		m.OpenEntries,
 		m.OpenProg,

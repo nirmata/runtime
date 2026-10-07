@@ -99,14 +99,14 @@ func (f *fakeEnforcer) Close() error {
 	return err
 }
 
-func (f *fakeEnforcer) AddCgids(cgids []uint64) error {
+func (f *fakeEnforcer) AddCgids(cgids []uint64) ([]uint64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addCgids = append(f.addCgids, slices.Clone(cgids))
 	for _, c := range cgids {
 		f.cgids[c] = struct{}{}
 	}
-	return f.note("AddCgids")
+	return nil, f.note("AddCgids")
 }
 
 func (f *fakeEnforcer) DeleteCgids(cgids []uint64) error {

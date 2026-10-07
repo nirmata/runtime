@@ -57,6 +57,24 @@ struct policy_entries {
 struct policy_entries open_entries SEC(".maps");
 struct policy_entries exec_entries SEC(".maps");
 
+/* An exec from a cgroup no policy selected yet, with the masks of every policy
+ * whose rules matched it. Userspace replays the verdict against the cgroup's
+ * selection once the cgroup is added. A key, so repeats dedupe; padding-free. */
+struct exec_record {
+    __u64 cgid;
+    __u64 deny;
+    __u64 allow;
+    __u64 dd;
+};
+
+/* LRU: records of cgroups that are never selected are never deleted */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct exec_record);
+    __type(value, __u8);
+} exec_records SEC(".maps");
+
 /* Padding-free by construction: a hash key is compared as raw bytes, so any
  * uninitialized byte would split one logical key across separate entries. */
 struct path_event_key {

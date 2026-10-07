@@ -97,14 +97,14 @@ func TestPolicyMapCloseClearsEveryKeyItSet(t *testing.T) {
 	if _, err := a.AddTargets(pair); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.AddCgids([]uint64{42}); err != nil {
+	if _, err := a.AddCgids([]uint64{42}); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.SetDefaultDeny(true); err != nil {
 		t.Fatal(err)
 	}
 	// b shares the cgroup, so that key must outlive a's Close with b's bit only
-	if err := b.AddCgids([]uint64{42}); err != nil {
+	if _, err := b.AddCgids([]uint64{42}); err != nil {
 		t.Fatal(err)
 	}
 
