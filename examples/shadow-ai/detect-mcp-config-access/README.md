@@ -159,7 +159,7 @@ something was actually blocked and is never suppressed.
 ## Turning it into enforcement
 
 The same `policy.yaml` with `mode: enforce` blocks the reads instead of reporting them, in
-the `file_open` LSM hook, for every process in the pod including a `kubectl exec` shell.
+the kernel's file-open hook, for every process in the pod including a `kubectl exec` shell.
 Switching modes rebuilds the attachment, so an observing program never inherits deny
 entries. Run the reads again after switching and the `cat` fails with
 `Permission denied`.

@@ -6,7 +6,8 @@ File `open` enforcement. The policy denies `/etc/shadow` as a literal `values` e
 adds two more paths through a CEL `expression` that reads `spec.variables`. The two sides
 of a rule are unioned, so the effective deny list is all three paths.
 
-The block happens in the kernel's `file_open` LSM hook, which returns `-EPERM`. A shell
+The block happens in the kernel's file-open hook — `file_open` under BPF-LSM,
+`security_file_open` otherwise — which returns `-EPERM`. A shell
 inside the pod cannot read the file either — there is no path through the container
 runtime, a `kubectl exec`, or a compromised process that avoids the hook.
 
@@ -65,8 +66,8 @@ kubectl exec lsm-client -- cat /etc/shadow; echo "denied exit=$?"
 kubectl exec lsm-client -- cat /etc/hosts >/dev/null; echo "allowed exit=$?"
 ```
 
-- `cat: can't open '/etc/shadow': Permission denied` and `denied exit=1` — the LSM hook
-  refused the open. Allow a few seconds after applying the policy for the daemon to
+- `cat: can't open '/etc/shadow': Permission denied` and `denied exit=1` — the hook refused
+  the open. Allow a few seconds after applying the policy for the daemon to
   program the pod's path map.
 - `allowed exit=0` — every path not on the deny list is untouched.
 

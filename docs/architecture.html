@@ -323,7 +323,7 @@
     <div class="meta-row">
       <span class="tag">Status <b>pre-1.0 &middot; v1alpha1</b></span>
       <span class="tag">CRD <b>RuntimePolicy</b></span>
-      <span class="tag">Mechanism <b>eBPF &middot; BPF-LSM &middot; cgroup_skb</b></span>
+      <span class="tag">Mechanism <b>eBPF &middot; BPF-LSM or fmod_ret &middot; cgroup_skb</b></span>
       <span class="tag">Rules <b>CEL</b></span>
       <span class="tag">Findings <b>OpenReports</b></span>
       <span class="tag">License <b>Apache-2.0</b></span>
@@ -420,7 +420,7 @@
 
           <rect class="box-fill" x="488" y="76" width="204" height="46" rx="6" />
           <text class="lbl" x="590" y="98" text-anchor="middle">file_open · bprm_check</text>
-          <text class="cap" x="590" y="114" text-anchor="middle">open + exec (LSM)</text>
+          <text class="cap" x="590" y="114" text-anchor="middle">open + exec (LSM or fmod_ret)</text>
 
           <rect class="box-fill" x="488" y="132" width="204" height="46" rx="6" />
           <text class="lbl" x="590" y="154" text-anchor="middle">cgroup_skb egress</text>
@@ -692,7 +692,7 @@
 
     <div class="callout status-box">
       <span class="eyebrow"><span class="dot"></span>Current status</span>
-      <p>Pre-1.0, API <code>v1alpha1</code>. File <code>open</code> and process <code>exec</code> enforce through BPF-LSM where the kernel is booted with <code>lsm=bpf</code> and through a <code>fmod_ret</code> fallback otherwise, and only BPF-LSM also matches an exec against <code>open</code> rules; a domain name is matched against its IPv4 addresses only, so a deny on a domain does not block that destination over IPv6; <code>network</code>, <code>protocol</code>, <code>open</code>, and <code>exec</code> observations are drained on a poll interval rather than streamed; policy exceptions are not yet supported. See <a href="dev/DESIGN.md#known-gaps--future-work">Known gaps</a> for the full, current list.</p>
+      <p>Pre-1.0, API <code>v1alpha1</code>. File <code>open</code> and process <code>exec</code> enforce through BPF-LSM where the kernel is booted with <code>lsm=bpf</code> and otherwise through a <code>fmod_ret</code> fallback that needs kernel 5.7 or later, BTF, the BPF JIT, and an x86-64 or arm64 node; where neither is available they do not enforce, and only BPF-LSM also matches an exec against <code>open</code> rules (see <a href="users/platforms.md">Platform support</a>); a domain name is matched against its IPv4 addresses only, so a deny on a domain does not block that destination over IPv6; <code>network</code>, <code>protocol</code>, <code>open</code>, and <code>exec</code> observations are drained on a poll interval rather than streamed; policy exceptions are not yet supported. See <a href="dev/DESIGN.md#known-gaps--future-work">Known gaps</a> for the full, current list.</p>
     </div>
   </div>
 </section>

@@ -8,7 +8,8 @@ dropping a netcat or a downloader into the container does not make it runnable. 
 list here is built from a literal `values` list unioned with a CEL `expression` over
 `spec.variables`.
 
-The check runs in the kernel's `bprm_check_security` LSM hook and returns `-EPERM`, so it
+The check runs in the kernel's `bprm_check_security` LSM hook, or on the exec's open of
+the binary in `security_file_open` where BPF-LSM is not active, and returns `-EPERM`, so it
 covers every `execve` in the pod's cgroup, not just what a `kubectl exec` starts.
 
 Under a default deny the allow list has to name every binary the workload itself executes.

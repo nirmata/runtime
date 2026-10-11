@@ -31,7 +31,7 @@ As applications become AI-enabled, there is an immediate need to easily monitor 
 
 - **What your CNI can't tell you.** NetworkPolicy decides who may reach whom; it does not know that `port: 443` might carry SSH, an h2c tunnel, or a custom protocol instead of TLS. `protocol` classifies each flow from its first data segment, independent of the declared port, and joins `exec`, `open`, and `network` in one policy object evaluated by one daemon — a cross-domain assertion no CNI expresses, with each finding attributed to the pod and container it came from, including the process for `exec`/`open` findings. Connectivity, identity-based policy, FQDN egress, ingress, and encryption stay with the CNI; see [why a runtime layer](docs/users/why-runtime.md) for the full split.
 
-- **Blocks, not just alerts.** Runtime detection tells you a sensitive file was read. `mode: enforce` returns `-EPERM` from a BPF-LSM hook, so the read never happens. `mode: monitor` gives you the detection workflow first, with the same policy object.
+- **Blocks, not just alerts.** Runtime detection tells you a sensitive file was read. `mode: enforce` returns `-EPERM` from a kernel hook (BPF-LSM, or `fmod_ret` on `security_file_open`), so the read never happens. `mode: monitor` gives you the detection workflow first, with the same policy object.
 
 - **One small CRD, Kyverno CEL, deliberately narrow.** Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
 

@@ -720,7 +720,7 @@ In `monitor` mode the same eBPF programs are attached to the same matched pods, 
 **empty** `banned`/`allowed` maps and default-deny left off, so nothing is ever blocked. What
 the programs do is *count* what the workload touched:
 
-- the LSM programs count every `file_open` / `bprm_check_security` path per cgroup;
+- the `open` and `exec` programs count every opened or executed path per cgroup;
 - the egress program counts every destination IPv4 and IPv6 address per pod;
 - the protocol classifier counts every classified `(protocol, decision)` per pod, once per flow.
 
