@@ -4,7 +4,8 @@ Block a pod's network egress to a specific address, in the kernel, on a throwawa
 cluster. Five steps, and the only long wait is building the daemon image.
 
 This is the path that runs on any Linux host, which is why it is the quickstart. The
-`open` and `exec` samples enforce the same way but need a BPF-LSM kernel — see
+`open` and `exec` samples enforce the same way, with kernel requirements of their own — see
+[platform support](platforms.md) and
 [block reads of credential files](../../examples/files-and-processes/deny-sensitive-file-access/).
 
 ## Prerequisites

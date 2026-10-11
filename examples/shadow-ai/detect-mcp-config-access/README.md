@@ -24,14 +24,17 @@ was checked out. Those are reached the other way round, with a broad `deny` and 
 
 ## Requires
 
-File `open` observation requires a kernel booted with BPF-LSM active: `bpf` must appear in
-`/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions
-and hosted CI runners are typically not booted with it; Docker Desktop's LinuxKit VM is, so
-a kind cluster on macOS runs this example.
+File `open` observation needs BTF at
+`/sys/kernel/btf/vmlinux`, plus either BPF-LSM active (`bpf` in `/sys/kernel/security/lsm`) or, for the `fmod_ret` fallback, kernel 5.7 or later with the
+BPF JIT on x86-64 or arm64. Docker Desktop's LinuxKit VM has BPF-LSM active, so a kind
+cluster on macOS runs this example. See [platform support](../../../docs/users/platforms.md).
 
 ```bash
-kubectl debug node/<node> -it --image=busybox:1.36 -- cat /host/sys/kernel/security/lsm
+kubectl debug node/<node> -it --image=busybox:1.36 -- sh -c 'cat /host/sys/kernel/security/lsm; uname -rm'
 ```
+
+`bpf` in the first line means the LSM hooks; otherwise the second line must show kernel 5.7
+or later on `x86_64` or `aarch64`.
 
 Read it from the node, not from the agent pod: that image is distroless and has neither a
 shell nor `cat`.

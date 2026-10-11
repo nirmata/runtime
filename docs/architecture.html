@@ -692,7 +692,7 @@
 
     <div class="callout status-box">
       <span class="eyebrow"><span class="dot"></span>Current status</span>
-      <p>Pre-1.0, API <code>v1alpha1</code>. File <code>open</code> and process <code>exec</code> enforcement need a kernel booted with BPF-LSM active (<code>lsm=bpf</code>); a domain name is matched against its IPv4 addresses only, so a deny on a domain does not block that destination over IPv6; <code>network</code>, <code>protocol</code>, <code>open</code>, and <code>exec</code> observations are drained on a poll interval rather than streamed; policy exceptions are not yet supported. See <a href="dev/DESIGN.md#known-gaps--future-work">Known gaps</a> for the full, current list.</p>
+      <p>Pre-1.0, API <code>v1alpha1</code>. File <code>open</code> and process <code>exec</code> enforce through BPF-LSM where the kernel is booted with <code>lsm=bpf</code> and through a <code>fmod_ret</code> fallback otherwise, and only BPF-LSM also matches an exec against <code>open</code> rules; a domain name is matched against its IPv4 addresses only, so a deny on a domain does not block that destination over IPv6; <code>network</code>, <code>protocol</code>, <code>open</code>, and <code>exec</code> observations are drained on a poll interval rather than streamed; policy exceptions are not yet supported. See <a href="dev/DESIGN.md#known-gaps--future-work">Known gaps</a> for the full, current list.</p>
     </div>
   </div>
 </section>

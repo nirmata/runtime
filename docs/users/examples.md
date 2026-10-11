@@ -21,10 +21,11 @@ failure would also pass against a runtime that blocks everything.
 **cgroup v2** — Network egress enforcement and observation require only a cgroup v2 host
 and BPF support; a stock kind cluster on a Linux host qualifies.
 
-**BPF-LSM** — File `open` and process `exec` enforcement require a kernel booted with
-BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel
-boot parameter). Stock distributions and hosted CI runners are typically not booted with
-it.
+**BPF-LSM or `fmod_ret`** — File `open` and process `exec` enforcement need BTF at
+`/sys/kernel/btf/vmlinux`. They use the BPF-LSM hooks where `bpf` appears in
+`/sys/kernel/security/lsm`, and a `fmod_ret` fallback otherwise, which needs kernel 5.7 or
+later, the BPF JIT, and an x86-64 or arm64 node. Both enforce; only on a BPF-LSM node is an
+exec also matched against `open` rules — see [platform support](platforms.md).
 
 If enforcement appears to do nothing, that distinction is the first thing to check — see
 [troubleshooting](troubleshooting.md).
@@ -62,9 +63,9 @@ a workload may read and which binaries it may run.
 
 | Example | Scenario | Mode | Requires |
 | --- | --- | --- | --- |
-| [deny-sensitive-file-access](../../examples/files-and-processes/deny-sensitive-file-access/) | Block reads of credential files (`/etc/shadow`, SSH keys) even from a shell inside the pod | enforce | BPF-LSM |
-| [restrict-exec-allowlist](../../examples/files-and-processes/restrict-exec-allowlist/) | Prevent shell or netcat execution in a hardened pod: default-deny exec with an allow-list | enforce | BPF-LSM |
-| [enforce-workload-baseline](../../examples/files-and-processes/enforce-workload-baseline/) | Lock a workload to its known-good files, binaries, and destinations | enforce | BPF-LSM |
+| [deny-sensitive-file-access](../../examples/files-and-processes/deny-sensitive-file-access/) | Block reads of credential files (`/etc/shadow`, SSH keys) even from a shell inside the pod | enforce | BPF-LSM or `fmod_ret` |
+| [restrict-exec-allowlist](../../examples/files-and-processes/restrict-exec-allowlist/) | Prevent shell or netcat execution in a hardened pod: default-deny exec with an allow-list | enforce | BPF-LSM or `fmod_ret` |
+| [enforce-workload-baseline](../../examples/files-and-processes/enforce-workload-baseline/) | Lock a workload to its known-good files, binaries, and destinations | enforce | BPF-LSM or `fmod_ret` |
 
 ## Shadow AI
 
@@ -77,11 +78,11 @@ with what each signal can and cannot establish, in
 | --- | --- | --- | --- |
 | [report-unexpected-dns](../../examples/shadow-ai/report-unexpected-dns/) | Report the provider hostnames a workload resolves outside its approved set, and discover the names it resolves at all | monitor | cgroup v2 |
 | [trusted-and-untrusted-agents](../../examples/shadow-ai/trusted-and-untrusted-agents/) | Give a declared agent a hard TLS-to-one-Service boundary, and report which LLM providers an undeclared one resolves | enforce and monitor | cgroup v2 |
-| [detect-ai-sdks](../../examples/shadow-ai/detect-ai-sdks/) | Report the AI SDKs, model files, model caches, and agent credentials a workload reads | monitor | BPF-LSM |
-| [detect-agent-cli](../../examples/shadow-ai/detect-agent-cli/) | Report the coding-agent CLIs and self-hosted inference servers a workload launches | monitor | BPF-LSM |
-| [monitor-claude-code](../../examples/shadow-ai/monitor-claude-code/) | Run Claude Code in a container and inventory its process, file, network, protocol, and DNS activity | monitor | BPF-LSM for `open` and `exec`; cgroup v2 for network-side findings |
-| [detect-mcp-servers](../../examples/shadow-ai/detect-mcp-servers/) | Report every stdio MCP server a workload launches, identified by the package it was asked to run rather than the binary that ran it | monitor | BPF-LSM for the stdio half; cgroup v2 for the remote half |
-| [detect-mcp-config-access](../../examples/shadow-ai/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM |
+| [detect-ai-sdks](../../examples/shadow-ai/detect-ai-sdks/) | Report the AI SDKs, model files, model caches, and agent credentials a workload reads | monitor | BPF-LSM or `fmod_ret` |
+| [detect-agent-cli](../../examples/shadow-ai/detect-agent-cli/) | Report the coding-agent CLIs and self-hosted inference servers a workload launches | monitor | BPF-LSM or `fmod_ret` |
+| [monitor-claude-code](../../examples/shadow-ai/monitor-claude-code/) | Run Claude Code in a container and inventory its process, file, network, protocol, and DNS activity | monitor | BPF-LSM or `fmod_ret` for `open` and `exec`; cgroup v2 for network-side findings |
+| [detect-mcp-servers](../../examples/shadow-ai/detect-mcp-servers/) | Report every stdio MCP server a workload launches, identified by the package it was asked to run rather than the binary that ran it | monitor | BPF-LSM or `fmod_ret` for the stdio half; cgroup v2 for the remote half |
+| [detect-mcp-config-access](../../examples/shadow-ai/detect-mcp-config-access/) | Detect a process reading an MCP configuration file, credentials included, with an `open` deny list of absolute paths | monitor | BPF-LSM or `fmod_ret` |
 
 A `dns` behavior declares the names a workload is expected to resolve and reports the rest.
 It observes only, and a policy that pairs it with `mode: enforce` is refused when it
@@ -104,7 +105,7 @@ blocking any of it, which is where an enforcement policy usually starts.
 | Example | Scenario | Mode | Requires |
 | --- | --- | --- | --- |
 | [monitor-egress](../../examples/monitoring/monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor | cgroup v2 |
-| [monitor-workload-baseline](../../examples/monitoring/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
+| [monitor-workload-baseline](../../examples/monitoring/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor | BPF-LSM or `fmod_ret` for `open` and `exec`; `network` findings alone need only cgroup v2 |
 | [monitor-static-pods](../../examples/monitoring/monitor-static-pods/) | Confirm the daemon can observe kubeadm's static control-plane pods | monitor | cgroup v2 |
 
 Monitor mode reports through OpenReports `Report` objects and never blocks. What it can and
