@@ -17,15 +17,15 @@ entries the report showed, then switching `mode` to `enforce`. Compare
 
 ## Requires
 
-File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active:
-`bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot
-parameter). Stock distributions and hosted CI runners are typically not booted with it;
-Docker Desktop's LinuxKit VM is, so a kind cluster on macOS runs these examples.
+File `open` and process `exec` observation needs BTF at
+`/sys/kernel/btf/vmlinux`, plus either BPF-LSM active (`bpf` in `/sys/kernel/security/lsm`) or, for the `fmod_ret` fallback, kernel 5.7 or later with the
+BPF JIT on x86-64 or arm64. Docker Desktop's LinuxKit VM has BPF-LSM active, so a kind
+cluster on macOS runs this example. See [platform support](../../../docs/users/platforms.md).
 
 Network egress enforcement and observation require only a cgroup v2 host and BPF support;
 a stock kind cluster on a Linux host qualifies.
 
-Without BPF-LSM the `network` findings still appear; the `open` and `exec` behaviors
+Where neither hook runs, the `network` findings still appear; the `open` and `exec` behaviors
 produce nothing, and the policy carries an `ObservationAvailable=False` condition.
 
 Nirmata Runtime must be installed — see [installation](../../../docs/users/installation.md).

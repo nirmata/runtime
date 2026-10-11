@@ -77,7 +77,7 @@ Work through these in order.
 
 ## A path I allowed is still blocked
 
-For `open` and `exec`, each policy attaches its own LSM program and the kernel denies
+For `open` and `exec`, each policy attaches its own program and the kernel denies
 when any of them denies. A policy with `deny.values: ["*"]` blocks every path absent
 from its **own** `allow` list, whatever another policy allows — so check every policy
 matching the pod, not only the one carrying the allow entry. The path has to be in the
@@ -92,8 +92,9 @@ allow list of each default-denying policy. See
 - Allow up to about 20 seconds: BPF counters are drained every `--observe-interval`
   (default 10s), and findings are buffered and flushed every 10 seconds.
 - Check `status.conditions` for `ObservationAvailable=False`: it means observation
-  could not be attached on at least one node (named in the message; a node without
-  BPF-LSM, or a loaded LSM program with no observation maps), so a monitor-mode policy
+  could not be attached on at least one node (named in the message; a node where
+  neither the BPF-LSM nor the `fmod_ret` hook runs, or a loaded program with no observation
+  maps), so a monitor-mode policy
   on that node would silently produce no findings.
 - Check `status.conditions` for `PodsMatched=False`: the policy's selector matches no
   pod on any node, so there is nothing that could produce a finding.
@@ -215,7 +216,7 @@ are attached, nothing is blocked and no findings are produced. Set `enforce` or 
 `EnforcementUnavailable` (enforce mode) and `ObservationUnavailable` (monitor mode) mean
 attaching the enforcer for `open` or `exec` failed on at least one node — the `Applied`
 message borrows its message from `EnforcementAvailable` / `ObservationAvailable`, which
-names the failing nodes and usually BPF-LSM absence, see
+names the failing nodes and usually that neither `open`/`exec` hook runs there, see
 [step 2](#the-policy-is-applied-but-nothing-is-blocked).
 Both clear on their own once a later attempt succeeds, without restarting the policy.
 

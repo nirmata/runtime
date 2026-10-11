@@ -22,11 +22,11 @@ any of these.
 | --- | --- | --- | --- | --- |
 | [report-unexpected-dns](report-unexpected-dns/) | name | Report the DNS names a workload resolves that it was not expected to, and discover the names it resolves at all | monitor | cgroup v2 |
 | [trusted-and-untrusted-agents](trusted-and-untrusted-agents/) | name | Give a declared agent a hard TLS-to-one-Service boundary, and report which LLM providers an undeclared one resolves | enforce and monitor | cgroup v2 |
-| [detect-ai-sdks](detect-ai-sdks/) | file | Report the AI SDKs, model files, model caches, and agent credentials a workload reads | monitor | BPF-LSM |
-| [detect-agent-cli](detect-agent-cli/) | process | Report the coding-agent CLIs and self-hosted inference servers a workload launches | monitor | BPF-LSM |
-| [monitor-claude-code](monitor-claude-code/) | process, file, name, destination, protocol | Run Claude Code in a container and inventory its observable runtime activity | monitor | BPF-LSM for `open` and `exec`; cgroup v2 for network-side findings |
-| [detect-mcp-servers](detect-mcp-servers/) | process, name | Report every stdio MCP server a workload launches, and the remote MCP endpoints it resolves | monitor | BPF-LSM for the stdio half; cgroup v2 for the remote half |
-| [detect-mcp-config-access](detect-mcp-config-access/) | file | Detect a process reading an MCP configuration file, credentials included | monitor | BPF-LSM |
+| [detect-ai-sdks](detect-ai-sdks/) | file | Report the AI SDKs, model files, model caches, and agent credentials a workload reads | monitor | BPF-LSM or `fmod_ret` |
+| [detect-agent-cli](detect-agent-cli/) | process | Report the coding-agent CLIs and self-hosted inference servers a workload launches | monitor | BPF-LSM or `fmod_ret` |
+| [monitor-claude-code](monitor-claude-code/) | process, file, name, destination, protocol | Run Claude Code in a container and inventory its observable runtime activity | monitor | BPF-LSM or `fmod_ret` for `open` and `exec`; cgroup v2 for network-side findings |
+| [detect-mcp-servers](detect-mcp-servers/) | process, name | Report every stdio MCP server a workload launches, and the remote MCP endpoints it resolves | monitor | BPF-LSM or `fmod_ret` for the stdio half; cgroup v2 for the remote half |
+| [detect-mcp-config-access](detect-mcp-config-access/) | file | Detect a process reading an MCP configuration file, credentials included | monitor | BPF-LSM or `fmod_ret` |
 
 Every one of these is a detection, not a boundary. Nothing here reads inside TLS, so model
 names, prompts, tool arguments, and JSON-RPC methods are all out of reach, and no policy

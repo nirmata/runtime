@@ -32,7 +32,7 @@ report.
 | CNI NetworkPolicy | who may reach whom, L3/L4 and FQDN | attempts, process identity, its own enforcement status |
 | Nirmata Runtime | per-pod facts decided in the kernel: destination of every IP flow, protocol of every flow, file and exec enforcement, and the attempts as findings | content, which requires the client's cooperation; the IPv6 addresses of a destination named by domain |
 
-The mechanism — eBPF at `cgroup_skb` and BPF-LSM — is shared with other runtime tools. What
+The mechanism — eBPF at `cgroup_skb`, and BPF-LSM or `fmod_ret` — is shared with other runtime tools. What
 differs is the altitude: an admission-validated CRD, per-node status conditions, findings
 as OpenReports `Report` objects in the offending namespace, and CEL, rather than tracing
 primitives and a JSON event stream.
