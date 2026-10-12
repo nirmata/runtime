@@ -219,7 +219,8 @@ kubectl exec agent -- wget -q -O /dev/null http://example.com  # exec /bin/wget:
 kubectl exec agent -- ls /root/.aws                            # still lists "credentials"
 ```
 
-Each denial is written to the pod's Report, with the path and the policy that blocked it:
+Each denial is written to the pod's Report, with the path and the policy that blocked it.
+Findings are flushed every 10 seconds, and their order can vary:
 
 ```bash
 kubectl get report kyverno-runtime-agent \
