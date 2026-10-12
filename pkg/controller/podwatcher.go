@@ -48,6 +48,9 @@ type podWatcher struct {
 	nsFactory  informers.SharedInformerFactory
 	nsInformer cache.SharedIndexInformer
 	nsLister   corev1listers.NamespaceLister
+	// closed once both caches first sync; Start can run again after an error
+	synced     chan struct{}
+	syncedOnce sync.Once
 
 	nodeName      string
 	eventHandlers []events.PodEventHandler
@@ -70,6 +73,7 @@ func (w *podWatcher) Start(ctx context.Context) error {
 	if !cache.WaitForCacheSync(timeOut.Done(), w.informer.HasSynced, w.nsInformer.HasSynced) {
 		return fmt.Errorf("timed out waiting for cache sync")
 	}
+	w.syncedOnce.Do(func() { close(w.synced) })
 
 	go wait.Until(w.runWorker, time.Second, ctx.Done())
 
@@ -107,6 +111,7 @@ func NewPodWatcher(client kubernetes.Interface, nodeName string, eventHandlers [
 		nsFactory:     nsFactory,
 		nsInformer:    namespaces.Informer(),
 		nsLister:      namespaces.Lister(),
+		synced:        make(chan struct{}),
 		nodeName:      nodeName,
 		eventHandlers: eventHandlers,
 		nsHandlers:    nsHandlers,
@@ -307,6 +312,10 @@ func (w *podWatcher) handleCreateOrUpdate(pod *corev1.Pod, evType string) error 
 	}
 
 	return w.fanOut(pod, nsLabels, cgInfos, evType)
+}
+
+func (w *podWatcher) Synced() <-chan struct{} {
+	return w.synced
 }
 
 func (w *podWatcher) NamespaceLabels(name string) (map[string]string, error) {

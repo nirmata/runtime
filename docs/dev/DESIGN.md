@@ -72,8 +72,9 @@ On startup it wires together:
   the container's cgroup exists and before its entrypoint runs. It resolves the cgroup from the
   container's pid and hands it to `OpenExecManager.ContainerStarted`, so a container is enforced
   before the pod watcher, which only sees `Running` pods, can report it. Namespace labels come
-  from the pod watcher's namespace cache; a container whose namespace is not cached yet is left
-  to the pod watcher. A plugin that never registers is not retried.
+  from the pod watcher's namespace cache, so the plugin is not started until that cache has
+  synced; a container whose namespace is still not cached is left to the pod watcher. A plugin
+  that never registers is not retried.
 - `pkg/openexecmgr.OpenExecManager` and `pkg/egressmgr.EgressManager`: both an `events.PodEventHandler` and
   an `events.RuntimePolicyEventHandler`; they drive the actual eBPF attachments (see
   [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).

@@ -439,6 +439,13 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		logger.Error(err, "NRI initialization failed, continuing based on the pod informer only")
 	} else {
 		g.Go(func() error {
+			// a container handled before the namespace cache syncs would be
+			// skipped, leaving its entrypoint unenforced
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-pw.Synced():
+			}
 			// a plugin that never registered is misconfigured and is not retried;
 			// one that registered and lost the runtime is
 			for {
