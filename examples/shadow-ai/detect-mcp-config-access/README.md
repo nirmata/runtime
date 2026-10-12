@@ -11,10 +11,11 @@ No DNS is involved, and no new field is involved. The whole detection is a `deny
 absolute paths on the behavior that has existed since the first release, run in the mode
 that reports instead of blocking.
 
-Path matching is exact. The kernel maps are keyed on the resolved path string, so there is
-no glob, no prefix, and no `~` expansion: every (home directory, config file) pair is its
-own literal entry. That enumeration is the whole cost of the approach, and it is visible in
-`policy.yaml` rather than hidden behind a pattern that would silently match less than it
+Each value is a whole path or a directory. There is no `~` expansion and no wildcard for the
+home directory or the file name, and a directory rule such as `/root/.cursor/*` would report
+every file below it, not just the MCP config. So every (home directory, config file) pair is
+its own literal entry. That enumeration is the whole cost of the approach, and it is visible
+in `policy.yaml` rather than hidden behind a pattern that would silently match less than it
 looks like it matches.
 
 Some paths have no literal to list — a project-scoped `.mcp.json` sits wherever the repository
