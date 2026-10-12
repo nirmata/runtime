@@ -11,6 +11,14 @@ kernel booted with `bpf` in `/sys/kernel/security/lsm`, and a `fmod_ret` program
 behavioural difference is that an exec is matched against your `open` rules as well only
 on a BPF-LSM node — see [Platform support](platforms.md) if you depend on that.
 
+An `exec` deny reaches a container's entrypoint only on a container runtime with
+[NRI](https://github.com/containerd/nri) enabled, which is the default from containerd 2.0.
+The daemon registers as an NRI plugin on `daemon.nri.socketPath` and is handed each
+container before its entrypoint runs. Without NRI, a container is enforced from when its
+pod is reported `Running`, which is after the entrypoint has started. If the first
+connection to the socket fails, the daemon logs it and runs without NRI until it is
+restarted; a connection lost after registering is retried.
+
 Also required: Linux nodes, and BTF at `/sys/kernel/btf/vmlinux` for CO-RE relocation
 when the daemon loads its eBPF programs.
 
@@ -110,6 +118,7 @@ defaults to `ghcr.io/nirmata/kyverno-runtime`.
 | `daemon.affinity` | `{}` | Affinity rules for the DaemonSet. |
 | `daemon.securityContext` | `{privileged: true, runAsUser: 0, readOnlyRootFilesystem: true}` | Container `securityContext`. |
 | `daemon.updateStrategy` | `{}` (Kubernetes default `RollingUpdate`) | DaemonSet `spec.updateStrategy`. |
+| `daemon.nri.socketPath` | `/var/run/nri/nri.sock` | The container runtime's NRI socket on the host. Its directory is mounted into the daemon at the same path. |
 | `daemon.metrics.port` | `9090` | Port the daemon serves `/metrics` and `/healthz` on, passed through `--metrics-addr`. |
 | `daemon.observeInterval` | `""` (daemon default `10s`) | Sets `--observe-interval`. |
 | `daemon.eventBufferSize` | `""` (daemon default `4096`) | Sets `--event-buffer-size`. |

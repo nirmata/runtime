@@ -18,6 +18,7 @@ import (
 	"github.com/nirmata/runtime/pkg/events"
 	"github.com/nirmata/runtime/pkg/metrics"
 	"github.com/nirmata/runtime/pkg/monitor"
+	"github.com/nirmata/runtime/pkg/nri"
 	"github.com/nirmata/runtime/pkg/openexecmgr"
 	"github.com/nirmata/runtime/pkg/pushsink"
 	"github.com/nirmata/runtime/pkg/reporter"
@@ -432,6 +433,32 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			}
 		}
 	})
+
+	n, err := nri.New(os.Getenv("NRI_SOCKET_PATH"), logger, execMgr, pw.NamespaceLabels)
+	if err != nil {
+		logger.Error(err, "NRI initialization failed, continuing based on the pod informer only")
+	} else {
+		g.Go(func() error {
+			// a plugin that never registered is misconfigured and is not retried;
+			// one that registered and lost the runtime is
+			for {
+				err := n.Run(ctx)
+				if ctx.Err() != nil {
+					return nil
+				}
+				if !n.Registered() {
+					logger.Error(err, "NRI plugin failed to register, not retrying")
+					return nil
+				}
+				logger.Error(err, "NRI plugin exited, restarting")
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(3 * time.Second):
+				}
+			}
+		})
+	}
 
 	g.Go(func() error { return col.Run(ctx) })
 	g.Go(func() error { return sw.Run(ctx) })

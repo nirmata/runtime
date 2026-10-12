@@ -5,18 +5,16 @@ import (
 	"maps"
 
 	"github.com/nirmata/runtime/api/v1alpha1"
-	"github.com/nirmata/runtime/pkg/containers"
 	"github.com/nirmata/runtime/pkg/utils"
-
 	corev1 "k8s.io/api/core/v1"
 )
 
-func (l *OpenExecManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) {
+func (l *OpenExecManager) podCreated(pod corev1.Pod, nsLabels map[string]string, cgids []uint64) {
 	l.logger.V(2).Info("pod created", "podUid", pod.UID)
 	pr := &podRepresentation{
 		labels:            pod.Labels,
 		nsLabels:          nsLabels,
-		cgids:             containers.ExtractCgids(cgInfos),
+		cgids:             cgids,
 		attachedOpenExecs: make(map[string]*openExecAttachment),
 	}
 	for rpUid, la := range l.openExecAttachments {
@@ -38,14 +36,13 @@ func (l *OpenExecManager) podCreated(pod corev1.Pod, nsLabels map[string]string,
 // restarting inside a live pod), and a change to either the pod's own labels or
 // its namespace's refreshes the cached sets and re-evaluates every attachment's
 // target.
-func (l *OpenExecManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo) error {
+func (l *OpenExecManager) podUpdated(pod corev1.Pod, nsLabels map[string]string, cgids []uint64) error {
 	l.logger.V(2).Info("pod updated", "podUid", pod.UID)
 	pr, ok := l.pods[string(pod.UID)]
 	if !ok {
 		return fmt.Errorf("got a pod event for a pod that doesn't exist")
 	}
 
-	cgids := containers.ExtractCgids(cgInfos)
 	toAdd := utils.DiffSlice(pr.cgids, cgids)
 	toRemove := utils.DiffSlice(cgids, pr.cgids)
 	labelsChanged := !maps.Equal(pr.labels, pod.Labels) || !maps.Equal(pr.nsLabels, nsLabels)

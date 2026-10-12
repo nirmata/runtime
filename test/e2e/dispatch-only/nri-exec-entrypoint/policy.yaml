@@ -1,0 +1,14 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: e2e-nri-exec-entrypoint
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: nri-exec-client
+  behaviors:
+  - exec:
+      deny:
+        values:
+        - /usr/bin/curl

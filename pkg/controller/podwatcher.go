@@ -294,9 +294,9 @@ func (w *podWatcher) handleCreateOrUpdate(pod *corev1.Pod, evType string) error 
 	// A missing namespace is requeued rather than treated as an empty label
 	// set: passing one on would silently unselect the pod from every policy
 	// that carries a namespaceSelector.
-	ns, err := w.nsLister.Get(pod.Namespace)
+	nsLabels, err := w.NamespaceLabels(pod.Namespace)
 	if err != nil {
-		return fmt.Errorf("fetching namespace %s for pod %s: %w", pod.Namespace, pod.Name, err)
+		return fmt.Errorf("fetching namespace labels for pod %s: %w", pod.Name, err)
 	}
 
 	cgInfos, resolveErr := containers.ResolveCgInfos(pod)
@@ -306,7 +306,15 @@ func (w *podWatcher) handleCreateOrUpdate(pod *corev1.Pod, evType string) error 
 			"resolved", len(cgInfos), "reason", resolveErr.Error())
 	}
 
-	return w.fanOut(pod, ns.Labels, cgInfos, evType)
+	return w.fanOut(pod, nsLabels, cgInfos, evType)
+}
+
+func (w *podWatcher) NamespaceLabels(name string) (map[string]string, error) {
+	ns, err := w.nsLister.Get(name)
+	if err != nil {
+		return nil, fmt.Errorf("fetching namespace %s: %w", name, err)
+	}
+	return ns.Labels, nil
 }
 
 // every handler's teardown is keyed by pod UID, so the UID is all a delete
@@ -331,8 +339,8 @@ func (w *podWatcher) fanOut(pod *corev1.Pod, nsLabels map[string]string, cgInfos
 		})
 }
 
-// utils.Guard turns a panicking handler into an error on this item instead of
-// taking the worker down
+// for every event handler registered with the podWatcher, call the `call` function in
+// a panic guard
 func (w *podWatcher) dispatch(describe func(events.PodEventHandler) string, call func(events.PodEventHandler) error) error {
 	errChan := make(chan error, len(w.eventHandlers))
 	var wg sync.WaitGroup

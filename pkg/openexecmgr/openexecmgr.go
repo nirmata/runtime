@@ -224,10 +224,14 @@ func (l *OpenExecManager) PodEvent(pod corev1.Pod, nsLabels map[string]string, c
 	defer l.mu.Unlock()
 	switch eventType {
 	case events.EventTypeCreate:
-		l.podCreated(pod, nsLabels, cgInfos)
+		// nri may have created the pod from its first container start
+		if _, ok := l.pods[string(pod.UID)]; ok {
+			return l.podUpdated(pod, nsLabels, containers.ExtractCgids(cgInfos))
+		}
+		l.podCreated(pod, nsLabels, containers.ExtractCgids(cgInfos))
 		return nil
 	case events.EventTypeUpdate:
-		return l.podUpdated(pod, nsLabels, cgInfos)
+		return l.podUpdated(pod, nsLabels, containers.ExtractCgids(cgInfos))
 	}
 	return nil
 }

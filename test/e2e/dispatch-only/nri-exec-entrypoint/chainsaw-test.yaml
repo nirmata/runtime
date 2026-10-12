@@ -1,0 +1,48 @@
+# E2E behavioral assertion -- an exec deny applies to a container's entrypoint.
+#
+# The pod informer only sees a pod once it is Running, by which point the
+# entrypoint has already executed. Blocking it relies on the NRI plugin
+# registering the container's cgroup before the runtime starts the entrypoint.
+#
+# Both pods run `curl --version`, which exits 0 when it is allowed to execute:
+# the control pod, which no policy selects, must succeed, and the selected pod
+# must fail.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nri-exec-entrypoint
+spec:
+  steps:
+  - name: apply-exec-deny-policy
+    try:
+    - apply:
+        file: policy.yaml
+    - assert:
+        resource:
+          apiVersion: runtime.nirmata.io/v1alpha1
+          kind: RuntimePolicy
+          metadata:
+            name: e2e-nri-exec-entrypoint
+          status:
+            (conditions[?type == 'EnforcementAvailable'].status | [0]): "True"
+
+  - name: denied-entrypoint-never-runs
+    try:
+    - apply:
+        file: pods.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: nri-exec-control
+          status:
+            phase: Succeeded
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: nri-exec-client
+          status:
+            phase: Failed

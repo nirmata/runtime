@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nri-exec-client
+  labels:
+    app: nri-exec-client
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:8.11.1
+    command: ["curl", "--version"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nri-exec-control
+  labels:
+    app: nri-exec-control
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:8.11.1
+    command: ["curl", "--version"]

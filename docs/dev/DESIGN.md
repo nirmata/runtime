@@ -68,6 +68,12 @@ On startup it wires together:
 - `pkg/controller.NewPodWatcher`: watches `Pod` objects filtered to `spec.nodeName=<NODE_NAME>`
   and `status.phase=Running`, resolving each pod's container cgroup info
   (`pkg/containers.ResolveCgInfos`).
+- `pkg/nri.Nri`: an NRI plugin subscribed to `StartContainer`, which the runtime calls after
+  the container's cgroup exists and before its entrypoint runs. It resolves the cgroup from the
+  container's pid and hands it to `OpenExecManager.ContainerStarted`, so a container is enforced
+  before the pod watcher, which only sees `Running` pods, can report it. Namespace labels come
+  from the pod watcher's namespace cache; a container whose namespace is not cached yet is left
+  to the pod watcher. A plugin that never registers is not retried.
 - `pkg/openexecmgr.OpenExecManager` and `pkg/egressmgr.EgressManager`: both an `events.PodEventHandler` and
   an `events.RuntimePolicyEventHandler`; they drive the actual eBPF attachments (see
   [Enforcement](#enforcement-ebpf-lsm-hooks-and-egress-filtering)).
@@ -106,6 +112,7 @@ collector: PollSource(egress-observe, 10s) + PollSource(openexec-observe, 10s)
            + Source(dnsquery, ring buffer)
            -> Stage(attrIdx) -> Sink(monitor)                -> Run in errgroup
 RuntimePolicy informer -> wait for cache sync -> pod watcher  -> both in errgroup
+nri.New(NRI_SOCKET_PATH, execMgr, podWatcher.NamespaceLabels) -> Run in errgroup
 ```
 
 Handler fan-out is ordered, so `attribution.Index` learns a pod's cgroups before `Monitor` can

@@ -68,11 +68,6 @@ func New(logger logr.Logger, t tracer) *Manager {
 	}
 }
 
-var (
-	_ events.PodEventHandler           = (*Manager)(nil)
-	_ events.RuntimePolicyEventHandler = (*Manager)(nil)
-)
-
 func (m *Manager) PodEvent(pod corev1.Pod, nsLabels map[string]string, cgInfos []*containers.ContainerCgroupInfo, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -84,6 +84,8 @@ spec:
               fieldPath: metadata.namespace
         - name: DAEMONSET_NAME
           value: {{ include "kyverno-runtime.fullname" . | quote }}
+        - name: NRI_SOCKET_PATH
+          value: {{ .Values.daemon.nri.socketPath | quote }}
         ports:
         - name: metrics
           containerPort: {{ .Values.daemon.metrics.port }}
@@ -103,6 +105,8 @@ spec:
           mountPropagation: HostToContainer
         - name: securityfs
           mountPath: /sys/kernel/security
+        - name: nri
+          mountPath: {{ dir .Values.daemon.nri.socketPath }}
         {{- if .Values.daemon.push.target }}
         - name: push-tls
           mountPath: {{ $pushTLSDir }}
@@ -120,6 +124,12 @@ spec:
         hostPath:
           path: /sys/kernel/security
           type: Directory
+      # the directory, not the socket: the pod must start on runtimes without
+      # nri, and a runtime restart replaces the socket a file mount would pin
+      - name: nri
+        hostPath:
+          path: {{ dir .Values.daemon.nri.socketPath }}
+          type: DirectoryOrCreate
       {{- if .Values.daemon.push.target }}
       - name: push-tls
         secret:
