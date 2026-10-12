@@ -38,6 +38,9 @@ to block it, so the operation never completes. On a kernel booted with BPF-LSM a
 no boot parameter. Both enforce; an exec is matched against your `open` rules as well only
 on the first. See [platform support](platforms.md).
 
+Where the container runtime has NRI enabled, a new container is added to its pod's `open`
+and `exec` enforcement before its entrypoint runs, so a denied entrypoint fails to start.
+
 ## Allow, deny, and default deny
 
 Each behavior in `spec.behaviors` takes an optional `allow` and/or `deny`, each a
@@ -156,6 +159,10 @@ for the authoritative list.
 
 A boundary worth reading twice before relying on enforcement:
 
+- Without NRI on the container runtime, `open` and `exec` enforcement starts when the
+  pod is reported `Running`, after its containers' entrypoints have started. `network` and
+  `protocol` enforcement start then on every runtime. See
+  [requirements](installation.md#requirements).
 - A domain name is matched against the IPv4 addresses its A records return and nothing
   else. A connection to the same destination over IPv6 is not attributed to the domain: a
   default deny blocks it, and a deny on the domain does not. See

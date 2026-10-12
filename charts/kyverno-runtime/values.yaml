@@ -54,6 +54,10 @@ daemon:
   # logLevel: verbosity for the daemon's debug logs (higher is more verbose).
   # Empty uses the daemon default (0).
   logLevel: ""
+  nri:
+    # socketPath: the container runtime's NRI socket on the host, mounted at
+    # the same path in the daemon.
+    socketPath: /var/run/nri/nri.sock
   # push: stream findings to a collector as they are produced. Empty target
   # disables it, and the daemon then opens no connection at all.
   push:

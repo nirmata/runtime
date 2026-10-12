@@ -491,6 +491,14 @@ passes unexamined.
 - **No port granularity.** An address allows or denies every port on it; no policy
   value carries a port.
 
+## Limits of open and exec enforcement
+
+- **A container's entrypoint is covered only with NRI.** On a container runtime with
+  [NRI](https://github.com/containerd/nri) enabled, the default from containerd 2.0, a new
+  container is enforced before its entrypoint runs, so a denied entrypoint fails to start.
+  Without NRI, a container is enforced from when its pod is reported `Running`, after the
+  entrypoint has started. See [Requirements](../installation.md#requirements).
+
 ## DNS reporting
 
 A `dns` behavior declares the DNS names a selected workload is *expected* to resolve, and
