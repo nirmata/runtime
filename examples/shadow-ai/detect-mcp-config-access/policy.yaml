@@ -11,8 +11,8 @@ spec:
   - open:
       deny:
         values:
-        # One absolute path per (home directory, config file) pair: the kernel
-        # maps are keyed on the resolved path string, so there is no glob form.
+        # One absolute path per (home directory, config file) pair: a directory
+        # rule would report every file below it, and no other glob exists.
         - /root/.cursor/mcp.json
         - /root/.codeium/windsurf/mcp_config.json
         - /root/.config/Claude/claude_desktop_config.json

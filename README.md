@@ -161,13 +161,97 @@ kubectl delete rpol block-address-sample
 kubectl delete pod egress-client
 ```
 
+### Contain a compromised agent
+
+A prompt-injected agent does not need an exploit. It needs a shell, a downloader, and a
+credential file someone left in the image. Start a stand-in for that agent, with a fake
+AWS credentials file in its home directory:
+
+```bash
+kubectl run agent --image=busybox:1.36 --labels=app=agent --restart=Never --command -- \
+  sh -c 'mkdir -p /root/.aws && echo "aws_access_key_id=AKIAEXAMPLE" > /root/.aws/credentials && sleep 3600'
+kubectl wait --for=condition=Ready pod/agent --timeout=90s
+```
+
+Anything that gets a command into this pod can read the key, open a shell, and fetch a
+payload:
+
+```bash
+kubectl exec agent -- cat /root/.aws/credentials
+kubectl exec agent -- sh -c 'echo shell ok'
+kubectl exec agent -- wget -q -T 5 -O /dev/null http://example.com && echo fetched
+```
+
+Deny the file and the three binaries an attacker reaches for first:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: contain-agent
+spec:
+  mode: enforce
+  podSelector:
+    matchLabels:
+      app: agent
+  behaviors:
+  - open:
+      deny:
+        values:
+        - /root/.aws/credentials
+  - exec:
+      deny:
+        values:
+        - /bin/sh
+        - /bin/wget
+        - /bin/nc
+EOF
+```
+
+Allow a few seconds for the daemon to program the pod, then try again. The kernel returns
+`EPERM`, so the file is never read and the binaries never start, even from `kubectl exec`:
+
+```bash
+kubectl exec agent -- cat /root/.aws/credentials               # Operation not permitted
+kubectl exec agent -- sh -c 'echo shell ok'                    # exec /bin/sh: operation not permitted
+kubectl exec agent -- wget -q -O /dev/null http://example.com  # exec /bin/wget: operation not permitted
+kubectl exec agent -- ls /root/.aws                            # still lists "credentials"
+```
+
+Each denial is written to the pod's Report, with the path and the policy that blocked it.
+Observations are polled and findings flushed every 10 seconds, so allow about 20 seconds;
+the order of the results can vary:
+
+```bash
+kubectl get report kyverno-runtime-agent \
+  -o jsonpath='{range .results[*]}{.message}{"\n"}{end}'
+```
+
+```text
+enforced: open of /root/.aws/credentials was denied by policy contain-agent
+enforced: exec of /bin/sh was denied by policy contain-agent
+enforced: exec of /bin/wget was denied by policy contain-agent
+```
+
+Each value here is a whole path, matched as the kernel resolves it; ending a value in `/*`
+covers a whole directory instead, so `/root/.aws/*` would also deny the `config` file that
+usually sits beside `credentials`. A deny list names what you
+know is dangerous; to allow only what the workload needs, see the default-deny
+[exec allow-list](examples/files-and-processes/restrict-exec-allowlist/).
+
+```bash
+kubectl delete rpol contain-agent
+kubectl delete pod agent
+```
+
 ### See what a workload reaches for
 
 Enforcement is half of it. The other half is finding out what a workload does that nobody
 declared — a model provider it was never approved to call, an SDK nobody reviewed, an MCP
 server not in the image contract. A `dns` behavior declares the names a workload is
-*expected* to resolve and reports the rest, and it needs only the cgroup v2 host the sample
-above already used:
+*expected* to resolve and reports the rest, and it needs only the cgroup v2 host the
+address sample already used:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -242,8 +326,7 @@ that are not. The manifests above, with the full walkthrough, are in
 Full walkthroughs: [network egress](docs/users/quickstart.md), including how to flip a
 policy to `monitor` and read the resulting Report, plus
 [file reads](examples/files-and-processes/deny-sensitive-file-access/) and
-[process exec](examples/files-and-processes/restrict-exec-allowlist/), which have the extra
-kernel requirements listed in [platforms](docs/users/platforms.md).
+[process exec](examples/files-and-processes/restrict-exec-allowlist/).
 
 ## 📚 Documentation
 

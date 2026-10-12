@@ -1,9 +1,10 @@
 # File and process control
 
 Deciding which files a workload may read and which binaries it may run. An `open` behavior
-is keyed on the resolved absolute path, and an `exec` behavior on the resolved binary path —
-neither accepts a glob, a prefix, or a basename, and `exec` cannot match arguments because
-the hook that can refuse an exec cannot read them.
+is keyed on the resolved absolute path, and an `exec` behavior on the resolved binary path.
+A value is a whole path, or a directory when it ends in `/*`, which covers everything below
+it; `/proc/*/...` matches any PID. Neither behavior accepts any other glob or a basename,
+and `exec` cannot match arguments because the hook that can refuse an exec cannot read them.
 
 All of these need BTF, plus either BPF-LSM (`bpf` in `/sys/kernel/security/lsm`) or, for
 the `fmod_ret` fallback, kernel 5.7 or later with the BPF JIT on x86-64 or arm64 — see
