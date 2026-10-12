@@ -8,7 +8,8 @@ dropping a netcat or a downloader into the container does not make it runnable. 
 list here is built from a literal `values` list unioned with a CEL `expression` over
 `spec.variables`.
 
-The check runs in the kernel's `bprm_check_security` LSM hook and returns `-EPERM`, so it
+The check runs in the kernel's `bprm_check_security` LSM hook, or on the exec's open of
+the binary in `security_file_open` where BPF-LSM is not active, and returns `-EPERM`, so it
 covers every `execve` in the pod's cgroup, not just what a `kubectl exec` starts.
 
 Under a default deny the allow list has to name every binary the workload itself executes.
@@ -21,17 +22,20 @@ a single multi-call binary, that binary's path is what the hook sees.
 
 ## Requires
 
-File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active:
-`bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot
-parameter). Stock distributions and hosted CI runners are typically not booted with it;
-Docker Desktop's LinuxKit VM is, so a kind cluster on macOS runs these examples.
+File `open` and process `exec` enforcement needs BTF at
+`/sys/kernel/btf/vmlinux`, plus either BPF-LSM active (`bpf` in `/sys/kernel/security/lsm`) or, for the `fmod_ret` fallback, kernel 5.7 or later with the
+BPF JIT on x86-64 or arm64. Docker Desktop's LinuxKit VM has BPF-LSM active, so a kind
+cluster on macOS runs this example. See [platform support](../../../docs/users/platforms.md).
 
-Check before you start — if `bpf` is missing, the LSM programs cannot even be loaded and
-nothing below will be blocked:
+Check before you start — where neither hook runs, nothing below is blocked and the policy
+reports `EnforcementAvailable=False`:
 
 ```bash
-kubectl debug node/<node> -it --image=busybox:1.36 -- cat /host/sys/kernel/security/lsm
+kubectl debug node/<node> -it --image=busybox:1.36 -- sh -c 'cat /host/sys/kernel/security/lsm; uname -rm'
 ```
+
+`bpf` in the first line means the LSM hooks; otherwise the second line must show kernel 5.7
+or later on `x86_64` or `aarch64`.
 
 Read it from the node, not from the agent pod: that image is distroless and has neither
 a shell nor `cat`.

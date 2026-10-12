@@ -5,9 +5,10 @@ is keyed on the resolved absolute path, and an `exec` behavior on the resolved b
 neither accepts a glob, a prefix, or a basename, and `exec` cannot match arguments because
 the hook that can refuse an exec cannot read them.
 
-All of these require a kernel booted with BPF-LSM active: `bpf` must appear in
-`/sys/kernel/security/lsm`. Stock distributions and hosted CI runners are typically not
-booted with it; Docker Desktop's LinuxKit VM is.
+All of these need BTF, plus either BPF-LSM (`bpf` in `/sys/kernel/security/lsm`) or, for
+the `fmod_ret` fallback, kernel 5.7 or later with the BPF JIT on x86-64 or arm64 — see
+[platform support](../../docs/users/platforms.md). Docker Desktop's LinuxKit VM has BPF-LSM
+active.
 
 | Directory | Scenario | Mode |
 | --- | --- | --- |

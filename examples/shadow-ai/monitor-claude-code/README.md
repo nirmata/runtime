@@ -22,15 +22,19 @@ and calls the Anthropic API, providing activity for every applicable observer.
 - Docker, kind, and kubectl.
 - An Anthropic API key in `ANTHROPIC_API_KEY`. The script stores it in a Kubernetes Secret and
   never writes it to a manifest.
-- BPF-LSM for `open` and `exec` observations. Check the node, not the distroless daemon pod:
+- For `open` and `exec` observations, BTF plus either BPF-LSM or, for the `fmod_ret`
+  fallback, kernel 5.7 or later with the BPF JIT on x86-64 or arm64 — see
+  [platform support](../../../docs/users/platforms.md). Check the node, not the distroless
+  daemon pod:
 
   ```bash
   kubectl debug node/kyverno-runtime-control-plane -it --image=busybox:1.36 -- \
-    cat /host/sys/kernel/security/lsm
+    sh -c 'cat /host/sys/kernel/security/lsm; uname -rm'
   ```
 
-  The output must contain `bpf`. Network, protocol, and DNS observation require cgroup v2 and
-  BPF but not BPF-LSM. Docker Desktop's LinuxKit VM supports the full example.
+  `bpf` in the first line means the LSM hooks; otherwise the second line must show kernel
+  5.7 or later on `x86_64` or `aarch64`. Network, protocol, and DNS observation require
+  cgroup v2 and BPF only. Docker Desktop's LinuxKit VM supports the full example.
 
 ## Run it
 

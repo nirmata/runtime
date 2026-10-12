@@ -12,7 +12,7 @@ mode can and cannot see is listed in
 | Directory | Scenario | Requires |
 | --- | --- | --- |
 | [monitor-egress](monitor-egress/) | Audit where a workload actually connects before turning enforcement on | cgroup v2 |
-| [monitor-workload-baseline](monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | BPF-LSM for `open` and `exec`; `network` findings alone need only cgroup v2 |
+| [monitor-workload-baseline](monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | BPF-LSM or `fmod_ret` for `open` and `exec`; `network` findings alone need only cgroup v2 |
 | [monitor-static-pods](monitor-static-pods/) | Confirm the daemon can observe kubeadm's static control-plane pods | cgroup v2 |
 
 The [shadow-ai/](../shadow-ai/) examples are monitor-mode too. They live there rather than

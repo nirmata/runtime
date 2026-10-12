@@ -720,7 +720,7 @@ In `monitor` mode the same eBPF programs are attached to the same matched pods, 
 **empty** `banned`/`allowed` maps and default-deny left off, so nothing is ever blocked. What
 the programs do is *count* what the workload touched:
 
-- the LSM programs count every `file_open` / `bprm_check_security` path per cgroup;
+- the `open` and `exec` programs count every opened or executed path per cgroup;
 - the egress program counts every destination IPv4 and IPv6 address per pod;
 - the protocol classifier counts every classified `(protocol, decision)` per pod, once per flow.
 
@@ -1125,14 +1125,14 @@ BPF-LSM path is an exec also matched against `open` rules — see
 | [egress-to-domain-name](../../../examples/egress/egress-to-domain-name/) | An external domain name in `allow.values`, alongside cluster DNS named as a Service | `enforce` | cgroup v2 |
 | [monitor-egress](../../../examples/monitoring/monitor-egress/) | Same policy shape observed instead of blocked | `monitor` | cgroup v2 |
 | [report-unexpected-dns](../../../examples/shadow-ai/report-unexpected-dns/) | A `dns` allow list with a left-wildcard, plus the `deny: ["*"]` discovery form | `monitor` | cgroup v2 |
-| [detect-mcp-config-access](../../../examples/shadow-ai/detect-mcp-config-access/) | `open` deny over absolute MCP configuration paths, reported not blocked | `monitor` | BPF-LSM |
-| [deny-sensitive-file-access](../../../examples/files-and-processes/deny-sensitive-file-access/) | `open` deny with `values` unioned with a `variables` expression | `enforce` | BPF-LSM |
-| [restrict-exec-allowlist](../../../examples/files-and-processes/restrict-exec-allowlist/) | Default-deny `exec` with an allow-list | `enforce` | BPF-LSM |
+| [detect-mcp-config-access](../../../examples/shadow-ai/detect-mcp-config-access/) | `open` deny over absolute MCP configuration paths, reported not blocked | `monitor` | BPF-LSM or `fmod_ret` |
+| [deny-sensitive-file-access](../../../examples/files-and-processes/deny-sensitive-file-access/) | `open` deny with `values` unioned with a `variables` expression | `enforce` | BPF-LSM or `fmod_ret` |
+| [restrict-exec-allowlist](../../../examples/files-and-processes/restrict-exec-allowlist/) | Default-deny `exec` with an allow-list | `enforce` | BPF-LSM or `fmod_ret` |
 | [tls-only-egress](../../../examples/egress/tls-only-egress/) | `protocol` default deny allowing only `tls` and `dns` | `enforce` | cgroup v2 |
-| [monitor-workload-baseline](../../../examples/monitoring/monitor-workload-baseline/) | `network`, `exec`, and `open` observed together | `monitor` | BPF-LSM for `open`/`exec`; egress findings alone need only cgroup v2 |
+| [monitor-workload-baseline](../../../examples/monitoring/monitor-workload-baseline/) | `network`, `exec`, and `open` observed together | `monitor` | BPF-LSM or `fmod_ret` for `open`/`exec`; egress findings alone need only cgroup v2 |
 | [blocklist-from-configmap](../../../examples/dynamic-lists/blocklist-from-configmap/) | `resource.get` with `evaluationInterval` | `enforce` | cgroup v2 |
 | [blocklist-from-http](../../../examples/dynamic-lists/blocklist-from-http/) | `http.get` with the `dyn` coercion | `enforce` | cgroup v2 |
 | [blocklist-from-json](../../../examples/dynamic-lists/blocklist-from-json/) | `json.unmarshal` composed with `resource.get` | `monitor` | cgroup v2 |
-| [enforce-workload-baseline](../../../examples/files-and-processes/enforce-workload-baseline/) | All three behaviors under default-deny with `evaluationInterval` | `enforce` | BPF-LSM |
+| [enforce-workload-baseline](../../../examples/files-and-processes/enforce-workload-baseline/) | All three behaviors under default-deny with `evaluationInterval` | `enforce` | BPF-LSM or `fmod_ret` |
 
 The full catalog, grouped by feature, is in [Examples](../examples.md).

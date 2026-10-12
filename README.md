@@ -1,4 +1,4 @@
-# Nirmata Runtime For Kyverno
+# Runtime For Kyverno
 
 **🎉 Kyverno-style CEL policies for eBPF runtime enforcement.**
 
@@ -7,7 +7,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## 🚀 What is Nirmata Runtime?
+## 🚀 What is Runtime For Kyverno?
 
 **Nirmata Runtime** monitors and enforces runtime behaviors with Kyverno-style CEL policies using eBPF. It provides a per-node DaemonSet that attaches eBPF programs to the pods selected by a cluster-scoped `RuntimePolicy`.
 
@@ -21,19 +21,19 @@ The `RuntimePolicy` governs five kinds of workload behavior:
 
 Decisions are made in the kernel, so a denied operation never completes.
 
-Like Kyverno, everything in Nirmata Runtime is Kubernetes-native: policies are custom resources defined in this project and support CEL (Common Expressions Language); findings are written as [OpenReports](https://openreports.io) `Report` objects in the offending pod's namespace, per-node state and conditions live in the policy's `status`, and counters are exposed to Prometheus.
+Like Kyverno, everything in Runtime is Kubernetes-native: policies are custom resources defined in this project and support CEL (Common Expressions Language); findings are written as [OpenReports](https://openreports.io) `Report` objects in the offending pod's namespace, per-node state and conditions live in the policy's `status`, and counters are exposed to Prometheus.
 
-## 🔥 Why Nirmata Runtime?
+## 🔥 Why Runtime for Kyverno?
 
 As applications become AI-enabled, there is an immediate need to easily monitor and enforce runtime behaviors. Nirmata Runtime complements admission controllers, native RBAC and network policies, and AI gateways by providing an easy to use runtime tool to restrict AI workloads to a bounded set of behaviors and detect rogue agents.
 
-- **Admission Controllers checks the spec; Runtime checks the behavior.** Kyverno at admission validates what a pod *declares* before it starts. Nirmata Runtime enforces what the running process actually *does* — the files it opens, the binaries it execs, the addresses it contacts — after admission has already said yes.
+- **Admission Controllers checks the spec; Runtime checks the behavior.** Kyverno at admission validates what a pod *declares* before it starts. Runtime enforces what the running process actually *does* — the files it opens, the binaries it execs, the addresses it contacts — after admission has already said yes.
 
 - **What your CNI can't tell you.** NetworkPolicy decides who may reach whom; it does not know that `port: 443` might carry SSH, an h2c tunnel, or a custom protocol instead of TLS. `protocol` classifies each flow from its first data segment, independent of the declared port, and joins `exec`, `open`, and `network` in one policy object evaluated by one daemon — a cross-domain assertion no CNI expresses, with each finding attributed to the pod and container it came from, including the process for `exec`/`open` findings. Connectivity, identity-based policy, FQDN egress, ingress, and encryption stay with the CNI; see [why a runtime layer](docs/users/why-runtime.md) for the full split.
 
-- **Blocks, not just alerts.** Runtime detection tells you a sensitive file was read. `mode: enforce` returns `-EPERM` from a BPF-LSM hook, so the read never happens. `mode: monitor` gives you the detection workflow first, with the same policy object.
+- **Blocks, not just alerts.** Runtime detection tells you a sensitive file was read. `mode: enforce` returns `-EPERM` from a kernel hook (BPF-LSM, or `fmod_ret` on `security_file_open`), so the read never happens. `mode: monitor` gives you the detection workflow first, with the same policy object.
 
-- **One small CRD, Kyverno CEL, deliberately narrow.** Nirmata Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
+- **One small CRD, Kyverno CEL, deliberately narrow.** Runtime covers five behaviors with one `RuntimePolicy` CRD, allow and deny lists, and the same CEL libraries used across Kyverno — including deny lists fetched from ConfigMaps or HTTP feeds at evaluation time.
 
 ## ✨ Key Features
 
@@ -70,7 +70,7 @@ As applications become AI-enabled, there is an immediate need to easily monitor 
 🚨 **WARNING**: This project is pre-1.0 and the API is `v1alpha1`. Here are some known limitations:
 
 - Egress is keyed on IPv4 and IPv6 destination addresses, but a domain name is resolved from A records only, so it covers IPv4 addresses alone: a deny on a domain does not block that destination over IPv6.
-- File `open` and process `exec` enforcement require a kernel booted with BPF-LSM active: `bpf` must appear in `/sys/kernel/security/lsm` (set with the `lsm=` kernel boot parameter). Stock distributions and hosted CI runners are typically not booted with it.
+- File `open` and process `exec` use the BPF-LSM hooks where `bpf` appears in `/sys/kernel/security/lsm`, and a `fmod_ret` fallback otherwise. Only on a BPF-LSM node is an exec also matched against your `open` rules — see [platforms](docs/users/platforms.md).
 - `network`, `protocol`, `open`, and `exec` observations come from eBPF counters that the daemon drains on a poll interval rather than from a stream of events, so a finding can lag the behavior and carries counts rather than ordering. A `dns` question is streamed as it happens.
 - Exceptions are not yet supported.
 
@@ -85,8 +85,9 @@ As applications become AI-enabled, there is an immediate need to easily monitor 
   support; a stock kind cluster on a Linux host qualifies. That, plus egress from the
   cluster to the address each sample below probes, is all they need.
 
-- File `open` and process `exec` enforcement need a node booted with BPF-LSM active. Whether
-  a managed distribution gives you one is listed in [platforms](docs/users/platforms.md).
+- File `open` and process `exec` enforcement need BTF, plus either BPF-LSM or, for the
+  `fmod_ret` fallback, kernel 5.7 or later with the BPF JIT on x86-64 or arm64. Which
+  managed node images have BPF-LSM is listed in [platforms](docs/users/platforms.md).
 
 ### Install
 
@@ -241,7 +242,8 @@ that are not. The manifests above, with the full walkthrough, are in
 Full walkthroughs: [network egress](docs/users/quickstart.md), including how to flip a
 policy to `monitor` and read the resulting Report, plus
 [file reads](examples/files-and-processes/deny-sensitive-file-access/) and
-[process exec](examples/files-and-processes/restrict-exec-allowlist/), which need a BPF-LSM kernel.
+[process exec](examples/files-and-processes/restrict-exec-allowlist/), which have the extra
+kernel requirements listed in [platforms](docs/users/platforms.md).
 
 ## 📚 Documentation
 
@@ -288,7 +290,7 @@ process in **[SECURITY.md](SECURITY.md)**.
 
 ## 📄 License
 
-Nirmata Runtime is licensed under the [Apache License 2.0](LICENSE).
+Runtime is licensed under the [Apache License 2.0](LICENSE).
 
 ## 🔗 References
 
