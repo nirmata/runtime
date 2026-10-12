@@ -220,7 +220,8 @@ kubectl exec agent -- ls /root/.aws                            # still lists "cr
 ```
 
 Each denial is written to the pod's Report, with the path and the policy that blocked it.
-Findings are flushed every 10 seconds, and their order can vary:
+Observations are polled and findings flushed every 10 seconds, so allow about 20 seconds;
+the order of the results can vary:
 
 ```bash
 kubectl get report kyverno-runtime-agent \
@@ -233,7 +234,9 @@ enforced: exec of /bin/sh was denied by policy contain-agent
 enforced: exec of /bin/wget was denied by policy contain-agent
 ```
 
-Paths match exactly as the kernel resolves them, with no globs. A deny list names what you
+Each value here is a whole path, matched as the kernel resolves it; ending a value in `/*`
+covers a whole directory instead, so `/root/.aws/*` would also deny the `config` file that
+usually sits beside `credentials`. A deny list names what you
 know is dangerous; to allow only what the workload needs, see the default-deny
 [exec allow-list](examples/files-and-processes/restrict-exec-allowlist/).
 
