@@ -78,6 +78,8 @@ DNS question reporting shares the cgroup v2 requirement and needs no BPF-LSM.
 | [monitor-egress](monitoring/monitor-egress/) | Audit where a workload actually connects before turning enforcement on | monitor mode, Reports, metrics | monitor | cgroup v2 |
 | [monitor-workload-baseline](monitoring/monitor-workload-baseline/) | Record every file, binary, and destination a workload touches, without blocking | monitor mode across all three behaviors, `evaluationInterval`, Reports | monitor | BPF-LSM or `fmod_ret` for `open` and `exec`; `network` findings alone need only cgroup v2 |
 | [monitor-static-pods](monitoring/monitor-static-pods/) | Confirm the daemon can observe kubeadm's static control-plane pods | `podSelector: {}`, monitor mode over pods no controller owns | monitor | cgroup v2 |
+| [catch-pipe-to-shell](monitoring/catch-pipe-to-shell/) | Report a download piped into a shell, or a reverse shell, with the full command line and its credentials redacted | `exec` deny over everything, narrowed by a `monitorFilter` regex over argv | monitor | BPF-LSM or `fmod_ret` |
+| [report-external-egress](monitoring/report-external-egress/) | Report only the destinations outside the cluster's private ranges | `network` deny over everything, narrowed by a `monitorFilter` using the `CIDR` library | monitor | cgroup v2 |
 
 ### [dynamic-lists/](dynamic-lists/)
 

