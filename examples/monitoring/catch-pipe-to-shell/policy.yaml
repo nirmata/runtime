@@ -1,0 +1,23 @@
+apiVersion: runtime.nirmata.io/v1alpha1
+kind: RuntimePolicy
+metadata:
+  name: catch-pipe-to-shell
+spec:
+  mode: monitor
+  podSelector:
+    matchLabels:
+      app: agent
+  behaviors:
+  - exec:
+      deny:
+        values: ["*"]
+  monitorFilter:
+    expressions:
+    - name: exec-events-only
+      expression: 'has(event.exec)'
+    - name: download-and-run-or-reverse-shell
+      expression: >-
+        event.exec.argv.exists(a,
+          a.matches("(curl|wget)[^|]*\\|\\s*(ba)?sh") ||
+          a.contains("/dev/tcp/") ||
+          a.matches("\\bnc\\b.*\\s-e\\s"))
