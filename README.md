@@ -164,12 +164,40 @@ kubectl delete pod egress-client
 ### Contain a compromised agent
 
 A prompt-injected agent does not need an exploit. It needs a shell, a downloader, and a
-credential file someone left in the image. Start a stand-in for that agent, with a fake
-AWS credentials file in its home directory:
+credential file someone left in reach. Start a stand-in for that agent, with a fake AWS
+credentials file mounted in its home directory. The container runs `sleep` rather than a
+shell, so it starts whether you apply the policy below before or after it:
 
 ```bash
-kubectl run agent --image=busybox:1.36 --labels=app=agent --restart=Never --command -- \
-  sh -c 'mkdir -p /root/.aws && echo "aws_access_key_id=AKIAEXAMPLE" > /root/.aws/credentials && sleep 3600'
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-aws
+stringData:
+  credentials: |
+    aws_access_key_id=AKIAEXAMPLE
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agent
+  labels:
+    app: agent
+spec:
+  containers:
+  - name: agent
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    volumeMounts:
+    - name: aws
+      mountPath: /root/.aws/credentials
+      subPath: credentials
+  volumes:
+  - name: aws
+    secret:
+      secretName: agent-aws
+EOF
 kubectl wait --for=condition=Ready pod/agent --timeout=90s
 ```
 
@@ -315,6 +343,7 @@ such as `curl -u user:password`, is not recognized, so try this with dummy value
 ```bash
 kubectl delete rpol catch-pipe-to-shell
 kubectl delete pod agent
+kubectl delete secret agent-aws
 ```
 
 A filter works on every kind of observation and has the Kubernetes CEL libraries available.
