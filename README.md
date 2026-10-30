@@ -507,11 +507,17 @@ Runtime is licensed under the [Apache License 2.0](LICENSE).
 - [OpenReports](https://openreports.io)
 - [BPF LSM (Linux kernel documentation)](https://docs.kernel.org/bpf/prog_lsm.html)
 
+## 🏢 Enterprise support
+
+Runtime for Kyverno is built by [Nirmata](https://nirmata.com/?utm_source=github&utm_medium=readme&utm_campaign=runtime), the creators of Kyverno. Read more on the
+[Runtime for Kyverno page](https://nirmata.com/runtime-oss/?utm_source=github&utm_medium=readme&utm_campaign=runtime), or [talk to us](https://nirmata.com/request-a-demo/?utm_source=github&utm_medium=readme&utm_campaign=runtime)
+about support and production use with [Nirmata Control Hub](https://nirmata.com/nirmata-control-hub/?utm_source=github&utm_medium=readme&utm_campaign=runtime).
+
 ---
 
 <div align="center">
 
-Built with ❤️ by the Nirmata team
+Built with ❤️ by the [Nirmata](https://nirmata.com/?utm_source=github&utm_medium=readme&utm_campaign=runtime) team
 
 [Report Bug](https://github.com/nirmata/runtime/issues) · [Request Feature](https://github.com/nirmata/runtime/issues)
 
