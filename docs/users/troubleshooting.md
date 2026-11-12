@@ -75,6 +75,10 @@ Work through these in order.
    could be programmed. See the full condition table in
    [Status](reference/runtimepolicy.md#status).
 
+   The `NODES` column of `kubectl get rpol` shows how many nodes are affected: `37/40`
+   means three of the forty nodes that reported cannot run the policy in its mode, and
+   `kubectl describe rpol <name>` names them with their causes.
+
 ## A path I allowed is still blocked
 
 For `open` and `exec`, each policy attaches its own program and the kernel denies

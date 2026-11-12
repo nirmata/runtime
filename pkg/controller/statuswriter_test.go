@@ -1055,6 +1055,56 @@ func TestClusterConditionsSurviveHealthyNodeFlushingLast(t *testing.T) {
 	}
 }
 
+// TestClusterNodesReadyNamesTheShareOfNodesThatCanEnforce pins the ratio the
+// Nodes print column reads: three of four nodes enforcing must not read the
+// same as none of them, whichever node flushed last.
+func TestClusterNodesReadyNamesTheShareOfNodesThatCanEnforce(t *testing.T) {
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	writers := []*StatusWriter{sw}
+	for _, name := range []string{"node-b", "node-c", "node-d"} {
+		w := NewStatusWriter(client, name, time.Hour, logr.Discard(), nil, nil)
+		w.clock = func() time.Time { return fixedNow }
+		writers = append(writers, w)
+	}
+
+	recordAndFlush(t, writers[2], compiler.ModeEnforce,
+		availabilityCondition(v1alpha1.ConditionEnforcementAvailable, metav1.ConditionFalse, "BPF-LSM is not active on this node"))
+	for _, w := range []*StatusWriter{writers[0], writers[1], writers[3]} {
+		recordAndFlush(t, w, compiler.ModeEnforce,
+			availabilityCondition(v1alpha1.ConditionEnforcementAvailable, metav1.ConditionTrue, "attached"))
+	}
+
+	if got := getPolicy(t, client, "p").Status.NodesReady; got != "3/4" {
+		t.Errorf("nodesReady = %q, want 3/4", got)
+	}
+
+	recordAndFlush(t, writers[2], compiler.ModeEnforce,
+		availabilityCondition(v1alpha1.ConditionEnforcementAvailable, metav1.ConditionTrue, "attached"))
+
+	if got := getPolicy(t, client, "p").Status.NodesReady; got != "4/4" {
+		t.Errorf("nodesReady after node-c recovered = %q, want 4/4", got)
+	}
+}
+
+// TestCompileFailureClearsNodesReady: nothing of a spec the compiler rejected
+// runs on any node, so no node may be counted as ready for it.
+func TestCompileFailureClearsNodesReady(t *testing.T) {
+	existing := policyObj("p", "uid-1")
+	existing.Status.NodesReady = "1/1"
+	sw, client := newTestStatusWriter(t, "node-a", existing)
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonCompileFailed,
+		Message: "spec.behaviors[0].network: Invalid value",
+	})
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := getPolicy(t, client, "p").Status.NodesReady; got != "" {
+		t.Errorf("nodesReady = %q, want it cleared while the spec does not compile", got)
+	}
+}
+
 // TestClusterAppliedTrueDespiteUnmatchedNode: a node where the selector matches
 // nothing reports its own PodsMatched=False, and that must not read as a broken
 // policy at cluster scope while another node's matching pods are covered.
@@ -1234,6 +1284,94 @@ func TestAggregatePodsMatched(t *testing.T) {
 			}
 			if got.Status != tc.wantStatus || got.Reason != tc.wantReason {
 				t.Errorf("condition = (%s, %s), want (%s, %s)", got.Status, got.Reason, tc.wantStatus, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestNodesReady(t *testing.T) {
+	ready := func(name string) v1alpha1.EventSourceStatus {
+		return v1alpha1.EventSourceStatus{Name: name, Status: metav1.ConditionTrue}
+	}
+	starting := func(name string) v1alpha1.EventSourceStatus {
+		return v1alpha1.EventSourceStatus{Name: name, Status: metav1.ConditionUnknown}
+	}
+	tests := []struct {
+		name         string
+		mode         string
+		dependencies []string
+		nodes        []v1alpha1.NodePolicyStatus
+		want         string
+	}{
+		{name: "no shard yet", mode: compiler.ModeEnforce, want: ""},
+		{name: "no mode", mode: "",
+			nodes: []v1alpha1.NodePolicyStatus{{NodeName: "a"}}, want: ""},
+		{name: "enforce, every node available", mode: compiler.ModeEnforce,
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", EnforcementAvailable: ptrBool(true)},
+				{NodeName: "b", EnforcementAvailable: ptrBool(true)},
+			},
+			want: "2/2"},
+		{name: "enforce, one node unavailable", mode: compiler.ModeEnforce,
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", EnforcementAvailable: ptrBool(true)},
+				{NodeName: "b", EnforcementAvailable: ptrBool(false), Message: "BPF-LSM is not active on this node"},
+				{NodeName: "c", EnforcementAvailable: ptrBool(true)},
+			},
+			want: "2/3"},
+		{name: "enforce, no node can enforce", mode: compiler.ModeEnforce,
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", EnforcementAvailable: ptrBool(false)},
+				{NodeName: "b", EnforcementAvailable: ptrBool(false)},
+			},
+			want: "0/2"},
+		{name: "enforce, a node that never reported a failure", mode: compiler.ModeEnforce,
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a"},
+				{NodeName: "b", EnforcementAvailable: ptrBool(false)},
+			},
+			want: "1/2"},
+		{name: "enforce ignores observation", mode: compiler.ModeEnforce,
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", ObservationAvailable: ptrBool(false)},
+			},
+			want: "1/1"},
+		{name: "monitor ignores enforcement", mode: compiler.ModeMonitor,
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", EnforcementAvailable: ptrBool(false)},
+			},
+			want: "1/1"},
+		{name: "monitor, one node cannot observe", mode: compiler.ModeMonitor,
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", ObservationAvailable: ptrBool(true)},
+				{NodeName: "b", ObservationAvailable: ptrBool(false)},
+			},
+			want: "1/2"},
+		{name: "monitor, every source ready", mode: compiler.ModeMonitor,
+			dependencies: []string{openExecObserveSource, execTraceSource},
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", EventSources: []v1alpha1.EventSourceStatus{ready(openExecObserveSource), ready(execTraceSource)}},
+			},
+			want: "1/1"},
+		{name: "monitor, a source still starting", mode: compiler.ModeMonitor,
+			dependencies: []string{openExecObserveSource, execTraceSource},
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", EventSources: []v1alpha1.EventSourceStatus{ready(openExecObserveSource), ready(execTraceSource)}},
+				{NodeName: "b", EventSources: []v1alpha1.EventSourceStatus{ready(openExecObserveSource), starting(execTraceSource)}},
+			},
+			want: "1/2"},
+		{name: "monitor, a source the shard does not list", mode: compiler.ModeMonitor,
+			dependencies: []string{dnsQuerySource},
+			nodes: []v1alpha1.NodePolicyStatus{
+				{NodeName: "a", EventSources: []v1alpha1.EventSourceStatus{ready(dnsQuerySource)}},
+				{NodeName: "b"},
+			},
+			want: "1/2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nodesReady(tc.nodes, tc.mode, tc.dependencies); got != tc.want {
+				t.Errorf("nodesReady = %q, want %q", got, tc.want)
 			}
 		})
 	}

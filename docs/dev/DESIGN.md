@@ -923,6 +923,15 @@ nothing. On a mixed cluster the top-level conditions therefore state something t
 cluster instead of flapping to whichever node flushed last. A type no shard reports is removed
 from `status.conditions` rather than left at whatever an older writer put there.
 
+The same flush writes `status.nodesReady`, the `<ready>/<reporting>` ratio behind the `Nodes`
+print column, so `kubectl get rpol` tells "no node can enforce this" from "one of forty cannot"
+without reading the shards. `nodesReady` applies `Applied`'s gates to each shard on its own: a
+node is ready unless its shard reports `enforcementAvailable: false` (enforce mode), or
+`observationAvailable: false` or a required event source that is not `True` (monitor mode). A
+node that never reported its gate counts as ready, as it does for `Applied`, because `egressmgr`
+records `EnforcementAvailable` only when programming fails. The field is cleared while `Applied`
+carries a compile failure, since nothing of that spec runs on any node.
+
 Shards themselves are pruned at flush time: each daemon watches Node existence (a name-only
 metadata watch) and drops another node's entry from `status.nodes` once that node is gone, so a
 deleted node's last-known signals stop feeding the aggregate. A daemon never prunes its own

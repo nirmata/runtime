@@ -93,12 +93,13 @@ spec:
 ```
 
 ```text
-NAME                     MODE      APPLIED   REASON      AGE
-block-known-bad-egress   enforce   True      Enforcing   20s
+NAME                     MODE      APPLIED   REASON      NODES   AGE
+block-known-bad-egress   enforce   True      Enforcing   1/1     20s
 ```
 
 `APPLIED=True` with reason `Enforcing` means a daemon has the policy loaded and is
-blocking on it. `rpol` is the short name for `RuntimePolicy`, which is cluster-scoped.
+blocking on it, and `NODES` counts how many of the nodes that reported can enforce it.
+`rpol` is the short name for `RuntimePolicy`, which is cluster-scoped.
 
 ## 4. See the block
 
