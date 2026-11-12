@@ -155,3 +155,90 @@ func releaseProtoSide(owners protoOwners, uid string, values []string) []string 
 	}
 	return out
 }
+
+// networkTargetDiff returns, for each side, the targets in values that existing
+// does not name. Targets are compared on the key ownership uses, so an update
+// that only respells a target, such as 1.2.3.4 to 1.2.3.4/32, neither claims
+// nor releases it: the claim would be a no-op on the key the policy already
+// holds, and the release that follows would orphan it and delete the kernel
+// entry.
+func networkTargetDiff(values, existing *compiler.AllowDenyPair) *compiler.AllowDenyPair {
+	return targetDiff(values, existing, networkTargetKey)
+}
+
+// protocolTargetDiff is networkTargetDiff for protocol targets.
+func protocolTargetDiff(values, existing *compiler.AllowDenyPair) *compiler.AllowDenyPair {
+	return targetDiff(values, existing, protocolTargetKey)
+}
+
+// networkTarget is the key one network value is owned under. The default-deny
+// sentinel, refcounted by the defaultDeny set instead, gets a key of its own so
+// that its spellings compare equal too.
+type networkTarget struct {
+	prefix netip.Prefix
+	host   string
+	star   bool
+}
+
+func networkTargetKey(value string) (networkTarget, bool) {
+	prefixes, hosts, star, _ := egressfilter.ParseTargets([]string{value})
+	switch {
+	case len(prefixes) > 0:
+		return networkTarget{prefix: prefixes[0]}, true
+	case len(hosts) > 0:
+		return networkTarget{host: hosts[0]}, true
+	}
+	return networkTarget{star: star}, star
+}
+
+type protocolTarget struct {
+	target protofilter.Target
+	star   bool
+}
+
+func protocolTargetKey(value string) (protocolTarget, bool) {
+	targets, star, _ := protofilter.ParseTargets([]string{value})
+	if len(targets) > 0 {
+		return protocolTarget{target: targets[0]}, true
+	}
+	return protocolTarget{star: star}, star
+}
+
+func targetDiff[K comparable](values, existing *compiler.AllowDenyPair, key func(string) (K, bool)) *compiler.AllowDenyPair {
+	if values == nil {
+		return &compiler.AllowDenyPair{}
+	}
+	if existing == nil {
+		existing = &compiler.AllowDenyPair{}
+	}
+	return &compiler.AllowDenyPair{
+		Allow: targetSideDiff(values.Allow, existing.Allow, key),
+		Deny:  targetSideDiff(values.Deny, existing.Deny, key),
+	}
+}
+
+// targetSideDiff compares a value the schema rejects by its authored string:
+// it has no key, and was never programmed under any.
+func targetSideDiff[K comparable](values, existing []string, key func(string) (K, bool)) []string {
+	keys := make(map[K]struct{}, len(existing))
+	rejected := make(map[string]struct{})
+	for _, v := range existing {
+		if k, ok := key(v); ok {
+			keys[k] = struct{}{}
+		} else {
+			rejected[v] = struct{}{}
+		}
+	}
+	var out []string
+	for _, v := range values {
+		if k, ok := key(v); ok {
+			if _, held := keys[k]; held {
+				continue
+			}
+		} else if _, held := rejected[v]; held {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
