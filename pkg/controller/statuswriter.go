@@ -611,8 +611,8 @@ func conditionBool(c metav1.Condition) *bool {
 }
 
 // setClusterConditions derives the cluster-scoped availability, pods-matched
-// and Applied conditions from the per-node shards, so every daemon publishes
-// the same top-level answer instead of its own node's.
+// and Applied conditions, and the nodesReady summary, from the per-node shards,
+// so every daemon publishes the same top-level answer instead of its own node's.
 func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus, mode string, explicitApplied bool, sourceDependencies []string) {
 	now := metav1.NewTime(s.clock())
 	agg := make(map[string]metav1.Condition, 4)
@@ -635,9 +635,55 @@ func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus
 	record(aggregatePodsMatched(status.Nodes, now))
 	expected, hasExpected := s.sourceNodes()
 	record(aggregateEventSources(status.Nodes, now, sourceDependencies, expected, hasExpected))
-	if !explicitApplied {
-		apimeta.SetStatusCondition(&status.Conditions, s.appliedCondition(mode, agg))
+	if explicitApplied {
+		status.NodesReady = ""
+		return
 	}
+	apimeta.SetStatusCondition(&status.Conditions, s.appliedCondition(mode, agg))
+	status.NodesReady = nodesReady(status.Nodes, mode, sourceDependencies)
+}
+
+// nodesReady applies appliedCondition's gates to each shard on its own, so the
+// ratio and Applied cannot disagree about which nodes hold the policy back. As
+// there, a node that never reported its gate is not counted against: a manager
+// may record availability only when programming fails.
+func nodesReady(nodes []v1alpha1.NodePolicyStatus, mode string, sourceDependencies []string) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+	var ready int
+	for i := range nodes {
+		n := &nodes[i]
+		switch mode {
+		case compiler.ModeEnforce:
+			if isFalse(n.EnforcementAvailable) {
+				continue
+			}
+		case compiler.ModeMonitor:
+			if isFalse(n.ObservationAvailable) || !eventSourcesReady(n.EventSources, sourceDependencies) {
+				continue
+			}
+		default:
+			return ""
+		}
+		ready++
+	}
+	return fmt.Sprintf("%d/%d", ready, len(nodes))
+}
+
+func isFalse(v *bool) bool {
+	return v != nil && !*v
+}
+
+// eventSourcesReady treats a dependency the shard does not list as not ready,
+// as aggregateEventSourceNodes does: the node has not reported it yet.
+func eventSourcesReady(statuses []v1alpha1.EventSourceStatus, dependencies []string) bool {
+	for _, dependency := range dependencies {
+		if status, ok := sourceStatusFor(statuses, dependency); !ok || status.Status != metav1.ConditionTrue {
+			return false
+		}
+	}
+	return true
 }
 
 func currentPolicyMode(spec v1alpha1.RuntimePolicySpec, fallback string) string {

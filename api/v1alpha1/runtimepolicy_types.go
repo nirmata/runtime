@@ -161,6 +161,15 @@ type RuntimePolicyStatus struct {
 	// +listMapKey=nodeName
 	Nodes []NodePolicyStatus `json:"nodes,omitempty"`
 
+	// NodesReady is "<ready>/<reporting>" over the nodes holding a shard. A
+	// node is ready unless it reports that it cannot run the policy in its mode:
+	// enforcement unavailable for an enforce-mode policy; observation
+	// unavailable, or an event source the policy needs not ready, for a
+	// monitor-mode one. Empty while the policy has no mode or its spec failed
+	// to compile.
+	// +optional
+	NodesReady string `json:"nodesReady,omitempty"`
+
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -297,6 +306,7 @@ type EventSourceStatus struct {
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].reason`
+// +kubebuilder:printcolumn:name="Nodes",type=string,JSONPath=`.status.nodesReady`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 type RuntimePolicy struct {

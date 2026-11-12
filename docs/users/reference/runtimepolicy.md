@@ -10,7 +10,7 @@ behaviors to allow or deny, and whether the daemon blocks or only reports.
 | Scope | Cluster |
 | Short name | `rpol` |
 | Status subresource | yes |
-| Print columns | `Mode`, `Applied`, `Reason`, `Age` |
+| Print columns | `Mode`, `Applied`, `Reason`, `Nodes`, `Age` |
 
 ```bash
 kubectl get rpol
@@ -755,6 +755,27 @@ conditions are derived from the shards, so on a mixed cluster the top-level valu
 something true of the cluster rather than of whichever node wrote last. Updates are flushed
 every 30 seconds with conflict retry.
 
+`status.nodesReady`, shown as the `Nodes` column of `kubectl get rpol`, counts the nodes that
+can run the policy in its mode over the nodes holding a shard:
+
+```text
+NAME               MODE      APPLIED   REASON                   NODES   AGE
+block-ssh-egress   enforce   False     EnforcementUnavailable   37/40   5m
+```
+
+A node is ready unless its shard reports that it cannot run the policy: `enforcementAvailable:
+false` for an `enforce` policy; `observationAvailable: false`, or a required event source that
+is not yet `True`, for a `monitor` policy. A node that has not reported a failure counts as
+ready, and nodes where none of the policy's pods run count like any other — `PodsMatched`
+answers whether the selector matches anything. The column is empty while the policy's spec
+fails to compile, since nothing of it runs anywhere, and until the first daemon has written its
+shard.
+
+`kubectl describe rpol <name>` names the nodes holding the policy back and why: the
+`EnforcementAvailable` or `ObservationAvailable` condition message lists the failing nodes with
+their causes (the first five, then a count), and every node's own entry under `Nodes` carries
+its `Message` and its `Event Sources` with their reasons.
+
 Per-pod detail is not in the status. Which pods a policy matched and which of them violated it are
 in the Reports (which name them) and in the Prometheus counters; the status answers "is this policy
 loaded, on which nodes, in which mode, and when was it last evaluated".
@@ -762,6 +783,7 @@ loaded, on which nodes, in which mode, and when was it last evaluated".
 ```yaml
 status:
   lastEvaluatedTime: "2026-07-27T10:15:04Z"
+  nodesReady: 2/2
   nodes:
   - nodeName: node-1
     lastEvaluatedTime: "2026-07-27T10:15:04Z"

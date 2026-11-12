@@ -26,6 +26,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Applied")].reason
       name: Reason
       type: string
+    - jsonPath: .status.nodesReady
+      name: Nodes
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -575,6 +578,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - nodeName
                 x-kubernetes-list-type: map
+              nodesReady:
+                description: |-
+                  NodesReady is "<ready>/<reporting>" over the nodes holding a shard. A
+                  node is ready unless it reports that it cannot run the policy in its mode:
+                  enforcement unavailable for an enforce-mode policy; observation
+                  unavailable, or an event source the policy needs not ready, for a
+                  monitor-mode one. Empty while the policy has no mode or its spec failed
+                  to compile.
+                type: string
             type: object
         type: object
     served: true

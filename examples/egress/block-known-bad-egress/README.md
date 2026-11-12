@@ -88,8 +88,8 @@ kubectl get rpol block-known-bad-egress
 ```
 
 ```text
-NAME                     MODE      APPLIED   REASON      AGE
-block-known-bad-egress   enforce   True      Enforcing   20s
+NAME                     MODE      APPLIED   REASON      NODES   AGE
+block-known-bad-egress   enforce   True      Enforcing   1/1     20s
 ```
 
 The denied address is now unreachable from that pod:
