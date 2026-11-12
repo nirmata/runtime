@@ -70,10 +70,10 @@ func (e *EgressManager) rpUpdated(compiledRp *compiler.EvaluationResult) {
 	oldIps := clonePair(currentRp.IPs)
 	oldProtos := clonePair(currentRp.Protocols)
 
-	toAddPair := currentRp.IPs.DiffPair(compiledRp.IPs)
-	toRemovePair := compiledRp.IPs.DiffPair(currentRp.IPs)
-	toAddProtoPair := currentRp.Protocols.DiffPair(compiledRp.Protocols)
-	toRemoveProtoPair := compiledRp.Protocols.DiffPair(currentRp.Protocols)
+	toAddPair := networkTargetDiff(compiledRp.IPs, currentRp.IPs)
+	toRemovePair := networkTargetDiff(currentRp.IPs, compiledRp.IPs)
+	toAddProtoPair := protocolTargetDiff(compiledRp.Protocols, currentRp.Protocols)
+	toRemoveProtoPair := protocolTargetDiff(currentRp.Protocols, compiledRp.Protocols)
 
 	// the incoming policy update contains a deny "*"
 	hasDefaultDeny := denyHasStar(toAddPair)

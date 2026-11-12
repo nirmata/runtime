@@ -447,7 +447,12 @@ selectors, so relabeling a pod attaches or detaches it (#58) with the default-de
 correct.
 `rpUpdated` mutates the stored `EvaluationResult`'s `IPs`/`Selector` in place rather than replacing
 the pointer that pods' `attachedFilters` entries share (`82acb1f`), so a policy update does not leave
-pods pointing at stale IP data.
+pods pointing at stale IP data. Its diff compares the old and new `IPs` and `Protocols` pairs on the
+key the per-pod ownership refcount uses (`pkg/egressmgr/owners.go`: the masked prefix, the
+normalized host, the parsed protocol target), not on the authored strings. An update that only
+respells a target — `1.2.3.4` to `1.2.3.4/32`, `2001:db8::1` to `2001:0db8::1`, `API.example.com.`
+to `api.example.com` — is therefore no change at all, rather than a claim on a key the policy
+already holds followed by a release that orphans it and deletes the kernel entry.
 
 ### Application protocol (`pkg/egressmgr`, `pkg/bpf/protofilter`)
 
