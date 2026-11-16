@@ -190,7 +190,7 @@ jobs:
           cache: true
 
       - name: Set up Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       # Renders with defaults and with the toggles flipped, and asserts the
       # metrics port actually reaches the daemon args.
@@ -342,7 +342,7 @@ jobs:
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Resolve the image tag
         run: echo "IMAGE_TAG=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
@@ -481,7 +481,7 @@ jobs:
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       # Hard requirements only. The active LSM list decides which hooks the
       # daemon picks, not whether this lane can run, so it is reported and not
