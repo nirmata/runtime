@@ -563,6 +563,15 @@ spec:
                         ObservationAvailable reports whether observation for this policy is
                         attached on this node.
                       type: boolean
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the metadata.generation of the spec whose rules
+                        this node has programmed. It stays behind metadata.generation while this
+                        node has not processed the latest spec, or when that spec failed to
+                        compile and the earlier rules remain in place. Absent when this node has
+                        programmed no spec of the policy.
+                      format: int64
+                      type: integer
                     podsMatched:
                       description: |-
                         PodsMatched reports whether any pod on this node currently matches the

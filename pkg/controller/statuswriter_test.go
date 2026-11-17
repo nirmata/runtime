@@ -1664,3 +1664,102 @@ func hasCondition(conds []metav1.Condition, condType string) bool {
 	}
 	return false
 }
+
+// TestIntervalReevaluationKeepsNewerCompileFailure: a policy with an
+// evaluationInterval keeps re-evaluating the last spec that compiled after a
+// newer one is rejected, and those re-evaluations must not clear the rejection.
+func TestIntervalReevaluationKeepsNewerCompileFailure(t *testing.T) {
+	sw, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	programmed := evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything())
+	programmed.Generation = 1
+
+	if err := sw.RuntimePolicyEvent(programmed, events.EventTypeCreate); err != nil {
+		t.Fatal(err)
+	}
+	sw.RecordCondition("uid-1", "p", metav1.Condition{
+		Type: v1alpha1.ConditionApplied, Status: metav1.ConditionFalse, ObservedGeneration: 2,
+		Reason: v1alpha1.ReasonCompileFailed, Message: "spec.behaviors[0].network: Invalid value",
+	})
+	if err := sw.RuntimePolicyEvent(programmed, events.EventTypeUpdate); err != nil {
+		t.Fatal(err)
+	}
+	if err := sw.Flush(context.Background()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	got := getPolicy(t, client, "p")
+	applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+	if applied.Reason != v1alpha1.ReasonCompileFailed || applied.ObservedGeneration != 2 {
+		t.Errorf("Applied = (%s, %s, generation %d), want the generation 2 compile failure kept",
+			applied.Status, applied.Reason, applied.ObservedGeneration)
+	}
+	if got.Status.Nodes[0].ObservedGeneration != 1 {
+		t.Errorf("shard generation = %d, want 1: generation 1 is still what node-a has programmed",
+			got.Status.Nodes[0].ObservedGeneration)
+	}
+}
+
+// TestClusterConditionsTrailTheSlowestNode: a condition derived from every
+// shard must not claim a generation one node has not programmed yet.
+func TestClusterConditionsTrailTheSlowestNode(t *testing.T) {
+	swA, client := newTestStatusWriter(t, "node-a", policyObj("p", "uid-1"))
+	swB := NewStatusWriter(client, "node-b", time.Hour, logr.Discard(), nil, nil)
+	swB.clock = func() time.Time { return fixedNow }
+
+	flushGeneration := func(sw *StatusWriter, generation int64) {
+		t.Helper()
+		res := evalResult("uid-1", "p", compiler.ModeEnforce, labels.Everything())
+		res.Generation = generation
+		if err := sw.RuntimePolicyEvent(res, events.EventTypeUpdate); err != nil {
+			t.Fatal(err)
+		}
+		sw.RecordCondition("uid-1", "p", podsMatchedCondition(metav1.ConditionTrue))
+		if err := sw.Flush(context.Background()); err != nil {
+			t.Fatalf("flush: %v", err)
+		}
+	}
+	derived := []string{v1alpha1.ConditionApplied, v1alpha1.ConditionPodsMatched}
+
+	flushGeneration(swA, 1)
+	flushGeneration(swB, 1)
+	flushGeneration(swA, 2)
+	got := getPolicy(t, client, "p")
+	for _, condType := range derived {
+		if g := conditionOfType(t, got.Status.Conditions, condType).ObservedGeneration; g != 1 {
+			t.Errorf("%s generation with node-b still on 1 = %d, want 1", condType, g)
+		}
+	}
+
+	flushGeneration(swB, 2)
+	got = getPolicy(t, client, "p")
+	for _, condType := range derived {
+		if g := conditionOfType(t, got.Status.Conditions, condType).ObservedGeneration; g != 2 {
+			t.Errorf("%s generation with every node on 2 = %d, want 2", condType, g)
+		}
+	}
+}
+
+func TestOldestObservedGeneration(t *testing.T) {
+	tests := []struct {
+		name        string
+		generations []int64
+		want        int64
+	}{
+		{name: "no shards", want: 0},
+		{name: "no shard has programmed the policy", generations: []int64{0, 0}, want: 0},
+		{name: "one generation everywhere", generations: []int64{3, 3}, want: 3},
+		{name: "a node behind", generations: []int64{4, 3, 4}, want: 3},
+		{name: "a node that programmed nothing does not hold the rest back", generations: []int64{0, 4}, want: 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			nodes := make([]v1alpha1.NodePolicyStatus, 0, len(tc.generations))
+			for i, g := range tc.generations {
+				nodes = append(nodes, v1alpha1.NodePolicyStatus{NodeName: fmt.Sprintf("node-%d", i), ObservedGeneration: g})
+			}
+			if got := oldestObservedGeneration(nodes); got != tc.want {
+				t.Errorf("oldestObservedGeneration = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

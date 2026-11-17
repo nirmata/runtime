@@ -251,6 +251,14 @@ type NodePolicyStatus struct {
 	// +optional
 	LastEvaluatedTime *metav1.Time `json:"lastEvaluatedTime,omitempty"`
 
+	// ObservedGeneration is the metadata.generation of the spec whose rules
+	// this node has programmed. It stays behind metadata.generation while this
+	// node has not processed the latest spec, or when that spec failed to
+	// compile and the earlier rules remain in place. Absent when this node has
+	// programmed no spec of the policy.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// EnforcementAvailable reports whether the kernel programs and maps
 	// enforcing this policy are attached and programmed on this node.
 	// +optional

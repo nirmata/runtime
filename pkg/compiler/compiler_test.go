@@ -342,13 +342,13 @@ func TestCompile_UndeclaredVariableReference(t *testing.T) {
 	}
 }
 
-func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
+func TestCompile_ModeUIDNameGenerationIntervalSelectorPropagate(t *testing.T) {
 	c := newTestCompiler(t)
 	enforce := v1alpha1.PolicyModeEnforce
 
 	t.Run("explicit fields propagate", func(t *testing.T) {
 		rp := v1alpha1.RuntimePolicy{
-			ObjectMeta: metav1.ObjectMeta{UID: "abc-123", Name: "block-egress"},
+			ObjectMeta: metav1.ObjectMeta{UID: "abc-123", Name: "block-egress", Generation: 4},
 			Spec: v1alpha1.RuntimePolicySpec{
 				Mode:               &enforce,
 				EvaluationInterval: &metav1.Duration{Duration: 5 * time.Minute},
@@ -368,6 +368,9 @@ func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
 		if compiled.Name != "block-egress" {
 			t.Errorf("Name = %q, want %q", compiled.Name, "block-egress")
 		}
+		if compiled.Generation != 4 {
+			t.Errorf("Generation = %d, want 4", compiled.Generation)
+		}
 		if compiled.ReevalInterval == nil || *compiled.ReevalInterval != 5*time.Minute {
 			t.Errorf("ReevalInterval = %v, want %v", compiled.ReevalInterval, 5*time.Minute)
 		}
@@ -384,6 +387,9 @@ func TestCompile_ModeUIDNameIntervalSelectorPropagate(t *testing.T) {
 		}
 		if res.Name != "block-egress" {
 			t.Errorf("Name = %q, want %q", res.Name, "block-egress")
+		}
+		if res.Generation != 4 {
+			t.Errorf("Generation = %d, want 4", res.Generation)
 		}
 		if !res.AppliesTo.Matches(nil, map[string]string{"app": "nginx"}) {
 			t.Error("target should match pod with label app=nginx")

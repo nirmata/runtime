@@ -986,6 +986,17 @@ same time. The one direct exception to the derivation is `reportCompileFailure`,
 `Applied=False/CompileFailed` itself for a policy the compiler rejected outright — there is no
 evaluation result to derive anything from, since nothing compiled.
 
+Status is generation-aware. A rejected update is not fanned out, so the managers keep the rules of
+the last generation that compiled. The compiler copies `metadata.generation` into the
+`EvaluationResult`, and `StatusWriter` remembers the generation of the last result it was handed:
+that is what this node has programmed. Each flush writes it into the node's shard as
+`observedGeneration` and stamps it onto the conditions this node recorded. Conditions derived
+from the shards take the oldest generation across them, ignoring nodes that have programmed
+nothing, so a cluster-scoped answer never claims a spec one node is still catching up to.
+`CompileFailed` carries the generation that was rejected instead. The next `RuntimePolicyEvent`
+for that generation or a later one drops it, and `Applied` is derived again; an
+`evaluationInterval` re-evaluation of the earlier rules does not, because its generation is older.
+
 This is the mechanism behind
 the "fail loud, not silent" rule: a network target the runtime cannot program (a wildcard, a domain
 too long for its map key) is reported as a typed `egressfilter.RejectedTarget`, logged at `V(0)`,

@@ -17,8 +17,10 @@ import (
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -793,5 +795,112 @@ func TestHandleDeleteUnknownUIDStillFansOut(t *testing.T) {
 	}
 	if got := len(h2.runtimePolicyCalls()); got != 1 {
 		t.Errorf("h2 got %d events, want 1", got)
+	}
+}
+
+// noServices resolves nothing: these policies name no cluster Service.
+type noServices struct{}
+
+func (noServices) ResolveService(string, string) ([]string, bool) { return nil, false }
+
+func (noServices) ResolveEndpoint(string, string, string) ([]string, bool) { return nil, false }
+
+// execRulesRecorder stands in for the open/exec manager: every evaluation it
+// is handed is one whose exec paths it accepted.
+type execRulesRecorder struct{ status *StatusWriter }
+
+func (r execRulesRecorder) RuntimePolicyEvent(res *compiler.EvaluationResult, evType string) error {
+	if evType != events.EventTypeDelete {
+		r.status.RecordCondition(res.UID, res.Name, metav1.Condition{
+			Type: v1alpha1.ConditionExecRulesValid, Status: metav1.ConditionTrue,
+			Reason: v1alpha1.ReasonAllPathsSupported, Message: "every exec path is programmed",
+		})
+	}
+	return nil
+}
+
+func enforceExecPolicy(generation int64, allow string) *v1alpha1.RuntimePolicy {
+	enforce := v1alpha1.PolicyModeEnforce
+	policy := policyObj("p", "uid-1")
+	policy.Generation = generation
+	policy.Spec = v1alpha1.RuntimePolicySpec{
+		Mode:        &enforce,
+		PodSelector: &metav1.LabelSelector{},
+		Behaviors: []v1alpha1.PolicyBehavior{{Exec: &v1alpha1.Behavior{
+			Deny:  &v1alpha1.BehaviorRule{Values: []string{"*"}},
+			Allow: &v1alpha1.BehaviorRule{Values: []string{allow}},
+		}}},
+	}
+	return policy
+}
+
+// TestStatusNamesTheGenerationOfEachCondition drives spec updates through the
+// real compiler into the status writer: a corrected spec must clear the
+// earlier compile failure, and a rejected one must leave the conditions of the
+// rules still programmed marked with the generation they came from.
+func TestStatusNamesTheGenerationOfEachCondition(t *testing.T) {
+	const valid, invalid = "/usr/bin/*", "/usr/bin/**"
+	tests := []struct {
+		name          string
+		first, second string
+		wantApplied   metav1.Condition
+		// the generations ExecRulesValid and node-a's shard describe
+		wantRulesValid int64
+		wantShard      int64
+	}{
+		{
+			name:  "invalid then fixed",
+			first: invalid, second: valid,
+			wantApplied:    metav1.Condition{Status: metav1.ConditionTrue, Reason: v1alpha1.ReasonEnforcing, ObservedGeneration: 2},
+			wantRulesValid: 2,
+			wantShard:      2,
+		},
+		{
+			name:  "valid then invalid",
+			first: valid, second: invalid,
+			wantApplied:    metav1.Condition{Status: metav1.ConditionFalse, Reason: v1alpha1.ReasonCompileFailed, ObservedGeneration: 2},
+			wantRulesValid: 1,
+			wantShard:      1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := compiler.NewCompiler(dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), noServices{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sw, client := newTestStatusWriter(t, "node-a", enforceExecPolicy(1, tc.first))
+			m, _ := newTestRpMgr(t, c, []events.RuntimePolicyEventHandler{sw, execRulesRecorder{status: sw}})
+			m.status = sw
+
+			if err := m.handleCreate(context.Background(), enforceExecPolicy(1, tc.first)); err != nil {
+				t.Fatalf("handleCreate: %v", err)
+			}
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+			if err := m.handleUpdate(context.Background(), enforceExecPolicy(2, tc.second)); err != nil {
+				t.Fatalf("handleUpdate: %v", err)
+			}
+			if err := sw.Flush(context.Background()); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+
+			got := getPolicy(t, client, "p")
+			applied := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionApplied)
+			if applied.Status != tc.wantApplied.Status || applied.Reason != tc.wantApplied.Reason ||
+				applied.ObservedGeneration != tc.wantApplied.ObservedGeneration {
+				t.Errorf("Applied = (%s, %s, generation %d), want (%s, %s, generation %d); message %q",
+					applied.Status, applied.Reason, applied.ObservedGeneration,
+					tc.wantApplied.Status, tc.wantApplied.Reason, tc.wantApplied.ObservedGeneration, applied.Message)
+			}
+			rules := conditionOfType(t, got.Status.Conditions, v1alpha1.ConditionExecRulesValid)
+			if rules.ObservedGeneration != tc.wantRulesValid {
+				t.Errorf("ExecRulesValid generation = %d, want %d", rules.ObservedGeneration, tc.wantRulesValid)
+			}
+			if len(got.Status.Nodes) != 1 || got.Status.Nodes[0].ObservedGeneration != tc.wantShard {
+				t.Errorf("nodes = %+v, want node-a's shard at generation %d", got.Status.Nodes, tc.wantShard)
+			}
+		})
 	}
 }

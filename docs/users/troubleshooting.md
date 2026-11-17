@@ -197,12 +197,21 @@ policy never named. Write cluster Services in full.
 
 ## Applied is False
 
-`CompileFailed` means the spec could not be compiled, and **nothing in the policy is in
+`CompileFailed` means the spec could not be compiled, and **nothing in that spec is in
 force** — not the offending rule, and not the rules either side of it. The message carries
 the field path, the value and the reason, so it points at one entry in one behavior:
 
 ```bash
 kubectl get rpol <name> -o jsonpath='{.status.conditions[?(@.type=="Applied")].message}'
+```
+
+If the rejected spec was an update, the rules of the last generation that compiled are still
+programmed. Each node's shard names that generation, and the other conditions carry it as
+their `observedGeneration`. A shard with no `observedGeneration` belongs to a node that has
+nothing of the policy programmed, such as one whose daemon restarted after the bad update:
+
+```bash
+kubectl get rpol <name> -o jsonpath='{.metadata.generation}{"\n"}{range .status.nodes[*]}{.nodeName}{"\t"}{.observedGeneration}{"\n"}{end}'
 ```
 
 Causes are a value the schema refuses (a malformed cluster Service name, a scoped IPv6
