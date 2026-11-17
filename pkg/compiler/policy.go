@@ -16,15 +16,16 @@ import (
 const varsKey = "variables"
 
 type EvaluationResult struct {
-	UID       string
-	Name      string
-	IPs       *AllowDenyPair
-	Open      *AllowDenyPair
-	Exec      *AllowDenyPair
-	Protocols *AllowDenyPair
-	DNS       *AllowDenyPair
-	AppliesTo PodTarget
-	Mode      string
+	UID        string
+	Name       string
+	Generation int64
+	IPs        *AllowDenyPair
+	Open       *AllowDenyPair
+	Exec       *AllowDenyPair
+	Protocols  *AllowDenyPair
+	DNS        *AllowDenyPair
+	AppliesTo  PodTarget
+	Mode       string
 
 	// MonitorFilter narrows which of this policy's findings are reported. Nil
 	// when the policy sets no spec.monitorFilter.
@@ -136,6 +137,7 @@ func (c *CompiledRuntimePolicy) Evaluate(ctx context.Context) (*EvaluationResult
 	return &EvaluationResult{
 		UID:                c.UID,
 		Name:               c.Name,
+		Generation:         c.Generation,
 		IPs:                net,
 		Open:               open,
 		Exec:               exec,

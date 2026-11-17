@@ -749,11 +749,20 @@ program must never inherit deny entries and an enforcing one must not start from
 `status` is written per node. Each daemon owns exactly one entry in `status.nodes` (keyed by
 `nodeName`) and never touches another node's entry; each shard carries that node's compact
 answers — `enforcementAvailable`, `observationAvailable`, `eventSources`, `podsMatched`, and a `message` naming
-what is unavailable there. `status.lastEvaluatedTime` is the newest shard timestamp, and the
+what is unavailable there — plus `observedGeneration`, the `metadata.generation` of the spec whose
+rules that node has programmed. `status.lastEvaluatedTime` is the newest shard timestamp, and the
 cluster-scoped `Applied`, `EnforcementAvailable`, `ObservationAvailable`, `EventSourcesAvailable` and `PodsMatched`
 conditions are derived from the shards, so on a mixed cluster the top-level value states
 something true of the cluster rather than of whichever node wrote last. Updates are flushed
 every 30 seconds with conflict retry.
+
+Every condition carries the `observedGeneration` of the spec it describes. `CompileFailed` names
+the generation that was rejected. The other conditions name the generation whose rules are
+programmed; a condition derived from the shards names the oldest generation any node has
+programmed, so it never claims a spec some node has not applied yet. A condition whose
+`observedGeneration` is behind `metadata.generation` describes an earlier spec: either a node has
+not processed the latest update yet, or the latest update failed to compile and the earlier rules
+are still in force.
 
 Per-pod detail is not in the status. Which pods a policy matched and which of them violated it are
 in the Reports (which name them) and in the Prometheus counters; the status answers "is this policy
@@ -765,16 +774,20 @@ status:
   nodes:
   - nodeName: node-1
     lastEvaluatedTime: "2026-07-27T10:15:04Z"
+    observedGeneration: 3
     observationAvailable: true
     podsMatched: true
   - nodeName: node-2
+    observedGeneration: 3
   conditions:
   - type: Applied
     status: "True"
+    observedGeneration: 3
     reason: Monitoring
     message: the policy is observed and reported but never blocks
   - type: TargetsValid
     status: "False"
+    observedGeneration: 3
     reason: UnsupportedTargets
     message: '2 egress target(s) are not enforced: "example.com": not an IP address ...'
 ```
@@ -783,7 +796,7 @@ Conditions:
 
 | Type | Reasons | Meaning |
 | --- | --- | --- |
-| `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed`, `EnforcementUnavailable`, `ObservationUnavailable`, `EventSourcesUnavailable`, `EventSourcesUnknown`, `NoMatchingPods` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for an internal policy constructed without a mode; the API server defaults an omitted `spec.mode` to `monitor`. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in such a policy is applied, including the rules either side of the bad one. `EnforcementUnavailable` / `ObservationUnavailable` report `False` when the `EnforcementAvailable` / `ObservationAvailable` condition (below) is `False` for the policy's mode: a mode that promises enforcement or observation does not read as applied while any node's attachment behind it never took. `NoMatchingPods` reports `False` when the `PodsMatched` condition (below) is `False` — no node has a matching pod — and the mode's own `EnforcementAvailable` / `ObservationAvailable` is not — that is, is either `True` or was never recorded at all, which is the normal case for a policy whose behaviors never hit a programming failure. When both conditions are `False` at once, `EnforcementUnavailable` / `ObservationUnavailable` takes priority and `NoMatchingPods` is not reported. |
+| `Applied` | `Enforcing`, `Monitoring`, `NoMode`, `CompileFailed`, `EnforcementUnavailable`, `ObservationUnavailable`, `EventSourcesUnavailable`, `EventSourcesUnknown`, `NoMatchingPods` | Whether the daemon has the policy loaded, and in which mode. `NoMode` reports `False` for an internal policy constructed without a mode; the API server defaults an omitted `spec.mode` to `monitor`. `CompileFailed` reports `False` when the spec could not be compiled, with the offending field path and value in the message; nothing in that spec is applied, including the rules either side of the bad one. If an earlier generation of the policy compiled, its rules stay in force on the nodes that programmed them until a corrected spec compiles, and the other conditions keep describing them under their own `observedGeneration`; a daemon that restarts while the spec is rejected programs nothing for it. The next spec that compiles replaces `CompileFailed`. `EnforcementUnavailable` / `ObservationUnavailable` report `False` when the `EnforcementAvailable` / `ObservationAvailable` condition (below) is `False` for the policy's mode: a mode that promises enforcement or observation does not read as applied while any node's attachment behind it never took. `NoMatchingPods` reports `False` when the `PodsMatched` condition (below) is `False` — no node has a matching pod — and the mode's own `EnforcementAvailable` / `ObservationAvailable` is not — that is, is either `True` or was never recorded at all, which is the normal case for a policy whose behaviors never hit a programming failure. When both conditions are `False` at once, `EnforcementUnavailable` / `ObservationUnavailable` takes priority and `NoMatchingPods` is not reported. |
 | `TargetsValid` | `AllTargetsSupported`, `NoTargets`, `UnsupportedTargets`, `UnresolvedServices` | Whether every `network` and `protocol` target could be programmed. `UnsupportedTargets` lists the rejected values and why; `UnresolvedServices` lists the Service and endpoint names that are not in cache. |
 | `ExecRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `exec` path could be programmed. `UnsupportedPaths` lists the rejected values and why. |
 | `OpenRulesValid` | `AllPathsSupported`, `NoPaths`, `UnsupportedPaths` | Whether every `open` path could be programmed. |

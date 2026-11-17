@@ -54,6 +54,9 @@ type policyStatusState struct {
 	// waits, unflushed, until a caller supplies one.
 	name string
 	mode string
+	// generation is the spec generation of the last evaluation handed to the
+	// managers, which is what this node has programmed.
+	generation int64
 
 	// conditions is keyed by condition type; the last write wins.
 	conditions map[string]metav1.Condition
@@ -199,6 +202,12 @@ func (s *StatusWriter) RuntimePolicyEvent(res *compiler.EvaluationResult, eventT
 		st.name = res.Name
 	}
 	st.mode = res.Mode
+	st.generation = res.Generation
+	// a compile failure is cleared by any later spec that compiled, but not by
+	// an interval re-evaluation of the rules it left in place
+	if applied, ok := st.conditions[v1alpha1.ConditionApplied]; ok && applied.ObservedGeneration <= res.Generation {
+		delete(st.conditions, v1alpha1.ConditionApplied)
+	}
 	// an availability condition recorded under the other mode has no writer
 	// left to correct it: the managers only record the type matching the
 	// current mode, so it would sit stale in the map forever
@@ -346,6 +355,7 @@ type flushItem struct {
 	// explicitApplied marks a directly recorded Applied, which the derived
 	// cluster-scoped one must stand aside for.
 	explicitApplied bool
+	generation      int64
 	gen             uint64
 }
 
@@ -379,12 +389,13 @@ func (s *StatusWriter) snapshot() []flushItem {
 			continue
 		}
 		item := flushItem{
-			uid:     uid,
-			name:    st.name,
-			mode:    st.mode,
-			signals: make(map[string]metav1.Condition, len(st.conditions)),
-			sources: make(map[string]sourceStatus, len(s.sources)),
-			gen:     st.gen,
+			uid:        uid,
+			name:       st.name,
+			mode:       st.mode,
+			signals:    make(map[string]metav1.Condition, len(st.conditions)),
+			sources:    make(map[string]sourceStatus, len(s.sources)),
+			generation: st.generation,
+			gen:        st.gen,
 		}
 		for name, status := range s.sources {
 			item.sources[name] = status
@@ -396,8 +407,9 @@ func (s *StatusWriter) snapshot() []flushItem {
 		for t, c := range st.conditions {
 			switch t {
 			case v1alpha1.ConditionApplied:
-				// reportCompileFailure records Applied directly: nothing
-				// compiled, so nothing else bears on whether the policy applied
+				// reportCompileFailure records Applied directly, stamped with
+				// the generation that failed: nothing of that spec compiled,
+				// so nothing else bears on whether it applied
 				item.explicitApplied = true
 			case v1alpha1.ConditionEnforcementAvailable,
 				v1alpha1.ConditionObservationAvailable,
@@ -405,6 +417,8 @@ func (s *StatusWriter) snapshot() []flushItem {
 				// these reach the status through this node's shard and the
 				// cluster aggregation, never as direct cluster-scoped writes
 				continue
+			default:
+				c.ObservedGeneration = st.generation
 			}
 			conds = append(conds, c)
 		}
@@ -465,6 +479,7 @@ func (s *StatusWriter) flushOne(ctx context.Context, item flushItem) error {
 		shard := signalShard(item.signals, item.sources, dependencies)
 		shard.NodeName = s.nodeName
 		shard.LastEvaluatedTime = &now
+		shard.ObservedGeneration = item.generation
 		setNodeShard(&updated.Status, shard)
 		recomputeLastEvaluated(&updated.Status)
 		for _, cond := range item.conditions {
@@ -615,6 +630,7 @@ func conditionBool(c metav1.Condition) *bool {
 // the same top-level answer instead of its own node's.
 func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus, mode string, explicitApplied bool, sourceDependencies []string) {
 	now := metav1.NewTime(s.clock())
+	generation := oldestObservedGeneration(status.Nodes)
 	agg := make(map[string]metav1.Condition, 4)
 	// a type no shard reports is removed rather than left as written: keeping
 	// it would preserve a value the shards no longer back
@@ -623,6 +639,7 @@ func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus
 			apimeta.RemoveStatusCondition(&status.Conditions, c.Type)
 			return
 		}
+		c.ObservedGeneration = generation
 		agg[c.Type] = c
 		apimeta.SetStatusCondition(&status.Conditions, c)
 	}
@@ -636,8 +653,25 @@ func (s *StatusWriter) setClusterConditions(status *v1alpha1.RuntimePolicyStatus
 	expected, hasExpected := s.sourceNodes()
 	record(aggregateEventSources(status.Nodes, now, sourceDependencies, expected, hasExpected))
 	if !explicitApplied {
-		apimeta.SetStatusCondition(&status.Conditions, s.appliedCondition(mode, agg))
+		applied := s.appliedCondition(mode, agg)
+		applied.ObservedGeneration = generation
+		apimeta.SetStatusCondition(&status.Conditions, applied)
 	}
+}
+
+// oldestObservedGeneration is the generation every node that has programmed
+// the policy has reached, so a condition aggregated over the shards never
+// claims a spec some node is not running yet. Nodes that have programmed no
+// spec of the policy do not hold it back.
+func oldestObservedGeneration(nodes []v1alpha1.NodePolicyStatus) int64 {
+	var oldest int64
+	for i := range nodes {
+		g := nodes[i].ObservedGeneration
+		if g != 0 && (oldest == 0 || g < oldest) {
+			oldest = g
+		}
+	}
+	return oldest
 }
 
 func currentPolicyMode(spec v1alpha1.RuntimePolicySpec, fallback string) string {

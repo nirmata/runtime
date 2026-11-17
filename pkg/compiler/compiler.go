@@ -20,6 +20,7 @@ type CompiledRuntimePolicy struct {
 	ReevalInterval *time.Duration
 	UID            string
 	Name           string
+	Generation     int64
 	mode           string
 
 	variables map[string]cel.Program
@@ -182,6 +183,7 @@ func (c *compiler) Compile(rp v1alpha1.RuntimePolicy) (*CompiledRuntimePolicy, e
 	return &CompiledRuntimePolicy{
 		UID:               string(rp.UID),
 		Name:              rp.Name,
+		Generation:        rp.Generation,
 		ReevalInterval:    &evalIntval,
 		appliesTo:         appliesTo,
 		resolver:          c.resolver,

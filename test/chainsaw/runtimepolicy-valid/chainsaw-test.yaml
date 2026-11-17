@@ -163,7 +163,7 @@ spec:
             --subresource=status --type=merge -p '{
               "status": {
                 "nodes": [
-                  {"nodeName": "node-a", "lastEvaluatedTime": "2026-01-01T00:00:00Z"},
+                  {"nodeName": "node-a", "lastEvaluatedTime": "2026-01-01T00:00:00Z", "observedGeneration": 1},
                   {"nodeName": "node-b", "lastEvaluatedTime": "2026-01-01T00:00:00Z"}
                 ],
                 "conditions": [
@@ -186,6 +186,7 @@ spec:
           status:
             (length(nodes)): 2
             (contains(to_string(nodes[?nodeName == 'node-a'].lastEvaluatedTime | [0]), '2026-01-01')): true
+            (nodes[?nodeName == 'node-a'].observedGeneration | [0]): 1
             (conditions[?type == 'Applied'].reason | [0]): Enforcing
     finally:
     - delete:
