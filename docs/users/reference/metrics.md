@@ -30,7 +30,7 @@ Label values:
 | --- | --- |
 | `source` | `egress-observe`, `openexec-observe` (the two poll sources), `dnsquery` (the DNS question source), `exec-trace` (the streamed exec source), `monitor`, `reporter` |
 | `kind` | `net`, `protocol`, `exec`, `open`, `dns` |
-| `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `count_map_full`, `ringbuf_full`, `name_unreadable`, `undecodable`, `queue_full`, `send_failed` |
+| `reason` | `buffer_full`, `unattributed`, `unattributed_kernel_deny`, `pending_full`, `count_map_full`, `ringbuf_full`, `name_unreadable`, `undecodable`, `queue_full`, `send_failed` |
 | `behavior` | `network`, `protocol`, `exec`, `open`, `dns` |
 | `result` | `ok`, `error`, `skipped` |
 
@@ -40,6 +40,10 @@ The pipeline-wide drop reasons:
   Raise `--event-buffer-size`.
 - `unattributed` — a finding reached the reporter without a namespace it could write a Report
   into.
+- `pending_full` — the reporter was holding its maximum number of findings, in total or for one
+  pod, because Report writes were failing or slow, so a new finding was dropped. Repeats of a
+  held finding are not dropped. Climbing means the Kubernetes API is unreachable or a workload
+  is producing far more distinct findings than a Report can hold.
 - `unattributed_kernel_deny` — the kernel denied something, but no enforce-mode policy the
   daemon tracks explains the deny. Kept distinct from `unattributed` so the two gaps stay
   tellable apart.

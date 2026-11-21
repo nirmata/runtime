@@ -26,6 +26,7 @@ import (
 // Defaults for Options.
 const (
 	DefaultMaxResultsPerReport = 500
+	DefaultMaxPendingFindings  = 10000
 	DefaultFlushInterval       = 10 * time.Second
 	// defaultFlushTimeout bounds the final flush performed after ctx is
 	// cancelled, which must not use the cancelled context.
@@ -41,6 +42,10 @@ const (
 	writeSkipped = "skipped"
 )
 
+// dropPendingFull is the EventsDropped reason for a finding refused because
+// the reporter's buffer was at capacity.
+const dropPendingFull = "pending_full"
+
 // Options configures a Reporter. The zero value is usable: every field has a
 // default. Note that no option touches redaction — that is deliberate and
 // permanent (DESIGN §4).
@@ -51,6 +56,11 @@ type Options struct {
 	// MaxResultsPerReport caps results per Report (default 500). Reports at
 	// the cap carry the truncated-results annotation.
 	MaxResultsPerReport int
+	// MaxPendingFindings caps distinct findings held by the reporter across
+	// every Report, counting those buffered and those in flight to the API
+	// server (default 10000). A finding whose fingerprint is already held
+	// still merges into it; a new fingerprint past the cap is dropped.
+	MaxPendingFindings int
 	// FlushInterval is how often buffered findings are written (default 10s).
 	FlushInterval time.Duration
 	// Clock is injectable for tests; defaults to time.Now.
@@ -72,6 +82,12 @@ type Reporter struct {
 	mu sync.Mutex
 	// pending maps report -> fingerprint -> accumulated finding.
 	pending map[reportKey]map[string]*pending
+	// held counts distinct findings per report, and heldTotal across all of
+	// them, from the moment Report buffers one until its write succeeds. A
+	// batch drained for a flush stays counted, so the cap covers in-flight
+	// findings and a failed write cannot requeue past it.
+	held      map[reportKey]int
+	heldTotal int
 }
 
 // reportKey addresses one Report: the pod's namespace and the Report name
@@ -85,6 +101,9 @@ type reportKey struct {
 func New(c client.Client, log logr.Logger, m *metrics.Metrics, opts Options) *Reporter {
 	if opts.MaxResultsPerReport <= 0 {
 		opts.MaxResultsPerReport = DefaultMaxResultsPerReport
+	}
+	if opts.MaxPendingFindings <= 0 {
+		opts.MaxPendingFindings = DefaultMaxPendingFindings
 	}
 	if opts.FlushInterval <= 0 {
 		opts.FlushInterval = DefaultFlushInterval
@@ -103,12 +122,19 @@ func New(c client.Client, log logr.Logger, m *metrics.Metrics, opts Options) *Re
 		metrics: m,
 		opts:    opts,
 		pending: map[reportKey]map[string]*pending{},
+		held:    map[reportKey]int{},
 	}
 }
 
 // Report enqueues a finding. It never blocks on the API server: repeats of a
 // fingerprint merge into the buffered entry (count, firstTimestamp,
 // lastTimestamp) and the next flush writes the merged result.
+//
+// A new fingerprint is refused once the reporter holds MaxPendingFindings in
+// total, or one more than a Report can hold for the same Report, so one noisy
+// pod cannot take the whole budget. The extra one keeps the truncated-results
+// annotation accurate: a Report that lost findings is never silent about it.
+// Refused findings are counted in EventsDropped.
 //
 // Findings without a usable pod namespace and name are dropped: they cannot
 // address a namespaced Report. Attribution normally guarantees both
@@ -139,15 +165,20 @@ func (r *Reporter) Report(f Finding) {
 	key := reportKey{Namespace: f.Pod.Namespace, Name: reportNameForPod(f.Pod.Name)}
 
 	r.mu.Lock()
-	byFingerprint, ok := r.pending[key]
-	if !ok {
-		byFingerprint = map[string]*pending{}
-		r.pending[key] = byFingerprint
-	}
-	if p, found := byFingerprint[fp]; found {
+	dropped := false
+	if p, found := r.pending[key][fp]; found {
 		p.merge(f, at)
+	} else if r.heldTotal >= r.opts.MaxPendingFindings || r.held[key] > r.opts.MaxResultsPerReport {
+		dropped = true
 	} else {
+		byFingerprint, ok := r.pending[key]
+		if !ok {
+			byFingerprint = map[string]*pending{}
+			r.pending[key] = byFingerprint
+		}
 		byFingerprint[fp] = &pending{finding: f, count: 1, first: at, last: at}
+		r.held[key]++
+		r.heldTotal++
 	}
 	r.mu.Unlock()
 
@@ -157,6 +188,14 @@ func (r *Reporter) Report(f Finding) {
 	behavior := Sanitize(f.Behavior)
 	if r.metrics != nil {
 		r.metrics.FindingsEmitted.WithLabelValues(policy, behavior).Inc()
+	}
+	if dropped {
+		if r.metrics != nil {
+			r.metrics.EventsDropped.WithLabelValues("reporter", dropPendingFull).Inc()
+		}
+		r.log.V(2).Info("dropping finding: reporter buffer is full",
+			"policy", policy, "behavior", behavior, "pod", Sanitize(f.Pod.Name), "namespace", f.Pod.Namespace)
+		return
 	}
 	if r.log.V(4).Enabled() {
 		r.log.V(4).Info("finding buffered", "policy", policy, "behavior", behavior,
@@ -220,7 +259,9 @@ func (r *Reporter) flush(ctx context.Context) error {
 		if err := r.writeReport(ctx, key, batch[key]); err != nil {
 			errs = append(errs, err)
 			r.requeue(key, batch[key])
+			continue
 		}
+		r.release(key, len(batch[key]))
 	}
 	return errors.Join(errs...)
 }
@@ -252,7 +293,20 @@ func (r *Reporter) notifyFlushSink(batch map[reportKey]map[string]*pending) {
 	}
 }
 
+// release stops counting n findings of a Report whose write succeeded.
+func (r *Reporter) release(key reportKey, n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.heldTotal -= n
+	if r.held[key] -= n; r.held[key] <= 0 {
+		delete(r.held, key)
+	}
+}
+
 // requeue folds a failed batch back into the buffer without double counting.
+// Both sides are already counted as held, so a fingerprint present in each
+// stops being counted twice and the cap cannot be exceeded.
 func (r *Reporter) requeue(key reportKey, items map[string]*pending) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
