@@ -862,6 +862,10 @@ Details worth knowing:
   appending a result.
 - Reports are capped at 500 results; a truncated Report is annotated
   `runtime.nirmata.io/truncated-results: "true"`.
+- While findings wait to be written, for example during a Kubernetes API outage, the daemon holds
+  at most 10000 distinct findings in total, and at most one more than a Report can hold for any
+  one pod. A repeat of a held finding still increments its `count`; a new finding beyond the
+  limits is dropped and counted in `nirmata_runtime_events_dropped_total{source="reporter",reason="pending_full"}`.
 - Pod labels are never copied into a Report, and there is no mechanism to attach arbitrary
   key/values to one. Every emitted value is scrubbed on the way out. This is not configurable.
 - A finding for a pod whose namespace is not a valid DNS-1123 label is dropped rather than

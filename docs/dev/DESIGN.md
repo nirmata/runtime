@@ -789,7 +789,12 @@ per pod named `kyverno-runtime-<podName>`, truncated and hash-suffixed when the 
 push it past the 63-character object-name limit. Merging preserves `count`,
 `firstTimestamp`, and `lastTimestamp`; results are capped at 500 with a
 `runtime.nirmata.io/truncated-results` annotation; a flush whose results are byte-identical to
-what is already stored is skipped rather than written. `Run(ctx)` flushes once more after
+what is already stored is skipped rather than written. Findings buffered or in flight are bounded
+by `Options.MaxPendingFindings` (10000) in total and by one more than `MaxResultsPerReport` per
+Report: a new fingerprint past either bound is dropped and counted in
+`events_dropped_total{source="reporter",reason="pending_full"}`, while a repeat of a held
+fingerprint still merges. A failed write requeues into already-counted slots, so the bound holds
+while the API server is down. `Run(ctx)` flushes once more after
 cancellation, on a fresh bounded context, so the last window is not lost on shutdown. It writes
 through a `sigs.k8s.io/controller-runtime/pkg/client.Client` built from the daemon's `rest.Config`
 with the OpenReports types installed in the scheme.

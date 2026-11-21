@@ -3,8 +3,10 @@ package reporter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -611,6 +613,10 @@ func TestNewAppliesDefaults(t *testing.T) {
 	c := newRecordingClient(t)
 	r := New(c, testLogger(t), nil, Options{})
 
+	if r.opts.MaxPendingFindings != DefaultMaxPendingFindings {
+		t.Errorf("MaxPendingFindings = %d, want %d", r.opts.MaxPendingFindings, DefaultMaxPendingFindings)
+	}
+
 	if r.opts.MaxResultsPerReport != DefaultMaxResultsPerReport {
 		t.Errorf("MaxResultsPerReport = %d, want %d", r.opts.MaxResultsPerReport, DefaultMaxResultsPerReport)
 	}
@@ -679,5 +685,182 @@ func TestFlushWithNilFlushSinkDoesNotPanic(t *testing.T) {
 	r.Report(findingIn("default", "pod-1", fixedTime))
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatalf("flush with nil FlushSink: %v", err)
+	}
+}
+
+// downClient fails every Get while down is set, standing in for an API server
+// outage that lasts across flushes.
+type downClient struct {
+	client.Client
+	mu   sync.Mutex
+	down bool
+}
+
+func newDownClient(t *testing.T) *downClient {
+	t.Helper()
+	dc := &downClient{down: true}
+	dc.Client = fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				dc.mu.Lock()
+				down := dc.down
+				dc.mu.Unlock()
+				if down {
+					return errors.New("apiserver unavailable")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	return dc
+}
+
+func (dc *downClient) setDown(down bool) {
+	dc.mu.Lock()
+	dc.down = down
+	dc.mu.Unlock()
+}
+
+// uniqueFindingIn returns findings for one pod that all have distinct
+// fingerprints.
+func uniqueFindingIn(namespace, podUID string, i int, at time.Time) Finding {
+	f := findingIn(namespace, podUID, at)
+	f.Target = fmt.Sprintf("/target/%d", i)
+	return f
+}
+
+// heldAccounting returns the reporter's held total, the number of findings
+// actually buffered, and the sum of the per-report counts.
+func heldAccounting(r *Reporter) (total, buffered, perReport int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, byFingerprint := range r.pending {
+		buffered += len(byFingerprint)
+	}
+	for _, n := range r.held {
+		perReport += n
+	}
+	return r.heldTotal, buffered, perReport
+}
+
+func TestPendingFindingsStayWithinTheCapWhileTheAPIIsDown(t *testing.T) {
+	c := newDownClient(t)
+	r, m := newTestReporter(t, c, Options{NodeName: "node-a", MaxPendingFindings: 5})
+
+	for round := 0; round < 3; round++ {
+		for i := 0; i < 20; i++ {
+			r.Report(uniqueFindingIn("default", "pod-1", round*20+i, fixedTime))
+		}
+		if err := r.flush(context.Background()); err == nil {
+			t.Fatal("flush returned nil while the API server is down")
+		}
+		total, buffered, perReport := heldAccounting(r)
+		if total != 5 || buffered != 5 || perReport != 5 {
+			t.Fatalf("round %d: held total %d, buffered %d, per-report sum %d; want 5 each", round, total, buffered, perReport)
+		}
+	}
+
+	// 60 unique findings were reported and 5 are held; the rest are counted.
+	if got := testutil.ToFloat64(m.EventsDropped.WithLabelValues("reporter", dropPendingFull)); got != 55 {
+		t.Errorf("EventsDropped{reporter,pending_full} = %v, want 55", got)
+	}
+}
+
+func TestRecoveryWritesHeldFindingsOnceAndFreesTheBudget(t *testing.T) {
+	c := newDownClient(t)
+	r, _ := newTestReporter(t, c, Options{NodeName: "node-a", MaxPendingFindings: 3})
+
+	for i := 0; i < 3; i++ {
+		r.Report(uniqueFindingIn("default", "pod-1", i, fixedTime))
+	}
+	if err := r.flush(context.Background()); err == nil {
+		t.Fatal("flush returned nil while the API server is down")
+	}
+	// A repeat of a held fingerprint still merges at the cap.
+	r.Report(uniqueFindingIn("default", "pod-1", 0, fixedTime.Add(time.Minute)))
+
+	c.setDown(false)
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatalf("flush after recovery: %v", err)
+	}
+
+	report := getReport(t, c, "default", "kyverno-runtime-pod-pod-1")
+	if len(report.Results) != 3 {
+		t.Fatalf("report holds %d results, want 3", len(report.Results))
+	}
+	counts := map[string]string{}
+	for _, res := range report.Results {
+		counts[res.Properties[propTarget]] = res.Properties[propCount]
+	}
+	want := map[string]string{"/target/0": "2", "/target/1": "1", "/target/2": "1"}
+	if diff := cmp.Diff(want, counts); diff != "" {
+		t.Errorf("counts after recovery (-want +got):\n%s", diff)
+	}
+
+	if total, buffered, perReport := heldAccounting(r); total != 0 || buffered != 0 || perReport != 0 {
+		t.Errorf("after recovery held total %d, buffered %d, per-report sum %d; want 0 each", total, buffered, perReport)
+	}
+
+	r.Report(uniqueFindingIn("default", "pod-1", 99, fixedTime))
+	if total, _, _ := heldAccounting(r); total != 1 {
+		t.Errorf("held total after a new finding = %d, want 1 (budget was not freed)", total)
+	}
+}
+
+func TestOneNoisyPodCannotTakeTheWholeBudget(t *testing.T) {
+	c := newDownClient(t)
+	r, m := newTestReporter(t, c, Options{NodeName: "node-a", MaxPendingFindings: 100, MaxResultsPerReport: 3})
+
+	for i := 0; i < 50; i++ {
+		r.Report(uniqueFindingIn("default", "noisy", i, fixedTime))
+	}
+	r.Report(uniqueFindingIn("default", "quiet", 0, fixedTime))
+
+	r.mu.Lock()
+	noisy := r.held[reportKey{Namespace: "default", Name: reportNameForPod("pod-noisy")}]
+	quiet := r.held[reportKey{Namespace: "default", Name: reportNameForPod("pod-quiet")}]
+	r.mu.Unlock()
+
+	// A Report holds 3, so 4 buffered findings are enough to mark it truncated
+	// and no more are kept.
+	if noisy != 4 {
+		t.Errorf("noisy pod holds %d findings, want 4", noisy)
+	}
+	if quiet != 1 {
+		t.Errorf("quiet pod holds %d findings, want 1", quiet)
+	}
+	if got := testutil.ToFloat64(m.EventsDropped.WithLabelValues("reporter", dropPendingFull)); got != 46 {
+		t.Errorf("EventsDropped{reporter,pending_full} = %v, want 46", got)
+	}
+}
+
+func TestConcurrentIngestAndFlushNeverExceedTheCap(t *testing.T) {
+	c := newDownClient(t)
+	const limit = 40
+	r, _ := newTestReporter(t, c, Options{NodeName: "node-a", MaxPendingFindings: limit, MaxResultsPerReport: 500})
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				r.Report(uniqueFindingIn("default", fmt.Sprintf("pod-%d", g%4), g*100+i, fixedTime))
+				if total, _, _ := heldAccounting(r); total > limit {
+					t.Errorf("held total %d exceeds cap %d", total, limit)
+					return
+				}
+			}
+		}(g)
+	}
+	for i := 0; i < 10; i++ {
+		_ = r.flush(context.Background())
+	}
+	wg.Wait()
+
+	total, buffered, perReport := heldAccounting(r)
+	if total > limit || total != buffered || total != perReport {
+		t.Errorf("held total %d, buffered %d, per-report sum %d, cap %d; want equal and within the cap", total, buffered, perReport, limit)
 	}
 }
